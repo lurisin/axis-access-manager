@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controllo accessi</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #1f2328; --muted: #5f6b7a;
+    --border: #d8dde3; --ok: #1a7f37; --warn: #9a6700; --err: #cf222e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --card: #1b1f24; --text: #e6e8eb; --muted: #9aa4af;
+      --border: #30363d; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  button { background: var(--card); color: var(--text); border: 1px solid var(--border);
+           border-radius: 8px; padding: 6px 14px; font: inherit; cursor: pointer; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+          padding: 16px 20px; margin-bottom: 16px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+  dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 500; }
+  .hint { color: var(--warn); margin: 12px 0 0; }
+  .muted { color: var(--muted); }
+  code { font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Controllo accessi</h1>
+    <button id="refresh" type="button">Aggiorna</button>
+  </header>
+
+  <section class="card">
+    <h2><span class="dot" id="ctrl-dot"></span>Controller A1210</h2>
+    <dl id="ctrl"><dt>Stato</dt><dd class="muted">verifica in corso…</dd></dl>
+  </section>
+
+  <section class="card">
+    <h2><span class="dot" id="mqtt-dot"></span>MQTT</h2>
+    <dl id="mqtt"><dt>Stato</dt><dd class="muted">verifica in corso…</dd></dl>
+    <p class="hint" id="mqtt-hint" hidden></p>
+  </section>
+
+  <section class="card">
+    <h2>Eventi ricevuti dall'avvio</h2>
+    <table>
+      <thead><tr><th>Categoria</th><th>Numero</th><th>Ultimo topic</th><th>Ultimo</th></tr></thead>
+      <tbody id="events"><tr><td colspan="4" class="muted">nessun evento</td></tr></tbody>
+    </table>
+  </section>
+</main>
+<script>
+  // Percorsi relativi: con Ingress la pagina è servita sotto un prefisso variabile
+  const $ = (id) => document.getElementById(id);
+  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+  const when = (iso) => iso ? new Date(iso).toLocaleString("it-IT") : "";
+  const rows = (pairs) => pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
+  const setDot = (id, cls) => { $(id).className = "dot " + cls; };
+
+  function renderController(c) {
+    if (!c.ok) {
+      setDot("ctrl-dot", "err");
+      $("ctrl").innerHTML = rows([["Stato", `<span style="color:var(--err)">${esc(c.error)}</span>`]]);
+      return;
+    }
+    setDot("ctrl-dot", c.door_found ? "ok" : "warn");
+    $("ctrl").innerHTML = rows([
+      ["Stato", "raggiungibile"],
+      ["Modello", esc(c.model)],
+      ["Firmware", esc(c.firmware)],
+      ["Numero di serie", esc(c.serial)],
+      ["Porte", c.doors.map((d) => `<code>${esc(d)}</code>`).join(", ") +
+        (c.door_found ? "" : ` <span style="color:var(--warn)">(il token configurato non c'è)</span>`)],
+      ["Tessere registrate", esc(c.credentials)],
+    ]);
+  }
+
+  function renderMqtt(m) {
+    const hint = $("mqtt-hint");
+    hint.hidden = true;
+    if (!m.configured) {
+      setDot("mqtt-dot", "err");
+      $("mqtt").innerHTML = rows([["Stato", "nessun broker: installa Mosquitto o imposta mqtt_host"]]);
+      return;
+    }
+    setDot("mqtt-dot", !m.connected ? "err" : m.access_events_seen ? "ok" : "warn");
+    $("mqtt").innerHTML = rows([
+      ["Broker", m.connected ? "collegato" : `non collegato ${esc(m.error)}`],
+      ["Prefisso", `<code>${esc(m.prefix)}</code>`],
+      ["Controller", m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? "online" : "offline"],
+      ["Ultima tessera letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(when(m.last_card.read_at))}` : "nessuna dall'avvio"],
+    ]);
+    if (m.connected && !m.access_events_seen) {
+      hint.textContent = "Nessun evento AccessControl ricevuto. Passa una tessera: se compare solo IdPoint, " +
+        "aggiungi gli eventi AccessControl (concesso, negato) al filtro eventi MQTT dell'A1210.";
+      hint.hidden = false;
+    }
+    const cats = Object.entries(m.categories);
+    $("events").innerHTML = cats.length
+      ? cats.map(([name, s]) => `<tr><td>${esc(name)}</td><td>${esc(s.count)}</td><td><code>${esc(s.last_topic)}</code></td><td>${esc(when(s.last_seen))}</td></tr>`).join("")
+      : `<tr><td colspan="4" class="muted">nessun evento</td></tr>`;
+  }
+
+  async function refresh() {
+    try {
+      const res = await fetch("api/status");
+      if (!res.ok) throw new Error("errore " + res.status);
+      const data = await res.json();
+      renderController(data.controller);
+      renderMqtt(data.mqtt);
+    } catch (err) {
+      setDot("ctrl-dot", "err");
+      $("ctrl").innerHTML = rows([["Stato", esc("add-on non raggiungibile: " + err.message)]]);
+    }
+  }
+
+  $("refresh").addEventListener("click", refresh);
+  refresh();
+  setInterval(refresh, 15000);
+</script>
+</body>
+</html>

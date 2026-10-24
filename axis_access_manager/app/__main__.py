@@ -1,0 +1,16 @@
+import logging
+
+import uvicorn
+
+from .config import load_settings
+from .main import create_app
+
+
+def main() -> None:
+    settings = load_settings()
+    logging.basicConfig(level=settings.log_level.upper(), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    uvicorn.run(create_app(settings), host="0.0.0.0", port=8099, log_level=settings.log_level)
+
+
+if __name__ == "__main__":
+    main()
