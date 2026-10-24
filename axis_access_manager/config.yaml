@@ -1,0 +1,35 @@
+name: Axis Access Manager
+version: "0.1.0"
+slug: axis_access_manager
+description: Gestione tessere e controllo accessi per il controller Axis A1210
+url: https://github.com/lurisin/axis-access-manager
+arch:
+  - aarch64
+  - amd64
+init: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:card-account-details
+panel_title: Controllo accessi
+services:
+  - mqtt:want
+options:
+  a1210_host: ""
+  a1210_username: ""
+  a1210_password: ""
+  a1210_verify_ssl: false
+  door_token: porta_via_consulta_ingresso_scala
+  mqtt_topic_prefix: accessi/via_consulta_controller
+  log_level: info
+schema:
+  a1210_host: str
+  a1210_username: str
+  a1210_password: password
+  a1210_verify_ssl: bool
+  door_token: str
+  mqtt_topic_prefix: str
+  mqtt_host: str?
+  mqtt_port: port?
+  mqtt_username: str?
+  mqtt_password: password?
+  log_level: list(debug|info|warning|error)

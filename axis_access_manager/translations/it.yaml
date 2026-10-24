@@ -1,0 +1,29 @@
+configuration:
+  a1210_host:
+    name: Indirizzo A1210
+    description: IP o nome host del controller, ad esempio 172.27.202.22
+  a1210_username:
+    name: Utente A1210
+    description: Utente del controller con permessi di amministratore (meglio uno dedicato all'add-on)
+  a1210_password:
+    name: Password A1210
+  a1210_verify_ssl:
+    name: Verifica certificato HTTPS
+    description: Lascia disattivato se il controller usa il certificato autofirmato di fabbrica
+  door_token:
+    name: Token porta
+    description: Token Axis della porta da gestire
+  mqtt_topic_prefix:
+    name: Prefisso topic MQTT
+    description: Prefisso configurato nel client MQTT dell'A1210; gli eventi arrivano sotto <prefisso>/eventi/...
+  mqtt_host:
+    name: Broker MQTT (facoltativo)
+    description: Vuoto = usa il broker Mosquitto di Home Assistant
+  mqtt_port:
+    name: Porta MQTT (facoltativa)
+  mqtt_username:
+    name: Utente MQTT (facoltativo)
+  mqtt_password:
+    name: Password MQTT (facoltativa)
+  log_level:
+    name: Livello di log
