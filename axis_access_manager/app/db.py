@@ -192,6 +192,24 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
             "ALTER TABLE events ADD COLUMN recovered INTEGER NOT NULL DEFAULT 0",
         ],
     ),
+    (
+        3,
+        "impronta degli eventi del controller, per non registrarli due volte",
+        [
+            "ALTER TABLE events ADD COLUMN ref TEXT NOT NULL DEFAULT ''",
+            # Stessa formula di service.event_ref
+            "UPDATE events SET ref = 'lettura|' || door || '|' || lower(card) "
+            "WHERE kind IN ('lettura', 'sconosciuta') AND source = 'lettore'",
+            "UPDATE events SET ref = kind || '|' || door "
+            "WHERE kind IN ('concesso', 'negato') AND source = 'controller'",
+            "UPDATE events SET ref = kind || '|' || door || '|' || detail WHERE kind IN ('allarme', 'manomissione')",
+            # Doppioni lasciati dal recupero della 0.18.0: recuperati con un gemello arrivato via MQTT
+            # nello stesso secondo
+            "DELETE FROM events WHERE recovered = 1 AND ref != '' AND EXISTS (SELECT 1 FROM events AS live "
+            "WHERE live.recovered = 0 AND live.ref = events.ref "
+            "AND abs(julianday(live.ts) - julianday(events.ts)) * 86400 <= 1.5)",
+        ],
+    ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 SETTING_APP_VERSION = "app_version"
@@ -882,10 +900,11 @@ class Database:
         raw: dict | None = None,
         door: str = "",
         recovered: bool = False,
+        ref: str = "",
     ) -> int:
         return self._execute(
-            "INSERT INTO events (ts, kind, card, person_id, person_name, detail, source, raw, door, recovered) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO events (ts, kind, card, person_id, person_name, detail, source, raw, door, recovered, ref) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ts,
                 kind,
@@ -897,13 +916,13 @@ class Database:
                 json.dumps(raw) if raw else "",
                 door,
                 int(recovered),
+                ref,
             ),
         )
 
-    def similar_event(
-        self, *, ts: str, kind: str, card: str = "", door: str = "", detail: str = "", only_recovered: bool = False
-    ) -> bool:
-        """Stesso evento del controller già registrato entro un secondo; only_recovered: solo tra i recuperati."""
+    def similar_event(self, *, ts: str, ref: str, only_recovered: bool = False) -> bool:
+        """Stesso evento del controller (stessa impronta) già registrato entro un secondo;
+        only_recovered: solo tra i recuperati."""
         try:
             moment = datetime.fromisoformat(ts)
         except ValueError:
@@ -912,9 +931,8 @@ class Database:
         high = (moment + timedelta(seconds=1)).isoformat(timespec="seconds")
         return bool(
             self._query(
-                "SELECT 1 FROM events WHERE ts BETWEEN ? AND ? AND kind = ? AND card = ? COLLATE NOCASE "
-                "AND door = ? AND detail = ? AND recovered >= ? LIMIT 1",
-                (low, high, kind, card, door, detail, int(only_recovered)),
+                "SELECT 1 FROM events WHERE ts BETWEEN ? AND ? AND ref = ? AND recovered >= ? LIMIT 1",
+                (low, high, ref, int(only_recovered)),
             )
         )
 
