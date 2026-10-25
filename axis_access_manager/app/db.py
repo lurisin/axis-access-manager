@@ -146,6 +146,8 @@ MIGRATIONS = [
     ("persons", "category_id", "INTEGER NOT NULL DEFAULT 0"),
     ("events", "door", "TEXT NOT NULL DEFAULT ''"),
     ("doors", "area_id", "INTEGER NOT NULL DEFAULT 0"),
+    ("controllers", "area_id", "INTEGER NOT NULL DEFAULT 0"),
+    ("controllers", "description", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -424,7 +426,16 @@ class Database:
 
     # Impianti: controller e porte
 
-    CONTROLLER_FIELDS = ("name", "host", "username", "password", "verify_ssl", "mqtt_topic_prefix")
+    CONTROLLER_FIELDS = (
+        "name",
+        "host",
+        "username",
+        "password",
+        "verify_ssl",
+        "mqtt_topic_prefix",
+        "area_id",
+        "description",
+    )
     DOOR_FIELDS = (
         "door_token",
         "name",
@@ -451,6 +462,7 @@ class Database:
         return next((c for c in self.list_controllers() if c["id"] == controller_id), None)
 
     def save_controller(self, controller_id: int | None, fields: dict) -> int:
+        fields = {"area_id": 0, "description": "", **fields}
         values = tuple(fields[f] for f in self.CONTROLLER_FIELDS)
         ts = now_iso()
         if controller_id:
@@ -492,7 +504,7 @@ class Database:
     def delete_door(self, door_id: int) -> None:
         self._execute("DELETE FROM doors WHERE id = ?", (door_id,))
 
-    # Strutture e aree: dove si trovano le porte
+    # Strutture e aree: dove si trovano controller e porte
 
     def list_sites(self) -> list[dict]:
         sites = self._query("SELECT * FROM sites ORDER BY name COLLATE NOCASE")
@@ -516,9 +528,11 @@ class Database:
 
     def delete_site(self, site_id: int) -> None:
         with self._lock:
-            self._conn.execute(
-                "UPDATE doors SET area_id = 0 WHERE area_id IN (SELECT id FROM areas WHERE site_id = ?)", (site_id,)
-            )
+            for table in ("doors", "controllers"):
+                self._conn.execute(
+                    f"UPDATE {table} SET area_id = 0 WHERE area_id IN (SELECT id FROM areas WHERE site_id = ?)",
+                    (site_id,),
+                )
             self._conn.execute("DELETE FROM sites WHERE id = ?", (site_id,))
             self._conn.commit()
 
@@ -539,11 +553,15 @@ class Database:
     def delete_area(self, area_id: int) -> None:
         with self._lock:
             self._conn.execute("UPDATE doors SET area_id = 0 WHERE area_id = ?", (area_id,))
+            self._conn.execute("UPDATE controllers SET area_id = 0 WHERE area_id = ?", (area_id,))
             self._conn.execute("DELETE FROM areas WHERE id = ?", (area_id,))
             self._conn.commit()
 
     def set_door_area(self, door_id: int, area_id: int) -> None:
         self._execute("UPDATE doors SET area_id = ? WHERE id = ?", (area_id, door_id))
+
+    def set_controller_area(self, controller_id: int, area_id: int) -> None:
+        self._execute("UPDATE controllers SET area_id = ? WHERE id = ?", (area_id, controller_id))
 
     # Modifiche alla programmazione del controller, per poterle annullare
 

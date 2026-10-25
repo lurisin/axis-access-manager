@@ -11,6 +11,13 @@ Le vecchie opzioni restano visibili come "Obsoleta" e non servono più.
 Il primo utente di Home Assistant che apre l'app diventa **amministratore**. Gli altri entrano con il ruolo "Solo Stato" finché un amministratore non dà loro altri permessi (Impostazioni → Utenti).
 Il pannello ora è visibile anche agli utenti di Home Assistant che non sono amministratori di Home Assistant: cosa possono fare lo decidono i permessi dell'app.
 
+### Novità della 0.7
+
+- **Notifiche**: nel menu c'è la campanella con il numero delle notifiche urgenti non ancora viste. Lo stato della porta non è più in alto: si vede nel dettaglio di ogni porta.
+- **Impianti** mostra i controller come schede per struttura e area. Toccando la scheda si apre la pagina del controller con lo **schema lettori ↔ porte**; l'ingranaggio apre la pagina **Connessione** (indirizzo, credenziali, area, descrizione della posizione).
+- L'area ora è del **controller**: porte e lettori la ereditano. Al primo avvio della 0.7 l'area che avevi dato alla porta passa al suo controller.
+- **Porte** è un elenco essenziale (nome, area, stato): il clic apre il dettaglio, anche con una porta sola.
+
 ### Novità della 0.6
 
 - Il menu è una **barra laterale** sempre presente con le sole icone; il pulsante ☰ la allarga con i nomi delle pagine. Sul telefono si apre sopra la pagina e si richiude da sola dopo la scelta; sul computer resta come l'hai lasciata.
@@ -32,34 +39,42 @@ Restano solo quelle tecniche:
 ## Sezioni
 
 - **Cruscotto**: accessi e rifiuti di oggi, persone e tessere, le porte raggruppate per struttura e area con stato e ultimo passaggio, grafico degli ultimi 7 giorni, ultimi eventi e avvisi (impianto da configurare, tessere da registrare, tessere in scadenza, allarmi, MQTT scollegato).
-- **Porte**: tutte le porte per struttura e area. Il dettaglio di una porta mostra stato, numeri di oggi, dispositivi (lettori con direzione, citofono, telecamera, controller), i gruppi che la aprono e i suoi ultimi eventi. Con una porta sola si apre direttamente il suo dettaglio.
+- **Porte**: elenco essenziale per struttura e area, con nome, accessi di oggi e stato. Il clic apre il dettaglio: stato, numeri di oggi, dispositivi (lettori con direzione, citofono, telecamera, controller), i gruppi che la aprono e i suoi ultimi eventi.
 - **Persone**: elenco essenziale in ordine alfabetico, con il colore della tipologia e un'etichetta solo se c'è qualcosa da sistemare (tessera sospesa, scaduta, in scadenza). Filtri rapidi per tipologia, ricerca per nome, ditta o tessera, filtri per gruppo e stato. Un clic apre la scheda della persona: tipologia, gruppo e validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi.
 - **Da Registrare**: tessere lette dal lettore ma non registrate, da assegnare a una persona nuova o esistente senza digitare il numero.
 - **Registro**: una riga per evento (ora, esito, chi, porta) e i dettagli al clic, a lato sul computer e in una finestra sul telefono. Le viste **Da Controllare** (rifiuti, tessere sconosciute, allarmi), Solo Negati, Solo Accessi, Allarmi e Tutto servono quando il passaggio è tanto: nelle viste filtrate un contatore dice quanti accessi riusciti non sono mostrati. Poi ricerca, porta, intervallo di date, istantanee ed esportazione CSV. La vista scelta viene ricordata.
+- **Notifiche**: cosa richiede attenzione, diviso in **Da Gestire** (urgenti, contano sulla campanella finché non premi Presa Visione) e **Informative**. Allarmi ed eventi restano per 24 ore; i problemi di collegamento finché non si risolvono, e se tornano si ripresentano. Quali tipi ricevere, e se urgenti o informativi, lo sceglie l'amministratore in Impostazioni → Notifiche.
 - **Regole**: tipologie, gruppi, fasce orarie e festività (vedi sotto).
-- **Impianti**: controller, porte con citofono e telecamera, strutture e aree, programmazione del controller (vedi sotto).
-- **Impostazioni**: stato di controller, porte, MQTT, citofoni e Home Assistant, esportazione e importazione CSV; per gli amministratori anche **Utenti** e **Attività**.
+- **Impianti**: controller, schema lettori ↔ porte, porte con citofono e telecamera, strutture e aree, programmazione del controller (vedi sotto).
+- **Impostazioni**: stato di controller, porte, MQTT, citofoni e Home Assistant, esportazione e importazione CSV; per gli amministratori anche **Notifiche**, **Utenti** e **Attività**.
 
-In alto c'è lo stato della porta (o delle porte). **L'app non apre la porta**: l'apertura è nei pulsanti di Home Assistant, da mettere nelle dashboard, e passa comunque dall'add-on con i suoi controlli di sicurezza.
+**L'app non apre la porta**: l'apertura è nei pulsanti di Home Assistant, da mettere nelle dashboard, e passa comunque dall'add-on con i suoi controlli di sicurezza.
 
 Il controller resta la fonte di verità: all'avvio e ogni 15 minuti l'add-on rilegge utenti e tessere, quindi anche quelle create in altro modo compaiono in elenco.
 
 ## Impianti
 
-- **Controller**: nome, indirizzo, utente, password (non viene mai mostrata, lasciala vuota per non cambiarla), prefisso MQTT e verifica del certificato. Con **Prova Collegamento** controlli i dati prima di salvarli. Salvando, l'add-on si ricollega subito senza riavvio.
-- **Porte**: per ogni porta del controller scegli il nome, se avere i pulsanti Apri e Apri a Lungo in Home Assistant, la **telecamera** per le istantanee e il **videocitofono** associato.
-- **Strutture e Aree**: dove si trovano le porte. Crei strutture (Hotel, Teatro, Villa 1…) e al loro interno aree (Piano Terra, Ingresso…); poi nella porta scegli la sua area. Il controller che comanda la porta resta un dettaglio tecnico: l'app ragiona per luoghi.
-- Per ora l'add-on gestisce un controller. Porte, citofoni, telecamere e pulsanti sono già organizzati per porta, così si potrà passare a più controller e più porte senza rifare la configurazione.
+La pagina mostra i **controller** come schede, raggruppati per struttura e area, con modello, numero di porte e lettori e stato del collegamento.
 
-### Programmazione del controller
+- **Ingranaggio → Connessione**: nome, struttura e area, descrizione della posizione (es. "quadro sotto la scala"), indirizzo, utente, password (non viene mai mostrata, lasciala vuota per non cambiarla), prefisso MQTT e verifica del certificato. Con **Prova Collegamento** controlli i dati prima di salvarli. Salvando, l'add-on si ricollega subito senza riavvio.
+- **Scheda del controller**: la configurazione di lettori e porte, in quattro schede: Schema, Porte, Lettori, Storico Modifiche (vedi sotto).
+- **Strutture e Aree**: dove si trovano i controller. Crei strutture (Teatro Eliseo, Hotel Giulia, Villa 1…) e al loro interno aree (Via Consulta, Primo Piano…); poi nella Connessione del controller scegli la sua area. Porte e lettori del controller la ereditano.
+- Per ora l'add-on gestisce un controller. Pagine e dati sono già organizzati per averne di più.
 
-La scheda **Programmazione** mostra come è programmato il controller e permette di cambiarlo:
+### Schema lettori ↔ porte
 
-- **Porte**: nome, descrizione e tempi (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme);
-- **Lettori**: nome e descrizione;
-- **Collegamenti lettore-porta** (punti di accesso Axis): quale lettore comanda quale porta, direzione (ingresso o uscita), attivo o no.
+A sinistra i lettori, a destra le porte del controller, uniti da un filo per ogni collegamento. **Tocca un lettore e poi una porta** per collegarli. L'**ingranaggio sul filo** apre direzione (ingresso o uscita), Collegamento Attivo e Scollega.
 
-Ogni modifica legge prima l'oggetto dal controller, cambia solo i campi scelti e salva la versione precedente nello **Storico Modifiche**: con **Annulla** la riporti com'era. Da qui non passano comandi di apertura.
+Le modifiche restano in sospeso, con il filo arancione tratteggiato, finché non premi **Salva**; Scarta le annulla. Se lasci la pagina con modifiche non salvate l'app chiede se salvarle o scartarle.
+
+Sull'Axis un collegamento è un lettore dentro un **punto di accesso** della porta, che ha la sua direzione: lo schema sposta i lettori tra i punti di accesso già presenti sul controller, senza crearne di nuovi. Se una porta non ha un punto di accesso nella direzione scelta, va creato dalla pagina web del controller. Spegnere un collegamento spegne il suo punto di accesso, quindi vale per tutti i lettori che lo usano (l'app lo dice).
+
+### Porte, lettori e storico
+
+- **Porte**: per ogni porta del controller le impostazioni dell'app (nome, pulsanti Apri e Apri a Lungo in Home Assistant, **telecamera** per le istantanee, **videocitofono**) e, con **Nome e Tempi**, nome, descrizione e tempi sul controller (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme). Una porta del controller non ancora usata dall'app si aggiunge con **Gestisci nell'App**.
+- **Lettori**: nome e descrizione sul controller, e quali porte comandano.
+- **Storico Modifiche**: ogni scrittura legge prima l'oggetto dal controller, cambia solo i campi scelti e salva la versione precedente; con **Annulla** la riporti com'era. Da qui non passano comandi di apertura.
+
 La creazione da zero di porte e lettori (tipo di serratura, protocollo OSDP del lettore) resta per ora nella pagina web del controller; i dettagli tecnici letti sono visibili sotto ogni porta.
 
 ## Regole di accesso

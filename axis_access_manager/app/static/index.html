@@ -48,7 +48,6 @@
                 border: none; background: none; color: var(--text); border-radius: 10px; margin-bottom: 4px; }
   .nav-toggle:hover { background: var(--surface-2); }
   .nav-toggle .lbl { font-weight: 700; font-size: 16px; }
-  a.door-pill:hover { text-decoration: none; filter: brightness(.97); }
   .nav-backdrop { display: none; }
   .brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px 12px; font-weight: 700; font-size: 16px; }
   .brand .logo { width: 32px; height: 32px; border-radius: 9px; background: var(--accent); color: var(--accent-text);
@@ -66,7 +65,6 @@
             backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
             display: flex; align-items: center; gap: 12px; padding: 12px 24px; flex-wrap: wrap; }
   .topbar h1 { font-size: 20px; margin: 0; flex: 1; min-width: 120px; }
-  .door { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .content { padding: 20px 24px 48px; max-width: 1180px; width: 100%; }
 
   /* Elementi */
@@ -128,6 +126,49 @@
   .log-detail { position: sticky; top: 76px; }
   .hidden-count { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface-2); font-size: 13px; color: var(--muted); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ctl-card { position: relative; padding: 0; }
+  .ctl-main { display: flex; flex-direction: column; gap: 6px; padding: 16px 60px 16px 18px; color: var(--text); }
+  .ctl-main:hover { text-decoration: none; background: var(--surface-2); border-radius: inherit; }
+  .ctl-name { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; }
+  .ctl-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; font-size: 13px; color: var(--muted); }
+  .ctl-stats b { color: var(--text); font-size: 15px; }
+  .ctl-stats .pill { margin-left: auto; }
+  .ctl-gear { position: absolute; top: 12px; right: 12px; }
+  .ctl-head { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  .schema { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(56px, 200px) minmax(0, 1fr); align-items: start; }
+  .sch-col { display: flex; flex-direction: column; gap: 14px; position: relative; z-index: 1; min-width: 0; }
+  .sch-head { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .sch-node { display: flex; align-items: center; gap: 10px; min-height: 62px; padding: 8px 12px; border: 2px solid var(--border); border-radius: 12px; background: var(--surface);
+    color: var(--text); text-align: left; font: inherit; width: 100%; box-sizing: border-box; cursor: pointer; }
+  .sch-node:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+  .sch-node .grow { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .sch-node b { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sch-meta { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sch-node.sel { border-color: var(--accent); background: var(--accent-soft); }
+  .sch-node.target { border-style: dashed; border-color: var(--accent); }
+  .sch-lines { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+  .sch-line { fill: none; stroke-width: 3; stroke: var(--accent); }
+  .sch-line.new { stroke: var(--warn); stroke-dasharray: 8 6; }
+  .sch-line.off { stroke: var(--muted); stroke-dasharray: 3 6; }
+  .sch-gear { position: absolute; z-index: 2; width: 34px; height: 34px; padding: 0; border-radius: 50%; border: 2px solid var(--accent); background: var(--surface);
+    display: grid; place-items: center; color: var(--text); }
+  .sch-gear.new { border-color: var(--warn); } .sch-gear.off { border-color: var(--muted); }
+  .sch-gear svg.icon { width: 16px; height: 16px; }
+  .save-bar { position: sticky; bottom: 12px; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; margin-top: 12px;
+    border-radius: 12px; background: #1b1f24; color: #fff; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+  .save-bar .grow { flex: 1 1 200px; min-width: 0; }
+  .save-bar button:not(.primary) { background: transparent; color: #fff; border-color: #5f6b7a; }
+  a.item.door-row { color: var(--text); }
+  a.item.door-row:hover { text-decoration: none; background: var(--surface-2); }
+  .door-group .card { margin-bottom: 18px; }
+  @media (max-width: 600px) {
+    .schema { grid-template-columns: minmax(0, 1fr) 46px minmax(0, 1fr); }
+    .sch-node { padding: 8px; min-height: 66px; }
+    .sch-node .ev-icon { display: none; }
+    .sch-node b { white-space: normal; overflow-wrap: anywhere; font-size: 13px; line-height: 1.25; }
+    .sch-meta { white-space: normal; font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  }
+  .item.notif.seen .title { color: var(--muted); font-weight: 500; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center; }
   .toolbar input[type=search] { flex: 1 1 220px; }
   .muted { color: var(--muted); }
@@ -147,7 +188,6 @@
   .pill.accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
-  .door-pill { font-size: 14px; padding: 5px 12px; white-space: normal; max-width: 100%; }
   .alert { display: flex; gap: 12px; align-items: flex-start; border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
            background: var(--warn-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
   .alert.err { background: var(--err-soft); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
@@ -304,8 +344,6 @@
   }
   @media (max-width: 480px) {
     .topbar h1 { font-size: 17px; }
-    .door { width: 100%; }
-    .door .door-pill { flex: 1; justify-content: center; }
     .kpi .value { font-size: 24px; }
   }
 </style>
@@ -319,6 +357,7 @@
     <a href="#persone" data-route="persone" title="Persone"><span data-icon="people"></span><span class="lbl">Persone</span></a>
     <a href="#da-registrare" data-route="da-registrare" title="Da Registrare"><span data-icon="cardplus"></span><span class="lbl">Da Registrare</span><span class="count" id="nav-unknown" hidden></span></a>
     <a href="#registro" data-route="registro" title="Registro"><span data-icon="list"></span><span class="lbl">Registro</span></a>
+    <a href="#notifiche" data-route="notifiche" title="Notifiche"><span data-icon="bell"></span><span class="lbl">Notifiche</span><span class="count" id="nav-notif" hidden></span></a>
     <a href="#regole" data-route="regole" title="Regole"><span data-icon="clock"></span><span class="lbl">Regole</span></a>
     <a href="#impianti" data-route="impianti" title="Impianti"><span data-icon="building"></span><span class="lbl">Impianti</span></a>
     <a href="#impostazioni" data-route="impostazioni" title="Impostazioni"><span data-icon="cog"></span><span class="lbl">Impostazioni</span></a>
@@ -328,9 +367,7 @@
   <div class="main">
     <header class="topbar">
       <h1 id="page-title">Cruscotto</h1>
-      <div class="door">
-        <a href="#porte" class="pill door-pill" id="door-pill"><span class="dot" id="door-dot"></span><span id="door-text">Porta …</span></a>
-      </div>
+      <span class="pill err" id="offline-pill" hidden>Add-on Non Raggiungibile</span>
     </header>
     <div class="content" id="view"><div class="loading"><span class="spinner"></span></div></div>
   </div>
@@ -377,6 +414,8 @@ const ICONS = {
   camera: "M4,4H7L9,2H15L17,4H20A2,2 0 0,1 22,6V18A2,2 0 0,1 20,20H4A2,2 0 0,1 2,18V6A2,2 0 0,1 4,4M12,7A5,5 0 0,0 7,12A5,5 0 0,0 12,17A5,5 0 0,0 17,12A5,5 0 0,0 12,7M12,9A3,3 0 0,1 15,12A3,3 0 0,1 12,15A3,3 0 0,1 9,12A3,3 0 0,1 12,9Z",
   building: "M5,3V21H11V17.5H13V21H19V3H5M7,5H9V7H7V5M11,5H13V7H11V5M15,5H17V7H15V5M7,9H9V11H7V9M11,9H13V11H11V9M15,9H17V11H15V9M7,13H9V15H7V13M11,13H13V15H11V13M15,13H17V15H15V13M7,17H9V19H7V17M15,17H17V19H15V17Z",
   menu: "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z",
+  chip: "M6,4H18V5H21V7H18V9H21V11H18V13H21V15H18V17H21V19H18V20H6V19H3V17H6V15H3V13H6V11H3V9H6V7H3V5H6V4M11,15V18H12V15H11M13,15V18H14V15H13M15,15V18H16V15H15Z",
+  arrow: "M4,11V13H16L10.5,18.5L11.92,19.92L19.84,12L11.92,4.08L10.5,5.5L16,11H4Z",
   user: "M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z",
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ""}"/></svg>`;
@@ -594,24 +633,12 @@ async function loadSummary() {
   try {
     const s = await api("api/summary");
     store.summary = s;
-    const mode = s.door_mode;
-    const doors = s.doors || [];
-    const open = doors.filter((d) => d.mode && d.mode !== "Locked");
-    const cls = !s.configured ? "" : doors.length > 1 ? (open.length ? "warn" : doors.some((d) => !d.mode) ? "" : "ok") : (mode === "Locked" ? "ok" : mode ? "warn" : "");
-    $("#door-dot").className = "dot " + cls;
-    $("#door-pill").className = "pill door-pill " + cls;
-    let text;
-    if (!s.configured) text = "Impianto Non Configurato";
-    else if (doors.length > 1) text = `${doors.length} Porte · ${open.length ? plural(open.length, "Non Bloccata", "Non Bloccate") : doors.some((d) => !d.mode) ? "Stato Incompleto" : "Tutte Bloccate"}`;
-    else text = mode ? `${doors[0]?.name || "Porta"} ${DOOR_MODES[mode] || mode}` : "Stato Porta Sconosciuto";
-    $("#door-text").textContent = text;
-    $("#door-pill").title = doors.map((d) => `${d.name}: ${doorModeLabel(d.mode)}`).join("\n");
-    const badge = $("#nav-unknown");
-    badge.hidden = !s.unknown_cards;
-    badge.textContent = s.unknown_cards;
+    $("#offline-pill").hidden = true;
+    const badges = [["#nav-unknown", s.unknown_cards], ["#nav-notif", s.notifications]];
+    badges.forEach(([sel, n]) => { const b = $(sel); b.hidden = !n; b.textContent = n > 99 ? "99+" : n; });
+    $("#nav [data-route=notifiche]").title = s.notifications ? `Notifiche: ${plural(s.notifications, "urgente", "urgenti")}` : "Notifiche";
   } catch (err) {
-    $("#door-text").textContent = "Add-on Non Raggiungibile";
-    $("#door-pill").className = "pill door-pill err";
+    $("#offline-pill").hidden = false;
   }
 }
 
@@ -625,15 +652,18 @@ const ROUTES = {
   registro: ["Registro Accessi", viewLog, "registro"],
   regole: ["Regole di Accesso", viewRules, "regole"],
   impianti: ["Impianti", viewInstallation, "impianti"],
+  notifiche: ["Notifiche", viewNotifications, ""],
   impostazioni: ["Impostazioni", viewSettings, ""],
 };
 let route = {name: "cruscotto", sub: ""};
 function parseHash() {
-  const [name, sub = ""] = location.hash.replace(/^#/, "").split("/");
+  const [name, ...rest] = location.hash.replace(/^#/, "").split("/");
+  const sub = rest.join("/");
   return ROUTES[name] && (!ROUTES[name][2] || can(ROUTES[name][2])) ? {name, sub} : {name: "cruscotto", sub: ""};
 }
 async function render() {
   route = parseHash();
+  pageGuard = null;
   if ($("#sheet").open && !(route.name === "persone" && route.sub)) $("#sheet").close();
   const [title, view] = ROUTES[route.name];
   $("#page-title").textContent = title;
@@ -661,11 +691,29 @@ function initNav() {
   $("#nav").addEventListener("click", (e) => { if (e.target.closest("a") && phoneLayout()) setNav(false, false); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && phoneLayout() && document.body.classList.contains("nav-open")) setNav(false, false); });
 }
-window.addEventListener("hashchange", () => { $("#view").innerHTML = '<div class="loading"><span class="spinner"></span></div>'; render(); });
+// Pagina con modifiche non salvate: {dirty() → bool, save() → bool}; chiede prima di uscire
+let pageGuard = null;
+let lastHash = location.hash;
+window.addEventListener("hashchange", async () => {
+  if (pageGuard?.dirty()) {
+    const target = location.hash;
+    history.replaceState(null, "", lastHash || "#");
+    const choice = await modal({title: "Modifiche Non Salvate", body: '<p style="margin:0">Hai modifiche non ancora scritte sul controller. Vuoi salvarle prima di uscire?</p>',
+      actions: [{label: "Resta Qui", value: null}, {label: "Scarta", kind: "danger", value: "discard"}, {label: "Salva", kind: "primary", value: "save"}]});
+    if (!choice || (choice === "save" && !(await pageGuard.save()))) return;
+    pageGuard = null;
+    location.hash = target;
+    return;
+  }
+  lastHash = location.hash;
+  $("#view").innerHTML = '<div class="loading"><span class="spinner"></span></div>';
+  render();
+});
+window.addEventListener("beforeunload", (e) => { if (pageGuard?.dirty()) { e.preventDefault(); e.returnValue = ""; } });
 // Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta
 async function refreshView() {
   if ($("#modal").open || $("#sheet").open) return;
-  if (["cruscotto", "da-registrare"].includes(route.name)) await render();
+  if (["cruscotto", "da-registrare", "notifiche"].includes(route.name)) await render();
   if (route.name === "registro") await refreshLog();
 }
 
@@ -761,10 +809,33 @@ async function viewDoorsPage(el, sub) {
     el.innerHTML = `<div class="card"><div class="empty">${icon("door")}<br><b>Nessuna porta configurata</b><br>${can("impianti") ? 'Aggiungi controller e porte nella pagina <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare l'impianto."}</div></div>`;
     return;
   }
-  // Con una porta sola si va dritti ai suoi dettagli
-  const id = Number(sub) || (doors.length === 1 ? doors[0].id : 0);
-  if (id) return viewDoorDetail(el, id, doors);
-  el.innerHTML = doorGroups(doors);
+  if (Number(sub)) return viewDoorDetail(el, Number(sub), doors);
+  el.innerHTML = doorList(doors);
+  paintIcons(el);
+  const search = $("#door-q");
+  if (search) search.oninput = () => {
+    const q = search.value.trim().toLowerCase();
+    $$("[data-door-row]", el).forEach((r) => { r.hidden = Boolean(q) && !r.dataset.doorRow.includes(q); });
+    $$(".door-group", el).forEach((g) => { g.hidden = !$$("[data-door-row]", g).some((r) => !r.hidden); });
+  };
+}
+// Elenco essenziale delle porte, per struttura e area: il clic apre i dettagli
+function doorList(doors) {
+  const groups = [];
+  for (const d of doors) {
+    const key = `${d.site_id}:${d.area_id}`;
+    let g = groups.find((x) => x.key === key);
+    if (!g) groups.push(g = {key, title: placeOf(d) || "Senza Area", doors: []});
+    g.doors.push(d);
+  }
+  const row = (d) => `<a class="item door-row" href="#porte/${d.id}" data-door-row="${esc(`${d.name} ${placeOf(d)}`.toLowerCase())}">
+      <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
+      <div class="grow"><div class="title">${esc(d.name)}</div><div class="meta">${groups.length > 1 ? "" : `<span>${esc(placeOf(d) || "Senza area")}</span>`}<span>oggi ${plural(d.today.granted, "accesso", "accessi")}</span>${d.today.alarms ? `<span style="color:var(--err)">${plural(d.today.alarms, "allarme", "allarmi")}</span>` : ""}</div></div>
+      <span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span>
+      <span class="muted">${icon("arrow")}</span></a>`;
+  return `${doors.length > 8 ? '<div class="toolbar"><input type="search" id="door-q" placeholder="Cerca porta o area" aria-label="Cerca porta"></div>' : ""}
+    ${groups.map((g) => `<section class="door-group">${groups.length > 1 ? `<h3 class="section-title">${icon("building")}${esc(g.title)}</h3>` : ""}<div class="card flush"><div class="list">${g.doors.map(row).join("")}</div></div></section>`).join("")}
+    <p class="hint">Tocca una porta per stato, dispositivi, chi può entrare ed eventi.</p>`;
 }
 async function viewDoorDetail(el, id, doors) {
   let d;
@@ -777,11 +848,12 @@ async function viewDoorDetail(el, id, doors) {
     ...d.readers.map((r) => [icon("card"), r.name, [r.direction, r.description].filter(Boolean).join(" · ") || r.access_point, r.enabled ? ["ok", "Attivo"] : ["", "Disattivato"]]),
     d.intercom ? [icon("phone"), d.intercom, `Videocitofono Hikvision · relè ${d.intercom_relay}`, d.intercom_open_door ? ["ok", "Apre la Porta"] : ["", "Solo Registro"]] : null,
     d.camera ? [icon("camera"), d.camera, d.snapshot_on_granted ? "istantanea su ogni passaggio" : "istantanea su rifiuti, citofono e allarmi", ["ok", "Attiva"]] : null,
-    [icon("cog"), d.controller.name || "Controller", d.controller.host, null],
+    [icon("chip"), d.controller.name || "Controller", d.controller.host, null],
   ].filter(Boolean);
   const kpi = (label, value, sub, color = "") => `<div class="card"><div class="label">${label}</div><div class="value" ${color ? `style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
   el.innerHTML = `
     <div class="row" style="margin-bottom:14px">
+      <a class="small-text" href="#porte">← Tutte le Porte</a>
       ${place ? `<span class="muted">${icon("building")}</span><span class="muted">${esc(place)}</span>` : ""}
       <span class="pill ${doorModeClass(d.mode)}" style="font-size:14px;padding:4px 12px"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span>
       <span class="spacer" style="flex:1"></span>${switcher}
@@ -794,7 +866,7 @@ async function viewDoorDetail(el, id, doors) {
       ${kpi("Ultimo Passaggio", d.last ? esc(d.last.person || "—") : "—", d.last ? esc(relTime(d.last.ts)) : can("registro") ? "nessuno" : "serve il permesso Registro")}
     </div>
     <div class="grid two">
-      <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") ? '<a class="small-text" href="#impianti">Configura</a>' : ""}</h2>
+      <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") && d.controller.id ? `<a class="small-text" href="#impianti/c${d.controller.id}">Configura</a>` : ""}</h2>
         <div class="list" style="margin-top:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div>
         <p class="hint" style="padding:0 18px 14px">L'apertura della porta resta nei pulsanti di Home Assistant.</p></div>
       ${d.groups ? `<div class="card flush"><h2>Chi Può Entrare<span class="spacer"></span>${can("regole") ? '<a class="small-text" href="#regole/gruppi">Regole</a>' : ""}</h2>
@@ -1518,83 +1590,497 @@ async function viewHolidays(body) {
   };
 }
 
+// ---------- Notifiche ----------
+const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", mqtt: "refresh", unknown_card: "cardplus", expiring: "clock", denied: "block"};
+async function viewNotifications(el) {
+  let n;
+  try { n = await api("api/notifications"); } catch (err) { el.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }
+  const urgent = n.items.filter((i) => i.level === "urgent"), info = n.items.filter((i) => i.level === "info");
+  const row = (i) => `<div class="item notif ${i.seen ? "seen" : ""}">
+      <div class="ev-icon ${i.level === "urgent" ? (i.seen ? "k-muted" : "k-err") : "k-info"}">${icon(NOTIF_ICONS[i.type] || "bell")}</div>
+      <div class="grow"><div class="title">${esc(i.title)}</div><div class="meta"><span>${esc(i.text)}</span><span>${esc(relTime(i.ts))}</span></div></div>
+      ${i.link ? `<a class="btn small ghost" href="${esc(i.link)}">Apri</a>` : ""}
+      ${i.level === "urgent" && !i.seen ? `<button type="button" class="small" data-seen="${esc(i.id)}">${icon("check")}Presa Visione</button>` : ""}
+    </div>`;
+  const section = (title, hint, list, empty) => `<div class="card flush"><h2>${title}<span class="spacer"></span><span class="muted small-text">${hint}</span></h2>
+    <div class="list" style="margin-top:8px">${list.length ? list.map(row).join("") : `<div class="empty">${empty}</div>`}</div></div>`;
+  el.innerHTML = `
+    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Il numero sulla campanella conta le notifiche urgenti non ancora viste. Allarmi ed eventi restano qui per 24 ore; i problemi di collegamento finché non si risolvono.</p>
+      ${urgent.some((i) => !i.seen) ? `<button type="button" id="n-all">${icon("check")}Segna Tutte Come Viste</button>` : ""}
+      ${store.me.admin ? `<a class="btn" href="#impostazioni/notifiche">${icon("cog")}Scegli Notifiche</a>` : ""}</div>
+    ${section("Da Gestire", plural(urgent.filter((i) => !i.seen).length, "da vedere", "da vedere"), urgent, "Nessuna notifica urgente: tutto in ordine.")}
+    ${section("Informative", "non contano sulla campanella", info, "Niente da segnalare.")}`;
+  const mark = async (ids) => { if (await run(() => api("api/notifications/seen", {method: "POST", body: ids ? {ids} : {}}))) { await loadSummary(); render(); } };
+  if ($("#n-all")) $("#n-all").onclick = () => mark(null);
+  el.onclick = (e) => { const b = e.target.closest("[data-seen]"); if (b) mark([b.dataset.seen]); };
+}
+
+async function viewNotificationSettings(body) {
+  let n;
+  try { n = await api("api/notifications"); } catch (err) { body.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }
+  body.innerHTML = `<div class="card flush" style="max-width:760px"><h2>${icon("bell")}Quali Notifiche Ricevere</h2>
+    <p class="muted small-text" style="margin:0 18px 8px">Urgente: conta sulla campanella e va presa visione. Informativa: compare nella pagina Notifiche senza contare. Disattivata: non compare. Vale per tutti gli utenti dell'app.</p>
+    <div class="list">${n.types.map((t) => `<div class="item"><div class="ev-icon k-accent">${icon(NOTIF_ICONS[t.key] || "bell")}</div>
+      <div class="grow"><div class="title">${esc(t.name)}</div><div class="meta">${esc(t.description)}</div></div>
+      <select data-level="${esc(t.key)}" style="width:auto">${Object.entries(n.levels).map(([k, label]) => `<option value="${k}" ${k === t.level ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></div>`).join("")}</div></div>`;
+  paintIcons(body);
+  body.onchange = async (e) => {
+    const sel = e.target.closest("[data-level]");
+    if (sel && await run(() => api("api/notifications/settings", {method: "PUT", body: {[sel.dataset.level]: sel.value}}), "Notifiche aggiornate")) loadSummary();
+  };
+}
+
 // ---------- Impianti ----------
 const secs = (v) => v === null || v === undefined ? "—" : `${v} s`;
+const DIRECTION_LABELS = {in: "Ingresso", out: "Uscita", "": "Senza Direzione"};
+const loadingBox = () => '<div class="loading"><span class="spinner"></span></div>';
+const errorBox = (title, err) => `<div class="alert err">${icon("alert")}<div class="grow"><b>${esc(title)}</b>${esc(err.message || err)}</div></div>`;
+
 async function viewInstallation(el, sub) {
-  const tabs = [["porte", "Controller e Porte"], ["strutture", "Strutture e Aree"], ["programmazione", "Programmazione"]];
-  const tab = tabs.some(([k]) => k === sub) ? sub : "porte";
-  el.innerHTML = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impianti/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div><div id="i-body"><div class="loading"><span class="spinner"></span></div></div>`;
-  const body = $("#i-body");
+  const [first, tab = ""] = sub.split("/");
+  const match = /^c(\d+)$/.exec(first);
   let data;
-  try { data = await api("api/installation"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
-  if (tab === "programmazione") return viewProgramming(body, data.controllers[0]);
-  if (tab === "strutture") return viewSites(body, data);
+  el.innerHTML = loadingBox();
+  try { data = await api("api/installation"); } catch (err) { el.innerHTML = errorBox("Impianti Non Leggibili", err); return; }
+  if (first === "programmazione" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}`); return; }
+  if (match) {
+    const ctrl = data.controllers.find((c) => c.id === Number(match[1]));
+    if (!ctrl) { el.innerHTML = `<div class="card"><div class="empty">Controller non trovato. <a href="#impianti">Torna agli Impianti</a></div></div>`; return; }
+    $("#page-title").textContent = ctrl.name;
+    return tab === "connessione" ? viewConnection(el, ctrl) : viewController(el, ctrl, tab);
+  }
+  const tabs = [["controller", "Controller"], ["strutture", "Strutture e Aree"]];
+  const active = first === "strutture" ? "strutture" : "controller";
+  el.innerHTML = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impianti/${k}" class="${active === k ? "active" : ""}">${label}</a>`).join("")}</div><div id="i-body">${loadingBox()}</div>`;
+  const body = $("#i-body");
+  if (active === "strutture") return viewSites(body, data);
   await viewControllers(body, data);
   paintIcons(body);
 }
 
+// Elenco dei controller per struttura e area: tocca la scheda per lo schema, l'ingranaggio per la connessione
 async function viewControllers(body, data) {
-  const ctrl = data.controllers[0];
-  if (!ctrl) {
-    body.innerHTML = `<div class="card"><div class="empty">${icon("door")}<br><b>Nessun controller configurato</b><br>Aggiungi il controller Axis con indirizzo, utente e password: poi scegli le porte da gestire.<br><br>
+  if (!data.controllers.length) {
+    body.innerHTML = `<div class="card"><div class="empty">${icon("chip")}<br><b>Nessun controller configurato</b><br>Aggiungi il controller Axis con indirizzo, utente e password: poi colleghi lettori e porte.<br><br>
       <button type="button" class="primary" id="ctrl-new">${icon("plus")}Aggiungi Controller</button></div></div>`;
     $("#ctrl-new").onclick = () => controllerEditor();
     return;
   }
-  const places = {};
-  (await api("api/locations").catch(() => [])).forEach((site) => site.areas.forEach((area) => area.doors.forEach((id) => { places[id] = {site: site.name, area: area.name}; })));
-  const doorCard = (d) => `<div class="card" style="margin:0">
-    <h2>${icon("door")}${esc(d.name)}<span class="spacer"></span>${d.ha_buttons ? '<span class="pill accent">Pulsanti HA</span>' : ""}</h2>
-    ${props([
-      ["Dove", placeOf(places[d.id] || {}) ? esc(placeOf(places[d.id])) : '<span class="muted">Nessuna area</span>'],
-      ["Porta del Controller", `<code>${esc(d.door_token)}</code>`],
-      ["Telecamera", d.snapshot_camera ? `<code>${esc(d.snapshot_camera)}</code>${d.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'],
-      ["Citofono", d.intercom_name ? `${esc(d.intercom_name)} · relè ${d.intercom_relay}${d.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'],
-    ])}
-    <div class="row" style="margin-top:12px"><button type="button" class="small" data-door-edit="${d.id}">${icon("edit")}Modifica</button><button type="button" class="small danger" data-door-del="${d.id}">Rimuovi</button></div>
-  </div>`;
+  const groups = {};
+  data.controllers.forEach((c) => {
+    const label = placeOf(c.place) || "Senza Struttura";
+    (groups[label] = groups[label] || []).push(c);
+  });
+  const card = (c) => `<div class="card ctl-card" style="margin:0">
+      <a class="ctl-main" href="#impianti/c${c.id}">
+        <span class="ctl-name">${icon("chip")}${esc(c.name)}</span>
+        <span class="muted small-text" data-ctl-model="${c.id}">${esc(c.description || "Axis")}</span>
+        <span class="ctl-stats"><span><b>${c.doors.length}</b> ${c.doors.length === 1 ? "porta" : "porte"}</span><span><b data-ctl-readers="${c.id}">…</b> lettori</span>
+          <span class="pill" data-ctl-state="${c.id}"><span class="spinner" style="width:12px;height:12px"></span></span></span>
+      </a>
+      <a class="ctl-gear btn small ghost icon-only" href="#impianti/c${c.id}/connessione" title="Impostazioni di Connessione" aria-label="Impostazioni di connessione di ${esc(c.name)}">${icon("cog")}</a>
+    </div>`;
+  const full = data.controllers.length >= data.max_controllers;
   body.innerHTML = `
-    <div class="card"><h2>${icon("cog")}${esc(ctrl.name)}<span class="spacer"></span><span class="pill" id="ctrl-state"><span class="spinner" style="width:12px;height:12px"></span></span></h2>
-      ${props([["Indirizzo", `<code>${esc(ctrl.host)}</code>${ctrl.verify_ssl ? "" : ' <span class="muted small-text">(certificato non verificato)</span>'}`], ["Utente", esc(ctrl.username)],
-        ["Password", ctrl.has_password ? "salvata" : '<span class="pill err">Mancante</span>'], ["Prefisso MQTT", `<code>${esc(ctrl.mqtt_topic_prefix)}/…</code>`]])}
-      <div class="row" style="margin-top:12px"><button type="button" class="small" id="ctrl-edit">${icon("edit")}Modifica</button><button type="button" class="small danger" id="ctrl-del">Rimuovi</button></div>
-      <p class="hint">Per ora l'add-on gestisce un controller; le porte e le impostazioni sono già organizzate per averne di più.</p></div>
-    <div class="toolbar"><h2 class="section-title" style="margin:0;flex:1">Porte</h2><button type="button" class="primary" id="door-new">${icon("plus")}Aggiungi Porta</button></div>
-    ${ctrl.doors.length ? `<div class="grid cards">${ctrl.doors.map(doorCard).join("")}</div>` : `<div class="card"><div class="empty">Nessuna porta: aggiungi quella del controller da gestire.</div></div>`}`;
+    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Tocca un controller per collegare lettori e porte e per la programmazione. L'ingranaggio apre indirizzo, credenziali e posizione.</p>
+      ${full ? "" : `<button type="button" class="primary" id="ctrl-new">${icon("plus")}Aggiungi Controller</button>`}</div>
+    ${Object.entries(groups).map(([label, list]) => `<h2 class="section-title">${esc(label)}</h2><div class="grid cards" style="margin-bottom:20px">${list.map(card).join("")}</div>`).join("")}
+    ${full ? '<p class="hint">Per ora l\'add-on gestisce un controller; pagine e dati sono già pronti per averne di più.</p>' : ""}`;
+  if ($("#ctrl-new")) $("#ctrl-new").onclick = () => controllerEditor();
   api("api/status").then((s) => {
-    const pill = $("#ctrl-state");
+    const c = data.controllers[0];
+    const pill = $(`[data-ctl-state="${c.id}"]`);
     if (!pill) return;
     pill.className = "pill " + (s.controller.ok ? "ok" : "err");
-    pill.textContent = s.controller.ok ? `Raggiungibile · ${s.controller.model} ${s.controller.firmware}` : "Non Raggiungibile";
+    pill.innerHTML = `<span class="dot"></span>${s.controller.ok ? "Collegato" : "Non Raggiungibile"}`;
     pill.title = s.controller.error || "";
+    $(`[data-ctl-readers="${c.id}"]`).textContent = s.controller.readers ?? "—";
+    if (s.controller.ok) $(`[data-ctl-model="${c.id}"]`).textContent = [`${s.controller.model}`, c.description].filter(Boolean).join(" · ");
   }).catch(() => {});
-  $("#ctrl-edit").onclick = () => controllerEditor(ctrl);
+}
+
+// Struttura e area del controller: porte e lettori la ereditano
+function areaSelect(sites, selected = 0, name = "area_id") {
+  return `<select name="${name}"><option value="0">Nessuna Area</option>${sites.filter((x) => x.id).map((x) => `<optgroup label="${esc(x.name)}">${x.areas.map((a) => `<option value="${a.id}" ${a.id === selected ? "selected" : ""}>${esc(x.name)} › ${esc(a.name)}</option>`).join("")}</optgroup>`).join("")}</select>`;
+}
+
+function controllerFields(ctrl, sites) {
+  return `<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(ctrl?.name || "Controller A1210")}">`)}
+      ${field("Struttura e Area", areaSelect(sites, ctrl?.area_id || 0), 'Porte e lettori del controller stanno qui. Si creano in <a href="#impianti/strutture">Strutture e Aree</a>.')}</div>
+    ${field("Descrizione della Posizione", `<input name="description" maxlength="200" value="${esc(ctrl?.description || "")}" placeholder="es. quadro elettrico sotto la scala">`)}
+    <h3 class="section-title" style="margin-top:18px">${icon("cog")}Connessione</h3>
+    ${field("Indirizzo", `<input name="host" class="mono" value="${esc(ctrl?.host || "")}" placeholder="es. 192.168.1.50">`, "IP o nome del controller, senza https://.")}
+    <div class="fields-2">${field("Utente", `<input name="username" autocomplete="off" value="${esc(ctrl?.username || "")}">`)}
+    ${field("Password", `<input name="password" type="password" autocomplete="new-password" placeholder="${ctrl?.has_password ? "lascia vuoto per non cambiarla" : ""}">`)}</div>
+    ${field("Prefisso MQTT", `<input name="mqtt_topic_prefix" class="mono" value="${esc(ctrl?.mqtt_topic_prefix || "")}" placeholder="es. accessi/controller_ingresso">`, "Lo stesso impostato nel client MQTT del controller: gli eventi arrivano sotto &lt;prefisso&gt;/eventi/…")}
+    <div class="field inline"><input type="checkbox" name="verify_ssl" id="f-ssl" ${ctrl?.verify_ssl ? "checked" : ""}><label for="f-ssl">Verifica Certificato HTTPS</label></div>
+    <p class="hint" style="margin-top:-8px">Lascialo spento se il controller usa il certificato di fabbrica.</p>
+    <div class="row"><button type="button" class="small" id="ctrl-test">${icon("refresh")}Prova Collegamento</button><span id="ctrl-test-result" class="small-text"></span></div>`;
+}
+
+function bindControllerFields(root, ctrl) {
+  const read = () => ({name: val(root, "name"), host: val(root, "host"), username: val(root, "username"), password: $("[name=password]", root).value,
+    mqtt_topic_prefix: val(root, "mqtt_topic_prefix"), verify_ssl: val(root, "verify_ssl"), area_id: Number(val(root, "area_id")), description: val(root, "description")});
+  $("#ctrl-test", root).onclick = async () => {
+    const out = $("#ctrl-test-result", root);
+    out.innerHTML = '<span class="spinner"></span>';
+    const f = read();
+    try {
+      const r = await api("api/controllers/test", {method: "POST", body: {host: f.host, username: f.username, password: f.password, verify_ssl: f.verify_ssl, controller_id: ctrl?.id || null}});
+      out.innerHTML = `<span class="pill ok">${esc(r.model)} · firmware ${esc(r.firmware)}</span> ${plural(r.doors.length, "porta", "porte")}: ${r.doors.map((d) => esc(d.name)).join(", ")}`;
+    } catch (err) { out.innerHTML = `<span class="pill err">${esc(err.message)}</span>`; }
+  };
+  return read;
+}
+
+async function controllerEditor() {
+  const sites = await api("api/locations").catch(() => []);
+  let read;
+  const result = await modal({
+    title: "Nuovo Controller", wide: true,
+    body: controllerFields(null, sites),
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async () =>
+      (await run(() => api("api/controllers", {method: "POST", body: read()}), "Controller aggiunto: collegamento avviato")) || false}],
+    onOpen: (dlg) => { read = bindControllerFields(dlg, null); },
+  });
+  if (result?.id) { loadSummary(); location.hash = `#impianti/c${result.id}`; }
+}
+
+function controllerHeader(ctrl, tab) {
+  const tabs = [["", "Schema"], ["porte", "Porte"], ["lettori", "Lettori"], ["storico", "Storico Modifiche"]];
+  const place = placeOf(ctrl.place);
+  return `<div class="ctl-head">
+      <div class="small-text muted"><a href="#impianti">Impianti</a>${place ? ` › ${esc(place)}` : ""}</div>
+      <div class="row" style="align-items:center"><h2 style="margin:0;font-size:20px">${esc(ctrl.name)}</h2><span class="pill" id="ctl-state"><span class="spinner" style="width:12px;height:12px"></span></span>
+        <span class="spacer" style="flex:1"></span><a class="btn small" href="#impianti/c${ctrl.id}/connessione">${icon("cog")}Connessione</a></div>
+      ${ctrl.description ? `<div class="muted small-text">${esc(ctrl.description)}</div>` : ""}
+    </div>
+    ${tab === "connessione" ? "" : `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impianti/c${ctrl.id}${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`}`;
+}
+
+function paintControllerState() {
+  api("api/status").then((s) => {
+    const pill = $("#ctl-state");
+    if (!pill) return;
+    pill.className = "pill " + (s.controller.ok ? "ok" : "err");
+    pill.innerHTML = `<span class="dot"></span>${s.controller.ok ? `Collegato · ${esc(s.controller.model)}` : "Non Raggiungibile"}`;
+    pill.title = s.controller.ok ? `firmware ${s.controller.firmware}` : s.controller.error || "";
+  }).catch(() => {});
+}
+
+// Pagina Connessione: dati tecnici del controller, raggiunta dall'ingranaggio
+async function viewConnection(el, ctrl) {
+  const sites = await api("api/locations").catch(() => []);
+  el.innerHTML = `${controllerHeader(ctrl, "connessione")}
+    <form class="card" id="conn-form" style="max-width:760px">${controllerFields(ctrl, sites)}
+      <div class="row" style="margin-top:18px;justify-content:space-between"><button type="button" class="danger" id="ctrl-del">Rimuovi Controller</button>
+        <span class="row"><a class="btn" href="#impianti/c${ctrl.id}">Annulla</a><button type="submit" class="primary">Salva</button></span></div></form>`;
+  paintIcons(el);
+  paintControllerState();
+  const form = $("#conn-form");
+  const read = bindControllerFields(form, ctrl);
+  const initial = JSON.stringify(read());
+  pageGuard = {dirty: () => JSON.stringify(read()) !== initial, save: () => saveConnection(false)};
+  async function saveConnection(navigate = true) {
+    const ok = await run(() => api(`api/controllers/${ctrl.id}`, {method: "PUT", body: read()}), "Controller salvato: collegamento riavviato");
+    if (ok) { pageGuard = null; loadSummary(); if (navigate) location.hash = `#impianti/c${ctrl.id}`; }
+    return Boolean(ok);
+  }
+  form.onsubmit = (e) => { e.preventDefault(); saveConnection(); };
   $("#ctrl-del").onclick = async () => {
     if (await confirmBox("Rimuovi Controller", `Rimuovere <b>${esc(ctrl.name)}</b> e le sue porte dall'app? Sul controller non cambia niente: tessere, gruppi e programmazione restano dove sono.`, "Rimuovi", true) &&
-        await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller rimosso dall'app")) render();
-  };
-  $("#door-new").onclick = () => doorEditor(ctrl);
-  body.onclick = async (e) => {
-    const b = e.target.closest("button");
-    if (!b) return;
-    const door = ctrl.doors.find((d) => d.id === Number(b.dataset.doorEdit || b.dataset.doorDel));
-    if (!door) return;
-    if (b.dataset.doorEdit) doorEditor(ctrl, door);
-    else if (await confirmBox("Rimuovi Porta", `Rimuovere <b>${esc(door.name)}</b> dall'app? Spariscono anche i suoi pulsanti in Home Assistant e il collegamento al citofono. Sul controller non cambia niente.`, "Rimuovi", true) &&
-        await run(() => api(`api/doors/${door.id}`, {method: "DELETE"}), "Porta rimossa")) render();
+        await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller rimosso dall'app")) { pageGuard = null; loadSummary(); location.hash = "#impianti"; }
   };
 }
 
-// Strutture e aree: dove si trovano le porte (hotel, ville, teatro...)
+// Pagina del controller: schema lettori ↔ porte, porte, lettori e storico delle modifiche
+async function viewController(el, ctrl, tab) {
+  tab = ["porte", "lettori", "storico"].includes(tab) ? tab : "";
+  el.innerHTML = `${controllerHeader(ctrl, tab)}<div id="c-body">${loadingBox()}</div>`;
+  paintIcons(el);
+  paintControllerState();
+  const body = $("#c-body");
+  const primary = (await api("api/installation")).controllers[0];
+  if (!primary || primary.id !== ctrl.id) { body.innerHTML = '<div class="card"><div class="empty">La programmazione è disponibile per il controller in uso.</div></div>'; return; }
+  let p;
+  try { p = await api("api/programming"); } catch (err) { body.innerHTML = errorBox("Programmazione Non Leggibile", err) + '<p class="hint">Controlla il collegamento con l\'ingranaggio Connessione.</p>'; return; }
+  const errors = p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "";
+  const appDoor = (token) => ctrl.doors.find((d) => d.door_token === token);
+  const doorName = (d) => appDoor(d.token)?.name || d.name || p.doors.find((x) => x.token === d.token)?.name || d.token;
+  if (tab === "porte") return controllerDoors(body, ctrl, p, errors, appDoor);
+  if (tab === "lettori") return controllerReaders(body, p, errors, doorName);
+  if (tab === "storico") return controllerHistory(body, p);
+  return controllerSchema(body, ctrl, p, errors, appDoor, doorName);
+}
+
+const linkKey = (l) => `${l.reader}>${l.door}`;
+const linkSig = (l) => `${linkKey(l)}:${l.direction}:${l.enabled ? 1 : 0}`;
+function linksOf(p) {
+  const links = [];
+  p.access_points.forEach((a) => a.readers.forEach((r) => {
+    if (a.door && !links.some((l) => l.reader === r && l.door === a.door)) links.push({reader: r, door: a.door, direction: a.direction || "", enabled: a.enabled});
+  }));
+  return links;
+}
+
+function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
+  const saved = linksOf(p);
+  let pending = saved.map((l) => ({...l}));
+  let selected = null;
+  const readerName = (token) => { const r = p.readers.find((x) => x.token === token); return r?.name || token; };
+  const directionsOf = (door) => [...new Set(p.access_points.filter((a) => a.door === door).map((a) => a.direction || ""))];
+  const changes = () => {
+    const before = new Map(saved.map((l) => [linkKey(l), l]));
+    const after = new Map(pending.map((l) => [linkKey(l), l]));
+    const list = [];
+    after.forEach((l, k) => {
+      const old = before.get(k);
+      if (!old) list.push(`Collega ${readerName(l.reader)} → ${doorName({token: l.door})} (${DIRECTION_LABELS[l.direction]})`);
+      else if (linkSig(old) !== linkSig(l)) list.push(`${readerName(l.reader)} → ${doorName({token: l.door})}: ${DIRECTION_LABELS[l.direction]}${l.enabled ? "" : ", disattivato"}`);
+    });
+    before.forEach((l, k) => { if (!after.has(k)) list.push(`Scollega ${readerName(l.reader)} da ${doorName({token: l.door})}`); });
+    return list;
+  };
+  body.innerHTML = `${errors}
+    <div class="card">
+      <p class="muted small-text" id="sch-hint" style="margin-top:0"></p>
+      ${p.readers.length && p.doors.length ? `<div class="schema" id="schema">
+        <div class="sch-col"><div class="sch-head">Lettori</div>${p.readers.map((r) => `<button type="button" class="sch-node" data-reader="${esc(r.token)}">
+          <span class="ev-icon k-accent">${icon("card")}</span><span class="grow"><b>${esc(r.name || r.token)}</b><span class="sch-meta" data-reader-meta="${esc(r.token)}"></span></span></button>`).join("")}</div>
+        <div class="sch-mid"></div>
+        <div class="sch-col"><div class="sch-head" style="text-align:right">Porte</div>${p.doors.map((d) => `<button type="button" class="sch-node" data-door="${esc(d.token)}">
+          <span class="ev-icon k-ok">${icon("door")}</span><span class="grow"><b>${esc(doorName(d))}</b><span class="sch-meta">${appDoor(d.token) ? esc(d.name && d.name !== doorName(d) ? `sul controller: ${d.name}` : d.token) : "non gestita dall'app"}</span></span></button>`).join("")}</div>
+        <svg class="sch-lines" id="sch-svg" aria-hidden="true"></svg><div id="sch-gears"></div>
+      </div>` : '<div class="empty">Sul controller non ci sono lettori o porte da collegare.</div>'}
+      <p class="hint">Ogni filo è un lettore che comanda una porta. Le modifiche si scrivono sul controller solo con Salva, e ognuna si può annullare dallo Storico Modifiche.</p>
+    </div>
+    <div class="save-bar" id="sch-bar" hidden><span class="grow" id="sch-changes"></span><button type="button" id="sch-discard">Scarta</button><button type="button" class="primary" id="sch-save">Salva</button></div>`;
+  paintIcons(body);
+  const schema = $("#schema");
+  if (!schema) return;
+
+  function draw() {
+    if (!document.body.contains(schema)) { window.removeEventListener("resize", draw); return; }
+    const box = schema.getBoundingClientRect();
+    const svg = $("#sch-svg"), gears = $("#sch-gears");
+    svg.setAttribute("width", box.width);
+    svg.setAttribute("height", box.height);
+    const savedSig = new Set(saved.map(linkSig));
+    const used = [];
+    let paths = "", buttons = "";
+    pending.forEach((l, i) => {
+      const r = $(`[data-reader="${CSS.escape(l.reader)}"]`, schema), d = $(`[data-door="${CSS.escape(l.door)}"]`, schema);
+      if (!r || !d) return;
+      const a = r.getBoundingClientRect(), b = d.getBoundingClientRect();
+      const x1 = a.right - box.left, y1 = a.top + a.height / 2 - box.top, x2 = b.left - box.left, y2 = b.top + b.height / 2 - box.top;
+      const mx = (x1 + x2) / 2;
+      const state = !l.enabled ? "off" : savedSig.has(linkSig(l)) ? "ok" : "new";
+      paths += `<path d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}" class="sch-line ${state}"/>`;
+      // Punto del filo per l'ingranaggio, spostato se un altro è già lì (fili che si incrociano)
+      let t = 0.5, gx, gy;
+      for (const candidate of [0.5, 0.32, 0.68, 0.2, 0.8]) {
+        t = candidate;
+        const u = 1 - t;
+        gx = u * u * u * x1 + 3 * u * u * t * mx + 3 * u * t * t * mx + t * t * t * x2;
+        gy = u * u * u * y1 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y2;
+        if (!used.some(([ux, uy]) => Math.hypot(ux - gx, uy - gy) < 34)) break;
+      }
+      used.push([gx, gy]);
+      buttons += `<button type="button" class="sch-gear ${state}" data-link="${i}" style="left:${gx - 17}px;top:${gy - 17}px" title="${esc(readerName(l.reader))} → ${esc(doorName({token: l.door}))} · ${DIRECTION_LABELS[l.direction]}" aria-label="Impostazioni del collegamento ${esc(readerName(l.reader))} verso ${esc(doorName({token: l.door}))}">${icon("cog")}</button>`;
+    });
+    svg.innerHTML = paths;
+    gears.innerHTML = buttons;
+  }
+
+  function update() {
+    $$("[data-reader]", schema).forEach((n) => n.classList.toggle("sel", n.dataset.reader === selected));
+    $$("[data-door]", schema).forEach((n) => n.classList.toggle("target", Boolean(selected)));
+    $$("[data-reader-meta]", schema).forEach((m) => {
+      const mine = pending.filter((l) => l.reader === m.dataset.readerMeta);
+      m.textContent = mine.length ? mine.map((l) => `${doorName({token: l.door})} · ${DIRECTION_LABELS[l.direction]}`).join(", ") : "non collegato";
+    });
+    $("#sch-hint").textContent = selected ? `Ora tocca la porta da collegare a ${readerName(selected)}. Tocca di nuovo il lettore per annullare.` : "Tocca un lettore e poi una porta per collegarli. L'ingranaggio sul filo apre direzione e stato del collegamento.";
+    const list = changes();
+    $("#sch-bar").hidden = !list.length;
+    $("#sch-changes").textContent = list.length ? `Modifiche non salvate: ${list.length === 1 ? list[0] : plural(list.length, "modifica", "modifiche")}` : "";
+    $("#sch-changes").title = list.join("\n");
+    draw();
+  }
+
+  // Stesso punto di accesso (porta e direzione): si attiva e disattiva insieme
+  const setEnabled = (l, enabled) => pending.forEach((x) => { if (x.door === l.door && x.direction === l.direction) x.enabled = enabled; });
+
+  async function editLink(l) {
+    const dirs = directionsOf(l.door);
+    const shared = pending.filter((x) => x !== l && x.door === l.door && x.direction === l.direction).map((x) => readerName(x.reader));
+    const result = await modal({title: `${readerName(l.reader)} → ${doorName({token: l.door})}`,
+      body: `${field("Direzione", `<select name="direction">${dirs.map((k) => `<option value="${esc(k)}" ${k === l.direction ? "selected" : ""}>${DIRECTION_LABELS[k] ?? esc(k)}</option>`).join("")}</select>`,
+        "Ingresso o uscita dalla porta: i gruppi possono dare accesso solo in una direzione.")}
+        <div class="field inline"><input type="checkbox" name="enabled" id="f-le" ${l.enabled ? "checked" : ""}><label for="f-le">Collegamento Attivo</label></div>
+        <p class="hint" style="margin-top:-8px">Spento: il lettore resta collegato ma non apre la porta.${shared.length ? ` Vale anche per ${esc(shared.join(", "))}, che usano lo stesso punto di accesso.` : ""}</p>`,
+      actions: [{label: "Scollega", kind: "danger", value: "unlink"}, {label: "Annulla", value: null}, {label: "Applica", kind: "primary", submit: true, onClick: (dlg) => ({direction: val(dlg, "direction"), enabled: val(dlg, "enabled")})}]});
+    if (!result) return;
+    if (result === "unlink") pending = pending.filter((x) => x !== l);
+    else {
+      l.direction = result.direction;
+      setEnabled(l, result.enabled);
+      l.enabled = result.enabled;
+    }
+    update();
+  }
+
+  schema.onclick = (e) => {
+    const gear = e.target.closest("[data-link]");
+    if (gear) { selected = null; editLink(pending[Number(gear.dataset.link)]); return; }
+    const reader = e.target.closest("[data-reader]");
+    if (reader) { selected = selected === reader.dataset.reader ? null : reader.dataset.reader; update(); return; }
+    const door = e.target.closest("[data-door]");
+    if (!door || !selected) return;
+    const token = door.dataset.door;
+    const dirs = directionsOf(token);
+    if (pending.some((l) => l.reader === selected && l.door === token)) toast("Lettore e porta sono già collegati: usa l'ingranaggio sul filo");
+    else if (!dirs.length) toast("Sul controller questa porta non ha punti di accesso: vanno creati dalla pagina web del controller", true);
+    else {
+      const direction = dirs.includes("in") ? "in" : dirs[0];
+      const same = pending.find((l) => l.door === token && l.direction === direction);
+      pending.push({reader: selected, door: token, direction, enabled: same ? same.enabled : true});
+    }
+    selected = null;
+    update();
+  };
+  async function save(rerender = true) {
+    const list = changes();
+    if (!list.length) return true;
+    const ok = await confirmBox("Scrivi sul Controller", `Queste modifiche cambiano quale lettore apre quale porta:<ul style="margin:8px 0 0;padding-left:20px">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="hint">Se dopo il salvataggio le tessere non aprono più, annulla dallo Storico Modifiche.</p>`, "Salva sul Controller");
+    if (!ok) return false;
+    const result = await run(() => api("api/programming/links", {method: "PUT", body: {links: pending}}), "Collegamenti scritti sul controller");
+    if (!result) return false;
+    pageGuard = null;
+    if (rerender) render();
+    return true;
+  }
+  $("#sch-save").onclick = () => save();
+  $("#sch-discard").onclick = () => { pending = saved.map((l) => ({...l})); selected = null; update(); };
+  pageGuard = {dirty: () => changes().length > 0, save: () => save(false)};
+  window.addEventListener("resize", draw);
+  update();
+  requestAnimationFrame(draw);
+}
+
+const DOOR_TIME_FIELDS = [
+  ["access_time", "Tempo di Apertura", "Quanto resta sbloccata dopo un accesso."],
+  ["extended_access_time", "Apertura Estesa", "Per chi ha bisogno di più tempo (es. Apri a Lungo)."],
+  ["open_too_long_time", "Allarme Aperta Troppo a Lungo", "Dopo quanto la porta aperta va in allarme."],
+  ["extended_open_too_long_time", "Allarme con Apertura Estesa", ""],
+  ["pre_alarm_time", "Preallarme", "Avviso prima dell'allarme."],
+];
+const configDetails = (items) => items.length ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici (${items.length})</summary>
+  <div class="table-wrap"><table class="table"><tbody>${items.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td><code>${esc(c.value)}</code></td></tr>`).join("")}</tbody></table></div></details>` : "";
+const saveProgramming = (path, payload, message) => run(() => api(path, {method: "PUT", body: payload}), message);
+
+// Porte del controller: impostazioni dell'app (telecamera, citofono, pulsanti) e nome e tempi sul controller
+function controllerDoors(body, ctrl, p, errors, appDoor) {
+  const appInfo = (d) => {
+    const door = appDoor(d.token);
+    if (!door) return `<p class="muted small-text" style="margin:8px 0 0">Non gestita dall'app: niente registro per porta, pulsanti in Home Assistant o citofono.</p>`;
+    return props([
+      ["Nome nell'App", esc(door.name)],
+      ["Telecamera", door.snapshot_camera ? `<code>${esc(door.snapshot_camera)}</code>${door.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'],
+      ["Citofono", door.intercom_name ? `${esc(door.intercom_name)} · relè ${door.intercom_relay}${door.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'],
+      ["Pulsanti HA", door.ha_buttons ? "Apri e Apri a Lungo" : '<span class="muted">Nessuno</span>'],
+    ]);
+  };
+  const missing = ctrl.doors.filter((d) => !p.doors.some((x) => x.token === d.door_token));
+  body.innerHTML = `${errors}
+    <div class="grid cards">${p.doors.map((d) => `<div class="card" style="margin:0">
+      <h2>${icon("door")}${esc(appDoor(d.token)?.name || d.name || d.token)}<span class="spacer"></span>${appDoor(d.token) ? '<span class="pill ok">Nell\'App</span>' : '<span class="pill">Solo Controller</span>'}</h2>
+      ${appInfo(d)}
+      <h3 class="section-title" style="margin-top:14px">Sul Controller</h3>
+      ${props([["Nome", esc(d.name || "—")], ["Token", `<code>${esc(d.token)}</code>`], ...DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined).map(([k, label]) => [label, secs(d[k])])])}
+      ${d.description ? `<p class="hint">${esc(d.description)}</p>` : ""}${configDetails(d.configuration)}
+      <div class="row" style="margin-top:12px">${appDoor(d.token) ? `<button type="button" class="small" data-app-edit="${esc(d.token)}">${icon("edit")}Impostazioni App</button>` : `<button type="button" class="small primary" data-app-add="${esc(d.token)}">${icon("plus")}Gestisci nell'App</button>`}
+        ${d.editable || d.name ? `<button type="button" class="small" data-pd="${esc(d.token)}">${icon("clock")}Nome e Tempi</button>` : ""}
+        ${appDoor(d.token) ? `<button type="button" class="small ghost danger" data-app-del="${esc(d.token)}">Togli dall'App</button>` : ""}</div>
+    </div>`).join("") || '<div class="card"><div class="empty">Nessuna porta letta dal controller.</div></div>'}</div>
+    ${missing.length ? `<div class="alert" style="margin-top:16px">${icon("alert")}<div class="grow"><b>Porte non trovate sul controller</b>${missing.map((d) => `${esc(d.name)} (<code>${esc(d.door_token)}</code>)`).join(", ")}: controlla la programmazione o toglile dall'app.
+      ${missing.map((d) => `<button type="button" class="small ghost danger" data-app-del="${esc(d.door_token)}">Togli ${esc(d.name)}</button>`).join(" ")}</div></div>` : ""}`;
+  paintIcons(body);
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.appEdit) doorEditor(ctrl, appDoor(b.dataset.appEdit));
+    else if (b.dataset.appAdd) doorEditor(ctrl, null, b.dataset.appAdd, p.doors.find((d) => d.token === b.dataset.appAdd)?.name);
+    else if (b.dataset.appDel) {
+      const door = appDoor(b.dataset.appDel);
+      if (await confirmBox("Togli dall'App", `Togliere <b>${esc(door.name)}</b> dall'app? Spariscono anche i suoi pulsanti in Home Assistant e il collegamento al citofono. Sul controller non cambia niente.`, "Togli", true) &&
+          await run(() => api(`api/doors/${door.id}`, {method: "DELETE"}), "Porta tolta dall'app")) { loadSummary(); render(); }
+    } else if (b.dataset.pd) {
+      const d = p.doors.find((x) => x.token === b.dataset.pd);
+      const times = DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
+      const ok = await modal({title: "Porta " + (d.name || d.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(d.name)}">`)}
+        ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(d.description)}">`)}
+        ${times.length ? `<div class="fields-2">${times.map(([k, label, hint]) => field(label + " (Secondi)", `<input type="number" name="${k}" min="0" step="1" value="${d[k]}">`, hint)).join("")}</div>` : ""}`,
+        actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) => {
+          const payload = {name: val(dlg, "name"), description: val(dlg, "description")};
+          times.forEach(([k]) => { payload[k] = Number(val(dlg, k)); });
+          return (await saveProgramming(`api/programming/doors/${encodeURIComponent(d.token)}`, payload, "Porta aggiornata sul controller")) || false;
+        }}]});
+      if (ok) render();
+    }
+  };
+}
+
+function controllerReaders(body, p, errors, doorName) {
+  const links = linksOf(p);
+  body.innerHTML = `${errors}
+    <div class="grid cards">${p.readers.map((r) => {
+      const mine = links.filter((l) => l.reader === r.token);
+      return `<div class="card" style="margin:0">
+      <h2>${icon("card")}${esc(r.name || r.token)}</h2>
+      ${props([["Comanda", mine.length ? mine.map((l) => `${esc(doorName(p.doors.find((d) => d.token === l.door) || {token: l.door}))} · ${DIRECTION_LABELS[l.direction]}${l.enabled ? "" : ' <span class="pill err">Spento</span>'}`).join("<br>") : '<span class="muted">Nessuna porta</span>'],
+        ["Token", `<code>${esc(r.token)}</code>`], ["Posizione", esc(r.location || "—")], ["Attesa PIN", secs(r.timeout)]])}
+      ${r.description ? `<p class="hint">${esc(r.description)}</p>` : ""}${configDetails(r.configuration)}
+      <div class="row" style="margin-top:12px"><button type="button" class="small" data-pr="${esc(r.token)}">${icon("edit")}Nome e Descrizione</button></div>
+    </div>`;
+    }).join("") || '<div class="card"><div class="empty">Nessun lettore letto dal controller.</div></div>'}</div>
+    <p class="hint">Quale porta comanda ogni lettore si sceglie nello Schema.</p>`;
+  paintIcons(body);
+  body.onclick = async (e) => {
+    const b = e.target.closest("[data-pr]");
+    if (!b) return;
+    const r = p.readers.find((x) => x.token === b.dataset.pr);
+    const ok = await modal({title: "Lettore " + (r.name || r.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(r.name)}">`)}
+      ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(r.description)}">`)}`,
+      actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
+        (await saveProgramming(`api/programming/readers/${encodeURIComponent(r.token)}`, {name: val(dlg, "name"), description: val(dlg, "description")}, "Lettore aggiornato sul controller")) || false}]});
+    if (ok) render();
+  };
+}
+
+function controllerHistory(body, p) {
+  body.innerHTML = `<div class="card flush"><h2>Storico Modifiche<span class="spacer"></span><span class="muted small-text">annulla per riportare com'era</span></h2>
+    <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Modifica</th><th></th></tr></thead><tbody>
+    ${p.changes.length ? p.changes.map((c) => `<tr><td>${esc(fmtDateTime(c.ts))}</td><td>${esc(c.user)}</td><td>${esc(c.summary)}</td><td style="text-align:right">${c.undone ? '<span class="pill">Annullata</span>' : `<button type="button" class="small" data-undo="${c.id}">Annulla</button>`}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">nessuna modifica fatta dall\'app</td></tr>'}</tbody></table></div></div>`;
+  body.onclick = async (e) => {
+    const b = e.target.closest("[data-undo]");
+    if (!b) return;
+    const c = p.changes.find((x) => x.id === Number(b.dataset.undo));
+    if (await confirmBox("Annulla Modifica", `Riportare <b>${esc(c.summary)}</b> com'era prima della modifica del ${esc(fmtDateTime(c.ts))}?`, "Annulla Modifica") &&
+        await run(() => api(`api/programming/changes/${c.id}/undo`, {method: "POST"}), "Modifica annullata sul controller")) render();
+  };
+}
+
+// Strutture e aree: dove si trovano i controller e quindi le loro porte (hotel, ville, teatro...)
 async function viewSites(body, data) {
   let sites;
-  try { sites = await api("api/locations"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
-  const doors = (data.controllers[0]?.doors || []);
-  const doorName = (id) => doors.find((d) => d.id === id)?.name || `porta ${id}`;
+  try { sites = await api("api/locations"); } catch (err) { body.innerHTML = errorBox("Strutture Non Leggibili", err); return; }
+  const ctrlName = (id) => data.controllers.find((c) => c.id === id)?.name || `controller ${id}`;
   const real = sites.filter((x) => x.id);
   const loose = sites.find((x) => !x.id);
+  const chips = (a) => [...a.controllers.map((id) => `<a class="chip" href="#impianti/c${id}">${icon("chip")}${esc(ctrlName(id))}</a>`),
+    ...(a.doors.length ? [`<span class="chip">${icon("door")}${plural(a.doors.length, "porta", "porte")}</span>`] : [])].join("") || "vuota";
   body.innerHTML = `
-    <p class="muted" style="margin-top:0">Ogni porta sta in un'area di una struttura, ad esempio Teatro › Accesso Scala o Villa 3 › Ingresso. Cruscotto, Porte e Registro raggruppano le porte così. Il controller che le comanda è solo un dettaglio tecnico.</p>
+    <p class="muted" style="margin-top:0">Ogni controller sta in un'area di una struttura, ad esempio Teatro Eliseo › Via Consulta o Hotel Giulia › Primo Piano. Porte e lettori del controller ereditano la sua area; la posizione precisa va nella descrizione del controller.</p>
     <div class="toolbar"><h2 class="section-title" style="margin:0;flex:1">Strutture</h2><button type="button" class="primary" id="site-new">${icon("plus")}Nuova Struttura</button></div>
     ${real.length ? real.map((site) => `<div class="card">
       <h2>${icon("building")}${esc(site.name)}<span class="spacer"></span>
@@ -1603,11 +2089,11 @@ async function viewSites(body, data) {
         <button type="button" class="small ghost icon-only danger" data-site-del="${site.id}" aria-label="Elimina struttura">${icon("trash")}</button></h2>
       ${site.description ? `<p class="muted" style="margin:-6px 0 10px">${esc(site.description)}</p>` : ""}
       ${site.areas.length ? `<div class="list">${site.areas.map((a) => `<div class="item"><div class="grow"><div class="title">${esc(a.name)}</div>
-        <div class="meta">${a.doors.length ? a.doors.map((id) => `<span class="chip">${icon("door")}${esc(doorName(id))}</span>`).join("") : "nessuna porta"}</div></div>
+        <div class="meta">${chips(a)}</div></div>
         <button type="button" class="small ghost icon-only" data-area-edit="${a.id}" aria-label="Rinomina area">${icon("edit")}</button>
         <button type="button" class="small ghost icon-only danger" data-area-del="${a.id}" aria-label="Elimina area">${icon("trash")}</button></div>`).join("")}</div>` : '<p class="muted" style="margin:0">Nessuna area: aggiungine una, ad esempio Piano Terra o Ingresso.</p>'}
     </div>`).join("") : '<div class="card"><div class="empty">Nessuna struttura: creane una, ad esempio Hotel, Teatro o Villa 1.</div></div>'}
-    ${loose ? `<div class="alert">${icon("alert")}<div class="grow"><b>Porte Senza Area</b>${loose.areas[0].doors.map((id) => esc(doorName(id))).join(", ")}: scegli la loro area con Modifica nella scheda Controller e Porte.</div></div>` : ""}`;
+    ${loose ? `<div class="alert">${icon("alert")}<div class="grow"><b>Senza Area</b>${loose.areas[0].controllers.map((id) => esc(ctrlName(id))).join(", ") || plural(loose.areas[0].doors.length, "porta", "porte")}: scegli l'area con l'ingranaggio Connessione del controller.</div></div>` : ""}`;
   const allAreas = real.flatMap((x) => x.areas.map((a) => ({...a, site: x})));
   const nameDialog = (title, label, value = "", extra = "") => modal({title, body: field(label, `<input name="name" maxlength="64" value="${esc(value)}">`) + extra,
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: (dlg) => ({name: val(dlg, "name"), description: val(dlg, "description")})}]});
@@ -1615,6 +2101,7 @@ async function viewSites(body, data) {
     const r = await nameDialog("Nuova Struttura", "Nome", "", field("Descrizione", '<input name="description" maxlength="200" placeholder="facoltativa">'));
     if (r && await run(() => api("api/sites", {method: "POST", body: r}), "Struttura aggiunta")) { await loadSummary(); render(); }
   };
+  const inside = (a) => a.controllers.length ? ` ${plural(a.controllers.length, "controller resterà", "controller resteranno")} senza area.` : "";
   body.onclick = async (e) => {
     const b = e.target.closest("button");
     if (!b) return;
@@ -1628,73 +2115,32 @@ async function viewSites(body, data) {
       const r = await nameDialog("Modifica Struttura", "Nome", site.name, field("Descrizione", `<input name="description" maxlength="200" value="${esc(site.description)}">`));
       done = r && await run(() => api(`api/sites/${site.id}`, {method: "PUT", body: r}), "Struttura salvata");
     } else if (b.dataset.siteDel) {
-      const n = site.areas.reduce((k, a) => k + a.doors.length, 0);
-      done = await confirmBox("Elimina Struttura", `Eliminare <b>${esc(site.name)}</b> con le sue aree?${n ? ` ${plural(n, "porta resterà", "porte resteranno")} senza area.` : ""} Sul controller non cambia niente.`, "Elimina", true) &&
+      const n = site.areas.reduce((k, a) => k + a.controllers.length, 0);
+      done = await confirmBox("Elimina Struttura", `Eliminare <b>${esc(site.name)}</b> con le sue aree?${n ? ` ${plural(n, "controller resterà", "controller resteranno")} senza area.` : ""} Sul controller non cambia niente.`, "Elimina", true) &&
         await run(() => api(`api/sites/${site.id}`, {method: "DELETE"}), "Struttura eliminata");
     } else if (b.dataset.areaEdit) {
       const r = await nameDialog("Rinomina Area", "Nome dell'Area", area.name);
       done = r && await run(() => api(`api/areas/${area.id}`, {method: "PUT", body: {name: r.name}}), "Area salvata");
     } else if (b.dataset.areaDel) {
-      done = await confirmBox("Elimina Area", `Eliminare l'area <b>${esc(area.name)}</b>?${area.doors.length ? ` ${plural(area.doors.length, "porta resterà", "porte resteranno")} senza area.` : ""}`, "Elimina", true) &&
+      done = await confirmBox("Elimina Area", `Eliminare l'area <b>${esc(area.name)}</b>?${inside(area)}`, "Elimina", true) &&
         await run(() => api(`api/areas/${area.id}`, {method: "DELETE"}), "Area eliminata");
     }
     if (done) { await loadSummary(); render(); }
   };
 }
 
-async function controllerEditor(ctrl) {
-  const result = await modal({
-    title: ctrl ? "Modifica Controller" : "Nuovo Controller",
-    body: `${field("Nome", `<input name="name" maxlength="100" value="${esc(ctrl?.name || "Controller A1210")}">`)}
-      ${field("Indirizzo", `<input name="host" class="mono" value="${esc(ctrl?.host || "")}" placeholder="es. 192.168.1.50">`, "IP o nome del controller, senza https://.")}
-      <div class="fields-2">${field("Utente", `<input name="username" autocomplete="off" value="${esc(ctrl?.username || "")}">`)}
-      ${field("Password", `<input name="password" type="password" autocomplete="new-password" placeholder="${ctrl?.has_password ? "lascia vuoto per non cambiarla" : ""}">`)}</div>
-      ${field("Prefisso MQTT", `<input name="mqtt_topic_prefix" class="mono" value="${esc(ctrl?.mqtt_topic_prefix || "")}" placeholder="es. accessi/controller_ingresso">`, "Lo stesso impostato nel client MQTT del controller: gli eventi arrivano sotto &lt;prefisso&gt;/eventi/…")}
-      <div class="field inline"><input type="checkbox" name="verify_ssl" id="f-ssl" ${ctrl?.verify_ssl ? "checked" : ""}><label for="f-ssl">Verifica Certificato HTTPS</label></div>
-      <p class="hint" style="margin-top:-8px">Lascialo spento se il controller usa il certificato di fabbrica.</p>
-      <div class="row"><button type="button" class="small" id="ctrl-test">${icon("refresh")}Prova Collegamento</button><span id="ctrl-test-result" class="small-text"></span></div>`,
-    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
-      const body = {name: val(dlg, "name"), host: val(dlg, "host"), username: val(dlg, "username"), password: $("[name=password]", dlg).value,
-        mqtt_topic_prefix: val(dlg, "mqtt_topic_prefix"), verify_ssl: val(dlg, "verify_ssl")};
-      return (await run(() => api(ctrl ? `api/controllers/${ctrl.id}` : "api/controllers", {method: ctrl ? "PUT" : "POST", body}), "Controller salvato: collegamento riavviato")) || false;
-    }}],
-    onOpen: (dlg) => {
-      $("#ctrl-test", dlg).onclick = async () => {
-        const out = $("#ctrl-test-result", dlg);
-        out.innerHTML = '<span class="spinner"></span>';
-        try {
-          const r = await api("api/controllers/test", {method: "POST", body: {host: val(dlg, "host"), username: val(dlg, "username"), password: $("[name=password]", dlg).value, verify_ssl: val(dlg, "verify_ssl"), controller_id: ctrl?.id || null}});
-          out.innerHTML = `<span class="pill ok">${esc(r.model)} · firmware ${esc(r.firmware)}</span> ${plural(r.doors.length, "porta", "porte")}: ${r.doors.map((d) => esc(d.name)).join(", ")}`;
-        } catch (err) { out.innerHTML = `<span class="pill err">${esc(err.message)}</span>`; }
-      };
-    },
-  });
-  if (result) { loadSummary(); render(); }
-}
-
-async function doorEditor(ctrl, door) {
-  const [available, cameras, sites] = await Promise.all([
-    api(`api/controllers/${ctrl.id}/doors-available`).catch(() => []),
-    api("api/cameras").catch(() => []),
-    api("api/locations").catch(() => []),
-  ]);
-  const areaNow = door ? (sites.flatMap((x) => x.areas).find((a) => a.doors.includes(door.id))?.id || 0) : (sites.flatMap((x) => x.areas.filter((a) => a.id))[0]?.id || 0);
-  const areaInput = `<select name="area_id"><option value="0">Nessuna Area</option>${sites.filter((x) => x.id).map((x) => `<optgroup label="${esc(x.name)}">${x.areas.map((a) => `<option value="${a.id}" ${a.id === areaNow ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</optgroup>`).join("")}</select>`;
-  const used = ctrl.doors.filter((d) => d.id !== door?.id).map((d) => d.door_token);
-  const doorOptions = available.filter((d) => !used.includes(d.token)).map((d) => `<option value="${esc(d.token)}" ${d.token === door?.door_token ? "selected" : ""}>${esc(d.name)} (${esc(d.token)})</option>`).join("");
-  const missing = door && !available.some((d) => d.token === door.door_token) ? `<option value="${esc(door.door_token)}" selected>${esc(door.door_token)}</option>` : "";
-  if (!door && available.length && !doorOptions) { toast("Tutte le porte del controller sono già configurate", true); return; }
-  const doorInput = doorOptions || missing ? `<select name="door_token">${missing}${doorOptions}</select>` : `<input name="door_token" class="mono" value="${esc(door?.door_token || "")}" placeholder="token della porta">`;
+// Impostazioni della porta nell'app; l'area viene dal controller
+async function doorEditor(ctrl, door, token = "", controllerName = "") {
+  const cameras = await api("api/cameras").catch(() => []);
   const cameraInput = cameras.length
     ? `<select name="snapshot_camera"><option value="">Nessuna</option>${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === door?.snapshot_camera ? "selected" : ""}>${esc(c.name)} (${esc(c.entity_id)})</option>`).join("")}${door?.snapshot_camera && !cameras.some((c) => c.entity_id === door.snapshot_camera) ? `<option value="${esc(door.snapshot_camera)}" selected>${esc(door.snapshot_camera)}</option>` : ""}</select>`
     : `<input name="snapshot_camera" class="mono" value="${esc(door?.snapshot_camera || "")}" placeholder="camera.ingresso">`;
-  const d = door || {ha_buttons: true, intercom_relay: 1, intercom_mqtt_prefix: "hmd"};
+  const d = door || {name: controllerName, door_token: token, ha_buttons: true, intercom_relay: 1, intercom_mqtt_prefix: "hmd"};
   const result = await modal({
-    title: door ? "Modifica Porta" : "Nuova Porta",
+    title: door ? `Impostazioni App · ${door.name}` : "Gestisci nell'App",
     wide: true,
-    body: `<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(d.name || "")}" placeholder="es. Ingresso Scala A">`)}
-      ${field("Porta del Controller", doorInput, available.length ? "" : "Elenco non disponibile: controller non raggiungibile.")}</div>
-      ${field("Struttura e Area", areaInput, 'Dove si trova la porta. Strutture e aree si creano in <a href="#impianti/strutture">Strutture e Aree</a>.')}
+    body: `<div class="fields-2">${field("Nome nell'App", `<input name="name" maxlength="100" value="${esc(d.name || "")}" placeholder="es. Ingresso Scala A">`)}
+      ${field("Porta del Controller", `<input class="mono" value="${esc(d.door_token)}" disabled>`)}</div>
       <div class="field inline"><input type="checkbox" name="ha_buttons" id="f-hab" ${d.ha_buttons ? "checked" : ""}><label for="f-hab">Pulsanti Apri e Apri a Lungo in Home Assistant</label></div>
       <p class="hint" style="margin-top:-8px">Da mettere nelle dashboard. L'apertura è sempre a tempo e solo a porta bloccata.</p>
       <h3 class="section-title" style="margin-top:18px">${icon("camera")}Telecamera</h3>
@@ -1707,100 +2153,13 @@ async function doorEditor(ctrl, door) {
       <p class="hint" style="margin-top:-8px">Dall'app Hik-Connect o dal monitor: l'add-on manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Spento = le chiamate finiscono solo nel registro.</p>
       ${field("Prefisso MQTT del Citofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}`,
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
-      const body = {name: val(dlg, "name"), door_token: val(dlg, "door_token"), ha_buttons: val(dlg, "ha_buttons"), snapshot_camera: val(dlg, "snapshot_camera"),
+      const body = {name: val(dlg, "name"), door_token: d.door_token, ha_buttons: val(dlg, "ha_buttons"), snapshot_camera: val(dlg, "snapshot_camera"),
         snapshot_on_granted: val(dlg, "snapshot_on_granted"), intercom_name: val(dlg, "intercom_name"), intercom_relay: Number(val(dlg, "intercom_relay")),
-        intercom_open_door: val(dlg, "intercom_open_door"), intercom_mqtt_prefix: val(dlg, "intercom_mqtt_prefix"), area_id: Number(val(dlg, "area_id"))};
+        intercom_open_door: val(dlg, "intercom_open_door"), intercom_mqtt_prefix: val(dlg, "intercom_mqtt_prefix")};
       return (await run(() => api(door ? `api/doors/${door.id}` : `api/controllers/${ctrl.id}/doors`, {method: door ? "PUT" : "POST", body}), "Porta salvata")) || false;
     }}],
   });
   if (result) { loadSummary(); render(); }
-}
-
-const DOOR_TIME_FIELDS = [
-  ["access_time", "Tempo di Apertura", "Quanto resta sbloccata dopo un accesso."],
-  ["extended_access_time", "Apertura Estesa", "Per chi ha bisogno di più tempo (es. Apri a Lungo)."],
-  ["open_too_long_time", "Allarme Aperta Troppo a Lungo", "Dopo quanto la porta aperta va in allarme."],
-  ["extended_open_too_long_time", "Allarme con Apertura Estesa", ""],
-  ["pre_alarm_time", "Preallarme", "Avviso prima dell'allarme."],
-];
-async function viewProgramming(body, ctrl) {
-  if (!ctrl) { body.innerHTML = '<div class="card"><div class="empty">Configura prima il controller nella scheda Controller e Porte.</div></div>'; return; }
-  let p;
-  try { p = await api("api/programming"); } catch (err) { body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Programmazione Non Leggibile</b>${esc(err.message)}</div></div>`; return; }
-  const configDetails = (items) => items.length ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici (${items.length})</summary>
-    <div class="table-wrap"><table class="table"><tbody>${items.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td><code>${esc(c.value)}</code></td></tr>`).join("")}</tbody></table></div></details>` : "";
-  body.innerHTML = `
-    <div class="alert info">${icon("shield")}<div class="grow"><b>Programmazione del Controller</b>Qui vedi e cambi nomi e tempi delle porte, i lettori e quale lettore comanda quale porta. Ogni modifica viene scritta sul controller e salvata nello storico: se qualcosa non va la annulli da qui sotto.</div></div>
-    ${p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : ""}
-    <h2 class="section-title">Porte</h2>
-    <div class="grid cards" style="margin-bottom:20px">${p.doors.map((d) => `<div class="card" style="margin:0">
-      <h2>${icon("door")}${esc(d.name || d.token)}</h2>
-      ${props([["Token", `<code>${esc(d.token)}</code>`], ...DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined).map(([k, label]) => [label, secs(d[k])])])}
-      ${d.description ? `<p class="hint">${esc(d.description)}</p>` : ""}${configDetails(d.configuration)}
-      ${d.editable || d.name ? `<div class="row" style="margin-top:12px"><button type="button" class="small" data-pd="${esc(d.token)}">${icon("edit")}Modifica</button></div>` : ""}
-    </div>`).join("") || '<div class="empty">nessuna porta letta</div>'}</div>
-    <h2 class="section-title">Lettori</h2>
-    <div class="grid cards" style="margin-bottom:20px">${p.readers.map((r) => `<div class="card" style="margin:0">
-      <h2>${icon("card")}${esc(r.name || r.token)}</h2>
-      ${props([["Token", `<code>${esc(r.token)}</code>`], ["Posizione", esc(r.location || "—")], ["Attesa PIN", secs(r.timeout)]])}
-      ${r.description ? `<p class="hint">${esc(r.description)}</p>` : ""}${configDetails(r.configuration)}
-      <div class="row" style="margin-top:12px"><button type="button" class="small" data-pr="${esc(r.token)}">${icon("edit")}Modifica</button></div>
-    </div>`).join("") || '<div class="empty">nessun lettore letto</div>'}</div>
-    <h2 class="section-title">Collegamenti Lettore-Porta</h2>
-    <p class="muted small-text" style="margin-top:-6px">Ogni punto di accesso dice quali lettori comandano quale porta e in che direzione. I gruppi di accesso fanno riferimento a questi punti.</p>
-    <div class="card flush" style="margin-bottom:20px"><div class="list">${p.access_points.map((a) => `<div class="item">
-      <div class="ev-icon ${a.enabled ? "k-accent" : "k-muted"}">${icon("shield")}</div>
-      <div class="grow"><div class="title">${esc(a.name || a.token)}</div>
-        <div class="meta"><span>${esc(a.reader_names.join(", ") || "nessun lettore")} → ${esc(a.door_name || "nessuna porta")}</span>${a.direction ? `<span class="pill">${esc(p.directions[a.direction] || a.direction)}</span>` : ""}${a.enabled ? "" : '<span class="pill err">Disattivato</span>'}</div></div>
-      <button type="button" class="small" data-pa="${esc(a.token)}">${icon("edit")}Modifica</button></div>`).join("") || '<div class="empty">nessun punto di accesso</div>'}</div></div>
-    <div class="card flush"><h2>Storico Modifiche<span class="spacer"></span><span class="muted small-text">annulla per riportare com'era</span></h2>
-      <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Modifica</th><th></th></tr></thead><tbody>
-      ${p.changes.length ? p.changes.map((c) => `<tr><td>${esc(fmtDateTime(c.ts))}</td><td>${esc(c.user)}</td><td>${esc(c.summary)}</td><td style="text-align:right">${c.undone ? '<span class="pill">Annullata</span>' : `<button type="button" class="small" data-undo="${c.id}">Annulla</button>`}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">nessuna modifica fatta dall\'app</td></tr>'}</tbody></table></div></div>`;
-  paintIcons(body);
-  const save = (path, payload, message) => run(() => api(path, {method: "PUT", body: payload}), message);
-  body.onclick = async (e) => {
-    const b = e.target.closest("button");
-    if (!b) return;
-    if (b.dataset.pd) {
-      const d = p.doors.find((x) => x.token === b.dataset.pd);
-      const times = DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
-      const ok = await modal({title: "Porta " + (d.name || d.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(d.name)}">`)}
-        ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(d.description)}">`)}
-        ${times.length ? `<div class="fields-2">${times.map(([k, label, hint]) => field(label + " (Secondi)", `<input type="number" name="${k}" min="0" step="1" value="${d[k]}">`, hint)).join("")}</div>` : ""}`,
-        actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) => {
-          const payload = {name: val(dlg, "name"), description: val(dlg, "description")};
-          times.forEach(([k]) => { payload[k] = Number(val(dlg, k)); });
-          return (await save(`api/programming/doors/${encodeURIComponent(d.token)}`, payload, "Porta aggiornata sul controller")) || false;
-        }}]});
-      if (ok) render();
-    } else if (b.dataset.pr) {
-      const r = p.readers.find((x) => x.token === b.dataset.pr);
-      const ok = await modal({title: "Lettore " + (r.name || r.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(r.name)}">`)}
-        ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(r.description)}">`)}`,
-        actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
-          (await save(`api/programming/readers/${encodeURIComponent(r.token)}`, {name: val(dlg, "name"), description: val(dlg, "description")}, "Lettore aggiornato sul controller")) || false}]});
-      if (ok) render();
-    } else if (b.dataset.pa) {
-      const a = p.access_points.find((x) => x.token === b.dataset.pa);
-      const ok = await modal({title: "Collegamento " + (a.name || a.token), wide: true,
-        body: `<div class="alert">${icon("alert")}<div class="grow">Cambiare porta o lettori cambia quale porta si apre con quale lettore. Se dopo il salvataggio le tessere non aprono più, annulla dallo storico.</div></div>
-          <div class="fields-2">${field("Nome", `<input name="name" maxlength="64" value="${esc(a.name)}">`)}
-          ${field("Porta Comandata", `<select name="door">${p.doors.map((d) => `<option value="${esc(d.token)}" ${d.token === a.door ? "selected" : ""}>${esc(d.name || d.token)}</option>`).join("")}</select>`)}</div>
-          <div class="field"><label>Lettori</label><div class="perm-list">${p.readers.map((r) => `<label><input type="checkbox" name="reader" value="${esc(r.token)}" ${a.readers.includes(r.token) ? "checked" : ""}>${esc(r.name || r.token)}</label>`).join("")}</div></div>
-          <div class="fields-2">${field("Direzione", `<select name="direction"><option value="">Non indicata</option>${Object.entries(p.directions).map(([k, label]) => `<option value="${k}" ${k === a.direction ? "selected" : ""}>${label}</option>`).join("")}</select>`)}
-          <div class="field inline" style="margin-top:26px"><input type="checkbox" name="enabled" id="f-ape" ${a.enabled ? "checked" : ""}><label for="f-ape">Attivo</label></div></div>`,
-        actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) => {
-          const readers = $$("[name=reader]:checked", dlg).map((x) => x.value);
-          if (!readers.length) { toast("Scegli almeno un lettore", true); return false; }
-          return (await save(`api/programming/access-points/${encodeURIComponent(a.token)}`, {name: val(dlg, "name"), door: val(dlg, "door"), readers, direction: val(dlg, "direction"), enabled: val(dlg, "enabled")}, "Collegamento aggiornato sul controller")) || false;
-        }}]});
-      if (ok) render();
-    } else if (b.dataset.undo) {
-      const c = p.changes.find((x) => x.id === Number(b.dataset.undo));
-      if (await confirmBox("Annulla Modifica", `Riportare <b>${esc(c.summary)}</b> com'era prima della modifica del ${esc(fmtDateTime(c.ts))}?`, "Annulla Modifica") &&
-          await run(() => api(`api/programming/changes/${c.id}/undo`, {method: "POST"}), "Modifica annullata sul controller")) render();
-    }
-  };
 }
 
 // ---------- Impostazioni ----------
@@ -1808,10 +2167,11 @@ const props = (pairs) => `<dl class="props">${pairs.map(([k, v]) => `<dt>${esc(k
 const statusDot = (cls) => `<span class="dot ${cls}"></span>`;
 let auditRows = [];
 async function viewSettings(el, sub) {
-  const tabs = [["stato", "Stato"], ...(store.me.admin ? [["utenti", "Utenti"], ["attivita", "Attività"]] : [])];
+  const tabs = [["stato", "Stato"], ...(store.me.admin ? [["notifiche", "Notifiche"], ["utenti", "Utenti"], ["attivita", "Attività"]] : [])];
   const tab = tabs.some(([k]) => k === sub) ? sub : "stato";
   el.innerHTML = `${tabs.length > 1 ? `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impostazioni/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>` : ""}<div id="st-body"><div class="loading"><span class="spinner"></span> verifica del controller…</div></div>`;
   const body = $("#st-body");
+  if (tab === "notifiche") return viewNotificationSettings(body);
   if (tab === "utenti") return viewUsers(body);
   if (tab === "attivita") return viewAudit(body);
   let s;
