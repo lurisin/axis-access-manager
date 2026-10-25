@@ -187,6 +187,7 @@ def test_categories_hidden_and_default_group_endpoints(client):
     assert client.post(f"/api/persons/{person['id']}/align").status_code == 200
     assert client.delete(f"/api/categories/{category['id']}").status_code == 400
 
+
 def test_status_lists_controller_door_names(client):
     controller = client.get("/api/status").json()["controller"]
     assert controller["doors"] == ["porta", "porta2"]
