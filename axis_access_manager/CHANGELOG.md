@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.0
+
+Ripristino completo di un controller resettato o sostituito.
+
+- **Ripristino Completo** nella scheda Backup del controller. Da un backup ricrea fuso orario, NTP, collegamento ed eventi MQTT, fasce orarie, porte con la configurazione della serratura, lettori, morsetti, punti di accesso e profili, sempre con gli stessi token: tipologie, tessere, ingressi, registro ed entità di Home Assistant restano collegati. Poi riscrive le tessere.
+- **Anteprima con l'ordine di scrittura**. La password del broker MQTT si scrive lì e non si salva. Gli oggetti di fabbrica in più sono già spuntati per essere tolti quando il controller è appena resettato. I tempi di apertura si scrivono entro i limiti della serratura. La programmazione oraria delle porte non si ripristina mai.
+- **Controller sostituito**: porte e lettori passano al dispositivo nuovo (DeviceUUID). Se un controller rifiutasse un token, l'oggetto si crea con uno nuovo e l'app lo cambia in tipologie, tessere e ingressi.
+- **Il backup salva anche i modi di identificazione** (CardOnly, REXOnly e quelli fatti a mano), che servono a ricreare i punti di accesso.
+- **Tessere quasi tutte sparite**: il riquadro nella pagina Persone propone il Ripristino Completo.
+
 ## 0.20.1
 
 Suggerimenti dal collaudo della 0.19.5.

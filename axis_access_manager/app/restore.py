@@ -9,8 +9,10 @@ entro i limiti della serratura, nessuno sblocco, scritture sospese se il control
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 
+from . import full_restore
 from .backup import COMMON, DOOR_TIMES, FIELD_LABELS, _item, _shown, common_view, context_of, controller_view
 from .db import Database
 from .programming import ProgrammingService, parse_duration
@@ -20,6 +22,13 @@ from .vapix import VapixError
 
 # Sezioni che si possono ripristinare, nell'ordine in cui si applicano: le tipologie prima delle persone
 RESTORE_SECTIONS = {"tipologie": "Tipologie", "persone": "Persone e Tessere", "porte": "Porte e Lettori"}
+# Con il ripristino completo di un controller: prima impostazioni e programmazione, le tessere per ultime
+ALL_SECTIONS = {
+    "dispositivo": full_restore.FULL_SECTIONS["dispositivo"],
+    "controller": full_restore.FULL_SECTIONS["controller"],
+    **RESTORE_SECTIONS,
+    "tessere": full_restore.FULL_SECTIONS["tessere"],
+}
 CARD_FIELDS = ("access_profile", "valid_from", "valid_to")
 
 
@@ -33,6 +42,11 @@ class Runtime:
     programming: ProgrammingService
     # Controller in uso: per ora porte e lettori si ripristinano solo lì
     controller_id: int | None
+    # Ripristino completo: password del broker MQTT scritta nell'anteprima e credenziali MQTT che l'add-on conosce
+    mqtt_password: str = ""
+    mqtt_known: dict[str, str] = dataclasses.field(default_factory=dict)
+    # Dispositivo del controller nuovo e token cambiati, tra una riga e l'altra
+    cache: dict = dataclasses.field(default_factory=dict)
 
 
 def _changes(current: dict | None, saved: dict) -> list[dict]:
@@ -63,10 +77,17 @@ def _new(key: str, section: str, action: str, label: str, text: str, **extra) ->
 
 
 def plan(
-    saved: dict[str, dict], current: dict[str, dict], sections: list[str], controller_id: int | None
+    saved: dict[str, dict],
+    current: dict[str, dict],
+    sections: list[str],
+    controller_id: int | None,
+    mqtt_users: set[str] | None = None,
 ) -> list[dict]:
     """Righe dell'anteprima per le sezioni scelte. Le chiavi che iniziano con _ servono solo al ripristino."""
     items: list[dict] = []
+    full = [s for s in full_restore.FULL_SECTIONS if s in sections]
+    if full and controller_id:
+        items += full_restore.plan(saved, current, full, controller_id, mqtt_users)
     saved_common, current_common = saved.get(COMMON) or {}, current.get(COMMON) or {}
     saved_ctx, current_ctx = context_of(saved), context_of(current)
     if "tipologie" in sections:
@@ -272,7 +293,7 @@ def _plan_doors(saved: dict, current: dict, saved_ctx: dict, current_ctx: dict) 
         saved_item = saved_view["porte"][token]
         item = _new(f"porta:{token}", "porte", "riporta", saved_item["label"], "Riporta com'era")
         if token not in current_doors:
-            item["blocked"] = "non è più programmata sul controller: si potrà ricreare con il ripristino completo"
+            item["blocked"] = "non è più programmata sul controller: ricreala con il ripristino completo"
             items.append(item)
             continue
         current_item = current_view["porte"][token]
@@ -316,8 +337,9 @@ def _plan_doors(saved: dict, current: dict, saved_ctx: dict, current_ctx: dict) 
 
 
 async def apply(items: list[dict], keys: list[str], runtime: Runtime, user: str) -> dict:
-    """Applica le righe scelte, nell'ordine tipologie → persone → porte. Una riga che non riesce non ferma le altre."""
-    order = list(RESTORE_SECTIONS)
+    """Applica le righe scelte nell'ordine di ALL_SECTIONS (dentro una sezione, quello dell'anteprima, che mette
+    prima chi è usato da altri). Una riga che non riesce non ferma le altre."""
+    order = list(ALL_SECTIONS)
     chosen = [i for i in items if i["key"] in set(keys)]
     chosen.sort(key=lambda i: order.index(i["section"]))
     result: dict = {"applied": [], "failed": [], "reload": False}
@@ -325,8 +347,13 @@ async def apply(items: list[dict], keys: list[str], runtime: Runtime, user: str)
         if item["blocked"]:
             result["failed"].append({"label": item["label"], "error": item["blocked"]})
             continue
+        outcome: dict = {}
         try:
-            if item["section"] == "tipologie":
+            if item["section"] in full_restore.FULL_SECTIONS:
+                outcome = await full_restore.apply_item(item, runtime, user)
+                # Porte, lettori e punti di accesso ricreati: il collegamento al controller riparte
+                result["reload"] |= item["section"] != "tessere"
+            elif item["section"] == "tipologie":
                 await _apply_category(item, runtime, user)
             elif item["section"] == "persone":
                 await _apply_person(item, runtime, user)
@@ -335,7 +362,10 @@ async def apply(items: list[dict], keys: list[str], runtime: Runtime, user: str)
         except (ServiceError, VapixError) as err:
             result["failed"].append({"label": item["label"], "error": str(err)})
             continue
-        result["applied"].append({"label": item["label"], "text": item["text"]})
+        result["applied"].append({"label": item["label"], "text": outcome.get("text") or item["text"]})
+        result["failed"] += outcome.get("failed", [])
+    if renamed := runtime.cache.get("tokens"):
+        result["renamed"] = len(renamed)
     gone = [k for k in keys if k not in {i["key"] for i in items}]
     result["unchanged"] = len(gone)
     return result

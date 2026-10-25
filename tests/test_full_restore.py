@@ -1,0 +1,304 @@
+import pytest
+from fastapi.testclient import TestClient
+from test_backup import Plant
+
+from app.main import create_app
+from app.restore import Runtime, apply, plan
+
+FULL = ["dispositivo", "controller", "tessere"]
+OLD_UUID = "e6689c2d-4eca-4637-9a0e-b8a44fe6a074"
+MQTT = {
+    "server": {"protocol": "tcp", "host": "172.27.120.21", "port": 1883},
+    "username": "axis_mqtt",
+    "password": "segreta",
+    "clientId": "via_consulta_controller",
+    "deviceTopicPrefix": "axis/B8A44FE6A074",
+}
+EVENTS = {
+    "topicPrefix": "custom",
+    "customTopicPrefix": "accessi/x",
+    "eventFilterList": [{"topicFilter": "onvif:AccessControl//.", "qos": 1, "retain": "property"}],
+}
+
+
+def bench_like(controller):
+    """Come l'A1210 del banco: dispositivo nelle configurazioni, MQTT con utente dedicato, un ingresso dell'app."""
+    controller.serial = "B8A44FE6A074"
+    controller.door_configs["porta"]["DeviceUUID"] = OLD_UUID
+    controller.door_configs["porta"]["DoorScheduleConfiguration"] = ""
+    controller.idpoint_configs = {
+        "lettore-1": {"DeviceUUID": OLD_UUID, "IdPoint.Reader.Type": "RS-485HD"},
+        "Axis-b8a44fe6a074:1.1": {"DeviceUUID": OLD_UUID, "IdPoint.REX.Type": "ActiveLow"},
+    }
+    controller.idpoints["Axis-b8a44fe6a074:1.1"] = {"token": "Axis-b8a44fe6a074:1.1", "Name": "Relè Citofono"}
+    controller.access_points[0]["DoorDeviceUUID"] = OLD_UUID
+    controller.access_points.append(
+        {
+            "token": "Axis-b8a44fe6a074:1.2",
+            "Name": "Relè Citofono",
+            "Entity": "porta",
+            "EntityType": "axtdc:Door",
+            "Enabled": True,
+            "DoorDeviceUUID": OLD_UUID,
+            "IdPointDevice": [{"IdPoint": "Axis-b8a44fe6a074:1.1", "DeviceUUID": OLD_UUID}],
+            "AuthenticationProfile": ["REXOnly"],
+            "Attribute": [{"Name": "Direction", "Value": "out"}],
+        }
+    )
+    controller.io_assignments = {
+        "Ser0hd": {"IoMode": "rs485hd", "IoUser": [{"Type": "idpoint", "token": "lettore-1", "Usage": "RS-485HD"}]},
+        "REX": {
+            "IoMode": "in:pu/gnd",
+            "IoUser": [{"Type": "idpoint", "token": "Axis-b8a44fe6a074:1.1", "Usage": "REX", "MultiIo": False}],
+        },
+    }
+    controller.mqtt, controller.mqtt_events = dict(MQTT), dict(EVENTS)
+
+    async def reader_configurations():
+        return [
+            {
+                "token": token,
+                "DeviceUUID": config["DeviceUUID"],
+                "Configuration": [{"Name": k, "Value": v} for k, v in config.items() if k != "DeviceUUID"],
+            }
+            for token, config in controller.idpoint_configs.items()
+        ]
+
+    controller.list_idpoint_configurations = reader_configurations
+
+
+@pytest.fixture
+def plant(db, controller, settings, tmp_path):
+    plant = Plant(db, controller, settings, tmp_path / "backup")
+    bench_like(controller)
+    return plant
+
+
+async def full_restore(plant, backup_id, keys=None, password="", known=None):
+    _, saved = plant.backups.load(backup_id)
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, FULL, plant.controller_id, set(known or {}))
+    chosen = [i["key"] for i in items if i["default"] and not i["blocked"]] if keys is None else keys
+    runtime = Runtime(
+        plant.db,
+        plant.access,
+        plant.rules,
+        plant.programming,
+        plant.controller_id,
+        mqtt_password=password,
+        mqtt_known=known or {},
+    )
+    return items, await apply(items, chosen, runtime, "admin")
+
+
+def written(controller, name):
+    return [c for c in controller.calls if c[0] == name]
+
+
+async def test_full_restore_after_factory_reset(plant, controller, db):
+    anna = await plant.access.create_person("Anna", "04aa", "admin")
+    await plant.access.create_person("Bruno", "04bb", "admin")
+    await plant.access.set_card_enabled(anna["cards"][0]["id"], False, "admin")
+    saved_doors = {t: dict(d) for t, d in controller.doors.items()}
+    saved_points = {p["token"]: p for p in controller.access_points}
+    backup = await plant.backup()
+    # Nel backup la password del broker non c'è
+    _, parts = plant.backups.load(backup["id"])
+    assert "password" not in parts[f"controller:{plant.controller_id}"]["device"]["mqtt"]
+
+    controller.factory_reset()
+    controller.calls.clear()
+    items, result = await full_restore(plant, backup["id"], password="segreta")
+
+    keys = [i["key"] for i in items]
+    assert keys[:3] == ["disp-fuso", "disp-mqtt", "disp-mqtt-eventi"]
+    assert next(i for i in items if i["key"] == "disp-mqtt")["password"] is True
+    assert "prog-fascia:standard_office_hours" in keys and "prog-fascia:standard_always" not in keys
+    assert keys.index("prog-porta:porta") < keys.index("prog-lettore:lettore-1") < keys.index("prog-io:Ser0hd")
+    assert keys.index("prog-io:REX") < keys.index("prog-punto:ap-in") < keys.index("prog-profilo:profilo_sempre")
+    assert keys[-1] == "tessere" and "2 tessere di 2 persone" in items[-1]["text"]
+    assert [i["key"] for i in items if i["section"] == "controller" and i["action"] != "ricrea"] == []
+    assert not result["failed"], result["failed"]
+    assert result["reload"] is True
+
+    # Tutto com'era, con gli stessi token
+    assert controller.doors == saved_doors
+    assert {p["token"] for p in controller.access_points} == set(saved_points)
+    points = {p["token"]: p for p in controller.access_points}
+    assert points["Axis-b8a44fe6a074:1.2"]["IdPointDevice"][0]["IdPoint"] == "Axis-b8a44fe6a074:1.1"
+    assert controller.profiles["profilo_sempre"]["AccessPolicy"][0]["AccessPoint"] == "ap-in"
+    assert controller.io_assignments["REX"]["IoUser"][0]["token"] == "Axis-b8a44fe6a074:1.1"
+    assert controller.idpoint_configs["Axis-b8a44fe6a074:1.1"]["IdPoint.REX.Type"] == "ActiveLow"
+    # Stesso controller: il dispositivo resta quello di prima; la programmazione oraria della porta non si scrive
+    assert controller.door_configs["porta"]["DeviceUUID"] == OLD_UUID
+    assert "DoorScheduleConfiguration" not in controller.door_configs["porta"]
+    assert controller.time_zone == "Europe/Rome" and controller.mqtt["password"] == "segreta"
+    assert controller.mqtt_events == EVENTS
+    # Ordine di scrittura: chi è usato prima di chi lo usa, le tessere per ultime
+    order = [c[0] for c in controller.calls]
+    assert order.index("set_schedule") < order.index("set_door") < order.index("set_door_configuration")
+    assert order.index("create_idpoint") < order.index("set_io_assignment") < order.index("create_access_point")
+    assert order.index("set_access_profile") < order.index("set_credential")
+    cards = {c["number"]: c for c in db.all_cards()}
+    assert not db.missing_cards()
+    credential = controller.credentials[cards["04aa"]["axis_credential_token"]]
+    assert credential["Enabled"] is False
+    assert credential["CredentialAccessProfile"][0]["AccessProfile"] == "profilo_sempre"
+    assert result["applied"][-1] == {"label": "Tessere", "text": "2 tessere riscritte"}
+
+    # Di nuovo uguale al backup: niente da fare
+    items, _ = await full_restore(plant, backup["id"], password="segreta")
+    assert items == []
+
+
+async def test_replaced_controller_gets_its_own_device(plant, controller):
+    backup = await plant.backup()
+    controller.factory_reset()
+    controller.serial = "ACCC8E000001"
+
+    items, result = await full_restore(plant, backup["id"], password="segreta")
+
+    assert not result["failed"], result["failed"]
+    # Configurazioni senza dispositivo: il controller nuovo ci mette il suo
+    assert ("set_door_configuration", "porta", "") in controller.calls
+    assert controller.idpoint_configs["lettore-1"]["DeviceUUID"] == ""
+    assert controller.door_configs["porta"]["DeviceUUID"] == "uuid-locale"
+    points = {p["token"]: p for p in controller.access_points}
+    assert points["ap-in"]["DoorDeviceUUID"] == "uuid-locale"
+    assert points["Axis-b8a44fe6a074:1.2"]["IdPointDevice"][0]["DeviceUUID"] == "uuid-locale"
+    assert OLD_UUID not in str(controller.access_points)
+
+
+async def test_tokens_refused_by_the_new_controller_are_renamed_everywhere(plant, controller, db):
+    rule = {"target": "door", "target_id": plant.scala, "schedule": "standard_always"}
+    category = await plant.rules.save_category(None, {"name": "Pulizie", "rules": [rule]}, "admin")
+    old_profile = "Axis-b8a44fe6a074:9.9"
+    controller.profiles[old_profile] = {**controller.profiles.pop(category["token"]), "token": old_profile}
+    db.replace_token(category["token"], old_profile)
+    anna = await plant.access.create_person("Anna", "04aa", "admin", category_id=category["id"])
+    assert db.get_person(anna["id"])["cards"][0]["access_profile"] == old_profile
+    db.save_controller_input(
+        plant.controller_id,
+        "REX",
+        {
+            "name": "Relè Citofono",
+            "role": "intercom",
+            "door_token": "porta",
+            "idpoint_token": "Axis-b8a44fe6a074:1.1",
+            "access_point_token": "Axis-b8a44fe6a074:1.2",
+        },
+    )
+    backup = await plant.backup()
+    controller.factory_reset()
+    controller.refuse_axis_tokens = True
+
+    items, result = await full_restore(plant, backup["id"], password="segreta")
+
+    assert not result["failed"], result["failed"]
+    assert result["renamed"] == 3
+    new_profile = db.get_category(category["id"])["group_token"]
+    assert new_profile != old_profile and new_profile in controller.profiles
+    assert db.get_person(anna["id"])["cards"][0]["access_profile"] == new_profile
+    credential = next(iter(controller.credentials.values()))
+    assert credential["CredentialAccessProfile"][0]["AccessProfile"] == new_profile
+    mine = db.controller_inputs(plant.controller_id)["REX"]
+    assert mine["idpoint_token"] in controller.idpoints and mine["access_point_token"] != "Axis-b8a44fe6a074:1.2"
+    point = next(p for p in controller.access_points if p["token"] == mine["access_point_token"])
+    assert point["IdPointDevice"][0]["IdPoint"] == mine["idpoint_token"]
+    assert controller.io_assignments["REX"]["IoUser"][0]["token"] == mine["idpoint_token"]
+
+
+async def test_door_times_are_capped_and_extra_objects_removed_after_reset(plant, controller):
+    controller.doors["porta"]["AccessTime"] = "PT90S"
+    await plant.access.create_person("Anna", "04aa", "admin")
+    backup = await plant.backup()
+    controller.factory_reset()
+    controller.doors["Door1"] = {"token": "Door1", "Name": "Door 1"}
+
+    items, result = await full_restore(plant, backup["id"], password="segreta")
+
+    door = next(i for i in items if i["key"] == "prog-porta:porta")
+    assert "fuori dai limiti della serratura" in door["warnings"][0]
+    extra = next(i for i in items if i["key"] == "prog-porta-togli:Door1")
+    # Dopo un reset (nessuna tessera sul controller) gli oggetti di fabbrica si tolgono di serie
+    assert extra["action"] == "togli" and extra["default"] is True
+    assert not result["failed"], result["failed"]
+    assert controller.doors["porta"]["AccessTime"] == "PT30S" and "Door1" not in controller.doors
+
+
+async def test_partial_differences_on_a_working_controller(plant, controller):
+    await plant.access.create_person("Anna", "04aa", "admin")
+    backup = await plant.backup()
+    controller.doors["Door9"] = {"token": "Door9", "Name": "Aggiunta"}
+    controller.door_configs["porta"]["Configuration"] = [{"Name": "Lock.Type", "Value": "FailSafe"}]
+    controller.idpoints["lettore-2"]["Name"] = "Cambiato"
+
+    items, result = await full_restore(plant, backup["id"], keys=[])
+
+    by_key = {i["key"]: i for i in items}
+    assert set(by_key) == {"prog-porta:porta", "prog-lettore:lettore-2", "prog-porta-togli:Door9"}
+    assert by_key["prog-porta:porta"]["changes"] == [{"label": "Lock.Type", "old": "FailSafe", "new": "FailSecure"}]
+    assert by_key["prog-lettore:lettore-2"]["changes"][0]["new"] == "Lettore interno"
+    # Con le tessere sul controller un oggetto in più è lavoro fatto dopo il backup: non spuntato
+    assert by_key["prog-porta-togli:Door9"]["default"] is False
+    assert result["applied"] == []
+
+
+async def test_mqtt_password_known_to_the_add_on_is_not_asked(plant, controller):
+    backup = await plant.backup()
+    controller.factory_reset()
+
+    items, result = await full_restore(plant, backup["id"], keys=["disp-mqtt"])
+    assert result["failed"] == [
+        {"label": "Collegamento MQTT", "error": "scrivi la password del broker MQTT per l'utente axis_mqtt"}
+    ]
+    items, result = await full_restore(plant, backup["id"], keys=["disp-mqtt"], known={"axis_mqtt": "dal-supervisor"})
+    assert next(i for i in items if i["key"] == "disp-mqtt")["password"] is False
+    assert not result["failed"] and controller.mqtt["password"] == "dal-supervisor"
+
+
+async def test_offline_controller_blocks_the_full_restore(plant, controller):
+    backup = await plant.backup()
+    controller.offline = True
+
+    items, _ = await full_restore(plant, backup["id"], keys=[])
+
+    assert [i["key"] for i in items] == ["completo"] and "non risponde" in items[0]["blocked"]
+
+
+@pytest.fixture
+def client(settings, controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    bench_like(controller)
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=tmp_path / "api.db")
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_full_restore_api(client, controller):
+    admin = {"X-Remote-User-Name": "rising", "X-Remote-User-Display-Name": "Rising"}
+    client.get("/api/me", headers=admin)
+    client.post("/api/persons", json={"name": "Anna", "card": "04aa"}, headers=admin)
+    created = client.post("/api/backups", json={}, headers=admin).json()
+    part = next(k for k in created["parts"] if k.startswith("controller:"))
+    controller.factory_reset()
+
+    # Solo dalla scheda del controller
+    response = client.post(f"/api/backups/{created['id']}/preview", json={"sections": FULL}, headers=admin)
+    assert response.status_code == 400
+    preview = client.post(
+        f"/api/backups/{created['id']}/preview", json={"sections": FULL, "part": part}, headers=admin
+    ).json()
+    assert list(preview["sections"])[:2] == ["dispositivo", "controller"]
+    assert all("_saved" not in i for i in preview["items"])
+    keys = [i["key"] for i in preview["items"] if i["default"]]
+    result = client.post(
+        f"/api/backups/{created['id']}/restore",
+        json={"sections": FULL, "part": part, "keys": keys, "mqtt_password": "segreta"},
+        headers=admin,
+    ).json()
+    assert not result["failed"], result["failed"]
+    assert controller.mqtt["password"] == "segreta" and "porta" in controller.doors
+    assert next(iter(controller.credentials.values()))["IdData"][0]["Value"] == "04aa"
+    actions = [a["action"] for a in client.get("/api/audit", headers=admin).json()]
+    assert "ripristino completo del controller da backup" in actions

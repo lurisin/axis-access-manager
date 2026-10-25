@@ -477,6 +477,8 @@ async def controller_snapshot(db: Database, row: dict, client) -> dict:
     schedules = await read("fasce orarie", client.list_schedules, [])
     _, io_assigned = await read("ingressi e uscite", client.list_io, ([], []))
     credentials = await read("tessere", client.list_credentials, [])
+    # Modi di identificazione (CardOnly, REXOnly... e quelli fatti a mano): servono a ricreare i punti di accesso
+    authentication = await _optional(client, "list_authentication_profiles")
     device = _device(
         info,
         await _optional(client, "date_time_info"),
@@ -507,6 +509,7 @@ async def controller_snapshot(db: Database, row: dict, client) -> dict:
         "idpoint_configurations": _by(idpoint_configs),
         "access_points": _by(points),
         "access_profiles": _by(profiles),
+        **({"authentication_profiles": _by(authentication)} if authentication is not None else {}),
         "schedules": _by(schedules),
         "io_assignments": _by(io_assigned, "IoName"),
         "credentials": _by([_credential_ref(c) for c in credentials], "card"),

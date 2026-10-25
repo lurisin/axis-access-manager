@@ -82,9 +82,12 @@ class A1210Client:
             raise VapixError(data["error"].get("message", "errore sconosciuto"))
         return data.get("data", {}).get("propertyList", {})
 
-    async def _cgi(self, path: str, method: str) -> dict:
-        """API JSON delle /axis-cgi (apiVersion 1.0): restituisce "data"."""
-        data = await self._post(path, {"apiVersion": "1.0", "method": method})
+    async def _cgi(self, path: str, method: str, params: dict | None = None, version: str = "1.0") -> dict:
+        """API JSON delle /axis-cgi (di serie apiVersion 1.0): restituisce "data"."""
+        body: dict = {"apiVersion": version, "method": method}
+        if params is not None:
+            body["params"] = params
+        data = await self._post(path, body)
         if "error" in data:
             raise VapixError((data["error"] or {}).get("message", "errore sconosciuto"))
         return data.get("data") or {}
@@ -104,6 +107,38 @@ class A1210Client:
     async def mqtt_event_config(self) -> dict:
         """Eventi pubblicati su MQTT e prefisso dei topic (per il backup)."""
         return await self._cgi("/axis-cgi/mqtt/event.cgi", "getEventPublicationConfig")
+
+    # Impostazioni del dispositivo, per il ripristino completo di un controller resettato o sostituito
+
+    async def _cgi_write(self, path: str, method: str, params: dict) -> dict:
+        """Scrittura con l'ultima apiVersion che il controller dichiara: le letture con la 1.0 restituiscono già i
+        campi delle versioni nuove (sull'A1210 del banco MQTT 1.5, eventi 1.2), che la 1.0 potrebbe rifiutare."""
+        try:
+            data = await self._post(path, {"method": "getSupportedVersions"})
+            versions = (data.get("data") or {}).get("apiVersions") or []
+            version = max(versions, key=lambda v: tuple(int(x) for x in str(v).split(".") if x.isdigit()))
+        except (VapixError, ValueError):
+            version = "1.0"
+        return await self._cgi(path, method, params, str(version))
+
+    async def set_time_zone(self, time_zone: str) -> None:
+        """Fuso orario con il nome IANA (per esempio Europe/Rome): le fasce orarie si leggono in ora locale."""
+        await self._cgi_write("/axis-cgi/time.cgi", "setTimeZone", {"timeZone": time_zone})
+
+    async def set_ntp(self, enabled: bool, source: str, servers: list[str]) -> None:
+        params: dict = {"enabled": enabled, "serversSource": source or "static"}
+        if servers:
+            params["staticServers"] = servers
+        await self._cgi_write("/axis-cgi/ntp.cgi", "setNTPClientConfiguration", params)
+
+    async def set_mqtt_client(self, config: dict) -> None:
+        """Broker MQTT (con la password, se serve) e collegamento attivo: gli eventi tornano subito."""
+        await self._cgi_write("/axis-cgi/mqtt/client.cgi", "configureClient", config)
+        await self._cgi_write("/axis-cgi/mqtt/client.cgi", "activateClient", {})
+
+    async def set_mqtt_events(self, config: dict) -> None:
+        """Eventi da pubblicare su MQTT e prefisso dei topic."""
+        await self._cgi_write("/axis-cgi/mqtt/event.cgi", "configureEventPublication", config)
 
     async def certificate_fingerprint(self) -> str:
         """Impronta SHA-256 del certificato HTTPS, per riconoscere il controller (come fa un browser)."""
@@ -206,6 +241,13 @@ class A1210Client:
     async def remove_access_profile(self, token: str) -> None:
         await self._post("/vapix/pacs", {"pacsaxis:RemoveAccessProfile": {"Token": [token]}})
 
+    async def list_authentication_profiles(self) -> list[dict]:
+        """Modi di identificazione dei punti di accesso (CardOnly, REXOnly... e quelli creati a mano)."""
+        return await self._list_all("/vapix/pacs", "pacsaxis:GetAuthenticationProfileList", "AuthenticationProfile")
+
+    async def set_authentication_profile(self, profile: dict) -> None:
+        await self._post("/vapix/pacs", {"pacsaxis:SetAuthenticationProfile": {"AuthenticationProfile": [profile]}})
+
     # Fasce orarie
 
     async def list_schedules(self) -> list[dict]:
@@ -228,11 +270,29 @@ class A1210Client:
         data = await self._post("/vapix/doorcontrol", {"axtdc:GetDoor": {"Token": tokens}})
         return data.get("Door", [])
 
-    async def set_door(self, door: dict) -> None:
-        await self._post("/vapix/doorcontrol", {"axtdc:SetDoor": {"Door": [door]}})
+    async def set_door(self, door: dict) -> str:
+        data = await self._post("/vapix/doorcontrol", {"axtdc:SetDoor": {"Door": [door]}})
+        return _first_token(data, door)
 
     async def list_door_configurations(self) -> list[dict]:
         return await self._list_all("/vapix/doorcontrol", "axtdc:GetDoorConfigurationList", "DoorConfiguration")
+
+    async def set_door_configuration(self, configuration: dict) -> None:
+        """Serratura, contatto porta e relè della porta. DeviceUUID vuoto = questo controller."""
+        await self._post("/vapix/doorcontrol", {"axtdc:SetDoorConfiguration": {"DoorConfiguration": [configuration]}})
+
+    async def remove_door(self, token: str) -> None:
+        """Toglie la porta e la sua configurazione."""
+        await self._post("/vapix/doorcontrol", {"axtdc:RemoveDoor": {"Token": [token]}})
+        await self._remove_configuration("/vapix/doorcontrol", "axtdc:RemoveDoorConfiguration", token)
+
+    async def _remove_configuration(self, path: str, method: str, token: str) -> None:
+        """Configurazione che va tolta insieme all'oggetto; se non c'era il controller risponde NotFound."""
+        try:
+            await self._post(path, {method: {"Token": [token]}})
+        except VapixError as err:
+            if "NotFound" not in str(err):
+                raise
 
     async def list_idpoints(self) -> list[dict]:
         return await self._list_all("/vapix/idpoint", "axtid:GetIdPointList", "IdPoint", required=True)
@@ -265,7 +325,7 @@ class A1210Client:
     async def remove_idpoint(self, token: str) -> None:
         """Toglie l'IdPoint e la sua configurazione, che il controller altrimenti tiene orfana."""
         await self._post("/vapix/idpoint", {"axtid:RemoveIdPoint": {"Token": [token]}})
-        await self._post("/vapix/idpoint", {"axtid:RemoveIdPointConfiguration": {"Token": [token]}})
+        await self._remove_configuration("/vapix/idpoint", "axtid:RemoveIdPointConfiguration", token)
 
     async def set_io_assignment(self, io: str, mode: str, users: list[dict]) -> None:
         """Assegna un I/O fisico (lista vuota = libera). Il controller risponde 200 anche se rifiuta: si controlla."""
