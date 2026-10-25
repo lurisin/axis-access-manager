@@ -44,7 +44,8 @@ TYPES = {
     ),
     "backup": (
         "Backup Non Riuscito",
-        "L'ultimo backup non è riuscito o è incompleto, per esempio perché un controller non rispondeva.",
+        "L'ultimo backup non è riuscito o è incompleto, per esempio perché un controller non rispondeva, oppure la "
+        "verifica giornaliera ha trovato file dei backup rovinati.",
         "urgent",
     ),
     "missing_cards": (
@@ -134,6 +135,7 @@ class NotificationService:
         controllers: list[dict] | None = None,
         missing: dict | None = None,
         backup: dict | None = None,
+        backup_verify: dict | None = None,
         now: datetime | None = None,
     ) -> list[dict]:
         """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente."""
@@ -309,6 +311,22 @@ class NotificationService:
                 "Backup Incompleto" if backup.get("id") else "Backup Non Riuscito",
                 _capital(backup["error"]),
                 backup.get("at") or now.isoformat(timespec="seconds"),
+                link="#impianti/backup",
+            )
+        if backup_verify and not backup_verify.get("ok", True):
+            # Resta finché una verifica successiva non trova tutto a posto (per esempio dopo aver eliminato i rovinati)
+            damaged = backup_verify.get("damaged") or len(backup_verify.get("errors") or [])
+            add(
+                "backup",
+                f"backup-verify:{backup_verify.get('at') or ''}",
+                "warn",
+                "Backup Rovinati",
+                (
+                    f"{damaged} backup non si possono ripristinare: file mancanti o rovinati"
+                    if damaged != 1
+                    else "Un backup non si può ripristinare: file mancanti o rovinati"
+                ),
+                backup_verify.get("at") or now.isoformat(timespec="seconds"),
                 link="#impianti/backup",
             )
         titles = {"allarme": "Allarme Porta", "manomissione": "Manomissione"}

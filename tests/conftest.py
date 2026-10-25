@@ -316,6 +316,12 @@ class FakeController:
         return token
 
 
+@pytest.fixture(autouse=True)
+def no_scheduled_backups(monkeypatch):
+    """I backup pianificati partirebbero da soli durante i test: li prova chi li chiede."""
+    monkeypatch.setenv("AAM_SCHEDULED_BACKUPS", "0")
+
+
 @pytest.fixture
 def settings():
     return parse_options(

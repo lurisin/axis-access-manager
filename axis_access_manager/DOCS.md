@@ -265,10 +265,38 @@ In **Impianti → Backup** (con il permesso Backup o da amministratore).
   - persone, tessere e tipologie aggiunte dopo il backup: si tolgono solo se le spunti, perché di solito sono lavoro buono fatto nel frattempo;
   - una tessera che oggi appartiene a un'altra persona non si sposta;
   - tempi della porta oltre i limiti della serratura (apertura 30 s, apertura estesa 60 s) non si riscrivono;
-  - una porta che non c'è più sul controller non si ricrea: servirà il ripristino completo (0.20).
+  - una porta che non c'è più sul controller non si ricrea: servirà il ripristino completo (prossima versione).
 - **Prima del Ripristino.** Prima di ogni ripristino l'app crea un backup dello stato attuale: per annullare, ripristina quello.
 - **Blocca** tiene il backup finché non lo sblocchi; un backup bloccato non si elimina. **Elimina** è solo per gli amministratori.
 - **Controller che non risponde.** Il backup prende la configurazione di quel controller dal backup precedente, si segna **Incompleto** e compare la notifica "Backup Incompleto" tra i guasti, finché un backup successivo non riesce.
+
+### Backup automatico
+
+Si imposta in **Impostazioni → Backup** (solo amministratori). In cima alla pagina Backup c'è lo stato: frequenza, prossimo backup e ultima verifica.
+
+- **Backup Automatico** (attivo di serie), con tre frequenze:
+  - **Ogni Ora Se Cambiato** (predefinita): ogni ora l'app guarda se è cambiato qualcosa e solo in quel caso crea un backup.
+  - **Ogni 6 Ore Se Cambiato**.
+  - **Solo Notturno**.
+- **Backup Notturno**, alle 03:00 se non scegli un altro orario. Si fa anche se non è cambiato niente: ogni giorno ha il suo punto di ripristino e si vede che il backup funziona. Se l'add-on era spento a quell'ora, si fa appena riparte e compare come Automatico.
+- **Backup Prima Delle Modifiche** (attivo di serie). Scatta in questi casi:
+  - prima di programmare porte, lettori, ingressi e punti di accesso;
+  - prima di cambiare tipologie, fasce orarie e festività;
+  - prima di eliminare una porta o un controller.
+
+  Una serie di modifiche di seguito fa un solo backup ogni 10 minuti. Il backup si fa sempre prima di ogni importazione CSV e subito dopo ogni aggiornamento dell'add-on (compare come Aggiornamento, con la versione). Prima di un ripristino si fa sempre, anche con questa opzione spenta.
+- **Quanti backup tenere**, con le regole di restic. Si tengono:
+  - gli ultimi 24;
+  - il più recente di ognuno degli ultimi 14 giorni;
+  - il più recente di ognuna delle ultime 8 settimane;
+  - il più recente di ognuno degli ultimi 12 mesi;
+  - il più recente di ognuno degli ultimi 3 anni.
+
+  I numeri si cambiano. I backup bloccati restano sempre e non occupano posti. Gli altri scadono e si eliminano dopo ogni backup nuovo. Se cambi le regole in modo che alcuni backup scadano subito, l'app dice quanti sono e chiede conferma. Passando il mouse sulla data di un backup vedi perché si tiene (ultimi, giornaliero, settimanale…).
+- **Verifica.** Una volta al giorno, e quando premi **Verifica Ora**, l'app rilegge tutti i file dei backup e ne ricontrolla l'impronta. Se trova backup rovinati compare il guasto "Backup Rovinati", con l'elenco nella pagina Backup. Elimina quei backup e premi Verifica Ora: gli altri sono a posto.
+- **Controller cambiato o irraggiungibile.** Il backup non lo aspetta e tiene la sua configurazione dal backup precedente. Se all'indirizzo del controller risponde un apparecchio diverso non ancora confermato, il backup non mescola la configurazione nuova con quella vecchia.
+- **Riquadro Backup** nel cruscotto: ultimo backup, prossimo backup automatico e verifica. Si aggiunge con la matita del cruscotto.
+- **Privacy.** Una persona eliminata resta nei backup finché questi non scadono: con le regole di serie al massimo 3 anni (le impostazioni lo dicono per le regole scelte). Abbassa i giorni, le settimane, i mesi o gli anni se serve una scadenza più breve.
 
 ## Sicurezza
 
