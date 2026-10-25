@@ -209,6 +209,7 @@
   .item .grow { flex: 1; min-width: 0; }
   .item .title { font-weight: 600; overflow-wrap: anywhere; }
   .item .meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+  .door-row .mode-meta { display: none; }
   .item .side { text-align: right; color: var(--muted); font-size: 13px; flex: none; }
   .avatar { width: 38px; height: 38px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); flex: none;
             display: grid; place-items: center; font-weight: 700; font-size: 14px; }
@@ -342,6 +343,10 @@
     .item .side { display: none; }
     .list > .item { flex-wrap: wrap; }
     .item .item-actions { flex-basis: 100%; margin-left: 46px; }
+    .item .item-actions:empty { display: none; }
+    /* Porte: lo stato passa nella riga sotto il nome, lasciando spazio al testo */
+    .door-row > .pill { display: none; }
+    .door-row .mode-meta { display: inline; }
     .topbar { position: static; }
     .toolbar input[type=date], .toolbar select { flex: 1 1 40%; }
     .fields-2 { grid-template-columns: 1fr; }
@@ -840,7 +845,7 @@ function doorList(doors) {
   }
   const row = (d) => `<a class="item door-row" href="#porte/${d.id}" data-door-row="${esc(`${d.name} ${placeOf(d)}`.toLowerCase())}">
       <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
-      <div class="grow"><div class="title">${esc(d.name)}</div><div class="meta">${groups.length > 1 ? "" : `<span>${esc(placeOf(d) || "Senza area")}</span>`}<span>oggi ${plural(d.today.granted, "accesso", "accessi")}</span>${d.today.alarms ? `<span style="color:var(--err)">${plural(d.today.alarms, "allarme", "allarmi")}</span>` : ""}</div></div>
+      <div class="grow"><div class="title">${esc(d.name)}</div><div class="meta">${groups.length > 1 ? "" : `<span>${esc(placeOf(d) || "Senza area")}</span>`}<span class="mode-meta">${esc(doorModeLabel(d.mode))}</span><span>oggi ${plural(d.today.granted, "accesso", "accessi")}</span>${d.today.alarms ? `<span style="color:var(--err)">${plural(d.today.alarms, "allarme", "allarmi")}</span>` : ""}</div></div>
       <span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span>
       <span class="muted">${icon("arrow")}</span></a>`;
   return `${doors.length > 8 ? '<div class="toolbar"><input type="search" id="door-q" placeholder="Cerca porta o area" aria-label="Cerca porta"></div>' : ""}
@@ -1609,8 +1614,8 @@ async function viewNotifications(el) {
   const row = (i) => `<div class="item notif ${i.seen ? "seen" : ""}">
       <div class="ev-icon ${i.level === "urgent" ? (i.seen ? "k-muted" : "k-err") : "k-info"}">${icon(NOTIF_ICONS[i.type] || "bell")}</div>
       <div class="grow"><div class="title">${esc(i.title)}</div><div class="meta"><span>${esc(i.text)}</span><span>${esc(relTime(i.ts))}</span></div></div>
-      ${i.link && (!i.link.startsWith("#impianti") || can("impianti")) ? `<a class="btn small ghost" href="${esc(i.link)}">Apri</a>` : ""}
-      ${i.level === "urgent" && !i.seen ? `<button type="button" class="small" data-seen="${esc(i.id)}">${icon("check")}Presa Visione</button>` : ""}
+      <div class="row item-actions">${i.link && (!i.link.startsWith("#impianti") || can("impianti")) ? `<a class="btn small ghost" href="${esc(i.link)}">Apri</a>` : ""}
+      ${i.level === "urgent" && !i.seen ? `<button type="button" class="small" data-seen="${esc(i.id)}">${icon("check")}Presa Visione</button>` : ""}</div>
     </div>`;
   const section = (title, hint, list, empty) => `<div class="card flush"><h2>${title}<span class="spacer"></span><span class="muted small-text">${hint}</span></h2>
     <div class="list" style="margin-top:8px">${list.length ? list.map(row).join("") : `<div class="empty">${empty}</div>`}</div></div>`;
@@ -2078,7 +2083,7 @@ async function controllerStatus(body, ctrl) {
   const connection = ` <a href="#impianti/c${ctrl.id}/connessione">Controlla la Connessione</a>`;
   const ctrlInfo = c.ok ? props([
     ["Stato", `${statusDot("ok")} Raggiungibile`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
-    ["Indirizzo", `<code>${esc(ctrl.host)}</code>`], ["Porte sul Controller", c.doors.map((d) => `<code>${esc(d)}</code>`).join(", ")],
+    ["Indirizzo", `<code>${esc(ctrl.host)}</code>`], ["Porte sul Controller", c.doors.map((d, i) => `<span title="${esc(d)}">${esc(c.door_names?.[i] || d)}</span>`).join(", ")],
     ["Lettori", esc(c.readers ?? "—")], ["Tessere sul Controller", esc(c.credentials)],
   ]) : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
   const cats = Object.entries(m.categories || {});
@@ -2258,7 +2263,7 @@ async function viewSettings(el, sub) {
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). Prima vedi un'anteprima, poi confermi. Le tessere già registrate vengono saltate.</p></div>
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano gruppo, validità, ditta, note e tipologia della persona, se nel file sono diversi.</p></div>
         ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Stato del controller, delle porte, degli eventi MQTT e dei citofoni: nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
       </div>
     </div>
