@@ -4,6 +4,7 @@
 
 - Registro e Notifiche: anche i dinieghi salvati prima della 0.8.2 compaiono con il motivo in italiano ("fuori fascia oraria" invece di "NotPermittedAtThisTime"); la traduzione si fa una volta all'avvio.
 - Controller → Stato: **Porte sul Controller** mostra i nomi delle porte invece dei codici interni (il codice resta nel suggerimento al passaggio del mouse).
+- Telefono: nelle Notifiche i pulsanti Apri e Presa Visione vanno sotto il testo (prima il titolo si spezzava lettera per lettera); nell'elenco Porte lo stato passa sotto il nome.
 - Impostazioni → Esporta e Importa: il testo spiega che le tessere già registrate vengono aggiornate, non più saltate.
 
 ## 0.8.3
