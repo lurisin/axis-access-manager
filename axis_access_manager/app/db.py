@@ -888,6 +888,21 @@ class Database:
 
     # Audit
 
+    def set_controller_event_source(self, name: str, old: str = "") -> int:
+        """Eventi del controller senza porta (coperchio aperto) con il nome attuale del controller.
+
+        Con old solo quelli registrati con quel nome; senza, tutti (c'è un solo controller).
+        """
+        where = "kind = 'manomissione' AND door = '' AND source NOT IN ('porta', ?)"
+        params: tuple = (name,)
+        if old:
+            where += " AND source = ?"
+            params += (old,)
+        with self._lock:
+            cur = self._conn.execute(f"UPDATE events SET source = ? WHERE {where}", (name, *params))
+            self._conn.commit()
+            return cur.rowcount
+
     def add_audit(self, user: str, action: str, detail: str = "") -> None:
         self._execute(
             "INSERT INTO audit (ts, user, action, detail) VALUES (?, ?, ?, ?)", (now_iso(), user, action, detail)

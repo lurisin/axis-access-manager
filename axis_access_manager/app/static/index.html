@@ -179,7 +179,7 @@
   /* Cruscotto a riquadri: larghezza in quarti di riga, l'altezza segue il contenuto */
   .dash-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -6px 0 12px; }
   .dash-bar svg.icon { width: 18px; height: 18px; vertical-align: -4px; }
-  .dash { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
+  .dash { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: start; }
   .dash > .card { margin: 0; min-width: 0; }
   .dw.w-1 { grid-column: span 1; } .dw.w-2 { grid-column: span 2; } .dw.w-3 { grid-column: span 3; } .dw.w-4 { grid-column: span 4; }
   .dw.dw-porte .door-group .section-title { margin-top: 4px; }
@@ -195,7 +195,7 @@
   .dash.editing .dw { outline: 2px dashed var(--border-strong); outline-offset: -2px; box-shadow: none; }
   .dash.editing .dw-body { pointer-events: none; opacity: .75; }
   .dw-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -6px -6px 10px; padding: 4px 4px 8px; border-bottom: 1px solid var(--border); }
-  .dw-edit b { font-size: 14px; flex: 1 1 90px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   .dw a.item { color: inherit; }
   .dw a.item:hover { text-decoration: none; background: var(--surface-2); }
   .dw-handle { cursor: grab; touch-action: none; }
@@ -215,7 +215,6 @@
     .dash { gap: 12px; }
     .dw.w-2 { grid-column: span 4; }
     .dw-kpi .value { font-size: 24px; }
-    .dw-edit b { flex: 1 1 0; }
     .dw-sizes { order: 3; flex-basis: 100%; }
     .dw-sizes button { flex: 1; }
     .dash-bar button { flex: 1 1 auto; }
@@ -977,6 +976,8 @@ async function viewDashboard(el) {
   const unknown = can("persone") ? await api("api/unknown-cards").catch(() => []) : [];
   const ctx = {d, doors, notif, unknown};
   const draw = () => {
+    // Ridisegnando la pagina resta dov'era: in modifica i clic successivi cadono sul riquadro giusto
+    const scroll = window.scrollY;
     const widgets = layout().filter(widgetAllowed);
     const missing = Object.keys(WIDGETS).filter((t) => widgetAllowed({type: t}) && !layout().some((w) => w.type === t));
     el.innerHTML = `
@@ -991,13 +992,14 @@ async function viewDashboard(el) {
         <section class="card dw w-${w.size} dw-${w.type}" data-w="${w.type}">
           ${dash.editing ? `<div class="dw-edit">
             <button type="button" class="ghost icon-only dw-handle" aria-label="Sposta ${esc(WIDGETS[w.type].title)}" title="Trascina per spostare (o usa le frecce)">${icon("drag")}</button>
-            <b class="grow">${esc(WIDGETS[w.type].title)}</b>
+            <span class="grow"></span>
             <span class="dw-sizes" role="group" aria-label="Larghezza">${SIZES.map(([n, label, title]) => `<button type="button" data-size="${n}" title="${title}" aria-pressed="${w.size === n}">${label}</button>`).join("")}</span>
             <button type="button" class="ghost icon-only" data-remove aria-label="Togli ${esc(WIDGETS[w.type].title)}" title="Togli">${icon("close")}</button></div>` : ""}
           <div class="dw-body">${WIDGET_BODY[w.type](ctx)}</div>
         </section>`).join("") || `<div class="card dw w-4"><div class="empty">Il cruscotto è vuoto. ${dash.editing ? "Usa Aggiungi Riquadro." : "Premi Modifica Cruscotto per aggiungere i riquadri."}</div></div>`}
       </div>`;
     paintIcons(el);
+    window.scrollTo(0, scroll);
     const events = $("[data-dash-events]", el);
     if (events) events.onclick = (e) => {
       const row = e.target.closest("[data-event]");

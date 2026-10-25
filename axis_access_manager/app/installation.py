@@ -232,10 +232,20 @@ class InstallationService:
             raise ServiceError("per ora l'add-on gestisce un solo controller")
         fields = self.controller_fields(data, existing)
         controller_id = self.db.save_controller(controller_id, fields)
+        if existing and existing["name"] and existing["name"] != fields["name"]:
+            # Registro e notifiche mostrano il nome attuale, non quello di quando è successo
+            self.db.set_controller_event_source(fields["name"], old=existing["name"])
         self.db.add_audit(
             user, "controller modificato" if existing else "controller aggiunto", f"{fields['name']} ({fields['host']})"
         )
         return {"id": controller_id}
+
+    def update_controller_event_names(self) -> int:
+        """All'avvio: con un solo controller, gli eventi del coperchio prendono il suo nome attuale."""
+        controllers = self.db.list_controllers()
+        if len(controllers) != 1 or not controllers[0]["name"]:
+            return 0
+        return self.db.set_controller_event_source(controllers[0]["name"])
 
     def delete_controller(self, controller_id: int, user: str) -> None:
         controller = self.db.get_controller(controller_id)
