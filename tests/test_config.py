@@ -3,7 +3,7 @@ import httpx
 from app.config import MqttSettings, parse_options, resolve_mqtt
 
 BASE = {
-    "a1210_host": " 172.27.202.22 ",
+    "a1210_host": " 192.168.1.50 ",
     "a1210_username": "addon",
     "a1210_password": "segreta",
     "a1210_verify_ssl": False,
@@ -15,7 +15,7 @@ BASE = {
 
 def test_parse_options_trims_values():
     settings = parse_options(BASE)
-    assert settings.a1210_host == "172.27.202.22"
+    assert settings.a1210_host == "192.168.1.50"
     assert settings.mqtt_topic_prefix == "accessi/via_consulta_controller"
     assert settings.mqtt is None
 
