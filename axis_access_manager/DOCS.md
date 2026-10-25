@@ -247,7 +247,7 @@ Se il citofono usa un firmware recente senza evento di chiamata, attiva `call_st
 - **Controller resettato o sostituito.** L'app memorizza numero di serie, modello, firmware e impronta del certificato del controller. Se all'indirizzo risponde un apparecchio diverso, smette di scrivere e di rileggere le tessere finché un amministratore non conferma il cambio nella pagina del controller.
 - **Tessere non presenti sul controller.** Le tessere che spariscono dal controller non vengono cancellate dall'app: restano in Persone con l'etichetta "Non Sul Controller", da riscrivere o togliere.
 - **Eventi persi.** Se Mosquitto, Home Assistant o l'add-on sono fermi, gli accessi di quel periodo vengono recuperati dal registro interno dell'A1210 (fino a 30.000 eventi, al massimo gli ultimi 7 giorni) appena il collegamento torna. Quelli già arrivati non si registrano di nuovo, anche se nel frattempo la tessera è stata tolta dall'app.
-- **Orologio.** Ogni 30 secondi l'app confronta l'ora del controller con quella di Home Assistant e segnala uno scarto oltre un minuto. Imposta un server NTP nel controller.
+- **Orologio.** Ogni 5 minuti l'app confronta l'ora del controller con quella di Home Assistant. Se il controller è sincronizzato via NTP l'ora giusta è la sua e uno scarto oltre un minuto segnala l'orologio di Home Assistant; altrimenti il guasto è "Orologio del Controller". Imposta un server NTP nel controller.
 - **Database.** Prima di ogni aggiornamento dell'add-on si fa una copia del database in `copie_database` (le ultime 3). Prima di ogni backup di Home Assistant si prepara una copia coerente in `copia_backup`; se all'avvio il database risultasse danneggiato, l'add-on riparte da quella.
 
 ## Sicurezza
