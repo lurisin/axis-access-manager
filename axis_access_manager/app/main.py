@@ -1223,6 +1223,9 @@ def _wire(app: FastAPI) -> None:
     async def after_event(row: dict) -> None:
         door = doors.get(row.get("door") or cfg.door_token) or {}
         camera = door.get("snapshot_camera") or ""
+        if row.get("kind") == "manomissione" and not row.get("door"):
+            # Coperchio del controller: non riguarda una porta, la sua telecamera non lo inquadra
+            camera = ""
         kinds = SNAPSHOT_KINDS | (GRANTED_KINDS if door.get("snapshot_on_granted") else set())
         if camera and row.get("kind") in kinds:
             filename, error = await state.ha.save_snapshot(camera, f"{row['id']}_{_file_stamp(row.get('ts') or '')}")

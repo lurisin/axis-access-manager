@@ -848,7 +848,7 @@ function renderTopStatus() {
   const faults = s.faults || [], alarms = s.alarms || [];
   box.innerHTML = faults.length || alarms.length
     ? `${faults.length ? `<button type="button" class="chip warn" data-pop="faults" title="Guasti dell'impianto">${icon("wrench")}<span class="lbl">Guasti</span><b>${faults.length}</b></button>` : ""}
-       ${alarms.length ? `<button type="button" class="chip err" data-pop="alarms" title="Allarmi da vedere">${icon("alert")}<span class="lbl">Allarmi</span><b>${alarms.length}</b></button>` : ""}`
+       ${alarms.length ? `<button type="button" class="chip err" data-pop="alarms" title="Allarmi da gestire: quelli non ancora visti">${icon("alert")}<span class="lbl">Allarmi</span><b>${alarms.length}</b></button>` : ""}`
     : `<span class="chip ok" title="Nessun guasto né allarme"><span class="dot"></span><span class="lbl">Sistema OK</span></span>`;
   const pop = $("#top-pop");
   if (!pop.hidden) showTopPop(pop.dataset.kind);
@@ -858,7 +858,7 @@ function showTopPop(kind) {
   const items = (kind === "faults" ? store.summary.faults : store.summary.alarms) || [];
   if (!items.length) { pop.hidden = true; return; }
   pop.dataset.kind = kind;
-  pop.innerHTML = `<div class="pop-head"><b>${kind === "faults" ? "Guasti" : "Allarmi"}</b>
+  pop.innerHTML = `<div class="pop-head"><b>${kind === "faults" ? "Guasti" : "Allarmi da Gestire"}</b>
       ${kind === "alarms" ? '<button type="button" class="ghost small" data-pop-seen>Segna Tutti Come Visti</button>' : ""}</div>
     ${items.map((i) => `<a class="pop-row" href="#notifiche"><span class="dot ${i.severity === "crit" ? "err" : "warn"}"></span>
       <div style="min-width:0"><div class="t">${esc(i.title)}</div><div class="m">${esc([i.text, i.door].filter(Boolean).join(" · "))}</div></div>

@@ -286,8 +286,8 @@ def test_one_snapshot_per_passage_and_always_on_remote_open(controller, tmp_path
     )
     with TestClient(app) as client:
 
-        def event(kind, card="", ts="2026-10-25T14:38:28Z"):
-            row = {"ts": ts, "kind": kind, "card": card, "door": "porta"}
+        def event(kind, card="", ts="2026-10-25T14:38:28Z", door="porta"):
+            row = {"ts": ts, "kind": kind, "card": card, "door": door}
             row["id"] = app.state.db.add_event(**row)
             client.portal.call(app.state.service.after_event, row)
             return row["id"]
@@ -305,6 +305,12 @@ def test_one_snapshot_per_passage_and_always_on_remote_open(controller, tmp_path
         event("lettura", "04a11a34")
         event("concesso", "04a11a34")
         assert len(ha.shots) == 2
+
+        # Coperchio del controller aperto: evento senza porta, niente foto; la manomissione di una porta sì
+        event("manomissione", door="")
+        assert len(ha.shots) == 2
+        event("manomissione")
+        assert len(ha.shots) == 3
 
         # Telecamera spenta: l'evento dice perché manca la foto
         door = app.state.db.list_doors()[0]

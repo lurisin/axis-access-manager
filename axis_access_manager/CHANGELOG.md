@@ -8,6 +8,8 @@
   - Se il contenuto è più lungo, nel riquadro compare la barra di scorrimento.
   - Ogni riquadro ha una misura minima sotto la quale non si legge più (per esempio il grafico dei 7 giorni almeno mezza riga e tre righe); i riquadri con un solo numero arrivano al massimo a due righe.
   - In modifica la barra con maniglia, nome e × sta sopra il contenuto, così anche i riquadri piccoli mantengono la loro misura.
+- Il bollino Allarmi in alto conta gli allarmi da gestire (non ancora visti), mentre il riquadro Allarmi Oggi li conta tutti: l'elenco a tendina ora si chiama Allarmi da Gestire.
+- L'apertura del coperchio del controller non scatta più la foto della telecamera della porta, che non la inquadra.
 - Il cruscotto predefinito ora è: Da Gestire e Ultimi Eventi affiancati, sotto Porte e Ultimi 7 Giorni. I cruscotti già salvati prendono l'altezza predefinita di ogni riquadro.
 
 ## 0.15.4
