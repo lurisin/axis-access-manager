@@ -105,6 +105,37 @@ class FakeController:
     async def list_idpoint_configurations(self):
         raise VapixError("non supportato")
 
+    async def list_io(self):
+        """Come risponde l'A1210 del banco: assegnati solo lettore e relè."""
+        info = [
+            {"IoName": "Ser0hd", "IoMode": ["rs485hd"], "PinInfo": [{"Name": "Reader 1:3", "Description": "A"}]},
+            {
+                "IoName": "DPS",
+                "IoMode": ["in:pu/gnd", "supervised"],
+                "PinInfo": [{"Name": "Door 1:1", "Description": "GND"}, {"Name": "Door 1:2", "Description": "I"}],
+            },
+            {
+                "IoName": "REX",
+                "IoMode": ["in:pu/gnd", "in:float/gnd", "supervised"],
+                "PinInfo": [{"Name": "Door 1:3", "Description": "GND"}, {"Name": "Door 1:4", "Description": "I"}],
+            },
+            {
+                "IoName": "IO1",
+                "IoMode": ["inout:pu/gnd", "inout:float/gnd", "supervised"],
+                "PinInfo": [{"Name": "Aux IO:3", "Description": "I/O"}],
+            },
+            {"IoName": "ALARM", "IoMode": ["in:pu/gnd"], "PinInfo": [{"Name": "External:4", "Description": "I"}]},
+        ]
+        assigned = [
+            {
+                "IoName": "Ser0hd",
+                "IoMode": "rs485hd",
+                "IoUser": [{"Type": "idpoint", "token": "lettore-1", "Usage": "RS-485HD"}],
+            },
+            {"IoName": "REX", "IoMode": "", "IoUser": []},
+        ]
+        return info, assigned
+
     async def get_access_points(self, tokens):
         return [copy.deepcopy(a) for a in self.access_points if a["token"] in tokens]
 

@@ -195,6 +195,12 @@ class A1210Client:
             # Nella documentazione Axis il metodo compare anche come SetIdPointList
             await self._post("/vapix/idpoint", {"axtid:SetIdPointList": {"IdPoint": [idpoint]}})
 
+    async def list_io(self) -> tuple[list[dict], list[dict]]:
+        """I/O fisici del controller e a chi sono assegnati. Il servizio axisio sull'A1210 risponde su /vapix/pin."""
+        info = await self._post("/vapix/pin", {"axisio:GetIoInfoList": {}})
+        assigned = await self._post("/vapix/pin", {"axisio:GetIoAssignmentList": {}})
+        return info.get("IoInfo", []), assigned.get("IoAssignment", [])
+
     async def list_idpoint_configurations(self) -> list[dict]:
         return await self._list_all("/vapix/idpoint", "axtid:GetIdPointConfigurationList", "IdPointConfiguration")
 

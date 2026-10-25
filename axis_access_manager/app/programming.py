@@ -28,6 +28,16 @@ DOOR_TIMES = {
     "PreAlarmTime": ("pre_alarm_time", "Preallarme", 0, 3600),
 }
 DIRECTIONS = {"in": "Ingresso", "out": "Uscita"}
+# Ingressi fisici dell'A1210 (nomi del servizio axisio) → nome di serie e porta I/O degli eventi, se c'è.
+# Contatto porta e REX sono il connettore Door (pin 1-2 e 3-4); gli altri danno anche gli eventi Device/IO/Port.
+CONTROLLER_INPUTS = {
+    "DPS": ("Contatto Porta", None),
+    "REX": ("Pulsante Uscita", None),
+    "IO1": ("Ingresso AUX 1", "0"),
+    "IO2": ("Ingresso AUX 2", "1"),
+    "EXTERNAL_TAMPER": ("Ingresso Manomissione", "2"),
+    "ALARM": ("Ingresso Allarme", "3"),
+}
 
 
 def parse_duration(value: str | None) -> float | None:
@@ -54,6 +64,32 @@ def _configuration(items: list[dict], token: str) -> list[dict]:
                 for c in item.get("Configuration") or []
             ]
     return []
+
+
+def _inputs(info: list[dict], assigned: list[dict]) -> list[dict]:
+    """Ingressi fisici del controller: morsetti, supervisione e a chi sono assegnati ora."""
+    users = {a.get("IoName"): a.get("IoUser") or [] for a in assigned}
+    found = {i.get("IoName"): i for i in info}
+    result = []
+    for io, (name, port) in CONTROLLER_INPUTS.items():
+        item = found.get(io)
+        if item is None:
+            continue
+        result.append(
+            {
+                "io": io,
+                "name": name,
+                "pins": [p.get("Name", "") for p in item.get("PinInfo") or [] if p.get("Description") != "GND"]
+                or [p.get("Name", "") for p in item.get("PinInfo") or []],
+                "supervised": "supervised" in (item.get("IoMode") or []),
+                "port": port,
+                "assigned": [
+                    {"type": u.get("Type", ""), "token": u.get("token", ""), "usage": u.get("Usage", "")}
+                    for u in users.get(io, [])
+                ],
+            }
+        )
+    return result
 
 
 def _attribute(item: dict, name: str) -> str:
@@ -95,6 +131,7 @@ class ProgrammingService:
         readers = await safe("lettori", self.controller.list_idpoints)
         reader_configs = await safe("configurazione lettori", self.controller.list_idpoint_configurations)
         points = await safe("punti di accesso", self.controller.list_access_points)
+        io_info, io_assigned = await safe("ingressi", self.controller.list_io, ([], []))
         reader_names = {r.get("token"): r.get("Name") or r.get("token") for r in readers}
         door_names = {d.get("token"): d.get("Name") or d.get("token") for d in doors}
         return {
@@ -138,6 +175,7 @@ class ProgrammingService:
                 }
                 for a in points
             ],
+            "inputs": _inputs(io_info, io_assigned),
             "directions": DIRECTIONS,
             "changes": self.db.list_controller_changes(self.controller_id),
             "errors": errors,

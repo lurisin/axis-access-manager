@@ -92,6 +92,11 @@ async def test_programming_changes_can_be_undone(db, controller):
     [point] = data["access_points"]
     assert point["reader_names"] == ["Lettore esterno"] and point["direction"] == "in"
     assert data["errors"] == ["configurazione lettori: non supportato"]
+    inputs = {i["io"]: i for i in data["inputs"]}
+    assert list(inputs) == ["DPS", "REX", "IO1", "ALARM"]
+    assert inputs["REX"]["pins"] == ["Door 1:4"] and inputs["REX"]["supervised"] is True
+    assert inputs["REX"]["assigned"] == [] and inputs["IO1"]["port"] == "0"
+    assert inputs["ALARM"]["name"] == "Ingresso Allarme" and inputs["ALARM"]["supervised"] is False
 
     await service.update_door("porta", {"name": "Portone", "access_time": 10}, "admin")
     assert controller.doors["porta"]["AccessTime"] == "PT10S"
