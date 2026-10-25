@@ -41,6 +41,9 @@ INGRESS_PROXY = "172.30.32.2"
 # Eventi per cui salvare un'istantanea della telecamera
 SNAPSHOT_KINDS = {"negato", "sconosciuta", "citofono", "allarme", "manomissione"}
 GRANTED_KINDS = {"concesso", "lettura", "apertura_remota"}
+# Passaggi contati come accessi nei numeri del giorno: la lettura della tessera precede il concesso (sarebbe doppia)
+# e le chiamate al citofono non sono accessi; le aperture dal citofono arrivano come apertura remota.
+ACCESS_COUNT_KINDS = ("concesso", "apertura_remota")
 EXPORT_LIMIT = 50000
 
 SYNC_INTERVAL = 15 * 60
@@ -717,7 +720,7 @@ def create_app(
                 {
                     **door,
                     "today": {
-                        "granted": sum(today.get(k, 0) for k in GRANTED_KINDS | {"citofono"}),
+                        "granted": sum(today.get(k, 0) for k in ACCESS_COUNT_KINDS),
                         "denied": today.get("negato", 0),
                         "alarms": today.get("allarme", 0) + today.get("manomissione", 0),
                     },
@@ -1186,7 +1189,7 @@ def _week_series(rows: list[dict]) -> list[dict]:
         bucket = days.get(day)
         if bucket is None:
             continue
-        if row["kind"] in ("concesso", "apertura_remota"):
+        if row["kind"] in ACCESS_COUNT_KINDS:
             bucket["granted"] += 1
         elif row["kind"] == "negato":
             bucket["denied"] += 1

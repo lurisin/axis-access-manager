@@ -870,7 +870,7 @@ async function viewDoorDetail(el, id, doors) {
     </div>
     ${d.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${d.errors.map(esc).join("<br>")}</div></div>` : ""}
     <div class="grid kpi" style="margin-bottom:16px">
-      ${kpi("Accessi Oggi", d.today.granted, "concessi, remoti e da citofono")}
+      ${kpi("Accessi Oggi", d.today.granted, "concessi e aperture remote, come nel cruscotto")}
       ${kpi("Negati Oggi", d.today.denied, "comprese le tessere sconosciute", d.today.denied ? "var(--warn)" : "")}
       ${kpi("Allarmi Oggi", d.today.alarms, "forzature e aperture troppo lunghe", d.today.alarms ? "var(--err)" : "")}
       ${kpi("Ultimo Passaggio", d.last ? esc(d.last.person || "—") : "—", d.last ? esc(relTime(d.last.ts)) : can("registro") ? "nessuno" : "serve il permesso Registro")}

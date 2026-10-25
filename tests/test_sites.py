@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -155,3 +157,13 @@ def test_door_pages_through_api(client):
     hotel = client.post("/api/sites", json={"name": "Hotel"}).json()["id"]
     assert client.post(f"/api/sites/{hotel}/areas", json={"name": "Reception"}).status_code == 200
     assert client.delete(f"/api/sites/{hotel}").json() == {"ok": True}
+
+    # Stessi numeri del cruscotto: la lettura che precede il concesso e la chiamata al citofono non contano
+    db = client.app.state.db
+    now = datetime.now(tz=UTC).isoformat(timespec="seconds")
+    for kind in ("lettura", "concesso", "apertura_remota", "citofono", "negato"):
+        db.add_event(ts=now, kind=kind, door="porta")
+    [door] = client.get("/api/door-overview").json()
+    assert door["today"] == {"granted": 2, "denied": 1, "alarms": 0}
+    dashboard = client.get("/api/dashboard").json()
+    assert dashboard["today"]["granted"] + dashboard["today"]["remote"] == door["today"]["granted"]
