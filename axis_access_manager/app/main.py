@@ -329,7 +329,7 @@ def create_app(
         app.state.snapshot_errors = {}
         # Nomi delle telecamere di Home Assistant (entity_id → friendly name), riletti ogni CAMERA_NAMES_TTL
         app.state.camera_names = {}
-        app.state.camera_names_at = 0.0
+        app.state.camera_names_at = None
         app.state.reload_lock = asyncio.Lock()
         app.state.last_sync = {"ok": None, "error": "", "result": None, "at": None}
         app.state.mqtt = await resolve_mqtt(options)
@@ -1299,7 +1299,9 @@ def _doors_status(state) -> list[dict]:
 
 async def _camera_names(state) -> dict[str, str]:
     """Nomi delle telecamere, dalla cache se recente: il riepilogo si legge spesso."""
-    if state.ha.available and time.monotonic() - state.camera_names_at > CAMERA_NAMES_TTL:
+    # Mai letti finora: None, non 0 (l'orologio monotono può partire da pochi secondi dopo l'avvio)
+    stale = state.camera_names_at is None or time.monotonic() - state.camera_names_at > CAMERA_NAMES_TTL
+    if state.ha.available and stale:
         state.camera_names_at = time.monotonic()
         cameras = await state.ha.states()
         if cameras:
