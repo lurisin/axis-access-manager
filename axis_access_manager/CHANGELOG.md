@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.2
+
+- Scelta della telecamera: segnate anche le telecamere ferme (stato "idle" di Home Assistant, che Frigate usa per quelle spente) e quelle la cui ultima foto non è riuscita. Prima erano segnate solo quelle non disponibili, che con Frigate non capitano quasi mai.
+
 ## 0.13.1
 
 - Istantanea non riuscita: non resta più solo nel log dell'add-on.
