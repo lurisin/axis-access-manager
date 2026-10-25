@@ -468,7 +468,7 @@ class AccessService:
 
     # Porta
 
-    async def open_door(self, extended: bool, user: str, door: str = "") -> None:
+    async def open_door(self, extended: bool, user: str, door: str = "", note: str = "") -> None:
         """Sblocco temporaneo, solo a serratura bloccata: la serratura non regge l'alimentazione continua."""
         door = door or self.settings.door_token
         if not door:
@@ -487,7 +487,7 @@ class AccessService:
         if self.monitor and self.monitor.connected:
             # Evita un secondo comando finché MQTT non segnala che la porta si è richiusa
             self.monitor.door_modes[door] = "Accessed"
-        detail = "tempo esteso" if extended else ""
+        detail = ", ".join(x for x in ("tempo esteso" if extended else "", note) if x)
         self.log_event(ts=now_iso(), kind="apertura_remota", detail=detail, source=user, door=door)
         self.db.add_audit(user, "porta aperta", detail)
 

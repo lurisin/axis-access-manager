@@ -35,16 +35,30 @@ IDLE_STATES = {"idle", "dismissed"}
 # di chi può entrare è quello dell'A1210
 LOCAL_CREDENTIALS = {"PASSWORD", "HIJACKING", "CARD", "BLUETOOTH", "QR_CODE", "FACE", "FINGERPRINT"}
 UNLOCK_SOURCES = {
-    "HOUSEHOLDER": "app o monitor",
-    "CENTER_PLATFORM": "centrale",
+    "HOUSEHOLDER": "App O Monitor",
+    # Al banco l'apertura dall'app Hik-Connect arriva così (sorgente "00"); l'account che apre non c'è
+    "CENTER_PLATFORM": "App Hik-Connect",
     "PASSWORD": "PIN",
-    "HIJACKING": "PIN antirapina",
-    "CARD": "tessera",
-    "BLUETOOTH": "bluetooth",
-    "QR_CODE": "codice QR",
-    "FACE": "volto",
-    "FINGERPRINT": "impronta",
+    "HIJACKING": "PIN Antirapina",
+    "CARD": "Tessera",
+    "BLUETOOTH": "Bluetooth",
+    "QR_CODE": "Codice QR",
+    "FACE": "Volto",
+    "FINGERPRINT": "Impronta",
 }
+# Apertura dell'inquilino: control_source dice se dall'app o dal monitor interno
+HOUSEHOLDER_SOURCES = {"app": "App Hik-Connect", "monitor": "Monitor Interno", "indoor": "Monitor Interno"}
+
+
+def unlock_source(attributes: dict) -> str:
+    """Come è stato aperto il citofono, come etichetta del registro."""
+    unlock_type = str(attributes.get("unlock_type") or "HOUSEHOLDER")
+    if unlock_type == "HOUSEHOLDER":
+        control = str(attributes.get("control_source") or "").lower()
+        for key, label in HOUSEHOLDER_SOURCES.items():
+            if key in control:
+                return label
+    return UNLOCK_SOURCES.get(unlock_type, UNLOCK_SOURCES["HOUSEHOLDER"])
 
 
 def topic_name(raw: str) -> str:
@@ -65,7 +79,7 @@ class IntercomBridge:
         self,
         settings: IntercomSettings,
         log: Callable[..., object],
-        open_door: Callable[[str], Awaitable[None]],
+        open_door: Callable[[str, str], Awaitable[None]],
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.settings = settings
@@ -111,7 +125,7 @@ class IntercomBridge:
             self._on_unlock()
 
     def _event(self, detail: str, raw: dict | None = None) -> None:
-        self._log(ts=now_iso(), kind="citofono", detail=detail, source=f"citofono {self.settings.name}", raw=raw)
+        self._log(ts=now_iso(), kind="citofono", detail=detail, source=self.settings.name, raw=raw)
 
     def _on_call_state(self, value: str) -> None:
         state = value.lower()
@@ -140,7 +154,7 @@ class IntercomBridge:
         now = self._clock()
         attributes = self._attributes if now - self._attributes_at <= ATTRIBUTES_MAX_AGE_SECONDS else {}
         unlock_type = str(attributes.get("unlock_type") or "")
-        how = UNLOCK_SOURCES.get(unlock_type, "app o monitor")
+        how = unlock_source(attributes)
         if now - self._last_open < OPEN_DEBOUNCE_SECONDS:
             return
         self._last_open = now
@@ -150,18 +164,20 @@ class IntercomBridge:
         if not self.settings.open_door:
             self._event(f"apertura da {how} (inoltro all'A1210 disattivato)", attributes)
             return
-        source = f"citofono · {how}"
+        # Nel registro come le aperture da Home Assistant: chi o cosa, e da dove ("App Hik-Connect (Citofono)")
+        source = f"{how} (Citofono)"
+        note = ""
         if self._ring_at is not None:
-            source += f" · {self._since_ring()} s dopo la chiamata"
+            note = f"{self._since_ring()} s dopo la chiamata"
             # Chi apre ha risposto: alla fine della chiamata non serve "nessuna risposta"
             self._answered = True
-        task = asyncio.get_running_loop().create_task(self._forward(source))
+        task = asyncio.get_running_loop().create_task(self._forward(source, note))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    async def _forward(self, source: str) -> None:
+    async def _forward(self, source: str, note: str = "") -> None:
         try:
-            await self._open_door(source)
+            await self._open_door(source, note)
             _LOGGER.info("Apertura dal citofono inoltrata all'A1210 (%s)", source)
         except Exception as err:
             # Porta non bloccata, controller irraggiungibile...: resta traccia nel log
