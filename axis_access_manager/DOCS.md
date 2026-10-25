@@ -255,7 +255,7 @@ Se il citofono usa un firmware recente senza evento di chiamata, attiva `call_st
 
 In **Impianti → Backup** (con il permesso Backup o da amministratore).
 
-- **Cosa contiene.** I **Dati Comuni**: persone, tessere, tipologie con le regole, fasce orarie, festività, strutture e aree, utenti dell'app e impostazioni. Poi la **configurazione di ogni controller**: porte con nomi e tempi, lettori, punti di accesso e schema, profili di accesso, ingressi, collegamento MQTT e dati dell'apparecchio. Le password dei controller non si salvano: dopo un ripristino completo vanno reinserite.
+- **Cosa contiene.** I **Dati Comuni**: persone, tessere, tipologie con le regole, fasce orarie, festività, strutture e aree, utenti dell'app e impostazioni. Poi la **configurazione di ogni controller**: porte con nomi, tempi e configurazione della serratura, lettori con la loro configurazione, punti di accesso e schema, profili di accesso, modi di identificazione, morsetti (ingressi e uscite), fuso orario, NTP, collegamento ed eventi MQTT, dati dell'apparecchio. Nessuna password: né quella dei controller né quella del broker MQTT.
 - **Dove.** Nella cartella dell'add-on (`backup`), quindi entrano nei backup di Home Assistant se includono l'add-on. Tienine una copia fuori sede (NAS o cloud). Ogni parte è un file compresso e, se non è cambiata dal backup precedente, non si scrive di nuovo: cento backup senza modifiche occupano quanto uno.
 - **Crea Backup Ora**, con un nome facoltativo ("Prima dei lavori al piano 2"). Ogni riga dell'elenco riassume cosa è cambiato dal backup precedente.
 - **Confronta** mostra le differenze con il backup precedente, con lo stato attuale o con un altro backup, sezione per sezione.
@@ -265,10 +265,36 @@ In **Impianti → Backup** (con il permesso Backup o da amministratore).
   - persone, tessere e tipologie aggiunte dopo il backup: si tolgono solo se le spunti, perché di solito sono lavoro buono fatto nel frattempo;
   - una tessera che oggi appartiene a un'altra persona non si sposta;
   - tempi della porta oltre i limiti della serratura (apertura 30 s, apertura estesa 60 s) non si riscrivono;
-  - una porta che non c'è più sul controller non si ricrea: servirà il ripristino completo (prossima versione).
+  - una porta che non c'è più sul controller non si ricrea qui: si ricrea con il **Ripristino Completo**.
 - **Prima del Ripristino.** Prima di ogni ripristino l'app crea un backup dello stato attuale: per annullare, ripristina quello.
 - **Blocca** tiene il backup finché non lo sblocchi; un backup bloccato non si elimina. **Elimina** è solo per gli amministratori.
 - **Controller che non risponde.** Il backup prende la configurazione di quel controller dal backup precedente, si segna **Incompleto** e compare la notifica "Backup Incompleto" tra i guasti, finché un backup successivo non riesce.
+
+### Ripristino completo di un controller
+
+Per un controller **resettato** (ai valori di fabbrica) o **sostituito** con uno nuovo. Si fa dalla scheda **Backup** del controller: **Ripristina** sul backup scelto, poi **Ripristino Completo** (solo amministratori). Se quasi tutte le tessere risultano "Non Presenti Sul Controller", l'app lo propone già scelto e il riquadro delle tessere nella pagina Persone porta lì.
+
+Prima, dalla pagina web del controller:
+
+1. rimetti l'indirizzo IP (dopo un reset l'A1210 parte con 192.168.0.90 o con quello del DHCP);
+2. crea l'utente amministratore con lo stesso nome e la stessa password salvati in **Impianti → controller → Connessione** (oppure aggiorna lì i dati nuovi);
+3. un controller **sostituito** fa comparire l'avviso **Controller Cambiato**, con le scritture sospese: confermalo, e solo dopo fai il ripristino.
+
+Cosa fa, nell'ordine in cui scrive:
+
+- **Impostazioni del Controller**: fuso orario, server NTP, collegamento al broker MQTT (lo riattiva subito, così gli accessi tornano in diretta) ed eventi MQTT. La password del broker non è nei backup: si scrive nell'anteprima e non si salva. Se il controller usa lo stesso utente MQTT dell'add-on non viene chiesta.
+- **Programmazione del Controller**: fasce orarie, modi di identificazione, porte con la configurazione della serratura, lettori con la loro configurazione, morsetti, punti di accesso e profili di accesso. Tutto con **gli stessi token del backup**: tipologie, tessere, ingressi dell'app, registro ed entità di Home Assistant restano collegati senza rifare niente. Se un controller rifiutasse un token, l'oggetto si crea con uno nuovo e l'app lo cambia ovunque (tipologie, tessere, ingressi).
+- **Tessere sul Controller**: riscrive le tessere che il controller non ha più, con titolare, accesso, validità e stato salvati nell'app.
+
+Le regole di sempre valgono anche qui:
+
+- i tempi della porta oltre i limiti della serratura si scrivono al limite (apertura 30 s, apertura estesa 60 s), con un avviso nell'anteprima;
+- la **programmazione oraria delle porte** (sblocchi programmati) non si ripristina mai: una porta non resta mai aperta da sola;
+- quello che sul controller c'è ma nel backup no (per esempio una porta di fabbrica) si toglie solo se lo spunti. È già spuntato quando il controller è appena stato resettato, cioè quando non ha nessuna tessera;
+- con un controller sostituito, porte e lettori passano al dispositivo nuovo (il DeviceUUID lo assegna il controller);
+- prima del ripristino l'app crea il backup "Prima del Ripristino", come sempre.
+
+Non si ripristinano l'indirizzo IP, gli utenti del controller e i certificati: servono già per collegarsi. Va rifatto a mano anche il collegamento del lettore OSDP con canale sicuro, se era attivo.
 
 ### Backup automatico
 

@@ -24,6 +24,7 @@ from .backup_copy import ha_copy_path, update_copies
 from .config import Settings, load_settings, normalize_host, resolve_mqtt
 from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
+from .full_restore import FULL_SECTIONS
 from .ha import HomeAssistant
 from .ha_mqtt import HaBridge, parse_command
 from .health import HEALTH_INTERVAL, HealthMonitor, clock_fault, clock_problem, controller_synced, paused_reason
@@ -31,7 +32,7 @@ from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
 from .notifications import FAULT_TYPES, NotificationService
 from .programming import INPUT_ROLES, ProgrammingService
-from .restore import RESTORE_SECTIONS, Runtime, apply, plan, public
+from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import RulesService
 from .service import (
     CASING_OPEN,
@@ -325,6 +326,8 @@ class RestorePreviewIn(BaseModel):
 
 class RestoreIn(RestorePreviewIn):
     keys: list[str] = Field(default_factory=list, max_length=5000)
+    # Ripristino completo: password del broker MQTT del controller, che nei backup non c'è. Non si salva
+    mqtt_password: str = Field("", max_length=256)
 
 
 class AppUserIn(BaseModel):
@@ -1338,7 +1341,7 @@ def create_app(
         # Un controller che non risponde non ha la sua parte nello stato attuale: porte e lettori restano bloccati
         current, _ = await state.backups.snapshot(_backup_clients(state))
         items = _restore_plan(state, saved, current, body)
-        return {"items": public(items), "sections": RESTORE_SECTIONS, "paused": state.controller.paused}
+        return {"items": public(items), "sections": ALL_SECTIONS, "paused": state.controller.paused}
 
     @app.post("/api/backups/{backup_id}/restore")
     async def restore_backup(backup_id: str, body: RestoreIn, request: Request, user: Admin) -> dict:
@@ -1360,12 +1363,19 @@ def create_app(
         current = {k: v for k, v in current.items() if k not in stale}
         items = _restore_plan(state, saved, current, body)
         runtime = Runtime(
-            state.db, state.service, state.rules, state.programming, (state.installation.primary or {}).get("id")
+            state.db,
+            state.service,
+            state.rules,
+            state.programming,
+            (state.installation.primary or {}).get("id"),
+            mqtt_password=body.mqtt_password,
+            mqtt_known=_mqtt_known(state),
         )
         result = await apply(items, body.keys, runtime, user.label)
+        full = any(s in FULL_SECTIONS for s in body.sections)
         state.db.add_audit(
             user.label,
-            "ripristino da backup",
+            "ripristino completo del controller da backup" if full else "ripristino da backup",
             f"{label}: {plural(len(result['applied']), 'modifica', 'modifiche')}"
             + (f", {plural(len(result['failed']), 'non riuscita', 'non riuscite')}" if result["failed"] else ""),
         )
@@ -1860,13 +1870,21 @@ def _backup_clients(state) -> dict[int, object]:
 
 
 def _restore_plan(state, saved: dict, current: dict, body: RestorePreviewIn) -> list[dict]:
-    sections = [s for s in body.sections if s in RESTORE_SECTIONS]
+    sections = [s for s in body.sections if s in ALL_SECTIONS]
     if not sections:
         raise BackupError("scegli cosa ripristinare")
     primary = (state.installation.primary or {}).get("id")
     if body.part and body.part != f"controller:{primary}":
         raise BackupError("per ora si ripristinano porte e lettori solo del controller in uso")
-    return plan(saved, current, sections, primary)
+    if any(s in FULL_SECTIONS for s in sections) and body.part != f"controller:{primary}":
+        raise BackupError("il ripristino completo si fa dalla scheda Backup del controller")
+    return plan(saved, current, sections, primary, set(_mqtt_known(state)))
+
+
+def _mqtt_known(state) -> dict[str, str]:
+    """Credenziali MQTT dell'add-on: se il controller usa le stesse, la password non va chiesta."""
+    mqtt = getattr(state, "mqtt", None)
+    return {mqtt.username: mqtt.password} if mqtt and mqtt.username and mqtt.password else {}
 
 
 def _local_text(value: str) -> str:

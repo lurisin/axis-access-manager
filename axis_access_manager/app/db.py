@@ -641,6 +641,33 @@ class Database:
         else:
             self._execute("DELETE FROM hidden_items WHERE kind = ? AND token = ?", (kind, token))
 
+    # Colonne con i token del controller: se un oggetto ricreato riceve un token nuovo, si cambiano ovunque
+    TOKEN_COLUMNS = (
+        ("schedule_rules", "schedule_token"),
+        ("category_rules", "schedule"),
+        ("categories", "group_token"),
+        ("cards", "access_profile"),
+        ("hidden_items", "token"),
+        ("doors", "door_token"),
+        ("controller_inputs", "door_token"),
+        ("controller_inputs", "schedule"),
+        ("controller_inputs", "idpoint_token"),
+        ("controller_inputs", "access_point_token"),
+    )
+
+    def replace_token(self, old: str, new: str) -> int:
+        """Sostituisce un token del controller in tutta l'app (ripristino completo); restituisce le righe cambiate."""
+        if not old or old == new:
+            return 0
+        statements = [
+            (f"UPDATE {table} SET {column} = ? WHERE {column} = ?", (new, old)) for table, column in self.TOKEN_COLUMNS
+        ]
+        statements.append(("UPDATE app_settings SET value = ? WHERE key = 'default_group' AND value = ?", (new, old)))
+        with self._lock:
+            changed = sum(self._conn.execute(sql, params).rowcount for sql, params in statements)
+            self._conn.commit()
+        return changed
+
     def all_settings(self) -> list[dict]:
         return self._query("SELECT key, value FROM app_settings ORDER BY key")
 

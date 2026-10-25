@@ -131,7 +131,7 @@
                             border-radius: 9px; padding: 7px 10px; min-width: 0; }
   input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   textarea { resize: vertical; min-height: 70px; }
-  input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); vertical-align: middle; }
+  input[type=checkbox], .perm-list input[type=radio] { width: 18px; height: 18px; accent-color: var(--accent); vertical-align: middle; flex: none; padding: 0; }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
           padding: 18px; margin-bottom: 16px; }
   .card > h2, .dw-body > h2, .section-title { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -521,6 +521,8 @@
   .rs-item .title { font-weight: 600; overflow-wrap: anywhere; }
   .rs-note { display: flex; gap: 6px; align-items: flex-start; font-size: 13px; color: var(--warn); margin-top: 4px; }
   .rs-note.err { color: var(--err); }
+  .rs-pass { display: grid; gap: 4px; margin-top: 8px; max-width: 360px; }
+  .rs-pass small { font-size: 12px; }
   .rs-note svg { width: 15px; height: 15px; fill: currentColor; flex: none; margin-top: 2px; }
   @media (max-width: 640px) {
     .bk-row > .ev-icon { display: none; }
@@ -1662,8 +1664,12 @@ function renderMissingBanner() {
   const cards = store.persons.flatMap((p) => p.cards.filter((c) => c.missing_since));
   if (!cards.length) { box.innerHTML = ""; return; }
   const persons = store.persons.filter((p) => p.cards.some((c) => c.missing_since)).length;
+  // Quasi tutte sparite: di solito il controller è stato resettato o sostituito e manca anche la programmazione
+  const total = store.persons.reduce((n, p) => n + p.cards.length, 0);
+  const reset = cards.length * 2 > total && can("backup") && store.me.admin;
   box.innerHTML = `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} Sul Controller</b>
       ${plural(persons, "persona ha", "persone hanno")} tessere che l'app conosce ma che sul controller non ci sono più, per esempio dopo un reset o una sostituzione. L'app non le cancella da sola: riscrivile sul controller con gruppo e validità salvati, oppure toglile dall'app.
+      ${reset ? '<br>Controller resettato o sostituito? Con <a href="#impianti/ripristino">Ripristino Completo</a> dalla scheda Backup del controller rimetti anche porte, lettori, ingressi e profili, poi le tessere.' : ""}
       ${personFilters.state === "mancanti" ? "" : ' <a href="#persone/mancanti">Mostra Solo Queste</a>'}</div>
     <div class="row w-persone" style="flex-wrap:nowrap"><button type="button" class="small primary" id="m-restore">Riscrivi Sul Controller</button><button type="button" class="small danger" id="m-forget">Togli dall'App</button></div></div>`;
   paintIcons(box);
@@ -2563,6 +2569,7 @@ async function viewInstallation(el, sub) {
   if (location.hash !== hash) return;
   if (first === "programmazione" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}`); return; }
   if (first === "stato" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}/stato`); return; }
+  if (first === "ripristino" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}/backup`); return; }
   if (match) {
     const ctrl = data.controllers.find((c) => c.id === Number(match[1]));
     if (!ctrl) { el.innerHTML = `<div class="card"><div class="empty">Controller non trovato. <a href="#impianti">Torna agli Impianti</a></div></div>`; return; }
@@ -3491,7 +3498,7 @@ async function viewBackups(body, part = "") {
   const list = part ? data.backups.filter((b) => b.parts?.[part]) : data.backups;
   const error = data.error;
   const intro = part
-    ? "Storico della configurazione di questo controller: porte, lettori, punti di accesso, profili e ingressi. Ripristina riporta porte e lettori com'erano."
+    ? "Storico della configurazione di questo controller: porte, lettori, punti di accesso, profili e ingressi. Ripristina riporta porte e lettori com'erano oppure, per un controller resettato o sostituito, ricrea tutto con il Ripristino Completo."
     : "Ogni backup salva i Dati Comuni (persone, tessere, tipologie, fasce orarie, festività, strutture e utenti dell'app) e la configurazione di ogni controller. Le parti che non cambiano non occupano altro spazio.";
   const verify = data.verify;
   body.innerHTML = `${error ? `<div class="alert">${icon("alert")}<div class="grow"><b>${error.id ? "Ultimo Backup Incompleto" : "Ultimo Backup Non Riuscito"}</b>${esc(error.error)} · ${esc(relTime(error.at))}</div></div>` : ""}
@@ -3623,23 +3630,34 @@ function restoreItemHtml(i) {
       ${i.changes.length ? `<div class="diff-fields">${i.changes.slice(0, 8).map((c) => `<span><span class="muted">${esc(c.label)}:</span> ${c.old === "—" ? "" : `<s>${esc(c.old)}</s> → `}${esc(c.new)}</span>`).join("")}${i.changes.length > 8 ? `<span class="muted">e altre ${i.changes.length - 8}</span>` : ""}</div>` : ""}
       ${i.warnings.map((w) => `<div class="rs-note">${icon("alert")}<span>${esc(w[0].toUpperCase() + w.slice(1))}</span></div>`).join("")}
       ${i.blocked ? `<div class="rs-note err">${icon("block")}<span>Non si può: ${esc(i.blocked)}</span></div>` : ""}
+      ${i.password ? `<div class="rs-pass"><input type="password" name="mqtt_password" autocomplete="new-password" placeholder="Password di ${esc(i.username)}"><small class="muted">Nei backup le password non ci sono: scrivila qui, non viene salvata.</small></div>` : ""}
     </div></label>`;
 }
+const RESTORE_MODES = {
+  porte: {sections: ["porte"], title: "Porte e Lettori", text: "Riporta nomi e tempi delle porte, le impostazioni dell'app sulle porte e i nomi dei lettori, per un controller che funziona."},
+  completo: {sections: ["dispositivo", "controller", "tessere"], title: "Ripristino Completo", text: "Per un controller resettato o sostituito: ricrea fasce orarie, porte con serratura, lettori, ingressi, punti di accesso e profili con i token del backup, rimette fuso orario, NTP e MQTT, poi riscrive le tessere."},
+};
 function restoreResultHtml(r) {
   return `${r.applied.length ? `<p style="margin-top:0"><b>${plural(r.applied.length, "modifica fatta", "modifiche fatte")}</b></p><ul class="diff">${capped(r.applied, (a) => `<li class="add"><b>✓</b>${esc(a.label)} <span class="muted">· ${esc(a.text)}</span></li>`)}</ul>` : ""}
     ${r.failed.length ? `<p${r.applied.length ? "" : ' style="margin-top:0"'}><b>${plural(r.failed.length, "non riuscita", "non riuscite")}</b></p><ul class="diff">${r.failed.map((f) => `<li class="del"><b>✕</b>${esc(f.label)} <span class="muted">· ${esc(f.error)}</span></li>`).join("")}</ul>` : ""}
     ${r.unchanged ? `<p class="hint">${plural(r.unchanged, "riga era già", "righe erano già")} come nel backup.</p>` : ""}
+    ${r.renamed ? `<p class="hint">${plural(r.renamed, "oggetto ha", "oggetti hanno")} ricevuto dal controller un token nuovo: l'app l'ha cambiato ovunque (tipologie, tessere, ingressi).</p>` : ""}
     <p class="hint">Prima del ripristino l'app ha creato il backup "Prima del Ripristino": per tornare indietro, ripristina quello.</p>`;
 }
 async function restoreBackup(b, data, part = "") {
+  // Tessere quasi tutte sparite: probabilmente il controller è stato resettato, si propone il ripristino completo
+  if (part) await loadSummary();
+  const startMode = (store.summary?.faults || []).some((f) => f.type === "missing_cards" && f.severity === "crit") ? "completo" : "porte";
   const sectionsBody = part
-    ? `<p style="margin:0">Riporta porte e lettori di questo controller come erano nel backup del ${esc(fmtDateTime(b.created_at))}. Prima di cambiare qualcosa vedrai l'elenco delle modifiche.</p>`
+    ? `<p style="margin-top:0">Backup del ${esc(fmtDateTime(b.created_at))}. Prima di cambiare qualcosa vedrai l'elenco delle modifiche.</p>
+      <div class="perm-list">${Object.entries(RESTORE_MODES).map(([k, m]) => `<label><input type="radio" name="mode" value="${k}" ${k === startMode ? "checked" : ""}><span><b>${esc(m.title)}</b><br><span class="muted small-text">${esc(m.text)}</span></span></label>`).join("")}</div>
+      <p class="hint" style="margin-bottom:0">Dopo un reset l'indirizzo IP e l'utente amministratore si rimettono dalla pagina web del controller, con gli stessi dati salvati nell'app. Un controller sostituito va prima confermato nell'avviso Controller Cambiato.</p>`
     : `<p style="margin-top:0">Backup del ${esc(fmtDateTime(b.created_at))}. Scegli cosa riportare com'era: prima di cambiare qualcosa vedrai l'elenco delle modifiche.</p>
       <div class="perm-list">${Object.entries(data.sections).map(([k, label]) => `<label><input type="checkbox" name="sec" value="${k}" checked><span><b>${esc(label)}</b><br><span class="muted small-text">${esc(RESTORE_HINTS[k] || "")}</span></span></label>`).join("")}</div>`;
   let sections = [];
   const preview = await modal({title: `Ripristina: ${backupTitle(b)}`, body: sectionsBody,
     actions: [{label: "Annulla", value: null}, {label: "Mostra Cosa Cambierà", kind: "primary", submit: true, onClick: async (dlg) => {
-      sections = part ? ["porte"] : $$('[name="sec"]:checked', dlg).map((x) => x.value);
+      sections = part ? RESTORE_MODES[$('[name="mode"]:checked', dlg)?.value || "porte"].sections : $$('[name="sec"]:checked', dlg).map((x) => x.value);
       if (!sections.length) { toast("Scegli almeno una voce", true); return false; }
       return (await run(() => api(`api/backups/${b.id}/preview`, {method: "POST", body: {sections, part}}))) || false;
     }}]});
@@ -3650,13 +3668,20 @@ async function restoreBackup(b, data, part = "") {
     return;
   }
   const groups = Object.entries(preview.sections).filter(([k]) => items.some((i) => i.section === k));
+  const full = sections.includes("controller");
+  let mqttPassword = "";
   const keys = await modal({title: "Cosa Cambierà", wide: true,
     body: `${preview.paused ? `<div class="alert err">${icon("alert")}<div class="grow"><b>Scritture Sospese</b>${esc(preview.paused)}</div></div>` : ""}
-      <p class="muted small-text" style="margin-top:0">Spunta cosa riportare com'era. Togliere quello che è stato aggiunto dopo il backup non è spuntato: di solito è lavoro buono fatto nel frattempo. Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
+      <p class="muted small-text" style="margin-top:0">${full
+        ? "Si scrive nell'ordine dell'elenco, le tessere per ultime. Quello che sul controller c'è ma nel backup no è spuntato solo se il controller è appena stato resettato. La programmazione oraria delle porte non si ripristina: niente sblocchi programmati."
+        : "Spunta cosa riportare com'era. Togliere quello che è stato aggiunto dopo il backup non è spuntato: di solito è lavoro buono fatto nel frattempo."} Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
       ${groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map(restoreItemHtml).join("")}</div>`).join("")}`,
     actions: [{label: "Annulla", value: null}, {label: "Ripristina Selezionati", kind: "primary", onClick: (dlg) => {
       const chosen = $$('[name="rs"]:checked', dlg).map((x) => x.value);
       if (!chosen.length) { toast("Spunta almeno una riga", true); return false; }
+      const pass = $('[name="mqtt_password"]', dlg);
+      if (pass && chosen.includes("disp-mqtt") && !pass.value) { toast("Scrivi la password del broker MQTT", true); pass.focus(); return false; }
+      mqttPassword = pass?.value || "";
       return chosen;
     }}],
     onOpen: (dlg) => {
@@ -3665,8 +3690,8 @@ async function restoreBackup(b, data, part = "") {
       update();
     }});
   if (!keys) return;
-  toast("Ripristino in corso…");
-  const result = await run(() => api(`api/backups/${b.id}/restore`, {method: "POST", body: {sections, part, keys}}));
+  toast(full ? "Ripristino completo in corso: può volerci qualche decina di secondi…" : "Ripristino in corso…");
+  const result = await run(() => api(`api/backups/${b.id}/restore`, {method: "POST", body: {sections, part, keys, mqtt_password: mqttPassword}}));
   if (!result) return;
   await modal({title: result.failed.length ? "Ripristino Parziale" : "Ripristino Fatto", body: restoreResultHtml(result), actions: [{label: "Chiudi", value: null}]});
   loadSummary();

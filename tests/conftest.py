@@ -21,6 +21,18 @@ class FakeController:
         self.fail_io_assignment = False
         self.idpoint_configs: dict[str, dict] = {}
         self.io_assignments: dict[str, dict] = {}
+        self.door_configs: dict[str, dict] = {
+            "porta": {"token": "porta", "Configuration": [{"Name": "Lock.Type", "Value": "FailSecure"}]}
+        }
+        self.authentication_profiles: dict[str, dict] = {
+            t: {"token": t, "Name": t, "Description": "", "Schedule": ["standard_always"]}
+            for t in ("CardOnly", "REXOnly")
+        }
+        self.time_zone = "Europe/Rome"
+        self.mqtt: dict = {}
+        self.mqtt_events: dict = {}
+        # Come un controller che rifiuta i token generati da un altro (Axis-<serie>:...)
+        self.refuse_axis_tokens = False
         self._ids = itertools.count(1)
         self.access_points = [
             {
@@ -96,7 +108,42 @@ class FakeController:
     async def date_time_info(self):
         # Come l'A1210 del banco: dateTime è in UTC
         moment = datetime.now(tz=UTC) + timedelta(seconds=self.clock_skew)
-        return {"dateTime": moment.strftime("%Y-%m-%dT%H:%M:%SZ"), "timeZone": "Europe/Rome", "dstEnabled": True}
+        return {"dateTime": moment.strftime("%Y-%m-%dT%H:%M:%SZ"), "timeZone": self.time_zone, "dstEnabled": True}
+
+    async def set_time_zone(self, time_zone):
+        self.calls.append(("set_time_zone", time_zone))
+        self.time_zone = time_zone
+
+    async def set_ntp(self, enabled, source, servers):
+        self.calls.append(("set_ntp", enabled, source, tuple(servers)))
+
+    async def mqtt_client_config(self):
+        return {"config": copy.deepcopy(self.mqtt), "status": {"state": "active"}} if self.mqtt else {}
+
+    async def mqtt_event_config(self):
+        return {"eventPublicationConfig": copy.deepcopy(self.mqtt_events)} if self.mqtt_events else {}
+
+    async def set_mqtt_client(self, config):
+        self.calls.append(("set_mqtt_client", config.get("password")))
+        self.mqtt = copy.deepcopy(config)
+
+    async def set_mqtt_events(self, config):
+        self.calls.append(("set_mqtt_events",))
+        self.mqtt_events = copy.deepcopy(config)
+
+    def _check_token(self, item):
+        if self.refuse_axis_tokens and str(item.get("token") or "").startswith("Axis-"):
+            raise VapixError("il controller ha rifiutato la richiesta: InvalidArgVal")
+
+    def factory_reset(self):
+        """Come un reset di fabbrica: resta solo quello che il controller ha di serie."""
+        self.doors, self.door_configs, self.idpoints, self.idpoint_configs = {}, {}, {}, {}
+        self.access_points, self.profiles, self.users, self.credentials = [], {}, {}, {}
+        self.schedules = {
+            "standard_always": {"token": "standard_always", "Name": "", "Description": "", "ScheduleDefinition": ""}
+        }
+        self.io_assignments = {"Ser0hd": {"IoMode": "", "IoUser": []}}
+        self.time_zone, self.mqtt, self.mqtt_events = "UTC", {}, {}
 
     async def ntp_info(self):
         return {
@@ -130,11 +177,33 @@ class FakeController:
         return [copy.deepcopy(self.doors[t]) for t in tokens if t in self.doors]
 
     async def set_door(self, door):
-        self.calls.append(("set_door", door["token"]))
-        self.doors[door["token"]] = copy.deepcopy(door)
+        self._check_token(door)
+        token = door.get("token") or f"door-{next(self._ids)}"
+        self.calls.append(("set_door", token))
+        self.doors[token] = {**copy.deepcopy(door), "token": token}
+        return token
 
     async def list_door_configurations(self):
-        return [{"token": "porta", "Configuration": [{"Name": "Lock.Type", "Value": "FailSecure"}]}]
+        return [copy.deepcopy(c) for c in self.door_configs.values()]
+
+    async def set_door_configuration(self, configuration):
+        self.calls.append(("set_door_configuration", configuration["token"], configuration.get("DeviceUUID")))
+        self.door_configs[configuration["token"]] = {
+            **copy.deepcopy(configuration),
+            "DeviceUUID": configuration.get("DeviceUUID") or "uuid-locale",
+        }
+
+    async def remove_door(self, token):
+        self.calls.append(("remove_door", token))
+        self.doors.pop(token, None)
+        self.door_configs.pop(token, None)
+
+    async def list_authentication_profiles(self):
+        return [copy.deepcopy(p) for p in self.authentication_profiles.values()]
+
+    async def set_authentication_profile(self, profile):
+        self.calls.append(("set_authentication_profile", profile["token"]))
+        self.authentication_profiles[profile["token"]] = copy.deepcopy(profile)
 
     async def list_idpoints(self):
         return [copy.deepcopy(i) for i in self.idpoints.values()]
@@ -150,6 +219,7 @@ class FakeController:
         raise VapixError("non supportato")
 
     async def create_idpoint(self, idpoint):
+        self._check_token(idpoint)
         token = idpoint.get("token") or f"idpoint-{next(self._ids)}"
         self.calls.append(("create_idpoint", token))
         self.idpoints[token] = {**copy.deepcopy(idpoint), "token": token}
@@ -174,6 +244,7 @@ class FakeController:
         self.io_assignments[io] = {"IoMode": mode, "IoUser": copy.deepcopy(users)}
 
     async def create_access_point(self, access_point):
+        self._check_token(access_point)
         token = access_point.get("token") or f"ap-{next(self._ids)}"
         self.calls.append(("create_access_point", token))
         self.access_points = [a for a in self.access_points if a["token"] != token]
@@ -213,7 +284,11 @@ class FakeController:
             },
             {"IoName": "REX", "IoMode": "", "IoUser": []},
         ]
-        return info, assigned
+        # Quello che è stato scritto prende il posto dello stato di partenza
+        merged = {a["IoName"]: a for a in assigned}
+        for io, value in self.io_assignments.items():
+            merged[io] = {"IoName": io, **copy.deepcopy(value)}
+        return info, list(merged.values())
 
     async def get_access_points(self, tokens):
         return [copy.deepcopy(a) for a in self.access_points if a["token"] in tokens]
@@ -279,6 +354,7 @@ class FakeController:
         return [copy.deepcopy(self.profiles[t]) for t in tokens if t in self.profiles]
 
     async def set_access_profile(self, profile):
+        self._check_token(profile)
         token = profile.get("token") or f"profile-{next(self._ids)}"
         self.calls.append(("set_access_profile", token))
         self.profiles[token] = {**copy.deepcopy(profile), "token": token}
@@ -292,6 +368,7 @@ class FakeController:
         return [dict(s) for s in self.schedules.values()]
 
     async def set_schedule(self, schedule):
+        self._check_token(schedule)
         token = schedule.get("token") or f"schedule-{next(self._ids)}"
         self.calls.append(("set_schedule", token))
         self.schedules[token] = {**schedule, "token": token}
