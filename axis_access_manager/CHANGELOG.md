@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.2
+
+- **Telecamera del controller**: se il controller è in un altro locale, nella scheda Telecamere puoi dargli una sua telecamera ("Inquadra: Coperchio del Controller"). Quando si apre il coperchio la foto viene da quella telecamera. Senza, come prima, nessuna foto.
+- Tutto quello che succede alla porta (accessi, aperture, citofono, allarmi della porta) continua a usare la telecamera della porta.
+- Se la telecamera del controller non fa la foto, compare tra i Guasti come le altre.
+
 ## 0.16.1
 
 - L'elenco a tendina dei bollini in alto si stacca meglio dai riquadri, soprattutto con il tema scuro: sfondo più chiaro, bordo e ombra più marcati. Il bollino della tendina aperta resta evidenziato.

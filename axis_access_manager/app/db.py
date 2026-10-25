@@ -169,6 +169,7 @@ MIGRATIONS = [
     ("doors", "area_id", "INTEGER NOT NULL DEFAULT 0"),
     ("controllers", "area_id", "INTEGER NOT NULL DEFAULT 0"),
     ("controllers", "description", "TEXT NOT NULL DEFAULT ''"),
+    ("controllers", "snapshot_camera", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -516,6 +517,13 @@ class Database:
         marks = ", ".join("?" * len(self.CONTROLLER_FIELDS))
         return self._execute(
             f"INSERT INTO controllers ({columns}, created_at, updated_at) VALUES ({marks}, ?, ?)", (*values, ts, ts)
+        )
+
+    def set_controller_camera(self, controller_id: int, camera: str) -> None:
+        """Telecamera che fotografa il controller quando si apre il coperchio."""
+        self._execute(
+            "UPDATE controllers SET snapshot_camera = ?, updated_at = ? WHERE id = ?",
+            (camera, now_iso(), controller_id),
         )
 
     def delete_controller(self, controller_id: int) -> None:

@@ -311,6 +311,13 @@ def test_one_snapshot_per_passage_and_always_on_remote_open(controller, tmp_path
         assert len(ha.shots) == 2
         event("manomissione")
         assert len(ha.shots) == 3
+        # Con la telecamera del controller il coperchio ha la sua foto, sempre da quella telecamera
+        ctrl = app.state.db.list_controllers()[0]
+        assert client.put(f"/api/controllers/{ctrl['id']}/camera", json={"camera": "quadro"}).status_code == 400
+        assert client.put(f"/api/controllers/{ctrl['id']}/camera", json={"camera": "camera.quadro"}).status_code == 200
+        event("manomissione", door="")
+        assert len(ha.shots) == 4 and ha.shots[-1][0] == "camera.quadro"
+        assert app.state.db.list_controllers()[0]["snapshot_camera"] == "camera.quadro"
 
         # Telecamera spenta: l'evento dice perché manca la foto
         door = app.state.db.list_doors()[0]

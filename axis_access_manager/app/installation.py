@@ -240,6 +240,21 @@ class InstallationService:
         )
         return {"id": controller_id}
 
+    def set_controller_camera(self, controller_id: int, camera: str, user: str) -> dict:
+        controller = self.db.get_controller(controller_id)
+        if controller is None:
+            raise ServiceError("controller non trovato")
+        camera = camera.strip()
+        if camera and not camera.startswith("camera."):
+            raise ServiceError("la telecamera deve essere un'entità camera di Home Assistant")
+        self.db.set_controller_camera(controller_id, camera)
+        self.db.add_audit(
+            user,
+            "telecamera del controller modificata",
+            f"{controller['name']}: {camera}" if camera else f"{controller['name']}: nessuna",
+        )
+        return {"id": controller_id, "snapshot_camera": camera}
+
     def update_controller_event_names(self) -> int:
         """All'avvio: con un solo controller, gli eventi del coperchio prendono il suo nome attuale."""
         controllers = self.db.list_controllers()
