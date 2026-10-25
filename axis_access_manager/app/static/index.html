@@ -37,17 +37,29 @@
 
   /* Struttura */
   .app { display: flex; min-height: 100vh; }
-  .nav { width: var(--nav-w); flex: none; background: var(--surface); border-right: 1px solid var(--border);
-         position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 16px 12px; }
-  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; font-weight: 700; font-size: 16px; }
+  /* Menu laterale: sempre presente con le sole icone, il pulsante ☰ lo allarga con i nomi delle pagine */
+  .nav { width: 64px; flex: none; background: var(--surface); border-right: 1px solid var(--border); overflow: hidden;
+         position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 10px 10px 12px; gap: 2px;
+         transition: width .18s ease; z-index: 30; }
+  body.nav-open .nav { width: var(--nav-w); }
+  .nav .lbl, .brand .name, .nav .foot { opacity: 0; pointer-events: none; transition: opacity .12s; white-space: nowrap; }
+  body.nav-open .nav .lbl, body.nav-open .brand .name, body.nav-open .nav .foot { opacity: 1; pointer-events: auto; }
+  .nav-toggle { display: flex; align-items: center; gap: 12px; width: 100%; justify-content: flex-start; padding: 9px 12px;
+                border: none; background: none; color: var(--text); border-radius: 10px; margin-bottom: 4px; }
+  .nav-toggle:hover { background: var(--surface-2); }
+  .nav-toggle .lbl { font-weight: 700; font-size: 16px; }
+  a.door-pill:hover { text-decoration: none; filter: brightness(.97); }
+  .nav-backdrop { display: none; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px 12px; font-weight: 700; font-size: 16px; }
   .brand .logo { width: 32px; height: 32px; border-radius: 9px; background: var(--accent); color: var(--accent-text);
                  display: grid; place-items: center; }
   .nav a { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 10px; color: var(--muted);
-           font-weight: 500; position: relative; }
+           font-weight: 500; position: relative; white-space: nowrap; }
   .nav a:hover { background: var(--surface-2); text-decoration: none; color: var(--text); }
   .nav a.active { background: var(--accent-soft); color: var(--accent); }
-  .nav .count { margin-left: auto; background: var(--err); color: #fff; border-radius: 10px; font-size: 12px;
-                min-width: 20px; padding: 0 6px; text-align: center; line-height: 20px; }
+  .nav .count { position: absolute; top: 3px; left: 28px; background: var(--err); color: #fff; border-radius: 10px; font-size: 11px;
+                min-width: 18px; padding: 0 5px; text-align: center; line-height: 18px; }
+  body.nav-open .nav .count { position: static; margin-left: auto; font-size: 12px; min-width: 20px; line-height: 20px; }
   .nav .foot { margin-top: auto; padding: 8px 12px; color: var(--muted); font-size: 12px; }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .topbar { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
@@ -80,7 +92,6 @@
           padding: 18px; margin-bottom: 16px; }
   .card > h2, .section-title { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .card > h2 .pill { white-space: normal; }
-  .nav .lbl-short { display: none; }
   .card > h2 .spacer, .row .spacer { flex: 1; }
   .card.flush { padding: 0; }
   .card.flush > h2 { padding: 16px 18px 0; }
@@ -88,6 +99,34 @@
   .grid.kpi { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .grid.two { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; }
   .grid.cards { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .grid.tiles { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+  .door-group { margin-bottom: 18px; }
+  .door-group .section-title { color: var(--muted); }
+  .tile { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; min-height: 128px; background: var(--surface);
+          border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); color: var(--text); }
+  .tile:hover { text-decoration: none; border-color: var(--accent); }
+  .tile .t { color: var(--text); }
+  .tile svg.icon { width: 18px; height: 18px; }
+  /* Registro compatto: una riga per evento, i dettagli al clic */
+  .list.compact > .ev { display: grid; grid-template-columns: 46px 12px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+                        padding: 8px 16px; border-top: 1px solid var(--border); cursor: pointer; font-size: 14px; }
+  .list.compact > .ev:first-child { border-top: none; }
+  .list.compact > .ev:hover { background: var(--surface-2); }
+  .list.compact > .ev.sel { background: var(--accent-soft); }
+  .ev .time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
+  .ev .what { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev .where { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; text-align: right; }
+  @media (max-width: 600px) {
+    .list.compact > .ev { grid-template-columns: 40px 10px minmax(0, 1fr) auto; gap: 8px; padding: 9px 12px; }
+    .ev .where { max-width: 96px; font-size: 12px; }
+  }
+  .ev .dot.info { background: var(--info); } .ev .dot.accent { background: var(--accent); }
+  .list.compact > .day { padding: 5px 16px; background: var(--surface-2); border-top: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--muted); }
+  .list.compact > .day:first-child { border-top: none; }
+  .log-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+  @media (min-width: 1100px) { .log-layout.split { grid-template-columns: minmax(0, 1fr) 380px; } }
+  .log-detail { position: sticky; top: 76px; }
+  .hidden-count { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface-2); font-size: 13px; color: var(--muted); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center; }
   .toolbar input[type=search] { flex: 1 1 220px; }
@@ -134,6 +173,15 @@
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--surface-2); border: 1px solid var(--border);
           border-radius: 7px; padding: 1px 8px; font-size: 13px; }
   .chip.off { text-decoration: line-through; color: var(--muted); }
+  .chip-btn { border-radius: 999px; padding: 4px 12px; font-size: 13px; gap: 6px; }
+  .chip-btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .chip-btn.on .muted { color: inherit; opacity: .7; }
+  #p-list > .day { padding: 4px 18px; background: var(--surface-2); border-top: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--muted); }
+  #p-list > .day:first-child { border-top: none; }
+  .person-row { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--border); cursor: pointer; min-height: 44px; box-sizing: border-box; }
+  #p-list > .person-row:first-child { border-top: none; }
+  .person-row:hover { background: var(--surface-2); }
+  .person-row .name { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
   .chip svg.icon { width: 14px; height: 14px; }
   .ev-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none; font-size: 16px; }
   .ev-icon svg { width: 18px; height: 18px; fill: currentColor; }
@@ -234,16 +282,16 @@
     .grid.two { grid-template-columns: 1fr; }
   }
   @media (max-width: 860px) {
-    .nav { position: fixed; bottom: 0; left: 0; right: 0; top: auto; height: auto; width: 100%; z-index: 20;
-           flex-direction: row; padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); border-right: none;
-           border-top: 1px solid var(--border); justify-content: space-around; }
-    .brand, .nav .foot { display: none; }
-    .nav a { flex-direction: column; gap: 2px; padding: 6px 2px; font-size: 10.5px; flex: 1; min-width: 0; text-align: center; border-radius: 8px; }
-    .nav a span.lbl, .nav a span.lbl-short { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-    .nav .count { position: absolute; top: 2px; left: 55%; margin: 0; font-size: 10px; min-width: 16px; line-height: 16px; padding: 0 4px; }
+    /* Sul telefono il menu allargato si apre sopra la pagina e si richiude da solo dopo la scelta */
+    .nav { position: fixed; left: 0; top: 0; bottom: 0; width: 52px; padding: 6px 4px calc(8px + env(safe-area-inset-bottom)); }
+    .nav a, .nav-toggle { padding: 10px 12px; min-height: 44px; }
+    body.nav-open .nav { width: min(264px, 80vw); box-shadow: 4px 0 24px rgba(0, 0, 0, .25); }
+    body.nav-open .nav-backdrop { display: block; position: fixed; inset: 0; background: rgba(10, 14, 20, .4); z-index: 25; }
+    .main { margin-left: 52px; }
+    .nav .count { left: 26px; }
     .topbar { padding: 10px 14px; }
     .topbar h1 { font-size: 18px; }
-    .content { padding: 14px 12px calc(90px + env(safe-area-inset-bottom)); }
+    .content { padding: 14px 12px calc(32px + env(safe-area-inset-bottom)); }
     .card { padding: 14px; }
     .list > .item { padding: 12px 14px; }
     .item .side { display: none; }
@@ -255,9 +303,7 @@
     dialog { width: calc(100vw - 16px); }
   }
   @media (max-width: 480px) {
-    .nav a span.lbl { display: none; }
-    .nav a span.lbl-short { display: block; }
-    .topbar h1 { display: none; }
+    .topbar h1 { font-size: 17px; }
     .door { width: 100%; }
     .door .door-pill { flex: 1; justify-content: center; }
     .kpi .value { font-size: 24px; }
@@ -266,22 +312,24 @@
 </head>
 <body>
 <div class="app">
-  <nav class="nav" id="nav">
-    <div class="brand"><span class="logo" data-icon="door"></span>Controllo Accessi</div>
-    <a href="#cruscotto" data-route="cruscotto"><span data-icon="dashboard"></span><span class="lbl">Cruscotto</span><span class="lbl-short">Home</span></a>
-    <a href="#persone" data-route="persone"><span data-icon="people"></span><span class="lbl">Persone</span><span class="lbl-short">Persone</span></a>
-    <a href="#da-registrare" data-route="da-registrare"><span data-icon="cardplus"></span><span class="lbl">Da Registrare</span><span class="lbl-short">Nuove</span><span class="count" id="nav-unknown" hidden></span></a>
-    <a href="#registro" data-route="registro"><span data-icon="list"></span><span class="lbl">Registro</span><span class="lbl-short">Registro</span></a>
-    <a href="#regole" data-route="regole"><span data-icon="clock"></span><span class="lbl">Regole</span><span class="lbl-short">Regole</span></a>
-    <a href="#impianti" data-route="impianti"><span data-icon="building"></span><span class="lbl">Impianti</span><span class="lbl-short">Impianti</span></a>
-    <a href="#impostazioni" data-route="impostazioni"><span data-icon="cog"></span><span class="lbl">Impostazioni</span><span class="lbl-short">Opzioni</span></a>
+  <nav class="nav" id="nav" aria-label="Menu principale">
+    <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Allarga il menu" aria-expanded="false"><span data-icon="menu"></span><span class="lbl">Controllo Accessi</span></button>
+    <a href="#cruscotto" data-route="cruscotto" title="Cruscotto"><span data-icon="dashboard"></span><span class="lbl">Cruscotto</span></a>
+    <a href="#porte" data-route="porte" title="Porte"><span data-icon="door"></span><span class="lbl">Porte</span></a>
+    <a href="#persone" data-route="persone" title="Persone"><span data-icon="people"></span><span class="lbl">Persone</span></a>
+    <a href="#da-registrare" data-route="da-registrare" title="Da Registrare"><span data-icon="cardplus"></span><span class="lbl">Da Registrare</span><span class="count" id="nav-unknown" hidden></span></a>
+    <a href="#registro" data-route="registro" title="Registro"><span data-icon="list"></span><span class="lbl">Registro</span></a>
+    <a href="#regole" data-route="regole" title="Regole"><span data-icon="clock"></span><span class="lbl">Regole</span></a>
+    <a href="#impianti" data-route="impianti" title="Impianti"><span data-icon="building"></span><span class="lbl">Impianti</span></a>
+    <a href="#impostazioni" data-route="impostazioni" title="Impostazioni"><span data-icon="cog"></span><span class="lbl">Impostazioni</span></a>
     <div class="foot" id="nav-foot"></div>
   </nav>
+  <div class="nav-backdrop" id="nav-backdrop"></div>
   <div class="main">
     <header class="topbar">
       <h1 id="page-title">Cruscotto</h1>
       <div class="door">
-        <span class="pill door-pill" id="door-pill"><span class="dot" id="door-dot"></span><span id="door-text">Porta …</span></span>
+        <a href="#porte" class="pill door-pill" id="door-pill"><span class="dot" id="door-dot"></span><span id="door-text">Porta …</span></a>
       </div>
     </header>
     <div class="content" id="view"><div class="loading"><span class="spinner"></span></div></div>
@@ -328,6 +376,7 @@ const ICONS = {
   trash: "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z",
   camera: "M4,4H7L9,2H15L17,4H20A2,2 0 0,1 22,6V18A2,2 0 0,1 20,20H4A2,2 0 0,1 2,18V6A2,2 0 0,1 4,4M12,7A5,5 0 0,0 7,12A5,5 0 0,0 12,17A5,5 0 0,0 17,12A5,5 0 0,0 12,7M12,9A3,3 0 0,1 15,12A3,3 0 0,1 12,15A3,3 0 0,1 9,12A3,3 0 0,1 12,9Z",
   building: "M5,3V21H11V17.5H13V21H19V3H5M7,5H9V7H7V5M11,5H13V7H11V5M15,5H17V7H15V5M7,9H9V11H7V9M11,9H13V11H11V9M15,9H17V11H15V9M7,13H9V15H7V13M11,13H13V15H11V13M15,13H17V15H15V13M7,17H9V19H7V17M15,17H17V19H15V17Z",
+  menu: "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z",
   user: "M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z",
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ""}"/></svg>`;
@@ -339,6 +388,14 @@ const DOOR_MODES = {
   Locked: "Bloccata", Accessed: "Aperta a Tempo", Unlocked: "Sbloccata", LockedOpen: "Aperta",
   Blocked: "Bloccata da Regola", LockedDown: "In Blocco", DoubleLocked: "Doppia Chiusura",
 };
+const doorModeLabel = (mode) => mode ? DOOR_MODES[mode] || mode : "Sconosciuto";
+const doorModeClass = (mode) => mode === "Locked" ? "ok" : mode ? "warn" : "";
+// Porte dell'impianto dall'intestazione: nomi e luoghi per registro e cruscotto
+const allDoors = () => store.summary.doors || [];
+const multiDoor = () => allDoors().length > 1;
+const doorByToken = (token) => allDoors().find((d) => d.token === token);
+const doorLabel = (token) => doorByToken(token)?.name || (multiDoor() ? token || "" : allDoors()[0]?.name || "");
+const placeOf = (d) => [d.site, d.area].filter((x) => x && !x.startsWith("Senza ")).join(" › ");
 // Tipi di evento del registro: etichetta, colore, icona
 const KINDS = {
   concesso: ["Accesso Concesso", "k-ok", "check"],
@@ -538,11 +595,17 @@ async function loadSummary() {
     const s = await api("api/summary");
     store.summary = s;
     const mode = s.door_mode;
-    $("#door-dot").className = "dot " + (mode === "Locked" ? "ok" : mode ? "warn" : "");
-    $("#door-pill").className = "pill door-pill " + (mode === "Locked" ? "ok" : mode ? "warn" : "");
     const doors = s.doors || [];
-    const label = doors.length > 1 ? doors.map((d) => `${d.name}: ${d.mode ? DOOR_MODES[d.mode] || d.mode : "Sconosciuto"}`).join(" · ") : null;
-    $("#door-text").textContent = !s.configured ? "Impianto Non Configurato" : label || (mode ? "Porta " + (DOOR_MODES[mode] || mode) : "Stato Porta Sconosciuto");
+    const open = doors.filter((d) => d.mode && d.mode !== "Locked");
+    const cls = !s.configured ? "" : doors.length > 1 ? (open.length ? "warn" : doors.some((d) => !d.mode) ? "" : "ok") : (mode === "Locked" ? "ok" : mode ? "warn" : "");
+    $("#door-dot").className = "dot " + cls;
+    $("#door-pill").className = "pill door-pill " + cls;
+    let text;
+    if (!s.configured) text = "Impianto Non Configurato";
+    else if (doors.length > 1) text = `${doors.length} Porte · ${open.length ? plural(open.length, "Non Bloccata", "Non Bloccate") : doors.some((d) => !d.mode) ? "Stato Incompleto" : "Tutte Bloccate"}`;
+    else text = mode ? `${doors[0]?.name || "Porta"} ${DOOR_MODES[mode] || mode}` : "Stato Porta Sconosciuto";
+    $("#door-text").textContent = text;
+    $("#door-pill").title = doors.map((d) => `${d.name}: ${doorModeLabel(d.mode)}`).join("\n");
     const badge = $("#nav-unknown");
     badge.hidden = !s.unknown_cards;
     badge.textContent = s.unknown_cards;
@@ -556,6 +619,7 @@ async function loadSummary() {
 // Pagina: titolo, vista, permesso necessario per vederla
 const ROUTES = {
   cruscotto: ["Cruscotto", viewDashboard, ""],
+  porte: ["Porte", viewDoorsPage, ""],
   persone: ["Persone", viewPersons, "persone"],
   "da-registrare": ["Da Registrare", viewUnknown, "persone"],
   registro: ["Registro Accessi", viewLog, "registro"],
@@ -580,6 +644,23 @@ async function render() {
   await view(el, route.sub);
   paintIcons(el);
 }
+// Menu laterale: sul computer resta come l'hai lasciato, sul telefono si richiude dopo ogni scelta
+const phoneLayout = () => window.matchMedia("(max-width: 860px)").matches;
+function setNav(open, remember = true) {
+  document.body.classList.toggle("nav-open", open);
+  $("#nav-toggle").setAttribute("aria-expanded", String(open));
+  $("#nav-toggle").setAttribute("aria-label", open ? "Riduci il menu" : "Allarga il menu");
+  if (remember && !phoneLayout()) { try { localStorage.setItem("aam-nav", open ? "1" : "0"); } catch (err) { /* facoltativo */ } }
+}
+function initNav() {
+  let saved = "1";
+  try { saved = localStorage.getItem("aam-nav") ?? "1"; } catch (err) { /* facoltativo */ }
+  setNav(!phoneLayout() && saved === "1", false);
+  $("#nav-toggle").onclick = () => setNav(!document.body.classList.contains("nav-open"));
+  $("#nav-backdrop").onclick = () => setNav(false, false);
+  $("#nav").addEventListener("click", (e) => { if (e.target.closest("a") && phoneLayout()) setNav(false, false); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && phoneLayout() && document.body.classList.contains("nav-open")) setNav(false, false); });
+}
 window.addEventListener("hashchange", () => { $("#view").innerHTML = '<div class="loading"><span class="spinner"></span></div>'; render(); });
 // Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta
 async function refreshView() {
@@ -597,7 +678,7 @@ function eventItem(e, {showSnapshot = true} = {}) {
     <div class="grow">
       <div class="title">${esc(label)}${e.person_name ? ` · ${esc(e.person_name)}` : ""}</div>
       <div class="meta"><span title="${esc(fmtFull(e.ts))}">${esc(relTime(e.ts))}</span>
-        ${e.card ? `<code>${esc(e.card)}</code>` : ""}${e.detail ? `<span>${esc(e.detail)}</span>` : ""}${source ? `<span>${source}</span>` : ""}</div>
+        ${multiDoor() && e.door ? `<span>${esc(doorLabel(e.door))}</span>` : ""}${e.card ? `<code>${esc(e.card)}</code>` : ""}${e.detail ? `<span>${esc(e.detail)}</span>` : ""}${source ? `<span>${source}</span>` : ""}</div>
     </div>
     ${showSnapshot && e.snapshot ? `<img class="thumb" loading="lazy" src="api/events/${e.id}/snapshot" alt="istantanea" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
     <div class="side">${esc(fmtDateTime(e.ts))}</div>
@@ -605,8 +686,8 @@ function eventItem(e, {showSnapshot = true} = {}) {
 }
 
 async function viewDashboard(el) {
-  let d;
-  try { d = await api("api/dashboard"); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  let d, doors;
+  try { [d, doors] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => [])]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   const t = d.today;
   const alerts = [];
   if (store.summary.configured === false) alerts.push(`<div class="alert info">${icon("cog")}<div class="grow"><b>Impianto da Configurare</b>${can("impianti") ? "Aggiungi il controller e le porte nella pagina Impianti." : "Chiedi a un amministratore di configurare il controller."}</div>${can("impianti") ? '<a class="btn small primary" href="#impianti">Impianti</a>' : ""}</div>`);
@@ -635,12 +716,98 @@ async function viewDashboard(el) {
       <div class="card"><div class="label">Persone</div><div class="value">${d.persons}</div><div class="sub">${can("persone") ? '<a href="#persone">anagrafica</a>' : "registrate"}</div></div>
       <div class="card"><div class="label">Tessere</div><div class="value">${d.cards}</div><div class="sub">${d.cards_suspended ? `${d.cards_suspended} sospese` : "tutte attive"}</div></div>
     </div>
+    ${doors.length ? `<div class="row" style="margin:4px 0 10px"><h2 class="section-title" style="margin:0;flex:1">${doors.length > 1 ? "Porte" : "Porta"}</h2>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</div>${doorGroups(doors)}` : ""}
     <div class="grid two">
       <div class="card"><h2>Ultimi 7 Giorni</h2><div class="chart">${chart}</div>
         <div class="legend"><span><i style="background:var(--ok)"></i>concessi</span><span><i style="background:var(--warn)"></i>negati</span><span><i style="background:var(--err)"></i>tessere sconosciute</span></div></div>
       ${can("registro") ? `<div class="card flush"><h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro Completo</a></h2>
-        <div class="list" style="margin-top:8px">${d.recent.length ? d.recent.map((e) => eventItem(e, {showSnapshot: false})).join("") : '<div class="empty">nessun evento registrato</div>'}</div></div>` : `<div class="card"><h2>Ultimi Eventi</h2><p class="muted" style="margin:0">Il tuo utente non ha il permesso di vedere il registro accessi.</p></div>`}
+        <div class="list compact" style="margin-top:8px" id="dash-events">${d.recent.length ? logRows(d.recent) : '<div class="empty">nessun evento registrato</div>'}</div></div>` : `<div class="card"><h2>Ultimi Eventi</h2><p class="muted" style="margin:0">Il tuo utente non ha il permesso di vedere il registro accessi.</p></div>`}
     </div>`;
+  if ($("#dash-events")) $("#dash-events").onclick = (e) => {
+    const row = e.target.closest("[data-event]");
+    if (row) showEvent(d.recent.find((x) => x.id === Number(row.dataset.event)));
+  };
+}
+
+// ---------- Porte ----------
+// Riquadro di una porta: stato, ultimo passaggio, numeri di oggi
+function doorTile(d) {
+  const last = d.last ? `<div class="small-text">Ultimo: <b>${esc(d.last.person || (KINDS[d.last.kind] || [d.last.kind])[0])}</b> <span class="muted">· ${esc(relTime(d.last.ts))}</span></div>` : '<div class="small-text muted">Nessun passaggio registrato</div>';
+  return `<a class="tile" href="#porte/${d.id}">
+    <div class="row" style="flex-wrap:nowrap"><b class="grow" style="font-size:16px;overflow-wrap:anywhere">${esc(d.name)}</b><span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span></div>
+    ${last}
+    <div class="row small-text muted" style="margin-top:auto">
+      <span>Oggi <b class="t">${d.today.granted}</b> accessi${d.today.denied ? ` · <b style="color:var(--warn)">${d.today.denied}</b> negati` : ""}${d.today.alarms ? ` · <b style="color:var(--err)">${d.today.alarms}</b> allarmi` : ""}</span>
+      <span class="spacer" style="flex:1"></span>
+      ${d.intercom ? `<span title="Videocitofono ${esc(d.intercom)}">${icon("phone")}</span>` : ""}${d.camera ? `<span title="Telecamera ${esc(d.camera)}">${icon("camera")}</span>` : ""}
+    </div></a>`;
+}
+// Porte raggruppate per struttura e area; le intestazioni compaiono solo quando servono a distinguere
+function doorGroups(doors) {
+  const groups = [];
+  for (const d of doors) {
+    const key = `${d.site_id}:${d.area_id}`;
+    let g = groups.find((x) => x.key === key);
+    if (!g) groups.push(g = {key, title: placeOf(d), doors: []});
+    g.doors.push(d);
+  }
+  const titled = groups.length > 1 || doors.length > 1;
+  return groups.map((g) => `<section class="door-group">${titled && g.title ? `<h3 class="section-title">${icon("building")}${esc(g.title)}</h3>` : ""}<div class="grid tiles">${g.doors.map(doorTile).join("")}</div></section>`).join("");
+}
+async function viewDoorsPage(el, sub) {
+  let doors;
+  try { doors = await api("api/door-overview"); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  if (!doors.length) {
+    el.innerHTML = `<div class="card"><div class="empty">${icon("door")}<br><b>Nessuna porta configurata</b><br>${can("impianti") ? 'Aggiungi controller e porte nella pagina <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare l'impianto."}</div></div>`;
+    return;
+  }
+  // Con una porta sola si va dritti ai suoi dettagli
+  const id = Number(sub) || (doors.length === 1 ? doors[0].id : 0);
+  if (id) return viewDoorDetail(el, id, doors);
+  el.innerHTML = doorGroups(doors);
+}
+async function viewDoorDetail(el, id, doors) {
+  let d;
+  try { d = await api(`api/door-detail/${id}`); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  $("#page-title").textContent = d.name;
+  document.title = `${d.name} · Controllo Accessi`;
+  const place = placeOf(d);
+  const switcher = doors.length > 1 ? `<label class="row small-text muted">Cambia Porta <select id="d-switch">${doors.map((x) => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.name)}${placeOf(x) ? ` · ${esc(placeOf(x))}` : ""}</option>`).join("")}</select></label>` : "";
+  const devices = [
+    ...d.readers.map((r) => [icon("card"), r.name, [r.direction, r.description].filter(Boolean).join(" · ") || r.access_point, r.enabled ? ["ok", "Attivo"] : ["", "Disattivato"]]),
+    d.intercom ? [icon("phone"), d.intercom, `Videocitofono Hikvision · relè ${d.intercom_relay}`, d.intercom_open_door ? ["ok", "Apre la Porta"] : ["", "Solo Registro"]] : null,
+    d.camera ? [icon("camera"), d.camera, d.snapshot_on_granted ? "istantanea su ogni passaggio" : "istantanea su rifiuti, citofono e allarmi", ["ok", "Attiva"]] : null,
+    [icon("cog"), d.controller.name || "Controller", d.controller.host, null],
+  ].filter(Boolean);
+  const kpi = (label, value, sub, color = "") => `<div class="card"><div class="label">${label}</div><div class="value" ${color ? `style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
+  el.innerHTML = `
+    <div class="row" style="margin-bottom:14px">
+      ${place ? `<span class="muted">${icon("building")}</span><span class="muted">${esc(place)}</span>` : ""}
+      <span class="pill ${doorModeClass(d.mode)}" style="font-size:14px;padding:4px 12px"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span>
+      <span class="spacer" style="flex:1"></span>${switcher}
+    </div>
+    ${d.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${d.errors.map(esc).join("<br>")}</div></div>` : ""}
+    <div class="grid kpi" style="margin-bottom:16px">
+      ${kpi("Accessi Oggi", d.today.granted, "concessi, remoti e da citofono")}
+      ${kpi("Negati Oggi", d.today.denied, "comprese le tessere sconosciute", d.today.denied ? "var(--warn)" : "")}
+      ${kpi("Allarmi Oggi", d.today.alarms, "forzature e aperture troppo lunghe", d.today.alarms ? "var(--err)" : "")}
+      ${kpi("Ultimo Passaggio", d.last ? esc(d.last.person || "—") : "—", d.last ? esc(relTime(d.last.ts)) : can("registro") ? "nessuno" : "serve il permesso Registro")}
+    </div>
+    <div class="grid two">
+      <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") ? '<a class="small-text" href="#impianti">Configura</a>' : ""}</h2>
+        <div class="list" style="margin-top:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div>
+        <p class="hint" style="padding:0 18px 14px">L'apertura della porta resta nei pulsanti di Home Assistant.</p></div>
+      ${d.groups ? `<div class="card flush"><h2>Chi Può Entrare<span class="spacer"></span>${can("regole") ? '<a class="small-text" href="#regole/gruppi">Regole</a>' : ""}</h2>
+        <div class="list" style="margin-top:8px">${d.groups.length ? d.groups.map((g) => `<div class="item"><div class="grow"><div class="title">${esc(g.name)}${g.default ? ' <span class="pill accent">Predefinito</span>' : ""}${g.enabled ? "" : ' <span class="pill">Disattivato</span>'}</div><div class="meta">${esc(g.schedule_names.join(", ") || "sempre")}</div></div><div class="side">${plural(g.persons, "persona", "persone")}</div></div>`).join("") : '<div class="empty">nessun gruppo apre questa porta</div>'}</div></div>` : ""}
+    </div>
+    ${d.events ? `<div class="card flush"><h2>Eventi di Questa Porta<span class="spacer"></span><a class="small-text" href="#registro" id="d-log">Apri nel Registro</a></h2>
+      <div class="list compact" style="margin-top:8px" id="d-events">${d.events.length ? logRows(d.events) : '<div class="empty">nessun evento registrato</div>'}</div></div>` : ""}`;
+  if ($("#d-switch")) $("#d-switch").onchange = (e) => { location.hash = `#porte/${e.target.value}`; };
+  if ($("#d-log")) $("#d-log").onclick = () => { logFilters.door = multiDoor() ? d.token : ""; };
+  if ($("#d-events")) $("#d-events").onclick = (e) => {
+    const row = e.target.closest("[data-event]");
+    if (row) showEvent(d.events.find((x) => x.id === Number(row.dataset.event)));
+  };
 }
 
 // ---------- Persone ----------
@@ -652,11 +819,9 @@ async function loadPersons() {
 async function viewPersons(el, sub) {
   try { await Promise.all([loadPersons(), loadGroups()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   const groupOptions = (store.groups || []).filter((g) => !g.hidden || store.persons.some((p) => personAccess(p).group === g.token)).map((g) => `<option value="${esc(g.token)}">${esc(g.name)}</option>`).join("");
-  const categoryOptions = store.categories.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
   el.innerHTML = `
     <div class="toolbar">
       <input type="search" id="p-q" placeholder="Cerca nome, ditta o numero tessera" value="${esc(personFilters.q)}">
-      ${store.categories.length ? `<select id="p-cat"><option value="">Tutte le Tipologie</option>${categoryOptions}<option value="0">Senza Tipologia</option></select>` : ""}
       <select id="p-group"><option value="">Tutti i Gruppi</option>${groupOptions}</select>
       <select id="p-state">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
@@ -664,14 +829,17 @@ async function viewPersons(el, sub) {
       </select>
       <button type="button" class="primary w-persone" id="p-new">${icon("plus")}Nuova Persona</button>
     </div>
+    <div class="chips" id="p-cats" style="margin:-6px 0 14px"></div>
     <div class="card flush"><h2 style="padding-bottom:12px"><span id="p-count" class="muted small-text"></span><span class="spacer"></span>
       <button type="button" class="small ghost w-persone" id="p-sync" title="Rilegge tessere e utenti dal controller">${icon("refresh")}Rileggi dal Controller</button></h2>
       <div class="list" id="p-list"></div></div>`;
   $("#p-group").value = personFilters.group;
-  if ($("#p-cat")) {
-    $("#p-cat").value = personFilters.category;
-    $("#p-cat").addEventListener("change", (e) => { personFilters.category = e.target.value; renderPersonList(); });
-  }
+  $("#p-cats").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-cat]");
+    if (!b) return;
+    personFilters.category = b.dataset.cat;
+    renderPersonList();
+  });
   $("#p-state").value = personFilters.state;
   $("#p-q").addEventListener("input", (e) => { personFilters.q = e.target.value; renderPersonList(); });
   $("#p-group").addEventListener("change", (e) => { personFilters.group = e.target.value; renderPersonList(); });
@@ -689,6 +857,7 @@ async function viewPersons(el, sub) {
     history.pushState(null, "", `#persone/${item.dataset.person}`);
     openPerson(Number(item.dataset.person));
   });
+  $("#p-list").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.closest("[data-person]")) { e.preventDefault(); e.target.click(); } });
   renderPersonList();
   if (sub) openPerson(Number(sub));
 }
@@ -709,22 +878,26 @@ function renderPersonList() {
   });
   const cards = store.persons.reduce((n, p) => n + p.cards.length, 0);
   $("#p-count").textContent = `${plural(store.persons.length, "persona", "persone")} · ${plural(cards, "tessera", "tessere")}` + (rows.length !== store.persons.length ? ` · ${rows.length} mostrate` : "");
-  list.innerHTML = rows.length ? rows.map((p) => {
+  // Tipologie come filtri rapidi, con il numero di persone di ognuna
+  const count = (id) => store.persons.filter((p) => (p.category_id || 0) === id).length;
+  const chip = (value, label, n, color = "") => `<button type="button" class="chip-btn ${personFilters.category === value ? "on" : ""}" data-cat="${value}">${color ? `<span class="swatch c-${esc(color)}"></span>` : ""}${esc(label)} <span class="muted">${n}</span></button>`;
+  const none = count(0);
+  $("#p-cats").innerHTML = store.categories.length ? chip("", "Tutte", store.persons.length) + store.categories.map((c) => chip(String(c.id), c.name, count(c.id), c.color)).join("") + (none ? chip("0", "Senza Tipologia", none) : "") : "";
+  // Elenco essenziale: nome e tipologia, un'etichetta solo se c'è qualcosa da sistemare; il resto è nella scheda
+  const sorted = [...rows].sort((a, b) => a.name.localeCompare(b.name, "it", {sensitivity: "base"}));
+  let letter = "";
+  list.innerHTML = sorted.length ? sorted.map((p) => {
     const a = personAccess(p);
-    const active = p.cards.some((c) => c.enabled);
     const vs = validityState(a.from, a.to);
-    return `<div class="item click" data-person="${p.id}">
-      <div class="avatar ${active && vs !== "scaduta" ? "" : "off"}">${esc(initials(p.name))}</div>
-      <div class="grow">
-        <div class="title">${esc(p.name)}${p.company ? ` <span class="muted" style="font-weight:400">· ${esc(p.company)}</span>` : ""}</div>
-        <div class="meta">
-          ${categoryPill(categoryOf(p.category_id))}
-          <span class="pill accent">${esc(groupName(a.group))}</span>
-          ${VALIDITY_PILL[vs] || ""}
-          ${p.cards.map((c) => `<span class="chip ${c.enabled ? "" : "off"}" title="${c.enabled ? "attiva" : "sospesa"}">${icon("card", "icon")} <code>${esc(c.number)}</code></span>`).join("")}
-        </div>
-      </div>
-      <div class="side">${p.last_access ? `ultimo accesso<br>${esc(relTime(p.last_access))}` : "mai entrato"}</div>
+    const suspended = p.cards.length && !p.cards.some((c) => c.enabled);
+    const flag = !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || "";
+    const c = categoryOf(p.category_id);
+    const first = (p.name.trim()[0] || "#").toLocaleUpperCase("it");
+    const head = sorted.length > 12 && first !== letter ? `<div class="day">${esc(first)}</div>` : "";
+    letter = first;
+    return `${head}<div class="person-row" data-person="${p.id}" role="button" tabindex="0">
+      <span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span>
+      <span class="name">${esc(p.name)}</span>${flag}
     </div>`;
   }).join("") : `<div class="empty">${store.persons.length ? "nessuna persona corrisponde ai filtri" : "nessuna persona registrata: passa una tessera sul lettore e registrala da \"Da registrare\""}</div>`;
 }
@@ -828,7 +1001,7 @@ async function openPerson(id) {
   sheet.oncancel = (e) => { e.preventDefault(); close(); };
   $("[data-close]", sheet).onclick = close;
   const reload = async () => { await loadPersons(); renderPersonList(); await openPerson(id); };
-  if ($("[data-person-log]", sheet)) $("[data-person-log]", sheet).onclick = (e) => { e.preventDefault(); close(); logFilters.q = p.name; location.hash = "#registro"; };
+  if ($("[data-person-log]", sheet)) $("[data-person-log]", sheet).onclick = (e) => { e.preventDefault(); close(); Object.assign(logFilters, {q: p.name, view: "tutto"}); location.hash = "#registro"; };
   $("[data-edit-access]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Accesso di " + p.name,
@@ -919,36 +1092,125 @@ async function viewUnknown(el) {
 }
 
 // ---------- Registro ----------
-const logFilters = {q: "", kind: "", from: "", to: ""};
+// Viste del registro: con tanto passaggio si guarda prima quello che richiede attenzione
+const LOG_VIEWS = {
+  controllo: ["Da Controllare", "negato,sconosciuta,allarme,manomissione"],
+  negati: ["Solo Negati", "negato,sconosciuta"],
+  accessi: ["Solo Accessi", "concesso,apertura_remota,citofono"],
+  allarmi: ["Allarmi", "allarme,manomissione"],
+  tutto: ["Tutto", ""],
+};
+const ACCESS_KINDS = "concesso,apertura_remota,citofono,lettura";
+const savedView = () => { try { return localStorage.getItem("aam-log-view") || "controllo"; } catch (err) { return "controllo"; } };
+const logFilters = {q: "", view: savedView(), door: "", from: "", to: ""};
 let logEvents = [];
+let logSelected = 0;
 function logParams(extra = {}) {
   const p = new URLSearchParams();
   if (logFilters.q) p.set("q", logFilters.q);
-  if (logFilters.kind) p.set("kind", logFilters.kind);
+  const kinds = (LOG_VIEWS[logFilters.view] || LOG_VIEWS.tutto)[1];
+  if (kinds) p.set("kind", kinds);
+  if (logFilters.door) p.set("door", logFilters.door);
   if (logFilters.from) p.set("since", new Date(logFilters.from + "T00:00:00").toISOString());
   if (logFilters.to) p.set("until", new Date(new Date(logFilters.to + "T00:00:00").getTime() + 86400000).toISOString());
   Object.entries(extra).forEach(([k, v]) => p.set(k, v));
   return p;
 }
+const KIND_DOT = {"k-ok": "ok", "k-warn": "warn", "k-err": "err", "k-info": "info", "k-accent": "accent", "k-muted": ""};
+// Riga compatta: ora, colore dell'esito, chi, cosa, dove
+function logRow(e) {
+  const [label, cls] = KINDS[e.kind] || [e.kind, "k-muted"];
+  const who = e.person_name || (e.card ? `Tessera ${e.card}` : e.kind === "citofono" ? e.source || "Citofono" : e.kind === "apertura_remota" ? e.source || "Home Assistant" : "");
+  let what = who ? label.replace(/^Accesso /, "").replace(/^Tessera /, "") : label;
+  if (what.toLowerCase() === who.toLowerCase()) what = "";
+  return `<div class="ev ${e.id === logSelected ? "sel" : ""}" data-event="${e.id}" role="button" tabindex="0" title="${esc(fmtFull(e.ts))}">
+    <span class="time">${esc(fmtTime(e.ts))}</span><span class="dot ${KIND_DOT[cls] || ""}"></span>
+    <span class="what">${who ? `<b>${esc(who)}</b> <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="con istantanea">${icon("camera", "icon")}</span>` : ""}</span>
+    ${multiDoor() ? `<span class="where">${esc(doorLabel(e.door))}</span>` : "<span></span>"}
+  </div>`;
+}
+function eventDetail(e) {
+  const [label, cls] = KINDS[e.kind] || [e.kind, "k-muted"];
+  const door = doorByToken(e.door) || (!multiDoor() ? allDoors()[0] : null);
+  const rows = [
+    ["Quando", esc(fmtFull(e.ts))],
+    door ? ["Porta", `<a href="#porte/${door.id}">${esc(door.name)}</a>${placeOf(door) ? ` <span class="muted">· ${esc(placeOf(door))}</span>` : ""}`] : e.door ? ["Porta", `<code>${esc(e.door)}</code>`] : null,
+    e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
+    e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
+    e.detail ? ["Dettaglio", esc(e.detail)] : null,
+    e.source ? ["Origine", esc(e.source)] : null,
+  ].filter(Boolean);
+  return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
+    ${e.snapshot ? `<img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="istantanea" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    ${props(rows)}
+    <div class="row" style="margin-top:14px">
+      ${e.person_id && can("persone") ? `<a class="btn small" href="#persone/${e.person_id}">${icon("user")}Scheda Persona</a>` : ""}
+      ${e.kind === "sconosciuta" && can("persone_modifica") ? `<a class="btn small primary" href="#da-registrare">${icon("cardplus")}Registra Tessera</a>` : ""}
+      ${e.person_name ? `<button type="button" class="small" data-same="${esc(e.person_name)}">Tutti i Suoi Eventi</button>` : ""}
+    </div>`;
+}
+function showEvent(e) {
+  if (!e) return;
+  logSelected = e.id;
+  $$(".list.compact > .ev").forEach((r) => r.classList.toggle("sel", Number(r.dataset.event) === e.id));
+  const panel = $("#l-detail");
+  const bind = (root, close) => {
+    const same = $("[data-same]", root);
+    if (same) same.onclick = () => { close(); Object.assign(logFilters, {q: same.dataset.same, view: "tutto"}); if (route.name === "registro") viewLog($("#view")); else location.hash = "#registro"; };
+  };
+  if (panel && window.matchMedia("(min-width: 1100px)").matches) {
+    panel.hidden = false;
+    panel.innerHTML = `<div class="card log-detail"><h2>Dettaglio Evento<span class="spacer"></span><button type="button" class="ghost icon-only" id="l-detail-x" aria-label="Chiudi">${icon("close")}</button></h2>${eventDetail(e)}</div>`;
+    $(".log-layout").classList.add("split");
+    $("#l-detail-x").onclick = () => { panel.hidden = true; $(".log-layout").classList.remove("split"); logSelected = 0; $$(".list.compact > .ev.sel").forEach((r) => r.classList.remove("sel")); };
+    bind(panel, () => {});
+  } else {
+    modal({title: "Dettaglio Evento", body: eventDetail(e), onOpen: (dlg) => { bindSnapshots(dlg); bind(dlg, () => dlg.close()); }});
+  }
+}
 async function viewLog(el) {
-  const kindOptions = Object.entries(KINDS).map(([k, [label]]) => `<option value="${k}">${esc(label)}</option>`).join("");
+  const doors = allDoors();
+  const doorSelect = doors.length > 1 ? `<select id="l-door" aria-label="Porta"><option value="">Tutte le Porte</option>${doorOptionGroups(doors, logFilters.door)}</select>` : "";
   el.innerHTML = `
     <div class="toolbar">
-      <input type="search" id="l-q" placeholder="Cerca persona, tessera o dettaglio" value="${esc(logFilters.q)}">
-      <select id="l-kind"><option value="">Tutti gli Eventi</option><option value="concesso,apertura_remota">Tutti gli Accessi</option><option value="negato,sconosciuta">Tutti i Rifiuti</option>${kindOptions}</select>
+      <div class="segmented" style="margin:0" role="tablist" aria-label="Vista">${Object.entries(LOG_VIEWS).map(([k, [label]]) => `<a href="#registro" role="tab" data-view="${k}" class="${logFilters.view === k ? "active" : ""}">${label}</a>`).join("")}</div>
+      ${doorSelect}
       <input type="date" id="l-from" value="${esc(logFilters.from)}" title="Dal giorno" aria-label="Dal giorno">
       <input type="date" id="l-to" value="${esc(logFilters.to)}" title="Al giorno" aria-label="Al giorno">
-      <a class="btn w-io" id="l-export" href="#" download>${icon("download")}CSV</a>
+      <input type="search" id="l-q" placeholder="Cerca nome, tessera o dettaglio" value="${esc(logFilters.q)}">
+      <a class="btn w-io" id="l-export" href="#" download title="Scarica gli eventi di questa vista">${icon("download")}CSV</a>
     </div>
-    <div class="card flush"><div class="list" id="l-list"><div class="loading"><span class="spinner"></span></div></div>
-      <div style="text-align:center;padding:12px" id="l-more-box" hidden><button type="button" id="l-more">Carica Altri</button></div></div>`;
-  $("#l-kind").value = logFilters.kind;
+    <div class="log-layout">
+      <div class="card flush" style="margin:0"><div class="list compact" id="l-list"><div class="loading"><span class="spinner"></span></div></div>
+        <div class="hidden-count" id="l-hidden" hidden></div>
+        <div style="text-align:center;padding:12px" id="l-more-box" hidden><button type="button" id="l-more">Carica Altri</button></div></div>
+      <div id="l-detail" hidden></div>
+    </div>`;
+  logSelected = 0;
   let timer;
+  $$("[data-view]", el).forEach((a) => a.addEventListener("click", (e) => {
+    e.preventDefault();
+    logFilters.view = a.dataset.view;
+    try { localStorage.setItem("aam-log-view", logFilters.view); } catch (err) { /* facoltativo */ }
+    $$("[data-view]", el).forEach((x) => x.classList.toggle("active", x === a));
+    loadLog();
+  }));
   $("#l-q").addEventListener("input", (e) => { logFilters.q = e.target.value.trim(); clearTimeout(timer); timer = setTimeout(() => loadLog(), 300); });
-  $("#l-kind").addEventListener("change", (e) => { logFilters.kind = e.target.value; loadLog(); });
+  if ($("#l-door")) $("#l-door").addEventListener("change", (e) => { logFilters.door = e.target.value; loadLog(); });
   $("#l-from").addEventListener("change", (e) => { logFilters.from = e.target.value; loadLog(); });
   $("#l-to").addEventListener("change", (e) => { logFilters.to = e.target.value; loadLog(); });
   $("#l-more").addEventListener("click", () => loadLog(true));
+  const list = $("#l-list");
+  const pick = (e) => { const row = e.target.closest("[data-event]"); if (row) showEvent(logEvents.find((x) => x.id === Number(row.dataset.event))); };
+  list.addEventListener("click", pick);
+  list.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(e); } });
+  $("#l-hidden").addEventListener("click", (e) => {
+    if (!e.target.closest("[data-show-all]")) return;
+    e.preventDefault();
+    logFilters.view = "tutto";
+    $$("[data-view]", el).forEach((x) => x.classList.toggle("active", x.dataset.view === "tutto"));
+    loadLog();
+  });
   bindSnapshots(el);
   await loadLog();
 }
@@ -961,24 +1223,51 @@ async function loadLog(more = false) {
   renderLog();
   $("#l-more-box").hidden = data.length < 100;
   $("#l-export").href = "api/export/events.csv?" + logParams();
+  if (!more) updateHiddenCount();
+}
+// Nelle viste filtrate dice quanti accessi riusciti non si vedono, senza mostrarli tutti
+async function updateHiddenCount() {
+  const box = $("#l-hidden");
+  if (!box) return;
+  const kinds = (LOG_VIEWS[logFilters.view] || LOG_VIEWS.tutto)[1];
+  if (!kinds || kinds.includes("concesso")) { box.hidden = true; return; }
+  const p = logParams({kind: ACCESS_KINDS});
+  if (!logFilters.from && !logFilters.to) p.set("since", new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
+  const r = await api("api/events/count?" + p).catch(() => null);
+  if (!r || !$("#l-hidden")) return;
+  box.hidden = !r.count;
+  box.innerHTML = `<span class="pill ok">${r.count}</span><span style="flex:1">${r.count === 1 ? "accesso riuscito non mostrato" : "accessi riusciti non mostrati"} in questa vista${logFilters.from || logFilters.to ? "" : " (oggi)"}</span><a href="#registro" data-show-all>Mostra Tutto</a>`;
+}
+// Righe del registro con l'intestazione del giorno quando cambia
+function logRows(events) {
+  let lastDay = "";
+  const today = new Date().toDateString(), yesterday = new Date(Date.now() - 86400000).toDateString();
+  return events.map((e) => {
+    const d = new Date(e.ts);
+    const day = d.toDateString() === today ? "Oggi" : d.toDateString() === yesterday ? "Ieri" : d.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long", year: "numeric"});
+    const head = day !== lastDay ? `<div class="day">${esc(day)}</div>` : "";
+    lastDay = day;
+    return head + logRow(e);
+  }).join("");
 }
 function renderLog() {
-  let lastDay = "";
-  $("#l-list").innerHTML = logEvents.length ? logEvents.map((e) => {
-    const day = new Date(e.ts).toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long", year: "numeric"});
-    const head = day !== lastDay ? `<div class="item" style="background:var(--surface-2);padding-top:6px;padding-bottom:6px"><b class="small-text">${esc(day)}</b></div>` : "";
-    lastDay = day;
-    return head + eventItem(e).replace('<div class="side">', '<div class="side" style="min-width:48px">').replace(esc(fmtDateTime(e.ts)), esc(fmtTime(e.ts)));
-  }).join("") : '<div class="empty">nessun evento con questi filtri</div>';
+  $("#l-list").innerHTML = logEvents.length ? logRows(logEvents) : `<div class="empty">${logFilters.view === "controllo" && !logFilters.q ? "niente da controllare: nessun rifiuto o allarme" : "nessun evento con questi filtri"}</div>`;
 }
 async function refreshLog() {
-  // Solo se si guarda la cima del registro senza filtri
-  if (logFilters.q || logFilters.kind || logFilters.from || logFilters.to || window.scrollY > 200) return;
-  const data = await api("api/events?limit=100").catch(() => null);
+  // Solo se si guarda la cima del registro senza ricerca né date
+  if (logFilters.q || logFilters.from || logFilters.to || window.scrollY > 200) return;
+  const data = await api("api/events?" + logParams({limit: "100"})).catch(() => null);
   if (!data || !$("#l-list")) return;
+  updateHiddenCount();
   if (data.length && logEvents.length && data[0].id === logEvents[0].id) return;
   logEvents = data;
   renderLog();
+}
+// Opzioni porta raggruppate per struttura e area
+function doorOptionGroups(doors, selected = "") {
+  const groups = {};
+  doors.forEach((d) => { (groups[placeOf(d) || "Porte"] ||= []).push(d); });
+  return Object.entries(groups).map(([place, list]) => `<optgroup label="${esc(place)}">${list.map((d) => `<option value="${esc(d.token)}" ${d.token === selected ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</optgroup>`).join("");
 }
 function bindSnapshots(root) {
   root.addEventListener("click", (e) => {
@@ -1232,18 +1521,19 @@ async function viewHolidays(body) {
 // ---------- Impianti ----------
 const secs = (v) => v === null || v === undefined ? "—" : `${v} s`;
 async function viewInstallation(el, sub) {
-  const tabs = [["porte", "Controller e Porte"], ["programmazione", "Programmazione"]];
+  const tabs = [["porte", "Controller e Porte"], ["strutture", "Strutture e Aree"], ["programmazione", "Programmazione"]];
   const tab = tabs.some(([k]) => k === sub) ? sub : "porte";
   el.innerHTML = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impianti/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div><div id="i-body"><div class="loading"><span class="spinner"></span></div></div>`;
   const body = $("#i-body");
   let data;
   try { data = await api("api/installation"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   if (tab === "programmazione") return viewProgramming(body, data.controllers[0]);
-  viewDoors(body, data);
+  if (tab === "strutture") return viewSites(body, data);
+  await viewControllers(body, data);
   paintIcons(body);
 }
 
-function viewDoors(body, data) {
+async function viewControllers(body, data) {
   const ctrl = data.controllers[0];
   if (!ctrl) {
     body.innerHTML = `<div class="card"><div class="empty">${icon("door")}<br><b>Nessun controller configurato</b><br>Aggiungi il controller Axis con indirizzo, utente e password: poi scegli le porte da gestire.<br><br>
@@ -1251,9 +1541,12 @@ function viewDoors(body, data) {
     $("#ctrl-new").onclick = () => controllerEditor();
     return;
   }
+  const places = {};
+  (await api("api/locations").catch(() => [])).forEach((site) => site.areas.forEach((area) => area.doors.forEach((id) => { places[id] = {site: site.name, area: area.name}; })));
   const doorCard = (d) => `<div class="card" style="margin:0">
     <h2>${icon("door")}${esc(d.name)}<span class="spacer"></span>${d.ha_buttons ? '<span class="pill accent">Pulsanti HA</span>' : ""}</h2>
     ${props([
+      ["Dove", placeOf(places[d.id] || {}) ? esc(placeOf(places[d.id])) : '<span class="muted">Nessuna area</span>'],
       ["Porta del Controller", `<code>${esc(d.door_token)}</code>`],
       ["Telecamera", d.snapshot_camera ? `<code>${esc(d.snapshot_camera)}</code>${d.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'],
       ["Citofono", d.intercom_name ? `${esc(d.intercom_name)} · relè ${d.intercom_relay}${d.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'],
@@ -1292,6 +1585,63 @@ function viewDoors(body, data) {
   };
 }
 
+// Strutture e aree: dove si trovano le porte (hotel, ville, teatro...)
+async function viewSites(body, data) {
+  let sites;
+  try { sites = await api("api/locations"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  const doors = (data.controllers[0]?.doors || []);
+  const doorName = (id) => doors.find((d) => d.id === id)?.name || `porta ${id}`;
+  const real = sites.filter((x) => x.id);
+  const loose = sites.find((x) => !x.id);
+  body.innerHTML = `
+    <p class="muted" style="margin-top:0">Ogni porta sta in un'area di una struttura, ad esempio Teatro › Accesso Scala o Villa 3 › Ingresso. Cruscotto, Porte e Registro raggruppano le porte così. Il controller che le comanda è solo un dettaglio tecnico.</p>
+    <div class="toolbar"><h2 class="section-title" style="margin:0;flex:1">Strutture</h2><button type="button" class="primary" id="site-new">${icon("plus")}Nuova Struttura</button></div>
+    ${real.length ? real.map((site) => `<div class="card">
+      <h2>${icon("building")}${esc(site.name)}<span class="spacer"></span>
+        <button type="button" class="small" data-area-new="${site.id}">${icon("plus")}Area</button>
+        <button type="button" class="small ghost icon-only" data-site-edit="${site.id}" aria-label="Modifica struttura">${icon("edit")}</button>
+        <button type="button" class="small ghost icon-only danger" data-site-del="${site.id}" aria-label="Elimina struttura">${icon("trash")}</button></h2>
+      ${site.description ? `<p class="muted" style="margin:-6px 0 10px">${esc(site.description)}</p>` : ""}
+      ${site.areas.length ? `<div class="list">${site.areas.map((a) => `<div class="item"><div class="grow"><div class="title">${esc(a.name)}</div>
+        <div class="meta">${a.doors.length ? a.doors.map((id) => `<span class="chip">${icon("door")}${esc(doorName(id))}</span>`).join("") : "nessuna porta"}</div></div>
+        <button type="button" class="small ghost icon-only" data-area-edit="${a.id}" aria-label="Rinomina area">${icon("edit")}</button>
+        <button type="button" class="small ghost icon-only danger" data-area-del="${a.id}" aria-label="Elimina area">${icon("trash")}</button></div>`).join("")}</div>` : '<p class="muted" style="margin:0">Nessuna area: aggiungine una, ad esempio Piano Terra o Ingresso.</p>'}
+    </div>`).join("") : '<div class="card"><div class="empty">Nessuna struttura: creane una, ad esempio Hotel, Teatro o Villa 1.</div></div>'}
+    ${loose ? `<div class="alert">${icon("alert")}<div class="grow"><b>Porte Senza Area</b>${loose.areas[0].doors.map((id) => esc(doorName(id))).join(", ")}: scegli la loro area con Modifica nella scheda Controller e Porte.</div></div>` : ""}`;
+  const allAreas = real.flatMap((x) => x.areas.map((a) => ({...a, site: x})));
+  const nameDialog = (title, label, value = "", extra = "") => modal({title, body: field(label, `<input name="name" maxlength="64" value="${esc(value)}">`) + extra,
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: (dlg) => ({name: val(dlg, "name"), description: val(dlg, "description")})}]});
+  $("#site-new").onclick = async () => {
+    const r = await nameDialog("Nuova Struttura", "Nome", "", field("Descrizione", '<input name="description" maxlength="200" placeholder="facoltativa">'));
+    if (r && await run(() => api("api/sites", {method: "POST", body: r}), "Struttura aggiunta")) { await loadSummary(); render(); }
+  };
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const site = real.find((x) => x.id === Number(b.dataset.siteEdit || b.dataset.siteDel || b.dataset.areaNew));
+    const area = allAreas.find((a) => a.id === Number(b.dataset.areaEdit || b.dataset.areaDel));
+    let done;
+    if (b.dataset.areaNew) {
+      const r = await nameDialog(`Nuova Area in ${site.name}`, "Nome dell'Area", "");
+      done = r && await run(() => api(`api/sites/${site.id}/areas`, {method: "POST", body: {name: r.name}}), "Area aggiunta");
+    } else if (b.dataset.siteEdit) {
+      const r = await nameDialog("Modifica Struttura", "Nome", site.name, field("Descrizione", `<input name="description" maxlength="200" value="${esc(site.description)}">`));
+      done = r && await run(() => api(`api/sites/${site.id}`, {method: "PUT", body: r}), "Struttura salvata");
+    } else if (b.dataset.siteDel) {
+      const n = site.areas.reduce((k, a) => k + a.doors.length, 0);
+      done = await confirmBox("Elimina Struttura", `Eliminare <b>${esc(site.name)}</b> con le sue aree?${n ? ` ${plural(n, "porta resterà", "porte resteranno")} senza area.` : ""} Sul controller non cambia niente.`, "Elimina", true) &&
+        await run(() => api(`api/sites/${site.id}`, {method: "DELETE"}), "Struttura eliminata");
+    } else if (b.dataset.areaEdit) {
+      const r = await nameDialog("Rinomina Area", "Nome dell'Area", area.name);
+      done = r && await run(() => api(`api/areas/${area.id}`, {method: "PUT", body: {name: r.name}}), "Area salvata");
+    } else if (b.dataset.areaDel) {
+      done = await confirmBox("Elimina Area", `Eliminare l'area <b>${esc(area.name)}</b>?${area.doors.length ? ` ${plural(area.doors.length, "porta resterà", "porte resteranno")} senza area.` : ""}`, "Elimina", true) &&
+        await run(() => api(`api/areas/${area.id}`, {method: "DELETE"}), "Area eliminata");
+    }
+    if (done) { await loadSummary(); render(); }
+  };
+}
+
 async function controllerEditor(ctrl) {
   const result = await modal({
     title: ctrl ? "Modifica Controller" : "Nuovo Controller",
@@ -1323,10 +1673,13 @@ async function controllerEditor(ctrl) {
 }
 
 async function doorEditor(ctrl, door) {
-  const [available, cameras] = await Promise.all([
+  const [available, cameras, sites] = await Promise.all([
     api(`api/controllers/${ctrl.id}/doors-available`).catch(() => []),
     api("api/cameras").catch(() => []),
+    api("api/locations").catch(() => []),
   ]);
+  const areaNow = door ? (sites.flatMap((x) => x.areas).find((a) => a.doors.includes(door.id))?.id || 0) : (sites.flatMap((x) => x.areas.filter((a) => a.id))[0]?.id || 0);
+  const areaInput = `<select name="area_id"><option value="0">Nessuna Area</option>${sites.filter((x) => x.id).map((x) => `<optgroup label="${esc(x.name)}">${x.areas.map((a) => `<option value="${a.id}" ${a.id === areaNow ? "selected" : ""}>${esc(a.name)}</option>`).join("")}</optgroup>`).join("")}</select>`;
   const used = ctrl.doors.filter((d) => d.id !== door?.id).map((d) => d.door_token);
   const doorOptions = available.filter((d) => !used.includes(d.token)).map((d) => `<option value="${esc(d.token)}" ${d.token === door?.door_token ? "selected" : ""}>${esc(d.name)} (${esc(d.token)})</option>`).join("");
   const missing = door && !available.some((d) => d.token === door.door_token) ? `<option value="${esc(door.door_token)}" selected>${esc(door.door_token)}</option>` : "";
@@ -1341,6 +1694,7 @@ async function doorEditor(ctrl, door) {
     wide: true,
     body: `<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(d.name || "")}" placeholder="es. Ingresso Scala A">`)}
       ${field("Porta del Controller", doorInput, available.length ? "" : "Elenco non disponibile: controller non raggiungibile.")}</div>
+      ${field("Struttura e Area", areaInput, 'Dove si trova la porta. Strutture e aree si creano in <a href="#impianti/strutture">Strutture e Aree</a>.')}
       <div class="field inline"><input type="checkbox" name="ha_buttons" id="f-hab" ${d.ha_buttons ? "checked" : ""}><label for="f-hab">Pulsanti Apri e Apri a Lungo in Home Assistant</label></div>
       <p class="hint" style="margin-top:-8px">Da mettere nelle dashboard. L'apertura è sempre a tempo e solo a porta bloccata.</p>
       <h3 class="section-title" style="margin-top:18px">${icon("camera")}Telecamera</h3>
@@ -1355,7 +1709,7 @@ async function doorEditor(ctrl, door) {
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
       const body = {name: val(dlg, "name"), door_token: val(dlg, "door_token"), ha_buttons: val(dlg, "ha_buttons"), snapshot_camera: val(dlg, "snapshot_camera"),
         snapshot_on_granted: val(dlg, "snapshot_on_granted"), intercom_name: val(dlg, "intercom_name"), intercom_relay: Number(val(dlg, "intercom_relay")),
-        intercom_open_door: val(dlg, "intercom_open_door"), intercom_mqtt_prefix: val(dlg, "intercom_mqtt_prefix")};
+        intercom_open_door: val(dlg, "intercom_open_door"), intercom_mqtt_prefix: val(dlg, "intercom_mqtt_prefix"), area_id: Number(val(dlg, "area_id"))};
       return (await run(() => api(door ? `api/doors/${door.id}` : `api/controllers/${ctrl.id}/doors`, {method: door ? "PUT" : "POST", body}), "Porta salvata")) || false;
     }}],
   });
@@ -1604,6 +1958,7 @@ async function importCsv(e) {
 // ---------- Avvio ----------
 async function start() {
   paintIcons();
+  initNav();
   try {
     store.me = await api("api/me");
   } catch (err) { /* la pagina funziona anche senza */ }

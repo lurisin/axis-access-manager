@@ -231,6 +231,9 @@ class RulesService:
                     "hidden": token in hidden and token != default,
                     "valid_from": profile.get("ValidFrom") or "",
                     "valid_to": profile.get("ValidTo") or "",
+                    "access_points": [
+                        p.get("AccessPoint") for p in profile.get("AccessPolicy") or [] if p.get("AccessPoint")
+                    ],
                 }
             )
         groups.sort(key=lambda g: (not g["default"], g["hidden"], g["name"].lower()))
