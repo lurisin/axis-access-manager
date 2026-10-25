@@ -55,6 +55,16 @@ def door_of_topic(topic: str) -> str:
     return topic.rsplit(marker, 1)[1].split("/", 1)[0] if marker in topic else ""
 
 
+# Condizioni della porta tenute come stato: topic → chiave; attive se lo stato non è "Normal",
+# la manomissione solo con "TamperDetected" (come nel vecchio package di Home Assistant)
+DOOR_CONDITIONS = {
+    "Door/State/DoorAlarm/": "allarme",
+    "Door/State/DoorWarning/": "preallarme",
+    "Door/State/DoorTamper/": "manomissione",
+}
+IO_PORT_MARKER = "/port/"
+
+
 @dataclass
 class CategoryStats:
     count: int = 0
@@ -75,6 +85,14 @@ class EventMonitor:
     door_token: str = ""
     # Modalità di ogni porta del controller, per token
     door_modes: dict[str, str] = field(default_factory=dict)
+    # Allarme, preallarme e manomissione di ogni porta: token → chiave → {"active", "state", "ts"}
+    door_conditions: dict[str, dict[str, dict]] = field(default_factory=dict)
+    # Diagnostica del controller: coperchio aperto, ultimo avvio, ingressi I/O (numero → attivo)
+    casing_open: bool | None = None
+    system_ready: str = ""
+    io_ports: dict[str, bool] = field(default_factory=dict)
+    # Chiamata quando il controller va online o offline
+    on_status: Callable[[], None] | None = None
     # Chiamata per ogni evento; retained=True per i messaggi conservati dal broker
     on_event: Callable[[Event, bool], None] | None = None
     # Integrazione con Home Assistant: chiamata a ogni connessione, comandi ricevuti e messaggio di addio
@@ -134,6 +152,8 @@ class EventMonitor:
     def handle(self, topic: str, payload: bytes, retained: bool = False) -> None:
         if topic == f"{self.prefix}/stato":
             self.controller_online = payload.decode(errors="replace") == "online"
+            if self.on_status:
+                self.on_status()
             return
         event = parse_event(self.prefix, topic, payload)
         if event is None:
@@ -148,11 +168,30 @@ class EventMonitor:
             token = door_of_topic(event.topic)
             if token:
                 self.door_modes[token] = event.data["State"]
+        self._track_state(event)
         if self.on_event:
             try:
                 self.on_event(event, retained)
             except Exception:
                 _LOGGER.exception("Errore nella gestione dell'evento %s", event.topic)
+
+    def _track_state(self, event: Event) -> None:
+        """Stati che Home Assistant mostra come sensori acceso/spento."""
+        data, topic = event.data, event.topic
+        ts = event.timestamp.isoformat(timespec="seconds")
+        for prefix, key in DOOR_CONDITIONS.items():
+            if topic.startswith(prefix) and "State" in data:
+                state = str(data["State"])
+                active = state == "TamperDetected" if key == "manomissione" else state != "Normal"
+                token = door_of_topic(topic) or self.door_token
+                self.door_conditions.setdefault(token, {})[key] = {"active": active, "state": state, "ts": ts}
+        if topic.startswith("Device/Casing/Open") and "Open" in data:
+            self.casing_open = str(data["Open"]) == "1"
+        elif topic.startswith("Device/Status/SystemReady"):
+            self.system_ready = ts
+        elif topic.startswith("Device/IO/Port") and IO_PORT_MARKER in topic and "state" in data:
+            port = topic.rsplit(IO_PORT_MARKER, 1)[1].split("/", 1)[0]
+            self.io_ports[port] = str(data["state"]) == "1"
 
     async def run(self, settings: MqttSettings) -> None:
         """Resta collegato al broker, riconnettendosi in caso di errore."""

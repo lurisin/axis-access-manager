@@ -1,4 +1,5 @@
-"""Entità di Home Assistant pubblicate con MQTT Discovery: porta, contatori, ultimo accesso, pulsanti, eventi."""
+"""Entità di Home Assistant pubblicate con MQTT Discovery: porte e loro allarmi, controller, contatori,
+ultimo accesso, pulsanti, eventi."""
 
 from __future__ import annotations
 
@@ -38,6 +39,27 @@ EVENT_TYPES = {
     "citofono": "citofono",
 }
 
+# Sensori acceso/spento di ogni porta: chiave nello stato → (nome, classe, icona)
+DOOR_CONDITIONS = {
+    "allarme": ("Allarme", "problem", "mdi:alarm-light"),
+    "preallarme": ("Preallarme", "problem", "mdi:alert"),
+    "manomissione": ("Manomissione", "tamper", "mdi:shield-alert"),
+}
+# Ingressi I/O del controller: numero della porta → (id, nome, classe), come nel vecchio package
+IO_INPUTS = {
+    "0": ("ingresso_aux_1", "Ingresso AUX 1", None),
+    "1": ("ingresso_aux_2", "Ingresso AUX 2", None),
+    "2": ("ingresso_manomissione", "Ingresso Manomissione", "tamper"),
+    "3": ("ingresso_allarme", "Ingresso Allarme", "problem"),
+}
+DOOR_ALARM_TYPES = {
+    "Normal": "Normale",
+    "DoorForcedOpen": "Porta Forzata",
+    "DoorOpenTooLong": "Aperta Troppo a Lungo",
+    "NotInTamper": "Normale",
+    "TamperDetected": "Manomissione Rilevata",
+}
+
 COMMANDS = {"apri": False, "apri_lungo": True}
 # Eventi che aggiornano il sensore Ultimo Accesso
 ACCESS_KINDS = ("concesso", "negato", "sconosciuta", "lettura", "apertura_remota")
@@ -65,6 +87,11 @@ def parse_command(command: str) -> tuple[bool, str] | None:
 
 def door_label(mode: str | None) -> str:
     return DOOR_MODES.get(mode, mode) if mode else "Sconosciuto"
+
+
+def on_off(value: bool | None) -> str:
+    """Stato di un sensore acceso/spento; "None" lo rende sconosciuto in Home Assistant."""
+    return "None" if value is None else "ON" if value else "OFF"
 
 
 class HaBridge:
@@ -176,6 +203,52 @@ class HaBridge:
                 },
             ),
             (
+                "binary_sensor",
+                "controller_online",
+                {
+                    **state,
+                    "name": "Controller Online",
+                    "device_class": "connectivity",
+                    "entity_category": "diagnostic",
+                    "value_template": "{{ value_json.controller.online }}",
+                },
+            ),
+            (
+                "binary_sensor",
+                "coperchio_controller",
+                {
+                    **state,
+                    "name": "Coperchio Controller Aperto",
+                    "device_class": "tamper",
+                    "value_template": "{{ value_json.controller.coperchio }}",
+                },
+            ),
+            (
+                "sensor",
+                "ultimo_avvio_controller",
+                {
+                    **state,
+                    "name": "Ultimo Avvio Controller",
+                    "device_class": "timestamp",
+                    "entity_category": "diagnostic",
+                    "value_template": "{{ value_json.controller.avvio }}",
+                },
+            ),
+            *[
+                (
+                    "binary_sensor",
+                    object_id,
+                    {
+                        **state,
+                        "name": name,
+                        **({"device_class": device_class} if device_class else {}),
+                        "icon": "mdi:electric-switch",
+                        "value_template": f"{{{{ value_json.ingressi['{port}'] }}}}",
+                    },
+                )
+                for port, (object_id, name, device_class) in IO_INPUTS.items()
+            ],
+            (
                 "event",
                 "eventi",
                 {
@@ -201,6 +274,23 @@ class HaBridge:
                             "name": f"Stato {label}",
                             "icon": "mdi:door",
                             "value_template": f"{{{{ value_json.porte['{door['door_token']}'] }}}}",
+                        },
+                    )
+                )
+            for key, (name, device_class, icon) in DOOR_CONDITIONS.items():
+                path = f"value_json.condizioni['{door['door_token']}'].{key}"
+                entities.append(
+                    (
+                        "binary_sensor",
+                        f"{key}_porta{suffix}",
+                        {
+                            **state,
+                            "name": f"{name} {label}",
+                            "device_class": device_class,
+                            "icon": icon,
+                            "value_template": f"{{{{ {path}.stato }}}}",
+                            "json_attributes_topic": self.state_topic,
+                            "json_attributes_template": f"{{{{ {path} | tojson }}}}",
                         },
                     )
                 )
@@ -274,7 +364,31 @@ class HaBridge:
             "negati_oggi": counts.get("negato", 0),
             "da_registrare": len(self.db.list_unknown_cards()),
             "persone": len(self.db.all_persons()),
+            "controller": {
+                "online": on_off(self.monitor.controller_online),
+                "coperchio": on_off(self.monitor.casing_open),
+                "avvio": self.monitor.system_ready or "None",
+            },
+            "ingressi": {port: on_off(self.monitor.io_ports.get(port)) for port in IO_INPUTS},
+            "condizioni": {d["door_token"]: self._conditions(d["door_token"]) for d in self.doors},
         }
+
+    def _conditions(self, token: str) -> dict:
+        """Allarme, preallarme e manomissione di una porta, con il tipo e l'ora dell'ultimo cambio."""
+        seen = self.monitor.door_conditions.get(token, {})
+        result = {}
+        for key in DOOR_CONDITIONS:
+            item = seen.get(key)
+            result[key] = (
+                {
+                    "stato": on_off(item["active"]),
+                    "tipo": DOOR_ALARM_TYPES.get(item["state"], item["state"]),
+                    "ultimo_cambio": item["ts"],
+                }
+                if item
+                else {"stato": "None", "tipo": "", "ultimo_cambio": ""}
+            )
+        return result
 
     async def _publish_state(self, client: aiomqtt.Client) -> None:
         await client.publish(self.state_topic, json.dumps(self.state()), qos=1, retain=True)

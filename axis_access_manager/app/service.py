@@ -35,6 +35,17 @@ DOOR_ALARMS = {
 }
 
 
+# Eventi che cambiano solo lo stato mostrato in Home Assistant (oltre a quanto va nel registro)
+STATE_TOPICS = (
+    "Door/State/DoorAlarm/",
+    "Door/State/DoorWarning/",
+    "Door/State/DoorTamper/",
+    "Device/Casing/Open",
+    "Device/Status/SystemReady",
+    "Device/IO/Port",
+)
+
+
 class ServiceError(Exception):
     """Richiesta non valida o non eseguibile: il messaggio va mostrato all'utente."""
 
@@ -117,6 +128,10 @@ class AccessService:
     def _changed(self) -> None:
         if self.on_change:
             self._spawn(self.on_change())
+
+    def notify_change(self) -> None:
+        """Qualcosa da aggiornare in Home Assistant (per esempio il controller è andato offline)."""
+        self._changed()
 
     def log_event(self, **fields) -> dict:
         """Salva un evento e avvisa chi lo deve elaborare."""
@@ -484,6 +499,9 @@ class AccessService:
             # Anche il valore conservato dal broker aggiorna lo stato in Home Assistant
             self._changed()
             return
+        if event.topic.startswith(STATE_TOPICS):
+            # Sensori di Home Assistant: allarmi della porta, coperchio, avvio e ingressi del controller
+            self._changed()
         if retained:
             return
         ts = event.timestamp.isoformat(timespec="seconds")

@@ -279,3 +279,19 @@ async def test_log_event_notifies_listeners(service):
     service.record_intercom("sensor.citofono", "Citofono")
     await asyncio.sleep(0)
     assert seen == ["citofono"]
+
+
+async def test_diagnostic_events_update_home_assistant(service, db):
+    changes = []
+
+    async def on_change():
+        changes.append(True)
+
+    service.on_change = on_change
+    # Anche il valore conservato dal broker aggiorna i sensori, ma non va nel registro
+    service.record_event(event("Device/IO/Port/$source/port/0", {"state": "1"}), retained=True)
+    service.record_event(event("Door/State/DoorWarning/$source/DoorToken/porta", {"State": "Normal"}))
+    service.notify_change()
+    await asyncio.sleep(0)
+    assert len(changes) == 3
+    assert db.list_events() == []

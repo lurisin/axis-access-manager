@@ -4,7 +4,7 @@ configuration:
     description: Gli eventi più vecchi vengono cancellati
   ha_integration:
     name: Entità in Home Assistant
-    description: Pubblica via MQTT stato porta, ultimo accesso, contatori, eventi per le automazioni e i pulsanti di apertura delle porte
+    description: Pubblica via MQTT stato e allarmi delle porte, stato del controller, ultimo accesso, contatori, eventi per le automazioni e i pulsanti di apertura delle porte
   ha_topic_prefix:
     name: Prefisso Topic per Home Assistant
     description: Topic MQTT usati dall'add-on per le proprie entità
@@ -19,45 +19,3 @@ configuration:
     name: Password MQTT (Facoltativa)
   log_level:
     name: Livello di Log
-  a1210_host:
-    name: "Indirizzo A1210 (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  a1210_username:
-    name: "Utente A1210 (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  a1210_password:
-    name: "Password A1210 (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  a1210_verify_ssl:
-    name: "Verifica Certificato HTTPS (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  door_token:
-    name: "Token Porta (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  access_profile:
-    name: "Profilo di Accesso (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  mqtt_topic_prefix:
-    name: "Prefisso Topic MQTT del Controller (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  ha_door_buttons:
-    name: "Pulsanti di Apertura (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  snapshot_camera:
-    name: "Telecamera per le Istantanee (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  snapshot_on_granted:
-    name: "Istantanea sugli Accessi Concessi (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  intercom_name:
-    name: "Nome del Citofono (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  intercom_open_door:
-    name: "Apri dal Citofono (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  intercom_relay:
-    name: "Relè del Citofono (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
-  intercom_mqtt_prefix:
-    name: "Prefisso MQTT del Citofono (Obsoleta)"
-    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
