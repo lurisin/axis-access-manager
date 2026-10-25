@@ -111,31 +111,77 @@ def test_notifications(db):
 
     db.add_event(ts=(now - timedelta(hours=1)).isoformat(), kind="allarme", door="porta", detail="porta forzata")
     db.add_event(ts=(now - timedelta(hours=30)).isoformat(), kind="allarme", door="porta")
-    db.add_event(ts=now.isoformat(), kind="negato", person_name="Luca", door="porta")
-    db.note_unknown_card("04AA", now.isoformat())
+    db.add_event(ts=now.isoformat(), kind="negato", person_name="Luca", door="porta", detail="fuori fascia oraria")
+    db.add_event(ts=now.isoformat(), kind="negato", card="04AA", door="porta", detail="tessera non registrata")
     items = _collect(service, mqtt_connected=False, controller_online=False)
-    assert {i["type"] for i in items} == {"door_alarm", "mqtt", "controller", "unknown_card"}
+    assert {i["type"] for i in items[:3]} == {"door_alarm", "mqtt", "controller"}
+    # Dalla più grave: allarme e collegamenti, poi la tessera sconosciuta, infine il singolo negato
+    assert [i["severity"] for i in items] == ["crit", "crit", "crit", "warn", "low"]
+    assert [i["type"] for i in items][3:] == ["unknown_card", "denied"]
     alarm = next(i for i in items if i["type"] == "door_alarm")
-    assert alarm["level"] == "urgent" and alarm["text"] == "Scala · porta forzata"
+    assert alarm["title"] == "Allarme Porta" and alarm["text"] == "Porta forzata" and alarm["door"] == "Scala"
+    denied = items[-1]
+    assert denied["text"] == "Luca · fuori fascia oraria" and denied["count"] == 1
+    assert items[3]["text"] == "Tessera 04AA" and items[3]["link"] == "#da-registrare"
 
     listing = service.listing(items)
-    assert listing["urgent"] == 3
+    assert listing["open"] == 5
     # Chi non vede il registro né le persone vede solo i collegamenti
     assert {i["type"] for i in service.listing(items, set())["items"]} == {"mqtt", "controller"}
 
     service.mark_seen(["mqtt", alarm["id"]], items)
-    assert service.listing(items)["urgent"] == 1
+    assert service.listing(items)["open"] == 3
     # Il collegamento torna: la notifica sparisce e, se si ripresenta, va rivista
     items = _collect(service, controller_online=False)
-    assert service.listing(items)["urgent"] == 1
+    assert service.listing(items)["open"] == 3
     items = _collect(service, mqtt_connected=False, controller_online=False)
-    assert service.listing(items)["urgent"] == 2
+    assert service.listing(items)["open"] == 4
 
-    service.set_levels({"denied": "info", "door_alarm": "off"}, "admin")
+    service.set_levels({"denied": "off", "door_alarm": "off"}, "admin")
     types = {i["type"] for i in _collect(service)}
-    assert "denied" in types and "door_alarm" not in types
+    assert "denied" not in types and "door_alarm" not in types and "unknown_card" in types
     with pytest.raises(ServiceError, match="livello non valido"):
-        service.set_levels({"denied": "forte"}, "admin")
+        service.set_levels({"denied": "info"}, "admin")
+
+
+def test_notifications_group_repeated_events(db):
+    service = NotificationService(db)
+    now = datetime.now(tz=UTC)
+
+    def denied(minutes_ago, **fields):
+        ts = (now - timedelta(minutes=minutes_ago)).isoformat()
+        return db.add_event(ts=ts, kind="negato", door="porta", detail="fuori fascia oraria", **fields)
+
+    # Tre tentativi della stessa persona a 2 minuti l'uno dall'altro: una notifica media con il conteggio
+    for minutes in (20, 18, 16):
+        denied(minutes, person_id=1, person_name="Ciccio Bello")
+    # Un quarto tentativo un'ora prima: troppo lontano, è un'altra notifica
+    denied(80, person_id=1, person_name="Ciccio Bello")
+    # Tessera sconosciuta ripetuta: critica
+    denied(5, card="c0110a01")
+    denied(4, card="c0110a01")
+    items = _collect(service)
+    assert [(i["type"], i["severity"], i["count"]) for i in items] == [
+        ("unknown_card", "crit", 2),
+        ("denied", "warn", 3),
+        ("denied", "low", 1),
+    ]
+    group = items[1]
+    assert group["title"] == "Accesso Negato ×3" and len(group["events"]) == 3 and group["event"] == group["events"][-1]
+    assert group["first_ts"] < group["ts"]
+    # Presa visione, poi un nuovo tentativo nella stessa finestra: la notifica torna da gestire
+    service.mark_seen([group["id"]], items)
+    assert service.listing(_collect(service))["open"] == 2
+    denied(15, person_id=1, person_name="Ciccio Bello")
+    listing = service.listing(_collect(service))
+    assert listing["open"] == 3
+    assert next(i for i in listing["items"] if i["count"] == 4)["seen"] is False
+
+
+def test_old_info_level_counts_as_active(db):
+    db.set_setting("notifications", '{"unknown_card": "info", "denied": "off"}')
+    levels = NotificationService(db).levels()
+    assert levels["unknown_card"] == "urgent" and levels["denied"] == "off"
 
 
 @pytest.fixture
@@ -156,8 +202,8 @@ def test_controller_page_through_api(client, controller):
 
     listing = client.get("/api/notifications").json()
     assert {t["key"] for t in listing["types"]} >= {"door_alarm", "controller", "mqtt"}
-    assert client.get("/api/summary").json()["notifications"] == listing["urgent"]
-    assert client.post("/api/notifications/seen", json={}).json() == {"urgent": 0}
+    assert client.get("/api/summary").json()["notifications"] == listing["open"]
+    assert client.post("/api/notifications/seen", json={}).json() == {"open": 0}
     types = client.put("/api/notifications/settings", json={"denied": "urgent"}).json()["types"]
     assert next(t for t in types if t["key"] == "denied")["level"] == "urgent"
     assert client.put("/api/notifications/settings", json={"x": "urgent"}).status_code == 400

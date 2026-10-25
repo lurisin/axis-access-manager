@@ -401,7 +401,7 @@ def create_app(
             "mqtt_connected": state.monitor.connected if status else None,
             "unknown_cards": len(state.db.list_unknown_cards()) if user.can("persone") else 0,
             "sync": state.last_sync,
-            "notifications": _notification_listing(request)["urgent"] if status else 0,
+            "notifications": _notification_listing(request)["open"] if status else 0,
         }
 
     @app.get("/api/notifications", dependencies=[need("stato")])
@@ -415,7 +415,7 @@ def create_app(
         ids = body.ids if body.ids is not None else [i["id"] for i in listing["items"]]
         state = request.app.state
         state.notifications.mark_seen(ids, _current_notifications(state))
-        return {"urgent": _notification_listing(request)["urgent"]}
+        return {"open": _notification_listing(request)["open"]}
 
     @app.put("/api/notifications/settings", dependencies=[need("utenti")])
     async def notification_settings(body: dict[str, str], request: Request) -> dict:
