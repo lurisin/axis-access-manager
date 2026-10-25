@@ -1,0 +1,230 @@
+[
+ {
+  "rowid": 1256,
+  "UtcTime": "2026-10-25T17:54:43.722451Z",
+  "KeyValues": [
+   {
+    "Key": "IdPointToken",
+    "Value": "lettore_via_consulta_ingresso_scala"
+   },
+   {
+    "Key": "topic1",
+    "Value": "Activity"
+   },
+   {
+    "Key": "topic0",
+    "Value": "IdPoint"
+   },
+   {
+    "Key": "Reason",
+    "Value": "CardPresented"
+   }
+  ]
+ },
+ {
+  "rowid": 1257,
+  "UtcTime": "2026-10-25T17:54:43.722728Z",
+  "KeyValues": [
+   {
+    "Key": "Action",
+    "Value": "Access"
+   },
+   {
+    "Key": "IdPointToken",
+    "Value": "lettore_via_consulta_ingresso_scala"
+   },
+   {
+    "Key": "topic0",
+    "Value": "IdPoint"
+   },
+   {
+    "Key": "topic1",
+    "Value": "Request"
+   },
+   {
+    "Key": "topic2",
+    "Value": "IdData"
+   },
+   {
+    "Key": "Card",
+    "Value": "c0110b18"
+   }
+  ]
+ },
+ {
+  "rowid": 1258,
+  "UtcTime": "2026-10-25T17:54:43.736202Z",
+  "KeyValues": [
+   {
+    "Key": "topic3",
+    "Value": "Card"
+   },
+   {
+    "Key": "IdentifierValue",
+    "Value": "6330313130623138"
+   },
+   {
+    "Key": "topic0",
+    "Value": "AccessControl"
+   },
+   {
+    "Key": "topic1",
+    "Value": "Denied"
+   },
+   {
+    "Key": "topic2",
+    "Value": "CredentialNotFound"
+   },
+   {
+    "Key": "AccessPointToken",
+    "Value": "accesso_via_consulta_ingresso_scala"
+   },
+   {
+    "Key": "Card",
+    "Value": "c0110b18"
+   }
+  ]
+ },
+ {
+  "rowid": 1259,
+  "UtcTime": "2026-10-25T17:54:43.736505Z",
+  "KeyValues": [
+   {
+    "Key": "IdentifierValue",
+    "Value": "6330313130623138"
+   },
+   {
+    "Key": "topic0",
+    "Value": "AccessControl"
+   },
+   {
+    "Key": "topic1",
+    "Value": "Denied"
+   },
+   {
+    "Key": "topic2",
+    "Value": "CredentialNotFound"
+   },
+   {
+    "Key": "AccessPointToken",
+    "Value": "accesso_via_consulta_ingresso_scala"
+   },
+   {
+    "Key": "Card",
+    "Value": "c0110b18"
+   }
+  ]
+ },
+ {
+  "rowid": 1261,
+  "UtcTime": "2026-10-25T17:54:49.788654Z",
+  "KeyValues": [
+   {
+    "Key": "Action",
+    "Value": "Access"
+   },
+   {
+    "Key": "IdPointToken",
+    "Value": "lettore_via_consulta_ingresso_scala"
+   },
+   {
+    "Key": "topic0",
+    "Value": "IdPoint"
+   },
+   {
+    "Key": "topic1",
+    "Value": "Request"
+   },
+   {
+    "Key": "topic2",
+    "Value": "IdData"
+   },
+   {
+    "Key": "Card",
+    "Value": "04a11a34"
+   }
+  ]
+ },
+ {
+  "rowid": 1262,
+  "UtcTime": "2026-10-25T17:54:49.806365Z",
+  "KeyValues": [
+   {
+    "Key": "CredentialHolderName",
+    "Value": "utente_ciccio_bello_261025005209"
+   },
+   {
+    "Key": "topic1",
+    "Value": "AccessGranted"
+   },
+   {
+    "Key": "AccessPointToken",
+    "Value": "accesso_via_consulta_ingresso_scala"
+   },
+   {
+    "Key": "topic2",
+    "Value": "Credential"
+   },
+   {
+    "Key": "topic0",
+    "Value": "AccessControl"
+   },
+   {
+    "Key": "CredentialToken",
+    "Value": "Axis-b8a44fe6a074:1792889564.863735000"
+   }
+  ]
+ },
+ {
+  "rowid": 1263,
+  "UtcTime": "2026-10-25T17:54:50.527300Z",
+  "KeyValues": [
+   {
+    "Key": "DoorToken",
+    "Value": "porta_via_consulta_ingresso_scala"
+   },
+   {
+    "Key": "topic1",
+    "Value": "State"
+   },
+   {
+    "Key": "State",
+    "Value": "Accessed"
+   },
+   {
+    "Key": "topic2",
+    "Value": "DoorMode"
+   },
+   {
+    "Key": "topic0",
+    "Value": "Door"
+   }
+  ]
+ },
+ {
+  "rowid": 1264,
+  "UtcTime": "2026-10-25T17:54:52.862083Z",
+  "KeyValues": [
+   {
+    "Key": "DoorToken",
+    "Value": "porta_via_consulta_ingresso_scala"
+   },
+   {
+    "Key": "topic1",
+    "Value": "State"
+   },
+   {
+    "Key": "State",
+    "Value": "Locked"
+   },
+   {
+    "Key": "topic2",
+    "Value": "DoorMode"
+   },
+   {
+    "Key": "topic0",
+    "Value": "Door"
+   }
+  ]
+ }
+]

@@ -8,6 +8,8 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from .backup_copy import recover, update_copy
+
 DB_PATH = Path("/data/axis_access_manager.db")
 
 SCHEMA = """
@@ -156,8 +158,8 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 """
 
-# Colonne aggiunte dopo la prima versione: (tabella, colonna, definizione)
-MIGRATIONS = [
+# Fino alla 0.17 si aggiungevano solo colonne: (tabella, colonna, definizione). Sono la versione 1 dello schema.
+LEGACY_COLUMNS = [
     ("cards", "access_profile", "TEXT NOT NULL DEFAULT ''"),
     ("cards", "valid_from", "TEXT NOT NULL DEFAULT ''"),
     ("cards", "valid_to", "TEXT NOT NULL DEFAULT ''"),
@@ -171,6 +173,28 @@ MIGRATIONS = [
     ("controllers", "description", "TEXT NOT NULL DEFAULT ''"),
     ("controllers", "snapshot_camera", "TEXT NOT NULL DEFAULT ''"),
 ]
+
+# Migrazioni numerate: (versione, descrizione, istruzioni SQL). PRAGMA user_version tiene l'ultima applicata.
+# Ogni migrazione gira una volta sola, in una transazione; prima si fa una copia del database.
+SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
+    (1, "colonne aggiunte fino alla 0.17", []),
+    (
+        2,
+        "identità del controller, tessere non presenti sul controller, eventi recuperati",
+        [
+            "ALTER TABLE controllers ADD COLUMN serial TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE controllers ADD COLUMN model TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE controllers ADD COLUMN firmware TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE controllers ADD COLUMN cert_fingerprint TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE controllers ADD COLUMN identity_at TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE controllers ADD COLUMN identity_change TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE cards ADD COLUMN missing_since TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE events ADD COLUMN recovered INTEGER NOT NULL DEFAULT 0",
+        ],
+    ),
+]
+SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
+SETTING_APP_VERSION = "app_version"
 
 
 def now_iso() -> str:
@@ -187,18 +211,64 @@ def local_day_start(days_ago: int = 0, now: datetime | None = None) -> str:
 class Database:
     """Accesso al database da più thread: una connessione protetta da un lock."""
 
-    def __init__(self, path: Path | str = DB_PATH) -> None:
+    def __init__(self, path: Path | str = DB_PATH, app_version: str = "") -> None:
+        """app_version: versione dell'add-on; se cambia rispetto all'ultimo avvio si fa una copia del database."""
+        self.path = Path(path) if str(path) != ":memory:" else None
+        self.recovered = recover(self.path) if self.path else ""
+        existed = bool(self.path and self.path.exists() and self.path.stat().st_size > 0)
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
+        self.copied = ""
         with self._lock:
             self._conn.execute("PRAGMA foreign_keys = ON")
+            version = self._conn.execute("PRAGMA user_version").fetchone()[0]
+            previous = self._app_version() if existed else ""
+            if existed and (version < SCHEMA_VERSION or (app_version and previous and previous != app_version)):
+                # Prima di toccare lo schema o dopo un aggiornamento dell'add-on: copia del database com'era
+                reason = f"v{previous}" if previous else f"schema{version}"
+                self.copied = update_copy(self.path, reason).name
             self._conn.executescript(SCHEMA)
-            for table, column, definition in MIGRATIONS:
-                columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
-                if column not in columns:
-                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            for step, _, statements in SCHEMA_STEPS:
+                if step <= version:
+                    continue
+                # Tutta la migrazione o niente: anche ALTER TABLE e user_version stanno nella transazione
+                self._conn.execute("BEGIN")
+                try:
+                    if step == 1:
+                        self._add_legacy_columns()
+                    for sql in statements:
+                        self._conn.execute(sql)
+                    self._conn.execute(f"PRAGMA user_version = {step}")
+                    self._conn.execute("COMMIT")
+                except Exception:
+                    self._conn.execute("ROLLBACK")
+                    raise
+            if app_version:
+                self._conn.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (SETTING_APP_VERSION, app_version),
+                )
             self._conn.commit()
+
+    def _app_version(self) -> str:
+        try:
+            row = self._conn.execute("SELECT value FROM app_settings WHERE key = ?", (SETTING_APP_VERSION,)).fetchone()
+        except sqlite3.OperationalError:
+            return ""
+        return row[0] if row else ""
+
+    def _add_legacy_columns(self) -> None:
+        for table, column, definition in LEGACY_COLUMNS:
+            columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    @property
+    def schema_version(self) -> int:
+        with self._lock:
+            return self._conn.execute("PRAGMA user_version").fetchone()[0]
 
     def close(self) -> None:
         self._conn.close()
@@ -247,6 +317,11 @@ class Database:
 
     def rename_person(self, person_id: int, name: str) -> None:
         self._execute("UPDATE persons SET name = ?, updated_at = ? WHERE id = ?", (name, now_iso(), person_id))
+
+    def set_person_user_token(self, person_id: int, token: str) -> None:
+        self._execute(
+            "UPDATE persons SET axis_user_token = ?, updated_at = ? WHERE id = ?", (token, now_iso(), person_id)
+        )
 
     def update_person_details(self, person_id: int, company: str, notes: str) -> None:
         self._execute(
@@ -320,8 +395,9 @@ class Database:
     def update_card(
         self, card_id: int, *, person_id: int, number: str, enabled: bool, access: dict | None = None
     ) -> None:
+        # Una tessera ricomparsa sul controller non è più "non presente"
         self._execute(
-            "UPDATE cards SET person_id = ?, number = ?, enabled = ? WHERE id = ?",
+            "UPDATE cards SET person_id = ?, number = ?, enabled = ?, missing_since = '' WHERE id = ?",
             (person_id, number, int(enabled), card_id),
         )
         if access is not None:
@@ -339,6 +415,28 @@ class Database:
 
     def delete_card(self, card_id: int) -> None:
         self._execute("DELETE FROM cards WHERE id = ?", (card_id,))
+
+    def mark_cards_missing(self, card_ids: list[int], since: str) -> None:
+        with self._lock:
+            self._conn.executemany(
+                "UPDATE cards SET missing_since = ? WHERE id = ? AND missing_since = ''",
+                [(since, card_id) for card_id in card_ids],
+            )
+            self._conn.commit()
+
+    def missing_cards(self) -> list[dict]:
+        """Tessere che l'app conosce ma che sul controller non ci sono più."""
+        rows = self._query(
+            "SELECT cards.*, persons.name AS person_name FROM cards JOIN persons ON persons.id = cards.person_id "
+            "WHERE cards.missing_since != '' ORDER BY persons.name COLLATE NOCASE, cards.id"
+        )
+        for row in rows:
+            row["enabled"] = bool(row["enabled"])
+        return rows
+
+    def set_card_token(self, card_id: int, token: str) -> None:
+        """Tessera riscritta sul controller: nuovo token, di nuovo presente."""
+        self._execute("UPDATE cards SET axis_credential_token = ?, missing_since = '' WHERE id = ?", (token, card_id))
 
     def all_cards(self) -> list[dict]:
         return self._query("SELECT * FROM cards")
@@ -525,6 +623,25 @@ class Database:
             "UPDATE controllers SET snapshot_camera = ?, updated_at = ? WHERE id = ?",
             (camera, now_iso(), controller_id),
         )
+
+    def set_controller_identity(self, controller_id: int, identity: dict) -> None:
+        """Numero di serie, modello, firmware e impronta del certificato del controller riconosciuto."""
+        self._execute(
+            "UPDATE controllers SET serial = ?, model = ?, firmware = ?, cert_fingerprint = ?, identity_at = ? "
+            "WHERE id = ?",
+            (
+                identity.get("serial", ""),
+                identity.get("model", ""),
+                identity.get("firmware", ""),
+                identity.get("cert_fingerprint", ""),
+                now_iso(),
+                controller_id,
+            ),
+        )
+
+    def set_controller_identity_change(self, controller_id: int, observed: str) -> None:
+        """Apparecchio diverso trovato all'indirizzo (JSON), vuoto quando non c'è niente da confermare."""
+        self._execute("UPDATE controllers SET identity_change = ? WHERE id = ?", (observed, controller_id))
 
     def delete_controller(self, controller_id: int) -> None:
         self._execute("DELETE FROM controllers WHERE id = ?", (controller_id,))
@@ -751,12 +868,48 @@ class Database:
         source: str = "",
         raw: dict | None = None,
         door: str = "",
+        recovered: bool = False,
     ) -> int:
         return self._execute(
-            "INSERT INTO events (ts, kind, card, person_id, person_name, detail, source, raw, door) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (ts, kind, card, person_id, person_name, detail, source, json.dumps(raw) if raw else "", door),
+            "INSERT INTO events (ts, kind, card, person_id, person_name, detail, source, raw, door, recovered) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                ts,
+                kind,
+                card,
+                person_id,
+                person_name,
+                detail,
+                source,
+                json.dumps(raw) if raw else "",
+                door,
+                int(recovered),
+            ),
         )
+
+    def similar_event(
+        self, *, ts: str, kind: str, card: str = "", door: str = "", detail: str = "", only_recovered: bool = False
+    ) -> bool:
+        """Stesso evento del controller già registrato entro un secondo; only_recovered: solo tra i recuperati."""
+        try:
+            moment = datetime.fromisoformat(ts)
+        except ValueError:
+            return False
+        low = (moment - timedelta(seconds=1)).isoformat(timespec="seconds")
+        high = (moment + timedelta(seconds=1)).isoformat(timespec="seconds")
+        return bool(
+            self._query(
+                "SELECT 1 FROM events WHERE ts BETWEEN ? AND ? AND kind = ? AND card = ? COLLATE NOCASE "
+                "AND door = ? AND detail = ? AND recovered >= ? LIMIT 1",
+                (low, high, kind, card, door, detail, int(only_recovered)),
+            )
+        )
+
+    def last_controller_event(self, kinds: tuple[str, ...]) -> str:
+        """Ora dell'ultimo evento arrivato dal controller: da lì si recuperano quelli persi."""
+        marks = ", ".join("?" * len(kinds))
+        rows = self._query(f"SELECT MAX(ts) AS ts FROM events WHERE kind IN ({marks})", kinds)
+        return rows[0]["ts"] or "" if rows else ""
 
     @staticmethod
     def _event_filter(
@@ -810,8 +963,8 @@ class Database:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         return self._query(
-            f"SELECT id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door "
-            f"FROM events {where} "
+            "SELECT id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door, "
+            f"recovered FROM events {where} "
             "ORDER BY id DESC LIMIT ?",
             tuple(params),
         )

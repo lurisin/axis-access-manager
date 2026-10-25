@@ -372,3 +372,44 @@ def test_summary_gives_camera_friendly_names(controller, tmp_path, monkeypatch):
         assert len(client.get("/api/summary").json()["faults"]) == 1
         app.state.snapshot_errors.clear()
         assert client.get("/api/summary").json()["faults"] == []
+
+
+def test_missing_cards_through_api(client, controller):
+    client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": "profilo_sempre"})
+    controller.credentials.clear()
+
+    assert client.post("/api/sync").json()["missing"] == 1
+    [card] = client.get("/api/missing-cards").json()
+    assert card["person_name"] == "Anna"
+    titles = [i["title"] for i in client.get("/api/notifications").json()["items"]]
+    assert "Tessere Non Presenti Sul Controller" in titles
+
+    assert client.post("/api/missing-cards/restore", json={}).json() == {"restored": 1, "failed": []}
+    assert client.get("/api/missing-cards").json() == []
+
+
+def test_changed_controller_through_api(client, controller):
+    from app.main import _apply_pause
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    controller.serial = "NUOVO"
+    client.portal.call(state.health.check_all)
+    _apply_pause(state)
+
+    [ctrl] = client.get("/api/installation").json()["controllers"]
+    assert "numero di serie X → NUOVO" in ctrl["health"]["identity_change"]
+    response = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": "profilo_sempre"})
+    assert response.status_code == 502 and "scritture sospese" in response.json()["detail"]
+    assert "sincronizzazione sospesa" in client.post("/api/sync").json()["detail"]
+    assert "Controller Cambiato" in [i["title"] for i in client.get("/api/summary").json()["faults"]]
+
+    assert client.post(f"/api/controllers/{ctrl['id']}/identity/accept").json() == {"ok": True}
+    response = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": "profilo_sempre"})
+    assert response.status_code == 200
+
+
+def test_status_reports_database(client):
+    data = client.get("/api/status").json()
+    assert data["database"]["schema"] >= 2
+    assert data["controllers"][0]["online"] is True

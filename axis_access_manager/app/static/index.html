@@ -355,7 +355,9 @@
   .alert.info { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
   .alert b { display: block; }
   .alert b.inline { display: inline; }
-  .alert .grow { flex: 1; }
+  .alert .grow { flex: 1; min-width: 0; }
+  /* Avvisi con pulsanti: sul telefono i pulsanti vanno sotto il testo */
+  @media (max-width: 640px) { .alert.stack { flex-wrap: wrap; } .alert.stack > .grow { flex-basis: calc(100% - 40px); } .alert.stack > :last-child { margin-left: 36px; flex-wrap: wrap; } }
   .todo { margin-bottom: 16px; }
   .todo .list .item .meta a { color: inherit; }
   .all-ok { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding: 10px 16px; border-radius: var(--radius);
@@ -563,6 +565,7 @@
 
 <dialog id="sheet" class="sheet"></dialog>
 <dialog id="modal"></dialog>
+<dialog id="retry"></dialog>
 <div id="toast" role="status"></div>
 
 <script>
@@ -688,8 +691,29 @@ async function api(path, options = {}) {
     body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "errore " + res.status);
+  if (!res.ok) {
+    const message = typeof data.detail === "string" ? data.detail : "errore " + res.status;
+    // Il controller non ha risposto a una modifica: si può riprovare senza rifare tutto da capo
+    if (res.status === 502 && (options.method || "GET") !== "GET" && !message.includes("scritture sospese") && await retryBox(message)) return api(path, options);
+    throw new Error(message);
+  }
   return data;
+}
+
+// Finestra separata da #modal: l'errore può arrivare mentre un'altra finestra è aperta
+function retryBox(message) {
+  return new Promise((resolve) => {
+    const dlg = $("#retry");
+    dlg.innerHTML = `<div class="dlg"><div class="dlg-head"><h2>Il Controller Non Ha Risposto</h2></div>
+      <div class="dlg-body"><p style="margin:0 0 8px">La modifica non è stata completata.</p><p class="muted small-text" style="margin:0">${esc(message)}</p>
+        <p class="hint">Controlla che il controller sia acceso e in rete, poi riprova. Riprovare non crea doppioni.</p></div>
+      <div class="dlg-foot"><button type="button" data-r="0">Annulla</button><button type="button" class="primary" data-r="1">Riprova</button></div></div>`;
+    const finish = (value) => { dlg.close(); resolve(value); };
+    $$("[data-r]", dlg).forEach((b) => { b.onclick = () => finish(b.dataset.r === "1"); });
+    dlg.oncancel = (e) => { e.preventDefault(); finish(false); };
+    dlg.showModal();
+    $("[data-r='1']", dlg).focus();
+  });
 }
 
 async function run(action, success) {
@@ -987,7 +1011,7 @@ window.addEventListener("hashchange", async () => {
 window.addEventListener("beforeunload", (e) => { if (pageGuard?.dirty()) { e.preventDefault(); e.returnValue = ""; } });
 // Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta
 async function refreshView() {
-  if ($("#modal").open || $("#sheet").open) return;
+  if ($("#modal").open || $("#sheet").open || $("#retry").open) return;
   if (route.name === "cruscotto" && dash.editing) return;
   if (["cruscotto", "da-registrare", "notifiche"].includes(route.name)) await render();
   if (route.name === "registro") await refreshLog();
@@ -1002,7 +1026,7 @@ function eventItem(e, {showSnapshot = true} = {}) {
     <div class="grow">
       <div class="title">${esc(label)}${e.person_name ? ` · ${esc(e.person_name)}` : ""}</div>
       <div class="meta"><span title="${esc(fmtFull(e.ts))}">${esc(relTime(e.ts))}</span>
-        ${multiDoor() && e.door ? `<span>${esc(doorLabel(e.door))}</span>` : ""}${e.card ? `<code>${esc(e.card)}</code>` : ""}${e.detail ? `<span>${esc(e.detail)}</span>` : ""}${source ? `<span>${source}</span>` : ""}</div>
+        ${multiDoor() && e.door ? `<span>${esc(doorLabel(e.door))}</span>` : ""}${e.card ? `<code>${esc(e.card)}</code>` : ""}${e.detail ? `<span>${esc(e.detail)}</span>` : ""}${source ? `<span>${source}</span>` : ""}${e.recovered ? '<span title="Recuperato dal registro interno del controller">recuperato</span>' : ""}</div>
     </div>
     ${showSnapshot && e.snapshot ? `<img class="thumb" loading="lazy" src="api/events/${e.id}/snapshot" alt="istantanea" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
     <div class="side">${esc(fmtDateTime(e.ts))}</div>
@@ -1434,6 +1458,7 @@ async function loadPersons() {
 const personTabs = (tab) => `<div class="segmented">${[["", "Persone"], ["tipologie", "Tipologie"]].map(([k, label]) => `<a href="#persone${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`;
 async function viewPersons(el, sub) {
   if (sub === "tipologie") return viewCategories(el);
+  if (sub === "mancanti") { personFilters.state = "mancanti"; sub = ""; history.replaceState(null, "", "#persone"); }
   try { await Promise.all([loadPersons(), loadGroups()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   el.innerHTML = `${personTabs("")}
     <div class="toolbar">
@@ -1441,9 +1466,11 @@ async function viewPersons(el, sub) {
       <select id="p-state">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
         <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
+        <option value="mancanti">Non Presenti Sul Controller</option>
       </select>
       <button type="button" class="primary w-persone" id="p-new">${icon("plus")}Nuova Persona</button>
     </div>
+    <div id="p-missing"></div>
     <div class="chips" id="p-cats" style="margin:-6px 0 14px"></div>
     <div class="card flush"><h2 style="padding-bottom:12px"><span id="p-count" class="muted small-text"></span><span class="spacer"></span>
       <button type="button" class="small ghost w-persone" id="p-sync" title="Rilegge tessere e utenti dal controller">${icon("refresh")}Rileggi dal Controller</button></h2>
@@ -1462,7 +1489,7 @@ async function viewPersons(el, sub) {
     e.target.disabled = true;
     const r = await run(() => api("api/sync", {method: "POST"}));
     e.target.disabled = false;
-    if (r) { toast(`Riletto dal controller: ${r.cards} tessere (${r.added} nuove, ${r.removed} rimosse)`); await loadPersons(); renderPersonList(); }
+    if (r) { toast(`Riletto dal controller: ${r.cards} tessere (${r.added} nuove${r.missing ? `, ${r.missing} non presenti sul controller` : ""})`); await loadPersons(); renderPersonList(); }
   });
   $("#p-list").addEventListener("click", (e) => {
     const item = e.target.closest("[data-person]");
@@ -1486,8 +1513,10 @@ function renderPersonList() {
     if (st === "attive" && !p.cards.some((c) => c.enabled)) return false;
     if (st === "sospese" && !p.cards.some((c) => !c.enabled)) return false;
     if (["in_scadenza", "scaduta", "futura"].includes(st) && validityState(a.from, a.to) !== st) return false;
+    if (st === "mancanti" && !p.cards.some((c) => c.missing_since)) return false;
     return true;
   });
+  renderMissingBanner();
   const cards = store.persons.reduce((n, p) => n + p.cards.length, 0);
   $("#p-count").textContent = `${plural(store.persons.length, "persona", "persone")} · ${plural(cards, "tessera", "tessere")}` + (rows.length !== store.persons.length ? ` · ${rows.length} mostrate` : "");
   // Tipologie come filtri rapidi, con il numero di persone di ognuna
@@ -1502,7 +1531,8 @@ function renderPersonList() {
     const a = personAccess(p);
     const vs = validityState(a.from, a.to);
     const suspended = p.cards.length && !p.cards.some((c) => c.enabled);
-    const flag = !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
+    const flag = p.cards.some((c) => c.missing_since) ? '<span class="pill err" title="Tessera sparita dal controller: riscrivila o toglila dall\'app">Non Sul Controller</span>'
+      : !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
     const c = categoryOf(p.category_id);
     const first = (p.name.trim()[0] || "#").toLocaleUpperCase("it");
     const head = sorted.length > 12 && first !== letter ? `<div class="day">${esc(first)}</div>` : "";
@@ -1512,6 +1542,45 @@ function renderPersonList() {
       <span class="name">${esc(p.name)}</span>${flag}
     </div>`;
   }).join("") : `<div class="empty">${store.persons.length ? "nessuna persona corrisponde ai filtri" : "nessuna persona registrata: passa una tessera sul lettore e registrala da \"Da registrare\""}</div>`;
+}
+
+// Tessere sparite dal controller (reset, sostituzione, cancellate a mano): l'app non le cancella da sola
+function renderMissingBanner() {
+  const box = $("#p-missing");
+  if (!box) return;
+  const cards = store.persons.flatMap((p) => p.cards.filter((c) => c.missing_since));
+  if (!cards.length) { box.innerHTML = ""; return; }
+  const persons = store.persons.filter((p) => p.cards.some((c) => c.missing_since)).length;
+  box.innerHTML = `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} Sul Controller</b>
+      ${plural(persons, "persona ha", "persone hanno")} tessere che l'app conosce ma che sul controller non ci sono più, per esempio dopo un reset o una sostituzione. L'app non le cancella da sola: riscrivile sul controller con gruppo e validità salvati, oppure toglile dall'app.
+      ${personFilters.state === "mancanti" ? "" : ' <a href="#persone/mancanti">Mostra Solo Queste</a>'}</div>
+    <div class="row w-persone" style="flex-wrap:nowrap"><button type="button" class="small primary" id="m-restore">Riscrivi Sul Controller</button><button type="button" class="small danger" id="m-forget">Togli dall'App</button></div></div>`;
+  paintIcons(box);
+  $("#m-restore").onclick = () => restoreMissing();
+  $("#m-forget").onclick = () => forgetMissing();
+}
+async function restoreMissing(ids = null) {
+  const r = await run(() => api("api/missing-cards/restore", {method: "POST", body: {ids}}));
+  if (!r) return false;
+  if (r.failed.length) {
+    await modal({title: "Tessere Non Riscritte", body: `<p style="margin-top:0">${plural(r.restored, "tessera riscritta", "tessere riscritte")}, ${plural(r.failed.length, "non riuscita", "non riuscite")}:</p>
+      <div class="list">${r.failed.map((f) => `<div class="item" style="padding-left:0"><div class="grow"><div class="title">${esc(f.person)} · <code>${esc(f.card)}</code></div><div class="meta">${esc(f.error)}</div></div></div>`).join("")}</div>
+      <p class="hint">Se manca il gruppo sul controller (dopo un reset) va ripristinata prima la configurazione del controller.</p>`, actions: [{label: "Chiudi", value: true}]});
+  } else toast(`${plural(r.restored, "tessera riscritta", "tessere riscritte")} sul controller`);
+  loadSummary();
+  await loadPersons();
+  renderPersonList();
+  return true;
+}
+async function forgetMissing(ids = null) {
+  const n = ids ? ids.length : store.persons.reduce((k, p) => k + p.cards.filter((c) => c.missing_since).length, 0);
+  if (!await confirmBox("Togli dall'App", `Togliere dall'app ${plural(n, "la tessera non presente", "le tessere non presenti")} sul controller? Le persone rimaste senza tessere spariscono con ditta, note e tipologia. Il registro dei passaggi resta.`, "Togli", true)) return false;
+  const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids}}), "Tessere tolte dall'app");
+  if (!r) return false;
+  loadSummary();
+  await loadPersons();
+  renderPersonList();
+  return true;
 }
 
 function validityFields(from = "", to = "") {
@@ -1595,8 +1664,8 @@ async function openPerson(id) {
       <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
           <div class="ev-icon ${c.enabled ? "k-accent" : "k-muted"}">${icon("card")}</div>
-          <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${c.enabled ? '<span class="pill ok">Attiva</span>' : '<span class="pill">Sospesa</span>'}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
-          <div class="row w-persone item-actions"><button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>
+          <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${c.missing_since ? `<span class="pill err">Non Sul Controller</span><span>sparita ${esc(relTime(c.missing_since))}</span>` : c.enabled ? '<span class="pill ok">Attiva</span>' : '<span class="pill">Sospesa</span>'}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
+          <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
           <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("")}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
         <dl class="props"><dt>Nome</dt><dd>${esc(p.name)}</dd><dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
@@ -1646,6 +1715,9 @@ async function openPerson(id) {
     });
     if (ok) reload();
   };
+  $$("[data-restore-card]", sheet).forEach((b) => b.onclick = async () => {
+    if (await restoreMissing([Number(b.dataset.restoreCard)])) reload();
+  });
   $$("[data-toggle]", sheet).forEach((b) => b.onclick = async () => {
     const enable = b.dataset.enabled !== "1";
     if (await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable}}), enable ? "Tessera riattivata" : "Tessera sospesa")) reload();
@@ -1653,7 +1725,7 @@ async function openPerson(id) {
   $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
     const last = p.cards.length === 1;
-    if (!await confirmBox("Elimina Tessera", `Eliminare la tessera <code>${esc(card.number)}</code> dal controller?` + (last ? " È l'unica tessera: verrà eliminata anche la persona." : ""), "Elimina", true)) return;
+    if (!await confirmBox("Elimina Tessera", `Eliminare la tessera <code>${esc(card.number)}</code> ${card.missing_since ? "dall'app? Sul controller non c'è già più." : "dal controller?"}` + (last ? " È l'unica tessera: verrà eliminata anche la persona." : ""), "Elimina", true)) return;
     const r = await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), "Tessera eliminata");
     if (!r) return;
     if (last) { close(); await loadPersons(); renderPersonList(); } else reload();
@@ -1736,7 +1808,7 @@ function logRow(e) {
   if (what.toLowerCase() === who.toLowerCase()) what = "";
   return `<div class="ev ${e.id === logSelected ? "sel" : ""}" data-event="${e.id}" role="button" tabindex="0" title="${esc(fmtFull(e.ts))}">
     <span class="time">${esc(fmtTime(e.ts))}</span><span class="dot ${KIND_DOT[cls] || ""}"></span>
-    <span class="what">${who ? `<b>${esc(who)}</b> <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="con istantanea">${icon("camera", "icon")}</span>` : ""}</span>
+    <span class="what">${who ? `<b>${esc(who)}</b> <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="con istantanea">${icon("camera", "icon")}</span>` : ""}${e.recovered ? ' <span class="muted small-text" title="Recuperato dal registro interno del controller">· recuperato</span>' : ""}</span>
     ${multiDoor() ? `<span class="where">${esc(eventPlace(e))}</span>` : "<span></span>"}
   </div>`;
 }
@@ -1750,6 +1822,7 @@ function eventDetail(e) {
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
     e.detail ? ["Dettaglio", esc(e.detail)] : null,
     e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
+    e.recovered ? ["Recuperato", "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
@@ -2375,8 +2448,9 @@ async function viewControllers(body, data) {
   });
   const card = (c) => `<div class="card ctl-card" style="margin:0">
       <a class="ctl-main" href="#impianti/c${c.id}">
-        <span class="ctl-name">${icon("chip")}${esc(c.name)}<span class="dot" data-ctl-state="${c.id}" title="Verifica del collegamento…" role="img" aria-label="Verifica del collegamento"></span></span>
-        <span class="muted small-text" data-ctl-model="${c.id}">${esc(c.description || "Axis")}</span>
+        <span class="ctl-name">${icon("chip")}${esc(c.name)}${(() => { const [cls, text] = healthState(c.health); return `<span class="dot ${cls}" data-ctl-state="${c.id}" title="${esc(text)}" role="img" aria-label="${esc(text)}"></span>`; })()}</span>
+        <span class="muted small-text" data-ctl-model="${c.id}">${esc([c.model, c.description].filter(Boolean).join(" · ") || "Axis")}</span>
+        ${c.health?.identity_change ? '<span class="pill err" style="align-self:flex-start">Controller Cambiato</span>' : c.health?.clock_problem ? '<span class="pill warn" style="align-self:flex-start">Orologio Sbagliato</span>' : ""}
         <span class="ctl-stats"><span><b>${c.doors.length}</b> ${c.doors.length === 1 ? "porta" : "porte"}</span><span data-ctl-readers="${c.id}"><b>…</b> lettori</span><span data-ctl-inputs="${c.id}" hidden></span></span>
       </a>
       <a class="ctl-gear btn small ghost icon-only" href="#impianti/c${c.id}/connessione" title="Impostazioni di Connessione" aria-label="Impostazioni di connessione di ${esc(c.name)}">${icon("cog")}</a>
@@ -2392,10 +2466,12 @@ async function viewControllers(body, data) {
     const c = data.controllers[0];
     const dot = $(`[data-ctl-state="${c.id}"]`);
     if (!dot) return;
-    // Verde: risponde e manda gli eventi; giallo: risponde ma gli eventi MQTT non arrivano; rosso: non risponde
-    const [cls, text] = !s.controller.ok ? ["err", `Non raggiungibile: ${s.controller.error || "nessuna risposta"}`]
-      : !s.mqtt.connected ? ["warn", "Collegato, ma gli eventi MQTT non arrivano: registro e stato porta non si aggiornano"]
-      : ["ok", "Collegato, eventi in arrivo"];
+    // Verde: risponde e manda gli eventi; giallo: risponde ma gli eventi MQTT non arrivano; rosso: non risponde o è cambiato
+    const health = s.controllers.find((h) => h.id === c.id) || c.health;
+    let [cls, text] = healthState(health);
+    if (!health) [cls, text] = !s.controller.ok ? ["err", `Non raggiungibile: ${s.controller.error || "nessuna risposta"}`] : ["ok", "Collegato"];
+    if (cls === "ok" && !s.mqtt.connected) [cls, text] = ["warn", "Collegato, ma gli eventi MQTT non arrivano: registro e stato porta non si aggiornano"];
+    else if (cls === "ok") text = "Collegato, eventi in arrivo";
     dot.className = `dot ${cls}`;
     dot.title = text;
     dot.setAttribute("aria-label", text);
@@ -2407,6 +2483,40 @@ async function viewControllers(body, data) {
     inputs.innerHTML = count(s.controller.inputs, "ingresso", "ingressi");
     if (s.controller.ok) $(`[data-ctl-model="${c.id}"]`).textContent = [`${s.controller.model}`, c.description].filter(Boolean).join(" · ");
   }).catch(() => {});
+}
+
+// Spia del controller dal controllo periodico (ogni 30 secondi): [classe, descrizione]
+function healthState(h) {
+  if (!h) return ["", "Verifica del collegamento…"];
+  if (h.identity_change) return ["err", "Controller cambiato: scritture sospese finché non confermi"];
+  if (h.unreachable) return ["err", `Non raggiungibile: ${h.error || "nessuna risposta"}`];
+  if (h.online === false) return ["warn", `Non ha risposto all'ultimo controllo: ${h.error || ""}`];
+  if (h.clock_problem) return ["warn", `Orologio sbagliato di ${offsetText(h.clock_offset)}`];
+  return ["ok", "Collegato"];
+}
+const offsetText = (sec) => {
+  const way = sec > 0 ? "avanti" : "indietro", v = Math.abs(sec);
+  return v >= 3600 ? `${(v / 3600).toFixed(1).replace(".", ",")} ore ${way}` : v >= 120 ? `${Math.round(v / 60)} min ${way}` : `${Math.round(v)} s ${way}`;
+};
+// Controller cambiato: avviso con la conferma (solo amministratori) in tutte le pagine del controller
+function identityAlert(ctrl) {
+  const h = ctrl.health;
+  if (!h?.identity_change) return "";
+  const k = h.known || {};
+  const row = (label, before, after) => before && after && before !== after ? `<tr><td>${label}</td><td><code>${esc(before)}</code></td><td><code>${esc(after)}</code></td></tr>` : "";
+  return `<div class="alert err stack">${icon("alert")}<div class="grow"><b>Controller Cambiato</b>All'indirizzo <code>${esc(ctrl.host)}</code> risponde un apparecchio diverso da quello memorizzato. Finché non confermi, l'app non scrive niente sul controller e non rilegge le tessere.
+      <div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th></th><th>Memorizzato</th><th>Trovato</th></tr></thead><tbody>
+        ${row("Numero di Serie", k.serial, h.serial)}${row("Modello", k.model, h.model)}${row("Certificato", (k.cert_fingerprint || "").slice(0, 23), (h.cert_fingerprint || "").slice(0, 23))}</tbody></table></div>
+      <p class="hint" style="margin-bottom:0">Conferma solo se il controller è stato davvero sostituito o resettato. Dopo la conferma le tessere che non trova restano segnate in Persone, da riscrivere o togliere.</p></div>
+    ${store.me.admin ? `<button type="button" class="small primary" data-accept-identity="${ctrl.id}">Conferma Nuovo Controller</button>` : '<span class="small-text muted">Serve un amministratore</span>'}</div>`;
+}
+function bindIdentityAlert(root, ctrl) {
+  const b = $("[data-accept-identity]", root);
+  if (!b) return;
+  b.onclick = async () => {
+    if (!await confirmBox("Conferma Nuovo Controller", `Da ora <b>${esc(ctrl.name)}</b> è l'apparecchio con numero di serie <code>${esc(ctrl.health.serial)}</code>. Le scritture ripartono e le tessere vengono rilette.`, "Conferma")) return;
+    if (await run(() => api(`api/controllers/${ctrl.id}/identity/accept`, {method: "POST"}), "Nuovo controller confermato")) { loadSummary(); render(); }
+  };
 }
 
 // Struttura e area del controller: porte e lettori la ereditano
@@ -2465,6 +2575,7 @@ function controllerHeader(ctrl, tab) {
         <span class="spacer" style="flex:1"></span><a class="btn small" href="#impianti/c${ctrl.id}/connessione">${icon("cog")}Connessione</a></div>
       ${ctrl.description ? `<div class="muted small-text">${esc(ctrl.description)}</div>` : ""}
     </div>
+    ${identityAlert(ctrl)}
     ${tab === "connessione" ? "" : `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impianti/c${ctrl.id}${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`}`;
 }
 
@@ -2472,8 +2583,9 @@ function paintControllerState() {
   api("api/status").then((s) => {
     const pill = $("#ctl-state");
     if (!pill) return;
-    pill.className = "pill " + (s.controller.ok ? "ok" : "err");
-    pill.innerHTML = `<span class="dot"></span>${s.controller.ok ? `Collegato · ${esc(s.controller.model)}` : "Non Raggiungibile"}`;
+    const changed = s.controllers.some((h) => h.identity_change);
+    pill.className = "pill " + (changed || !s.controller.ok ? "err" : "ok");
+    pill.innerHTML = `<span class="dot"></span>${changed ? "Controller Cambiato" : s.controller.ok ? `Collegato · ${esc(s.controller.model)}` : "Non Raggiungibile"}`;
     pill.title = s.controller.ok ? `firmware ${s.controller.firmware}` : s.controller.error || "";
   }).catch(() => {});
 }
@@ -2487,6 +2599,7 @@ async function viewConnection(el, ctrl) {
         <span class="row"><a class="btn" href="#impianti/c${ctrl.id}">Annulla</a><button type="submit" class="primary">Salva</button></span></div></form>`;
   paintIcons(el);
   paintControllerState();
+  bindIdentityAlert(el, ctrl);
   const form = $("#conn-form");
   const read = bindControllerFields(form, ctrl);
   const initial = JSON.stringify(read());
@@ -2509,6 +2622,7 @@ async function viewController(el, ctrl, tab) {
   el.innerHTML = `${controllerHeader(ctrl, tab)}<div id="c-body">${loadingBox()}</div>`;
   paintIcons(el);
   paintControllerState();
+  bindIdentityAlert(el, ctrl);
   const body = $("#c-body");
   const primary = (await api("api/installation")).controllers[0];
   // Nel frattempo si è cambiata pagina o scheda: questa risposta non serve più
@@ -2861,11 +2975,18 @@ async function controllerStatus(body, ctrl) {
   try { s = await api("api/status"); } catch (err) { body.innerHTML = errorBox("Stato Non Leggibile", err); return; }
   const c = s.controller, m = s.mqtt;
   const connection = ` <a href="#impianti/c${ctrl.id}/connessione">Controlla la Connessione</a>`;
+  const h = s.controllers.find((x) => x.id === ctrl.id);
+  const ntp = h?.ntp || {};
+  const clock = !h || h.clock_offset === null ? "—"
+    : `${statusDot(h.clock_problem ? "err" : "ok")} ${Math.abs(h.clock_offset) < 2 ? "Allineato a Home Assistant" : `${offsetText(h.clock_offset)} rispetto a Home Assistant`}${h.time_zone ? ` · ${esc(h.time_zone)}` : ""}`;
+  const ntpText = ntp.servers?.length || ntp.source ? `${ntp.active === false ? statusDot("warn") + " Non sincronizzato · " : ntp.active ? statusDot("ok") + " " : ""}${esc((ntp.servers || []).join(", ") || "nessun server")}${ntp.source ? ` <span class="muted">(${esc(ntp.source)})</span>` : ""}` : "—";
   const ctrlInfo = c.ok ? props([
-    ["Stato", `${statusDot("ok")} Raggiungibile`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
+    ["Stato", `${statusDot("ok")} Raggiungibile${h?.latency_ms != null ? ` <span class="muted">· risponde in ${h.latency_ms} ms, controllato ${esc(relTime(h.checked_at))}</span>` : ""}`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
+    ["Certificato", h?.cert_fingerprint ? `<code class="small-text" style="overflow-wrap:anywhere">${esc(h.cert_fingerprint)}</code>` : "—"],
+    ["Orologio", clock], ["Server NTP", ntpText],
     ["Indirizzo", `<code>${esc(ctrl.host)}</code>`], ["Porte sul Controller", c.doors.map((d, i) => `<span title="${esc(d)}">${esc(c.door_names?.[i] || d)}</span>`).join(", ")],
     ["Lettori", esc(c.readers ?? "—")], ["Tessere sul Controller", esc(c.credentials)],
-  ]) : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
+  ]) + (h?.clock_problem ? '<p class="hint" style="color:var(--err)">Le fasce orarie scattano con l\'ora del controller: imposta un server NTP raggiungibile nel controller (Sistema → Data e Ora).</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
   const cats = Object.entries(m.categories || {});
   const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta mqtt_host nelle opzioni dell'add-on.</div></div>` : props([
     ["Broker", m.connected ? `${statusDot("ok")} Collegato` : `${statusDot("err")} Non Collegato ${esc(m.error)}`],
@@ -2873,6 +2994,7 @@ async function controllerStatus(body, ctrl) {
     ["Controller", m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? `${statusDot("ok")} Online` : `${statusDot("err")} Offline`],
     ["Ultima Tessera Letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
     ["Eventi AccessControl", m.access_events_seen ? `${statusDot("ok")} Ricevuti` : `${statusDot("warn")} Non Ancora Ricevuti`],
+    ["Eventi Persi", s.recovery ? `${s.recovery.events ? `${plural(s.recovery.events, "recuperato", "recuperati")}` : "nessuno"} dal registro del controller, controllato ${esc(relTime(s.recovery.at))}` : "si controllano all'avvio e dopo ogni interruzione"],
   ]) + (m.connected && !m.access_events_seen ? '<p class="hint">Se dopo il passaggio di una tessera compare solo IdPoint, aggiungi gli eventi AccessControl (accesso concesso e negato) al filtro eventi MQTT dell\'A1210: servono per sapere se la porta si è aperta e perché un accesso è stato negato.</p>' : "")
     + (cats.length ? `<details style="margin-top:12px"><summary class="small-text muted" style="cursor:pointer">Eventi Ricevuti per Categoria (${cats.length})</summary><div class="table-wrap"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo Topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div></details>` : "");
   const doors = s.doors.filter((d) => ctrl.doors.some((x) => x.id === d.id));
@@ -2891,7 +3013,7 @@ async function controllerStatus(body, ctrl) {
   body.innerHTML = `<div class="grid two">
       <div>
         <div class="card"><h2>${statusDot(c.ok ? "ok" : "err")}Controller</h2>${ctrlInfo}
-          <p class="hint">Ultima sincronizzazione delle tessere: ${s.sync.at ? esc(relTime(s.sync.at)) : "non ancora eseguita"}${s.sync.ok === false ? ` · <span style="color:var(--err)">${esc(s.sync.error)}</span>` : ""}</p></div>
+          <p class="hint">Ultima sincronizzazione delle tessere: ${s.sync.paused ? "sospesa finché non confermi il nuovo controller" : s.sync.at ? esc(relTime(s.sync.at)) : "non ancora eseguita"}${s.sync.ok === false ? ` · <span style="color:var(--err)">${esc(s.sync.error)}</span>` : ""}</p></div>
         <div class="card"><h2>${icon("door")}Porte</h2>${doorList}</div>
       </div>
       <div>
@@ -3179,6 +3301,11 @@ async function viewSettings(el, sub) {
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
           <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi.</p></div>
+        <div class="card"><h2>${icon("download")}Database dell'Add-on</h2>${props([
+          ["Versione dello Schema", esc(s.database.schema)],
+          ["Copia per il Backup di HA", s.database.ha_copy ? `${statusDot("ok")} Preparata ${esc(relTime(s.database.ha_copy))}` : `${statusDot("")} Non ancora: si prepara prima del prossimo backup`],
+          ["Copie Prima degli Aggiornamenti", s.database.copies.length ? s.database.copies.map((c) => `${esc(fmtDateTime(c.at))} <span class="muted">· ${Math.max(1, Math.round(c.size / 1024))} kB</span>`).join("<br>") : "nessuna"],
+        ])}<p class="hint">Prima di ogni aggiornamento dell'add-on si fa una copia del database (si tengono le ultime 3). Subito prima di ogni backup di Home Assistant si prepara una copia coerente, usata all'avvio se il database risultasse danneggiato.</p></div>
         ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Stato del controller, delle porte, degli eventi MQTT e dei citofoni: nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
       </div>
     </div>

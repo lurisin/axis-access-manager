@@ -1,5 +1,6 @@
 import copy
 import itertools
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -76,8 +77,47 @@ class FakeController:
     async def aclose(self):
         pass
 
+    serial = "X"
+    firmware = "10.12.288.1"
+    fingerprint = "AA:BB"
+    # Secondi di scarto dell'orologio rispetto all'ora vera
+    clock_skew = 0
+    offline = False
+
     async def device_info(self):
-        return {"ProdNbr": "A1210", "Version": "10.12.288.1", "SerialNumber": "X"}
+        if self.offline:
+            raise VapixError("il controller non risponde (ConnectTimeout)")
+        return {"ProdNbr": "A1210", "Version": self.firmware, "SerialNumber": self.serial}
+
+    async def certificate_fingerprint(self):
+        return self.fingerprint
+
+    async def date_time_info(self):
+        # Come l'A1210 del banco: dateTime è in UTC
+        moment = datetime.now(tz=UTC) + timedelta(seconds=self.clock_skew)
+        return {"dateTime": moment.strftime("%Y-%m-%dT%H:%M:%SZ"), "timeZone": "Europe/Rome", "dstEnabled": True}
+
+    async def ntp_info(self):
+        return {
+            "client": {
+                "enabled": True,
+                "serversSource": "static",
+                "staticServers": ["it.pool.ntp.org"],
+                "advertisedServers": ["172.27.202.1"],
+                "synced": True,
+                "timeOffset": 0.36650896072387695,
+            }
+        }
+
+    log_events: list = []
+
+    async def fetch_events(self, start, limit=1000, row_id=None):
+        rows = [
+            e
+            for e in self.log_events
+            if e["UtcTime"] >= start.replace("Z", "") and (row_id is None or e["rowid"] > row_id)
+        ]
+        return rows[:limit], len(rows) > limit
 
     async def door_info_list(self):
         return [{"token": t, "Name": d["Name"]} for t, d in self.doors.items()]

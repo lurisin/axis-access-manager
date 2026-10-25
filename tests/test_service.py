@@ -41,14 +41,94 @@ async def test_sync_imports_existing_cards(service, controller, db):
     assert [c["enabled"] for c in persons[1]["cards"]] == [True, False]
 
 
-async def test_sync_removes_cards_deleted_on_controller(service, controller, db):
+async def test_sync_marks_cards_deleted_on_controller(service, controller, db):
     token = controller.add_existing("utente_mario", "Mario Rossi", "04aa")
     await service.sync_from_controller()
+    person = db.list_persons()[0]
+    db.update_person_details(person["id"], "Ditta Rossi", "chiavi del magazzino")
     controller.credentials.pop(token)
 
     result = await service.sync_from_controller()
 
-    assert result["removed"] == 1
+    # Mai cancellate da sole: la persona resta con i dati che conosce solo l'app
+    assert result["removed"] == 0 and result["missing"] == 1 and result["new_missing"] == 1
+    assert result["mass_missing"] is True
+    [person] = db.list_persons()
+    assert person["company"] == "Ditta Rossi"
+    assert person["cards"][0]["missing_since"]
+    assert (await service.sync_from_controller())["new_missing"] == 0
+
+
+async def test_mass_missing_threshold():
+    from app.service import mass_missing
+
+    assert mass_missing(50, 50) is True
+    assert mass_missing(50, 1) is False
+    assert mass_missing(50, 5) is False
+    assert mass_missing(50, 6) is True
+    assert mass_missing(2, 1) is False
+    assert mass_missing(0, 0) is False
+
+
+async def test_missing_card_comes_back(service, controller, db):
+    token = controller.add_existing("utente_mario", "Mario Rossi", "04aa")
+    await service.sync_from_controller()
+    saved = controller.credentials.pop(token)
+    await service.sync_from_controller()
+
+    controller.credentials[token] = saved
+    await service.sync_from_controller()
+
+    assert db.missing_cards() == []
+
+
+async def test_restore_missing_rewrites_card_and_user(service, controller, db):
+    person = await service.create_person("Mario Rossi", "04AA", "admin", group="profilo_sempre")
+    await service.set_card_enabled(person["cards"][0]["id"], False, "admin")
+    # Controller resettato: niente utenti né tessere
+    controller.credentials.clear()
+    controller.users.clear()
+    await service.sync_from_controller()
+
+    result = await service.restore_missing("admin")
+
+    assert result == {"restored": 1, "failed": []}
+    [credential] = controller.credentials.values()
+    assert credential["IdData"] == [{"Name": "Card", "Value": "04AA"}]
+    assert credential["Enabled"] is False
+    assert credential["CredentialAccessProfile"][0]["AccessProfile"] == "profilo_sempre"
+    assert person["axis_user_token"] in controller.users
+    [card] = db.get_person(person["id"])["cards"]
+    assert card["axis_credential_token"] == credential["token"] and not card["missing_since"]
+    assert (await service.sync_from_controller())["missing"] == 0
+
+
+async def test_restore_missing_reports_failures(service, controller, db):
+    await service.create_person("Mario Rossi", "04AA", "admin", group="profilo_sempre")
+    controller.credentials.clear()
+    await service.sync_from_controller()
+    controller.fail_set_credential = True
+
+    result = await service.restore_missing("admin")
+
+    assert result["restored"] == 0
+    assert result["failed"][0]["card"] == "04AA" and "errore finto" in result["failed"][0]["error"]
+    assert len(db.missing_cards()) == 1
+
+
+async def test_forget_missing_and_delete_missing_card(service, controller, db):
+    anna = await service.create_person("Anna Bianchi", "01", "admin", group="profilo_sempre")
+    mario = await service.create_person("Mario Rossi", "02", "admin", group="profilo_sempre")
+    controller.credentials.clear()
+    await service.sync_from_controller()
+
+    # Tessera non presente: si elimina senza chiederla al controller
+    controller.calls.clear()
+    await service.delete_card(anna["cards"][0]["id"], "admin")
+    assert not [c for c in controller.calls if c[0] == "remove_credential"]
+
+    assert service.forget_missing("admin") == {"cards": 1, "persons": 1}
+    assert db.get_person(mario["id"]) is None
     assert db.list_persons() == []
 
 
@@ -331,3 +411,74 @@ async def test_controller_casing_tamper_names_the_controller_not_a_door(service,
     db.add_event(ts="2026-10-25T09:00:00+00:00", kind="manomissione", detail="alloggiamento controller aperto")
     assert db.rename_controller_events("alloggiamento controller aperto", "coperchio del controller aperto", "A1") == 1
     assert {e["source"] for e in db.list_events()} == {"A1210 Banco", "A1"}
+
+
+def _bench_log(credential_token: str) -> list[dict]:
+    """Registro eventi letto dall'A1210 del banco (0.18): tessera sconosciuta e tessera valida."""
+    import json
+    from pathlib import Path
+
+    entries = json.loads((Path(__file__).parent / "data" / "eventlogger_a1210.json").read_text())
+    for entry in entries:
+        for kv in entry["KeyValues"]:
+            if kv["Key"] == "CredentialToken":
+                kv["Value"] = credential_token
+    return entries
+
+
+async def test_event_from_log_matches_mqtt_topics():
+    from app.events import event_from_log
+
+    events = [event_from_log(e) for e in _bench_log("x")]
+    assert [e.topic for e in events][:4] == [
+        "IdPoint/Activity/",
+        "IdPoint/Request/IdData/",
+        "AccessControl/Denied/CredentialNotFound/Card/",
+        "AccessControl/Denied/CredentialNotFound/",
+    ]
+    assert events[1].data["Card"] == "c0110b18"
+    assert events[6].data == {"DoorToken": "porta_via_consulta_ingresso_scala", "State": "Accessed"}
+    assert events[0].timestamp.isoformat(timespec="seconds") == "2026-10-25T17:54:43+00:00"
+
+
+async def test_recover_events_from_controller_log(service, controller, db):
+    person = await service.create_person("Ciccio Bello", "04A11A34", "admin", group="profilo_sempre")
+    controller.log_events = _bench_log(person["cards"][0]["axis_credential_token"])
+    rows = []
+
+    async def after(row):
+        rows.append(row)
+
+    service.after_event = after
+
+    recovered = await service.recover_events(datetime(2026, 10, 25, 17, 0, tzinfo=UTC))
+
+    events = db.list_events()
+    # Sconosciuta e negato (il doppio /Card conta una volta), lettura e concesso; DoorMode resta fuori
+    assert sorted(e["kind"] for e in events) == ["concesso", "lettura", "negato", "sconosciuta"]
+    assert recovered == 4
+    assert all(e["recovered"] for e in events)
+    granted = next(e for e in events if e["kind"] == "concesso")
+    assert granted["person_name"] == "Ciccio Bello"
+    # Una seconda lettura dello stesso registro non duplica niente
+    assert await service.recover_events(datetime(2026, 10, 25, 17, 0, tzinfo=UTC)) == 0
+    assert len(db.list_events()) == 4
+    assert db.list_unknown_cards()[0]["count"] == 1
+
+
+async def test_live_event_after_recovery_is_not_duplicated(service, controller, db):
+    controller.log_events = _bench_log("x")[:4]
+    await service.recover_events(datetime(2026, 10, 25, 17, 0, tzinfo=UTC))
+    assert len(db.list_events()) == 2
+
+    # Lo stesso negato arriva in ritardo via MQTT
+    service.record_event(
+        Event(
+            category="AccessControl",
+            topic="AccessControl/Denied/CredentialNotFound/Card/AccessPointToken/x",
+            timestamp=datetime(2026, 10, 25, 17, 54, 43, tzinfo=UTC),
+            data={"Card": "c0110b18", "AccessPointToken": "accesso_via_consulta_ingresso_scala"},
+        )
+    )
+
+    assert len(db.list_events()) == 2
