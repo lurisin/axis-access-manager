@@ -30,7 +30,10 @@ TYPES = {
         "urgent",
     ),
     "expiring": ("Tessere in Scadenza", "Persone con tessere che scadono nei prossimi tre giorni.", "urgent"),
+    "camera": ("Telecamere Non Disponibili", "L'ultima foto di una telecamera delle porte non è riuscita.", "urgent"),
 }
+# Guasti dell'impianto: restano finché non si risolvono, anche dopo la presa visione
+FAULT_TYPES = ("controller", "mqtt", "camera")
 # Tipi con nomi o eventi: permesso necessario per vederli
 VISIBILITY = {"door_alarm": "registro", "denied": "registro", "unknown_card": "persone", "expiring": "persone"}
 # Attiva: compare in Da Gestire e conta sulla campanella. "info" (fino alla 0.13) vale come attiva.
@@ -99,6 +102,7 @@ class NotificationService:
         controller_online: bool | None,
         sync: dict,
         door_names: dict[str, str],
+        cameras: list[dict] | None = None,
         now: datetime | None = None,
     ) -> list[dict]:
         """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente."""
@@ -209,6 +213,18 @@ class NotificationService:
                     text = f"Tessera {last['card']}" if last.get("card") else "Tessera non registrata"
                     severity = "crit" if len(group) > 1 else "warn"
                     add_group("unknown_card", severity, "Tessera Sconosciuta", text, group, "#da-registrare")
+        for cam in cameras or []:
+            # Telecamera di una porta con l'ultima foto non riuscita: sparisce alla prima foto buona
+            add(
+                "camera",
+                f"cam:{cam['camera']}",
+                "warn",
+                "Telecamera Non Disponibile",
+                f"{cam['name']} · {cam['error']}",
+                cam["ts"],
+                door=", ".join(cam.get("doors") or []),
+                link="#impianti",
+            )
         if levels["expiring"] != "off":
             for person in self.db.list_persons():
                 ends = [e for e in (_parse(c.get("valid_to") or "") for c in person["cards"]) if e]

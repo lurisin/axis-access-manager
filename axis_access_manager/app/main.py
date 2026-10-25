@@ -25,7 +25,7 @@ from .ha import HomeAssistant
 from .ha_mqtt import HaBridge, parse_command
 from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
-from .notifications import NotificationService
+from .notifications import FAULT_TYPES, NotificationService
 from .programming import INPUT_ROLES, ProgrammingService
 from .rules_service import RulesService
 from .service import CASING_OPEN, DENIED_REASONS, INPUT_TERMINALS, AccessService, ServiceError
@@ -428,6 +428,7 @@ def create_app(
         status = user.can("stato")
         doors = _doors_status(state)
         names = await _camera_names(state)
+        listing = _notification_listing(request) if status else None
         return {
             "door_mode": state.monitor.door_mode if status else None,
             "doors": doors if status else [{**d, "mode": None} for d in doors],
@@ -435,7 +436,12 @@ def create_app(
             "mqtt_connected": state.monitor.connected if status else None,
             "unknown_cards": len(state.db.list_unknown_cards()) if user.can("persone") else 0,
             "sync": state.last_sync,
-            "notifications": _notification_listing(request)["open"] if status else 0,
+            "notifications": listing["open"] if listing else 0,
+            # Barra in alto: guasti finché durano, allarmi finché non se ne prende visione
+            "faults": [_brief(i) for i in listing["items"] if i["type"] in FAULT_TYPES] if listing else [],
+            "alarms": [_brief(i) for i in listing["items"] if i["type"] == "door_alarm" and not i["seen"]]
+            if listing
+            else [],
             # Per mostrare le telecamere delle porte con il nome di Home Assistant
             "camera_names": {d["camera"]: names.get(d["camera"], "") for d in doors if d["camera"]},
         }
@@ -1305,6 +1311,10 @@ def _doors_status(state) -> list[dict]:
     ]
 
 
+def _brief(item: dict) -> dict:
+    return {k: item[k] for k in ("id", "type", "severity", "title", "text", "door", "ts", "count", "seen")}
+
+
 async def _camera_names(state) -> dict[str, str]:
     """Nomi delle telecamere, dalla cache se recente: il riepilogo si legge spesso."""
     # Mai letti finora: None, non 0 (l'orologio monotono può partire da pochi secondi dopo l'avvio)
@@ -1330,6 +1340,17 @@ def _current_notifications(state) -> list[dict]:
         controller_online=state.monitor.controller_online,
         sync=state.last_sync,
         door_names={d["door_token"]: d["name"] for d in state.doors},
+        cameras=[
+            {
+                "camera": camera,
+                "name": state.camera_names.get(camera) or camera,
+                "error": problem["error"],
+                "ts": problem["ts"],
+                "doors": [d["name"] for d in state.doors if d["snapshot_camera"] == camera],
+            }
+            for camera, problem in state.snapshot_errors.items()
+            if any(d["snapshot_camera"] == camera for d in state.doors)
+        ],
     )
 
 

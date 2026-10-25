@@ -52,6 +52,7 @@ Restano solo quelle tecniche:
 
 ## Sezioni
 
+- **Barra in alto**: in ogni pagina compaiono **Guasti** (controller, MQTT, telecamere) e **Allarmi** (porte e manomissioni non ancora viste) solo quando ci sono, altrimenti **Sistema OK**. Un clic apre l'elenco. Nel cruscotto ci sono anche la data e i badge con accessi e negati di oggi.
 - **Cruscotto**: riquadri che ogni utente sceglie e dispone come vuole.
   - Quelli disponibili sono: Da Gestire, Accessi, Negati e Allarmi di oggi, Persone, Porte, Ultimi 7 Giorni, Ultimi Eventi, Tessere in Scadenza, Tessere da Registrare e Stato Impianto.
   - Con **Modifica Cruscotto** li sposti trascinandoli, scegli la larghezza (un quarto, metà, tre quarti o riga intera), li togli o li aggiungi.

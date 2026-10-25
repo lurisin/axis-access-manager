@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.3
+
+- **Barra in alto più snella**, al posto della riga di riquadri con i numeri di oggi.
+  - **Guasti** (controller non raggiungibile, MQTT perso, telecamera che non fa la foto) e **Allarmi** (porta forzata o aperta troppo a lungo, manomissioni non ancora viste) compaiono solo quando ci sono, in tutte le pagine. Altrimenti si vede **Sistema OK**.
+  - Un clic apre l'elenco a tendina, con il collegamento alle Notifiche. Dagli Allarmi puoi segnarli tutti come visti. I guasti restano finché non si risolvono.
+  - Nel cruscotto, accanto al titolo, la data di oggi e due badge piccoli: accessi e negati di oggi. Il clic sui negati apre il Registro con la vista Solo Negati.
+- I riquadri Accessi, Negati e Allarmi di oggi non sono più nel cruscotto predefinito. Restano in Aggiungi Riquadro, più compatti. Se avevi già salvato il tuo cruscotto, toglili con Modifica Cruscotto o usa Ripristina Predefinito.
+
 ## 0.15.2
 
 - Modifica del cruscotto:

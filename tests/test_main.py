@@ -347,5 +347,15 @@ def test_summary_gives_camera_friendly_names(controller, tmp_path, monkeypatch):
     with TestClient(app) as client:
         assert client.get("/api/summary").json()["camera_names"] == {"camera.x": "Ingresso Teatro"}
         # Il riepilogo si legge a ogni evento: i nomi restano in memoria per qualche minuto
-        client.get("/api/summary")
+        summary = client.get("/api/summary").json()
         assert ha.reads == 1
+        assert summary["faults"] == [] and summary["alarms"] == []
+        # Foto non riuscita: un guasto nella barra in alto, con il nome della telecamera
+        app.state.snapshot_errors["camera.x"] = {"ts": "2026-10-25T15:00:00Z", "error": "risposta 503"}
+        [fault] = client.get("/api/summary").json()["faults"]
+        assert fault["title"] == "Telecamera Non Disponibile" and fault["text"] == "Ingresso Teatro · risposta 503"
+        # Resta un guasto anche dopo la presa visione, finché la telecamera non torna
+        client.post("/api/notifications/seen", json={"ids": [fault["id"]]})
+        assert len(client.get("/api/summary").json()["faults"]) == 1
+        app.state.snapshot_errors.clear()
+        assert client.get("/api/summary").json()["faults"] == []
