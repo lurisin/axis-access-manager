@@ -112,6 +112,23 @@ def user_token_for(name: str, now: datetime | None = None) -> str:
     return f"utente_{slug}_{(now or datetime.now()).strftime('%y%m%d%H%M%S')}"
 
 
+USER_TOKEN = re.compile(r"utente_([a-z0-9_]+)_\d{12}")
+
+
+def event_ref(kind: str, door: str, card: str = "", detail: str = "") -> str:
+    """Impronta di un evento del controller, uguale via MQTT e dal registro interno.
+
+    Non dipende dall'anagrafica (una tessera tolta dall'app trasforma una lettura in "sconosciuta" e lascia un
+    concesso senza numero) né dai dati che i due canali riportano in modo diverso: un esito per porta e secondo,
+    una lettura per porta, tessera e secondo. Stessa formula della migrazione 3 in db.py.
+    """
+    if kind in ("lettura", "sconosciuta"):
+        return f"lettura|{door}|{card.lower()}"
+    if kind in ("concesso", "negato"):
+        return f"{kind}|{door}"
+    return f"{kind}|{door}|{detail}"
+
+
 def normalize_text(value: str | None, limit: int, label: str) -> str:
     text = (value or "").strip()
     if len(text) > limit:
@@ -181,14 +198,8 @@ class AccessService:
         Un evento recuperato dal registro del controller può essere già arrivato via MQTT, e un evento MQTT
         in ritardo può essere già stato recuperato: in quei casi non si registra due volte.
         """
-        if fields.get("kind") in CONTROLLER_KINDS and self.db.similar_event(
-            ts=fields["ts"],
-            kind=fields["kind"],
-            card=fields.get("card") or "",
-            door=fields.get("door") or "",
-            detail=fields.get("detail") or "",
-            only_recovered=not self._recovering,
-        ):
+        ref = fields.get("ref") or ""
+        if ref and self.db.similar_event(ts=fields["ts"], ref=ref, only_recovered=not self._recovering):
             return None
         if self._recovering:
             fields["recovered"] = True
@@ -651,8 +662,11 @@ class AccessService:
             if not number:
                 return
             card = self.db.card_by_number(number)
+            ref = event_ref("lettura", door, number)
             if card is None:
-                if self.log_event(ts=ts, kind="sconosciuta", card=number, source="lettore", raw=data, door=door):
+                if self.log_event(
+                    ts=ts, kind="sconosciuta", card=number, source="lettore", raw=data, door=door, ref=ref
+                ):
                     self.db.note_unknown_card(number, ts)
             else:
                 self.log_event(
@@ -665,6 +679,7 @@ class AccessService:
                     source="lettore",
                     raw=data,
                     door=door,
+                    ref=ref,
                 )
         elif topic.startswith("AccessControl/AccessGranted") or topic.startswith("AccessControl/Denied"):
             granted = topic.startswith("AccessControl/AccessGranted")
@@ -681,31 +696,75 @@ class AccessService:
             if key in self._recent_decisions:
                 return
             self._recent_decisions.append(key)
+            kind = "concesso" if granted else "negato"
             if pushed:
                 # Pulsante di uscita o relè del citofono su un ingresso del controller: un'apertura senza tessera
-                self.log_event(ts=ts, kind="apertura_remota", source=pushed[0], detail=pushed[1], raw=data, door=door)
+                self.log_event(
+                    ts=ts,
+                    kind="apertura_remota",
+                    source=pushed[0],
+                    detail=pushed[1],
+                    raw=data,
+                    door=door,
+                    ref=event_ref(kind, door),
+                )
                 return
             self.log_event(
                 ts=ts,
-                kind="concesso" if granted else "negato",
+                kind=kind,
                 card=card["number"] if card else number,
                 person_id=card["person_id"] if card else None,
-                person_name=card["person_name"] if card else str(data.get("CredentialHolderName") or ""),
+                person_name=card["person_name"] if card else self._holder_name(data),
                 detail="" if granted else DENIED_REASONS.get(reason, reason),
                 source="controller",
                 raw=data,
                 door=door,
+                ref=event_ref(kind, door),
             )
         elif topic.startswith("Door/State/DoorAlarm/") and data.get("State") not in (None, "Normal"):
             state = str(data["State"])
+            detail = DOOR_ALARMS.get(state, state)
             self.log_event(
-                ts=ts, kind="allarme", detail=DOOR_ALARMS.get(state, state), source="porta", raw=data, door=door
+                ts=ts,
+                kind="allarme",
+                detail=detail,
+                source="porta",
+                raw=data,
+                door=door,
+                ref=event_ref("allarme", door, detail=detail),
             )
         elif topic.startswith("Door/State/DoorTamper/") and data.get("State") == "TamperDetected":
-            self.log_event(ts=ts, kind="manomissione", detail="manomissione porta", source="porta", raw=data, door=door)
+            detail = "manomissione porta"
+            self.log_event(
+                ts=ts,
+                kind="manomissione",
+                detail=detail,
+                source="porta",
+                raw=data,
+                door=door,
+                ref=event_ref("manomissione", door, detail=detail),
+            )
         elif topic.startswith("Device/Casing/Open") and str(data.get("Open")) == "1":
             # Coperchio del controller: non riguarda una porta
-            self.log_event(ts=ts, kind="manomissione", detail=CASING_OPEN, source=self.controller_name())
+            self.log_event(
+                ts=ts,
+                kind="manomissione",
+                detail=CASING_OPEN,
+                source=self.controller_name(),
+                ref=event_ref("manomissione", "", detail=CASING_OPEN),
+            )
+
+    def _holder_name(self, data: dict) -> str:
+        """Chi ha usato una tessera che l'app non ha più: l'A1210 manda il token dell'utente, non il nome.
+        Se la persona c'è ancora si usa il suo nome, altrimenti il nome ricavato dal token."""
+        holder = str(data.get("CredentialHolderName") or "")
+        person = self.db.person_by_user_token(holder) if holder else None
+        if person:
+            return person["name"]
+        match = USER_TOKEN.fullmatch(holder)
+        if match:
+            return f"{match[1].replace('_', ' ').title()} (tolta dall'app)"
+        return holder
 
     async def recover_events(self, since: datetime) -> int:
         """Eventi persi (MQTT o add-on fermi) letti dal registro interno del controller; restituisce quanti."""

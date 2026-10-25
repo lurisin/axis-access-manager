@@ -1,9 +1,10 @@
 import asyncio
 import dataclasses
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.db import Database
 from app.events import Event, EventMonitor
 from app.service import AccessService, ServiceError, normalize_card, user_token_for
 from app.vapix import VapixError
@@ -482,3 +483,80 @@ async def test_live_event_after_recovery_is_not_duplicated(service, controller, 
     )
 
     assert len(db.list_events()) == 2
+
+
+async def test_recovery_does_not_duplicate_events_of_a_card_removed_meanwhile(service, db):
+    # Collaudo 0.18.0: tessera letta e accettata via MQTT, poi tolta dall'app, poi recupero dal registro.
+    # Il recupero ricalcolava lettura → sconosciuta e un concesso senza numero: due doppioni.
+    person = await service.create_person("Prova Stabilità", "c0118a01", "admin", group="profilo_sempre")
+    card = person["cards"][0]
+    moment = datetime(2026, 10, 25, 17, 28, 41, tzinfo=UTC)
+    read = {"Card": "c0118a01", "IdPointToken": "lettore-1"}
+    granted = {
+        "AccessPointToken": "ap-in",
+        "CredentialToken": card["axis_credential_token"],
+        "CredentialHolderName": person["axis_user_token"],
+    }
+    service.record_event(Event("IdPoint", "IdPoint/Request/IdData/IdPointToken/lettore-1", moment, read))
+    service.record_event(Event("AccessControl", "AccessControl/AccessGranted/Card/", moment, granted))
+    assert [e["kind"] for e in db.list_events()] == ["concesso", "lettura"]
+    await service.delete_person(person["id"], "admin")
+
+    service._recent_decisions.clear()  # come dopo un riavvio dell'add-on
+    service._recovering = True
+    try:
+        service.record_event(Event("IdPoint", "IdPoint/Request/IdData/", moment, read))
+        service.record_event(Event("AccessControl", "AccessControl/AccessGranted/Card/", moment, granted))
+        # Un passaggio davvero perso, dopo che la persona è stata tolta
+        later = moment + timedelta(seconds=20)
+        service.record_event(Event("IdPoint", "IdPoint/Request/IdData/", later, read))
+        service.record_event(Event("AccessControl", "AccessControl/AccessGranted/Card/", later, granted))
+    finally:
+        service._recovering = False
+
+    events = db.list_events()
+    assert [(e["kind"], e["recovered"]) for e in events] == [
+        ("concesso", 1),
+        ("sconosciuta", 1),
+        ("concesso", 0),
+        ("lettura", 0),
+    ]
+    # Nome leggibile al posto del token dell'utente, e la tessera in Da Registrare solo per la lettura persa
+    assert events[0]["person_name"] == "Prova Stabilita (tolta dall'app)"
+    assert db.list_unknown_cards()[0]["count"] == 1
+
+
+def test_migration_fills_event_refs(tmp_path):
+    import sqlite3
+
+    from app.db import SCHEMA
+    from app.service import event_ref
+
+    path = tmp_path / "v2.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(SCHEMA)
+    conn.execute("ALTER TABLE events ADD COLUMN door TEXT NOT NULL DEFAULT ''")
+    rows = [
+        ("lettura", "C0118A01", "", "lettore"),
+        ("sconosciuta", "c0118b02", "", "lettore"),
+        ("concesso", "c0118a01", "", "controller"),
+        ("negato", "", "tessera non registrata", "controller"),
+        ("allarme", "", "porta aperta troppo a lungo", "porta"),
+        ("apertura_remota", "", "", "Mario (HA)"),
+    ]
+    for kind, card, detail, source in rows:
+        conn.execute(
+            "INSERT INTO events (ts, kind, card, detail, source, door) "
+            "VALUES ('2026-10-25T17:00:00+00:00', ?, ?, ?, ?, 'p')",
+            (kind, card, detail, source),
+        )
+    conn.commit()
+    conn.close()
+
+    db = Database(path, "0.18.1")
+    refs = {e["kind"]: e["ref"] for e in db._query("SELECT kind, ref FROM events")}
+    for kind, card, detail, _ in rows[:5]:
+        assert refs[kind] == event_ref(kind, "p", card, detail)
+    # Le aperture da Home Assistant non vengono dal controller
+    assert refs["apertura_remota"] == ""
+    db.close()

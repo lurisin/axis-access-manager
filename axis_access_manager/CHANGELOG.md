@@ -8,6 +8,7 @@ Correzioni dalla prova al banco della 0.18.0.
 - **Controllo ogni 30 secondi più leggero**: ora e NTP si rileggono ogni 5 minuti e quando il controller torna raggiungibile; ogni 30 secondi resta solo la verifica del collegamento. Nel log dell'add-on non compare più una riga per ogni richiesta al controller (resta con il livello debug).
 - Testi al singolare corretti: "Togliere dall'app la tessera non presente…", "1 tessera" nelle attività, nelle notifiche e nella rilettura dal controller.
 - Date con l'anno a quattro cifre (25/10/2026) in Impostazioni, Attività e negli altri elenchi.
+- **Eventi recuperati senza doppioni**: se una tessera veniva tolta dall'app dopo un passaggio, il recupero dal registro del controller registrava di nuovo quel passaggio come "sconosciuta" (finendo in Da Registrare) e come "concesso" con il codice dell'utente al posto del nome. Ora ogni evento del controller ha un'impronta (porta, tipo di evento, tessera letta) che non dipende dall'anagrafica, e lo stesso evento non si registra due volte. Vale anche per gli eventi già nel registro. Un accesso di una persona non più nell'app mostra il nome leggibile con "(tolta dall'app)".
 
 ## 0.18.0
 
