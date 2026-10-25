@@ -24,9 +24,9 @@ from .ha_mqtt import HaBridge, parse_command
 from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
 from .notifications import NotificationService
-from .programming import ProgrammingService
+from .programming import INPUT_ROLES, ProgrammingService
 from .rules_service import RulesService
-from .service import CASING_OPEN, DENIED_REASONS, AccessService, ServiceError
+from .service import CASING_OPEN, DENIED_REASONS, INPUT_TERMINALS, AccessService, ServiceError
 from .transfer import events_csv, import_persons, persons_csv
 from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
 from .vapix import A1210Client, VapixError
@@ -357,7 +357,9 @@ def create_app(
         state = request.app.state
         cfg = state.settings
         return {
-            "controller": await _controller_status(state.controller, cfg) if controller else None,
+            "controller": await _controller_status(state.controller, cfg, state.db.all_controller_inputs())
+            if controller
+            else None,
             "mqtt": _mqtt_status(state.monitor, state.mqtt_configured),
             "sync": state.last_sync,
             "home_assistant": {
@@ -777,6 +779,12 @@ def create_app(
             raise HTTPException(status_code=404, detail="porta non trovata")
         controller = state.db.get_controller(config["controller_id"]) or {}
         readers, points, errors = [], [], []
+        # Pulsanti e relè collegati agli ingressi del controller: anche loro sono punti di identificazione
+        inputs = {
+            row["idpoint_token"]: row
+            for row in state.db.controller_inputs(config["controller_id"]).values()
+            if row["idpoint_token"]
+        }
         try:
             all_points = await state.controller.list_access_points()
             idpoints = {r.get("token"): r for r in await state.controller.list_idpoints()}
@@ -789,11 +797,16 @@ def create_app(
                 )
                 for device in point.get("IdPointDevice") or []:
                     reader = idpoints.get(device.get("IdPoint"), {})
+                    wired = inputs.get(device.get("IdPoint"))
                     readers.append(
                         {
-                            "name": reader.get("Name") or device.get("IdPoint") or "",
+                            "name": (wired or {}).get("name") or reader.get("Name") or device.get("IdPoint") or "",
                             "description": reader.get("Description") or "",
-                            "direction": {"in": "Ingresso", "out": "Uscita"}.get(direction, ""),
+                            "direction": {"in": "Entrata", "out": "Uscita"}.get(direction, ""),
+                            # Ingresso del controller: ruolo e morsetto al posto del lato della porta
+                            "role": INPUT_ROLES.get(wired["role"], "") if wired else "",
+                            "role_key": wired["role"] if wired else "",
+                            "terminal": INPUT_TERMINALS.get(wired["io"], wired["io"]) if wired else "",
                             "access_point": point.get("Name") or point.get("token") or "",
                             "enabled": point.get("Enabled", True) is not False,
                         }
@@ -1331,7 +1344,7 @@ async def _maintenance(app: FastAPI) -> None:
         await asyncio.sleep(delay)
 
 
-async def _controller_status(controller: A1210Client, settings: Settings) -> dict:
+async def _controller_status(controller: A1210Client, settings: Settings, inputs: list[dict]) -> dict:
     if not settings.a1210_host:
         return {"ok": False, "error": "indirizzo del controller non configurato"}
     try:
@@ -1341,8 +1354,10 @@ async def _controller_status(controller: A1210Client, settings: Settings) -> dic
     except VapixError as err:
         return {"ok": False, "error": str(err)}
     tokens = [door.get("token") for door in doors]
+    # Pulsanti e relè sugli ingressi sono punti di identificazione come i lettori: si contano a parte
+    wired = {row["idpoint_token"] for row in inputs if row["idpoint_token"]}
     try:
-        readers = len(await controller.list_idpoints())
+        readers = sum(1 for p in await controller.list_idpoints() if p.get("token") not in wired)
     except VapixError:
         readers = None
     return {
@@ -1355,6 +1370,7 @@ async def _controller_status(controller: A1210Client, settings: Settings) -> dic
         "door_found": settings.door_token in tokens,
         "credentials": len(credentials),
         "readers": readers,
+        "inputs": sum(1 for row in inputs if row["role"]),
     }
 
 

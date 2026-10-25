@@ -897,11 +897,18 @@ async function viewDoorDetail(el, id, doors) {
   document.title = `${d.name} · Controllo Accessi`;
   const place = placeOf(d);
   const switcher = doors.length > 1 ? `<label class="row small-text muted">Cambia Porta <select id="d-switch">${doors.map((x) => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.name)}${placeOf(x) ? ` · ${esc(placeOf(x))}` : ""}</option>`).join("")}</select></label>` : "";
+  // Etichetta solo quando qualcosa non va: un dispositivo che funziona non ha bisogno di bollino
+  const off = (r) => (r.enabled ? null : ["warn", "Disattivato"]);
+  const readerMeta = (r) => {
+    if (r.role) return `${r.role} · morsetto ${r.terminal} del controller`;
+    const side = r.direction ? `Lettore tessere sul lato ${r.direction.toLowerCase()}` : "Lettore tessere";
+    return [side, r.description.includes("Axis Access Manager") ? "" : r.description].filter(Boolean).join(" · ");
+  };
   const devices = [
-    ...d.readers.map((r) => [icon("card"), r.name, [r.direction, r.description].filter(Boolean).join(" · ") || r.access_point, r.enabled ? ["ok", "Attivo"] : ["", "Disattivato"]]),
-    d.intercom ? [icon("phone"), d.intercom, `Videocitofono Hikvision · relè ${d.intercom_relay}`, d.intercom_open_door ? ["ok", "Apre la Porta"] : ["", "Solo Registro"]] : null,
-    d.camera ? [icon("camera"), d.camera, d.snapshot_on_granted ? "istantanea su ogni passaggio" : "istantanea su rifiuti, citofono e allarmi", ["ok", "Attiva"]] : null,
-    [icon("chip"), d.controller.name || "Controller", d.controller.host, null],
+    ...d.readers.map((r) => [icon(r.role_key === "intercom" ? "bell" : r.role ? "dooropen" : "card"), r.name, readerMeta(r), off(r)]),
+    d.intercom ? [icon("phone"), d.intercom, d.intercom_open_door ? `Videocitofono Hikvision · apre la porta con il relè ${d.intercom_relay}` : "Videocitofono Hikvision · registra le chiamate, non apre la porta", null] : null,
+    d.camera ? [icon("camera"), d.camera, d.snapshot_on_granted ? "Telecamera · istantanea a ogni passaggio" : "Telecamera · istantanea su rifiuti, citofono e allarmi", null] : null,
+    [icon("chip"), d.controller.name || "Controller", ["Controller", d.controller.host].filter(Boolean).join(" · "), null],
   ].filter(Boolean);
   const kpi = (label, value, sub, color = "") => `<div class="card"><div class="label">${label}</div><div class="value" ${color ? `style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
   el.innerHTML = `
@@ -1731,7 +1738,7 @@ async function viewControllers(body, data) {
       <a class="ctl-main" href="#impianti/c${c.id}">
         <span class="ctl-name">${icon("chip")}${esc(c.name)}</span>
         <span class="muted small-text" data-ctl-model="${c.id}">${esc(c.description || "Axis")}</span>
-        <span class="ctl-stats"><span><b>${c.doors.length}</b> ${c.doors.length === 1 ? "porta" : "porte"}</span><span><b data-ctl-readers="${c.id}">…</b> lettori</span>
+        <span class="ctl-stats"><span><b>${c.doors.length}</b> ${c.doors.length === 1 ? "porta" : "porte"}</span><span data-ctl-readers="${c.id}"><b>…</b> lettori</span><span data-ctl-inputs="${c.id}" hidden></span>
           <span class="pill" data-ctl-state="${c.id}"><span class="spinner" style="width:12px;height:12px"></span></span></span>
       </a>
       <a class="ctl-gear btn small ghost icon-only" href="#impianti/c${c.id}/connessione" title="Impostazioni di Connessione" aria-label="Impostazioni di connessione di ${esc(c.name)}">${icon("cog")}</a>
@@ -1750,7 +1757,12 @@ async function viewControllers(body, data) {
     pill.className = "pill " + (s.controller.ok ? "ok" : "err");
     pill.innerHTML = `<span class="dot"></span>${s.controller.ok ? "Collegato" : "Non Raggiungibile"}`;
     pill.title = s.controller.error || "";
-    $(`[data-ctl-readers="${c.id}"]`).textContent = s.controller.readers ?? "—";
+    const count = (n, one, many) => `<b>${n ?? "—"}</b> ${n === 1 ? one : many}`;
+    $(`[data-ctl-readers="${c.id}"]`).innerHTML = count(s.controller.readers, "lettore", "lettori");
+    // Pulsanti, relè e sensori collegati agli ingressi del controller
+    const inputs = $(`[data-ctl-inputs="${c.id}"]`);
+    inputs.hidden = !s.controller.inputs;
+    inputs.innerHTML = count(s.controller.inputs, "ingresso", "ingressi");
     if (s.controller.ok) $(`[data-ctl-model="${c.id}"]`).textContent = [`${s.controller.model}`, c.description].filter(Boolean).join(" · ");
   }).catch(() => {});
 }
