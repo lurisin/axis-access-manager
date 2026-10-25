@@ -247,6 +247,10 @@ SETTING_DASHBOARD = "dashboard_layout:"
 CAMERA_NAMES_TTL = 300
 
 
+class ControllerCameraIn(BaseModel):
+    camera: str = Field(default="", max_length=255)
+
+
 class DashboardWidgetIn(BaseModel):
     type: str
     size: int = Field(ge=1, le=4)
@@ -1025,6 +1029,15 @@ def create_app(
         await reload_runtime(request.app)
         return result
 
+    @app.put("/api/controllers/{controller_id}/camera", dependencies=[need("impianti")])
+    async def set_controller_camera(controller_id: int, body: ControllerCameraIn, request: Request) -> dict:
+        """Telecamera del coperchio: si cambia senza riaprire la connessione al controller."""
+        state = request.app.state
+        result = state.installation.set_controller_camera(controller_id, body.camera, request_user(request))
+        primary = state.installation.primary
+        state.controller_camera = (primary or {}).get("snapshot_camera") or ""
+        return result
+
     @app.delete("/api/controllers/{controller_id}", dependencies=[need("impianti")])
     async def delete_controller(controller_id: int, request: Request) -> dict:
         request.app.state.installation.delete_controller(controller_id, request_user(request))
@@ -1156,6 +1169,7 @@ async def _start_runtime(app: FastAPI) -> None:
         cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl
     )
     state.doors = state.installation.doors()
+    state.controller_camera = (state.installation.primary or {}).get("snapshot_camera") or ""
     state.monitor = EventMonitor(prefix=cfg.mqtt_topic_prefix, door_token=cfg.door_token)
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
@@ -1224,8 +1238,8 @@ def _wire(app: FastAPI) -> None:
         door = doors.get(row.get("door") or cfg.door_token) or {}
         camera = door.get("snapshot_camera") or ""
         if row.get("kind") == "manomissione" and not row.get("door"):
-            # Coperchio del controller: non riguarda una porta, la sua telecamera non lo inquadra
-            camera = ""
+            # Coperchio del controller: la telecamera del controller, mai quella di una porta
+            camera = state.controller_camera
         kinds = SNAPSHOT_KINDS | (GRANTED_KINDS if door.get("snapshot_on_granted") else set())
         if camera and row.get("kind") in kinds:
             filename, error = await state.ha.save_snapshot(camera, f"{row['id']}_{_file_stamp(row.get('ts') or '')}")
@@ -1352,10 +1366,11 @@ def _current_notifications(state) -> list[dict]:
                 "name": state.camera_names.get(camera) or camera,
                 "error": problem["error"],
                 "ts": problem["ts"],
-                "doors": [d["name"] for d in state.doors if d["snapshot_camera"] == camera],
+                "doors": [d["name"] for d in state.doors if d["snapshot_camera"] == camera]
+                + ([state.service.controller_name()] if camera == state.controller_camera else []),
             }
             for camera, problem in state.snapshot_errors.items()
-            if any(d["snapshot_camera"] == camera for d in state.doors)
+            if camera == state.controller_camera or any(d["snapshot_camera"] == camera for d in state.doors)
         ],
     )
 

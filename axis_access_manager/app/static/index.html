@@ -2957,7 +2957,7 @@ const CAMERA_DOWN = ["unavailable", "unknown", "off"];
 // quelle senza streaming che le foto le danno: "ferma" avvisa senza dire che è guasta.
 const cameraNote = (c) => CAMERA_DOWN.includes(c.state) ? "non disponibile"
   : c.last_error ? "ultima foto non riuscita" : c.state === "idle" ? "ferma" : "";
-// Scheda Telecamere: quale telecamera fotografa quale porta
+// Scheda Telecamere: quale telecamera fotografa quale porta, e quella del coperchio del controller
 async function controllerCameras(body, ctrl) {
   const cameras = await api("api/cameras").catch(() => []);
   if (!body.isConnected) return;
@@ -2971,46 +2971,71 @@ async function controllerCameras(body, ctrl) {
     return "";
   };
   const rows = ctrl.doors.filter((d) => d.snapshot_camera);
+  const cameraRow = (entity, place, when, edit, del) => `<div class="item">
+        <div class="ev-icon k-accent">${icon("camera")}</div>
+        <div class="grow"><div class="title">${esc(label(entity))}${problem(entity) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
+          <div class="meta"><span>${place}</span><span>${when}</span></div>
+          ${problem(entity) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(entity))}</div>` : ""}</div>
+        <button type="button" class="small" ${edit}>${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost danger" ${del}>Togli</button></div>`;
+  const ctrlRow = ctrl.snapshot_camera ? cameraRow(ctrl.snapshot_camera, `coperchio di ${esc(ctrl.name)}`, "foto quando si apre il coperchio", 'data-cam-edit="ctrl"', 'data-cam-del="ctrl"') : "";
   body.innerHTML = `
-    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Una telecamera di Home Assistant per porta: l'app salva una foto nel registro su accessi negati, aperture a distanza, chiamate al citofono e allarmi. Le foto sono anche in Media → axis_access_manager.</p>
-      ${ctrl.doors.length ? `<button type="button" class="primary" id="cam-new">${icon("plus")}Aggiungi Telecamera</button>` : ""}</div>
-    ${!ctrl.doors.length ? '<div class="card"><div class="empty">Prima aggiungi una porta all\'app nella scheda Porte.</div></div>'
-      : rows.length ? `<div class="card flush"><div class="list">${rows.map((d) => `<div class="item">
+    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Una telecamera di Home Assistant per porta: l'app salva una foto nel registro su accessi negati, aperture a distanza, chiamate al citofono e allarmi. Se il controller è in un altro locale, può avere la sua telecamera per l'apertura del coperchio. Le foto sono anche in Media → axis_access_manager.</p>
+      <button type="button" class="primary" id="cam-new">${icon("plus")}Aggiungi Telecamera</button></div>
+    ${rows.length || ctrlRow ? `<div class="card flush"><div class="list">${ctrlRow}${rows.map((d) => `<div class="item">
         <div class="ev-icon k-accent">${icon("camera")}</div>
         <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}${problem(d.snapshot_camera) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
           <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto solo sui rifiuti e le aperture a distanza"}</span></div>
           ${problem(d.snapshot_camera) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(d.snapshot_camera))}</div>` : ""}</div>
         <button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
-      : `<div class="card"><div class="empty">${icon("camera")}<br>Nessuna telecamera associata alle porte.</div></div>`}`;
+      : `<div class="card"><div class="empty">${icon("camera")}<br>Nessuna telecamera associata alle porte o al controller.</div></div>`}`;
   paintIcons(body);
   body.onclick = async (e) => {
     const b = e.target.closest("button");
     if (!b) return;
+    if (b.dataset.camEdit === "ctrl") return cameraEditor(ctrl, cameras, null, true);
+    if (b.dataset.camDel === "ctrl") {
+      if (await confirmBox("Togli Telecamera", `Togliere la telecamera del coperchio del controller <b>${esc(ctrl.name)}</b>? Le foto già salvate restano nel registro.`, "Togli", true) &&
+          await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera: ""}}), "Telecamera tolta")) { loadSummary(); render(); }
+      return;
+    }
     const door = ctrl.doors.find((d) => String(d.id) === (b.dataset.camEdit || b.dataset.camDel));
     if (b.id === "cam-new" || b.dataset.camEdit) return cameraEditor(ctrl, cameras, door);
     if (b.dataset.camDel && await confirmBox("Togli Telecamera", `Togliere la telecamera dalla porta <b>${esc(door.name)}</b>? Le foto già salvate restano nel registro.`, "Togli", true) &&
         await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}), "Telecamera tolta")) { loadSummary(); render(); }
   };
 }
-async function cameraEditor(ctrl, cameras, door) {
-  const current = door?.snapshot_camera || "";
+async function cameraEditor(ctrl, cameras, door, forController = false) {
+  const current = (forController ? ctrl.snapshot_camera : door?.snapshot_camera) || "";
+  const camLabel = (entity) => cameras.find((c) => c.entity_id === entity)?.name || cameraName(entity);
   const cameraInput = cameras.length
     ? `<select name="camera">${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === current ? "selected" : ""}>${cameraNote(c) ? "⚠ " : ""}${esc(c.name)}${cameras.some((x) => x !== c && x.name === c.name) ? ` (${esc(c.entity_id)})` : ""}${cameraNote(c) ? ` · ${cameraNote(c)}` : ""}</option>`).join("")}${current && !cameras.some((c) => c.entity_id === current) ? `<option value="${esc(current)}" selected>${esc(cameraName(current))} · non trovata</option>` : ""}</select>`
     : `<input name="camera" class="mono" value="${esc(current)}" placeholder="camera.ingresso">`;
-  const doorSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${d.id === door?.id ? "selected" : ""}>${esc(d.name)}${d.snapshot_camera && d.id !== door?.id ? ` (ora ${esc(cameras.find((c) => c.entity_id === d.snapshot_camera)?.name || cameraName(d.snapshot_camera))})` : ""}</option>`).join("")}</select>`;
+  // Cosa fotografa: una porta (tutto quello che succede lì) o il coperchio del controller
+  const editing = forController ? "ctrl" : door ? String(door.id) : "";
+  const targetSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${String(d.id) === editing ? "selected" : ""}>Porta ${esc(d.name)}${d.snapshot_camera && String(d.id) !== editing ? ` (ora ${esc(camLabel(d.snapshot_camera))})` : ""}</option>`).join("")}
+    <option value="ctrl" ${editing === "ctrl" ? "selected" : ""}>Coperchio del Controller${ctrl.snapshot_camera && editing !== "ctrl" ? ` (ora ${esc(camLabel(ctrl.snapshot_camera))})` : ""}</option></select>`;
   const result = await modal({
-    title: door ? "Modifica Telecamera" : "Aggiungi Telecamera",
+    title: door || forController ? "Modifica Telecamera" : "Aggiungi Telecamera",
     body: `${field("Telecamera", cameraInput, cameras.length ? "Le telecamere di Home Assistant, con il loro nome. Ferma: non trasmette (con Frigate anche se spenta), la foto potrebbe non riuscire." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
-      ${field("Porta", doorSelect, "Se la porta ha già una telecamera, viene sostituita.")}
-      <div class="field inline"><input type="checkbox" name="granted" id="f-cg" ${door?.snapshot_on_granted ? "checked" : ""}><label for="f-cg">Istantanea Anche sugli Accessi Concessi</label></div>
-      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su rifiuti, aperture a distanza, citofono e allarmi.</p>`,
+      ${field("Inquadra", targetSelect, "La porta: accessi, aperture, citofono e allarmi di quella porta. Il coperchio del controller: la sua apertura. Se c'è già una telecamera, viene sostituita.")}
+      <div data-granted><div class="field inline"><input type="checkbox" name="granted" id="f-cg" ${door?.snapshot_on_granted ? "checked" : ""}><label for="f-cg">Istantanea Anche sugli Accessi Concessi</label></div>
+      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su rifiuti, aperture a distanza, citofono e allarmi.</p></div>`,
+    onOpen: (dlg) => {
+      const sync = () => { $("[data-granted]", dlg).hidden = val(dlg, "door") === "ctrl"; };
+      $("[name=door]", dlg).addEventListener("change", sync);
+      sync();
+    },
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
-      const target = ctrl.doors.find((d) => String(d.id) === val(dlg, "door"));
+      const choice = val(dlg, "door");
+      const target = ctrl.doors.find((d) => String(d.id) === choice);
       const camera = val(dlg, "camera").trim();
       if (!camera) { toast("Scegli la telecamera", true); return false; }
-      // Spostata su un'altra porta: la porta di prima resta senza telecamera
-      if (door && door.id !== target.id && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}))) return false;
+      // Spostata altrove: la porta o il controller di prima resta senza telecamera
+      if (door && String(door.id) !== choice && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}))) return false;
+      if (forController && choice !== "ctrl" && !await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera: ""}}))) return false;
+      if (choice === "ctrl") return (await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera}}), "Telecamera salvata")) || false;
       return (await run(() => api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, {snapshot_camera: camera, snapshot_on_granted: val(dlg, "granted")})}), "Telecamera salvata")) || false;
     }}],
   });
