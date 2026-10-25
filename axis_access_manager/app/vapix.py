@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import ssl
+
 import httpx
 
 # Limite del controller per GetCredentialList
@@ -37,6 +41,7 @@ class A1210Client:
         verify_ssl: bool = False,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        self.host = host
         self._client = httpx.AsyncClient(
             base_url=f"https://{host}",
             auth=httpx.DigestAuth(username, password),
@@ -76,6 +81,46 @@ class A1210Client:
         if "error" in data:
             raise VapixError(data["error"].get("message", "errore sconosciuto"))
         return data.get("data", {}).get("propertyList", {})
+
+    async def _cgi(self, path: str, method: str) -> dict:
+        """API JSON delle /axis-cgi (apiVersion 1.0): restituisce "data"."""
+        data = await self._post(path, {"apiVersion": "1.0", "method": method})
+        if "error" in data:
+            raise VapixError((data["error"] or {}).get("message", "errore sconosciuto"))
+        return data.get("data") or {}
+
+    async def date_time_info(self) -> dict:
+        """Ora del controller: dateTime (locale), utcDateTime, timeZone."""
+        return await self._cgi("/axis-cgi/time.cgi", "getDateTimeInfo")
+
+    async def ntp_info(self) -> dict:
+        """Server NTP configurati e in uso."""
+        return await self._cgi("/axis-cgi/ntp.cgi", "getNTPInfo")
+
+    async def certificate_fingerprint(self) -> str:
+        """Impronta SHA-256 del certificato HTTPS, per riconoscere il controller (come fa un browser)."""
+        host, _, port = self.host.rpartition(":") if self.host.count(":") == 1 else (self.host, "", "")
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        try:
+            _, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port or 443), ssl=context), 10)
+        except (OSError, TimeoutError, ValueError) as err:
+            raise VapixError(f"certificato non leggibile ({err.__class__.__name__})") from err
+        try:
+            der = writer.get_extra_info("ssl_object").getpeercert(binary_form=True) or b""
+        finally:
+            writer.close()
+        digest = hashlib.sha256(der).hexdigest().upper()
+        return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2)) if der else ""
+
+    async def fetch_events(self, start: str, limit: int = 1000, row_id: int | None = None) -> tuple[list[dict], bool]:
+        """Registro eventi interno del controller (fino a 30.000), dal più vecchio; True se ce ne sono altri."""
+        request: dict = {"Limit": limit, "Start": start}
+        if row_id is not None:
+            request["RowID"] = row_id
+        data = await self._post("/vapix/eventlogger", {"axlog:FetchEvents": request})
+        return data.get("Event") or [], bool(data.get("More"))
 
     async def door_info_list(self) -> list[dict]:
         data = await self._post("/vapix/doorcontrol", {"tdc:GetDoorInfoList": {}})
@@ -258,3 +303,28 @@ class A1210Client:
         if extended:
             request["UseExtendedTime"] = True
         await self._post("/vapix/doorcontrol", {"tdc:AccessDoor": request})
+
+
+# Metodi che cambiano la configurazione del controller: sospesi se il controller all'indirizzo è cambiato
+WRITE_PREFIXES = ("set_", "remove_", "enable_", "disable_", "create_")
+
+
+class ControllerGuard:
+    """Il client del controller con le scritture sospendibili; letture e aperture della porta passano sempre."""
+
+    def __init__(self, client) -> None:
+        self.client = client
+        # Motivo della sospensione mostrato all'utente; vuoto = scritture permesse
+        self.paused = ""
+
+    def __getattr__(self, name: str):
+        attr = getattr(self.client, name)
+        if name.startswith(WRITE_PREFIXES) and callable(attr):
+
+            async def guarded(*args, **kwargs):
+                if self.paused:
+                    raise VapixError(f"scritture sospese: {self.paused}")
+                return await attr(*args, **kwargs)
+
+            return guarded
+        return attr

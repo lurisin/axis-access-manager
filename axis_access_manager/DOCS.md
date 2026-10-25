@@ -242,6 +242,14 @@ La scheda Stato del controller mostra lo stato della chiamata e l'ora dell'ultim
 Al primo collegamento il citofono può scaricare lo storico degli eventi e bloccarsi fino a un riavvio: tienine conto nella prima prova.
 Se il citofono usa un firmware recente senza evento di chiamata, attiva `call_state_poll` nell'add-on Hikvision Doorbell.
 
+## Stabilità e backup
+
+- **Controller resettato o sostituito.** L'app memorizza numero di serie, modello, firmware e impronta del certificato del controller. Se all'indirizzo risponde un apparecchio diverso, smette di scrivere e di rileggere le tessere finché un amministratore non conferma il cambio nella pagina del controller.
+- **Tessere non presenti sul controller.** Le tessere che spariscono dal controller non vengono cancellate dall'app: restano in Persone con l'etichetta "Non Sul Controller", da riscrivere o togliere.
+- **Eventi persi.** Se Mosquitto, Home Assistant o l'add-on sono fermi, gli accessi di quel periodo vengono recuperati dal registro interno dell'A1210 (fino a 30.000 eventi, al massimo gli ultimi 7 giorni) appena il collegamento torna.
+- **Orologio.** Ogni 30 secondi l'app confronta l'ora del controller con quella di Home Assistant e segnala uno scarto oltre un minuto. Imposta un server NTP nel controller.
+- **Database.** Prima di ogni aggiornamento dell'add-on si fa una copia del database in `copie_database` (le ultime 3). Prima di ogni backup di Home Assistant si prepara una copia coerente in `copia_backup`; se all'avvio il database risultasse danneggiato, l'add-on riparte da quella.
+
 ## Sicurezza
 
 L'add-on non espone porte: risponde solo alle richieste che arrivano da Home Assistant tramite Ingress, e ogni richiesta è controllata con i permessi dell'utente. La password del controller resta nel database dell'add-on e non viene mai rimandata alla pagina. Ogni modifica è registrata con il nome dell'utente di Home Assistant. L'add-on non invia mai comandi di sblocco prolungato alla porta.

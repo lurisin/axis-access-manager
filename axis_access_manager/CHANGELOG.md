@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.18.0
+
+Stabilità: l'app non perde dati se il controller viene resettato o sostituito, se Mosquitto si ferma o se un backup viene preso nel momento sbagliato.
+
+- **Tessere sparite dal controller**: non vengono più cancellate dall'app. Restano in Persone con l'etichetta "Non Sul Controller" e un avviso in cima all'elenco; da lì le riscrivi sul controller con gruppo e validità salvati, oppure le togli dall'app. Ditta, note e tipologia non si perdono più dopo un reset. Se sparisce più di una piccola quota delle tessere, o tutte, il guasto è critico.
+- **Identità del controller**: al primo collegamento l'app memorizza numero di serie, modello, firmware e impronta del certificato. Se all'indirizzo risponde un apparecchio diverso compare il guasto "Controller Cambiato" e l'app smette di scrivere sul controller e di rileggere le tessere, finché un amministratore non conferma con "Conferma Nuovo Controller". Aprire la porta resta possibile. Un aggiornamento del firmware non è un cambio: si annota nell'attività.
+- **Controllo di ogni controller ogni 30 secondi**, in parallelo: spia verde, gialla o rossa nella pagina Impianti, guasto "Controller Non Raggiungibile" dopo un minuto senza risposta. Se il controller risponde ma non manda eventi a MQTT, il guasto lo dice.
+- **Orologio del controller**: confronto con l'ora di Home Assistant e guasto oltre un minuto di scarto, perché le fasce orarie scattano con l'ora del controller. Nella scheda Stato ci sono scarto, fuso orario e server NTP.
+- **Eventi persi**: all'avvio e dopo ogni interruzione (Mosquitto, Home Assistant o controller offline) l'app recupera dal registro interno dell'A1210 gli accessi del periodo scoperto. Nel Registro hanno la nota "recuperato"; niente foto e niente evento in Home Assistant, perché arrivano in ritardo. Nessun doppione con quelli arrivati via MQTT.
+- **Tasto Riprova**: se il controller non risponde a una modifica compare una finestra con Riprova, invece del solo messaggio d'errore.
+- **Aggiornamenti del database**: versione dello schema con migrazioni numerate, ognuna in una transazione. Prima di ogni aggiornamento dell'add-on si fa una copia del database e si tengono le ultime 3.
+- **Backup di Home Assistant coerente**: subito prima di ogni backup l'add-on prepara una copia sicura del database. Se all'avvio il database risultasse danneggiato, riparte da quella copia. In Impostazioni → Generale si vedono versione dello schema e copie.
+
 ## 0.17.0
 
 - **Cruscotti predefiniti per ruolo**, tutti a griglia piena senza buchi:

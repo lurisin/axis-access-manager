@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 from .config import Settings
 from .db import Database, now_iso
-from .events import Event, EventMonitor, door_of_topic
+from .events import Event, EventMonitor, door_of_topic, event_from_log
 from .rules import RuleError, check_validity, normalize_validity
 from .vapix import A1210Client, VapixError
 
@@ -43,6 +43,20 @@ DOOR_ALARMS = {
 }
 
 
+# Eventi registrati dal controller: non si registrano due volte (MQTT e recupero dal registro interno)
+CONTROLLER_KINDS = ("lettura", "sconosciuta", "concesso", "negato", "allarme", "manomissione")
+# Eventi del registro interno del controller che finiscono nel Registro dell'app
+RECOVER_TOPICS = (
+    "IdPoint/Request/IdData",
+    "AccessControl/",
+    "Door/State/DoorAlarm/",
+    "Door/State/DoorTamper/",
+    "Device/Casing/Open",
+)
+RECOVER_PAGE = 1000
+RECOVER_MAX = 30000
+
+
 # Eventi che cambiano solo lo stato mostrato in Home Assistant (oltre a quanto va nel registro)
 STATE_TOPICS = (
     "Door/State/DoorAlarm/",
@@ -52,6 +66,18 @@ STATE_TOPICS = (
     "Device/Status/SystemReady",
     "Device/IO/Port",
 )
+
+
+# Tessere sparite dal controller in un colpo solo: oltre questa quota è quasi certamente un reset o un cambio
+MASS_MISSING_SHARE = 0.1
+MASS_MISSING_MIN = 3
+
+
+def mass_missing(total: int, missing: int) -> bool:
+    """Controller vuoto, o sparita più di una piccola quota delle tessere."""
+    if not total or not missing:
+        return False
+    return missing == total or (missing >= MASS_MISSING_MIN and missing > total * MASS_MISSING_SHARE)
 
 
 class ServiceError(Exception):
@@ -123,6 +149,9 @@ class AccessService:
         self._recent_decisions: deque[tuple] = deque(maxlen=20)
         # Punto di accesso → porta, per sapere a quale porta si riferisce un evento
         self.access_point_doors: dict[str, str] = {}
+        # Durante il recupero dal registro del controller: eventi segnati come recuperati, e quanti
+        self._recovering = False
+        self._recovered = 0
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         try:
@@ -141,8 +170,24 @@ class AccessService:
         """Qualcosa da aggiornare in Home Assistant (per esempio il controller è andato offline)."""
         self._changed()
 
-    def log_event(self, **fields) -> dict:
-        """Salva un evento e avvisa chi lo deve elaborare."""
+    def log_event(self, **fields) -> dict | None:
+        """Salva un evento e avvisa chi lo deve elaborare. None se era già nel registro.
+
+        Un evento recuperato dal registro del controller può essere già arrivato via MQTT, e un evento MQTT
+        in ritardo può essere già stato recuperato: in quei casi non si registra due volte.
+        """
+        if fields.get("kind") in CONTROLLER_KINDS and self.db.similar_event(
+            ts=fields["ts"],
+            kind=fields["kind"],
+            card=fields.get("card") or "",
+            door=fields.get("door") or "",
+            detail=fields.get("detail") or "",
+            only_recovered=not self._recovering,
+        ):
+            return None
+        if self._recovering:
+            fields["recovered"] = True
+            self._recovered += 1
         event_id = self.db.add_event(**fields)
         row = {**fields, "id": event_id}
         row.pop("raw", None)
@@ -155,6 +200,9 @@ class AccessService:
 
     async def sync_from_controller(self) -> dict:
         """Allinea il database a utenti e tessere presenti sul controller, che resta la fonte di verità."""
+        paused = getattr(self.controller, "paused", "")
+        if paused:
+            raise ServiceError(f"sincronizzazione sospesa: {paused}")
         async with self.lock:
             credentials = await self.controller.list_credentials()
             try:
@@ -194,11 +242,14 @@ class AccessService:
                         existing["id"], person_id=person_id, number=number, enabled=enabled, access=access
                     )
                 seen_cards.add(token)
-            removed = 0
-            for card in self.db.all_cards():
-                if card["axis_credential_token"] not in seen_cards:
-                    self.db.delete_card(card["id"])
-                    removed += 1
+            # Tessere sparite dal controller: mai cancellate da sole. Si segnano e decide l'utente
+            # (riscriverle o toglierle dall'app): un controller resettato o sostituito non svuota l'anagrafica.
+            cards = self.db.all_cards()
+            missing = [c for c in cards if c["axis_credential_token"] not in seen_cards]
+            new_missing = [c["id"] for c in missing if not c["missing_since"]]
+            if new_missing:
+                self.db.mark_cards_missing(new_missing, now_iso())
+                _LOGGER.warning("%s tessere non sono più sul controller: segnate, non cancellate", len(new_missing))
             for person in self.db.all_persons():
                 if not self.db.cards_of(person["id"]):
                     self.db.delete_person(person["id"])
@@ -208,7 +259,74 @@ class AccessService:
             except VapixError as err:
                 _LOGGER.debug("Punti di accesso non leggibili: %s", err)
             self._changed()
-            return {"cards": len(seen_cards), "added": added, "removed": removed}
+            return {
+                "cards": len(seen_cards),
+                "added": added,
+                "removed": 0,
+                "missing": len(missing),
+                "new_missing": len(new_missing),
+                "mass_missing": mass_missing(len(cards), len(missing)),
+            }
+
+    async def restore_missing(self, user: str, card_ids: list[int] | None = None) -> dict:
+        """Riscrive sul controller le tessere non presenti (tutte o quelle indicate), con gruppo e validità salvati."""
+        restored, failed = 0, []
+        async with self.lock:
+            cards = [c for c in self.db.missing_cards() if card_ids is None or c["id"] in card_ids]
+            known_users: set[str] = set()
+            for card in cards:
+                person = self.db.get_person(card["person_id"])
+                user_token = person["axis_user_token"] or ""
+                try:
+                    if user_token.startswith("credenziale:") or not user_token:
+                        # Tessera importata senza utente: se ne crea uno
+                        user_token = user_token_for(person["name"])
+                    if user_token not in known_users and not await self.controller.get_users([user_token]):
+                        await self.controller.set_user(
+                            {
+                                "token": user_token,
+                                "Name": person["name"],
+                                "Description": "Riscritto da Axis Access Manager",
+                                "Attribute": [],
+                            }
+                        )
+                    known_users.add(user_token)
+                    access = {k: card[k] for k in ("access_profile", "valid_from", "valid_to")}
+                    if not access["access_profile"]:
+                        access["access_profile"] = self.default_group
+                    credential = self._credential(user_token, person["name"], card["number"], access)
+                    credential["Enabled"] = card["enabled"]
+                    credential["Status"] = "Enabled" if card["enabled"] else "Disabled"
+                    token = await self.controller.set_credential(credential)
+                except VapixError as err:
+                    failed.append({"card": card["number"], "person": person["name"], "error": str(err)})
+                    continue
+                if user_token != person["axis_user_token"]:
+                    self.db.set_person_user_token(person["id"], user_token)
+                self.db.set_card_token(card["id"], token)
+                restored += 1
+            if restored:
+                self.db.add_audit(user, "tessere riscritte sul controller", f"{restored} tessere")
+                self._changed()
+        return {"restored": restored, "failed": failed}
+
+    def forget_missing(self, user: str, card_ids: list[int] | None = None) -> dict:
+        """Toglie dall'app le tessere non presenti sul controller; le persone rimaste senza tessere spariscono."""
+        cards = [c for c in self.db.missing_cards() if card_ids is None or c["id"] in card_ids]
+        persons = set()
+        for card in cards:
+            self.db.delete_card(card["id"])
+            persons.add(card["person_id"])
+        removed_persons = 0
+        for person_id in persons:
+            if not self.db.cards_of(person_id):
+                self.db.delete_person(person_id)
+                removed_persons += 1
+        if cards:
+            numbers = ", ".join(c["number"] for c in cards[:20]) + ("…" if len(cards) > 20 else "")
+            self.db.add_audit(user, "tessere non presenti tolte dall'app", f"{len(cards)} tessere: {numbers}")
+            self._changed()
+        return {"cards": len(cards), "persons": removed_persons}
 
     # Anagrafica
 
@@ -401,7 +519,9 @@ class AccessService:
             for card in person["cards"]:
                 credentials = await self.controller.get_credentials([card["axis_credential_token"]])
                 if not credentials:
-                    raise ServiceError(f"la tessera {card['number']} non è più sul controller: rileggi dal controller")
+                    raise ServiceError(
+                        f"la tessera {card['number']} non è più sul controller: riscrivila o toglila dall'app"
+                    )
                 await self.controller.set_credential(self._apply_access(credentials[0], access))
                 self.db.set_card_access(card["id"], access)
             detail = f"{person['name']}: gruppo {access['access_profile']}"
@@ -432,7 +552,8 @@ class AccessService:
         async with self.lock:
             card = self._card(card_id)
             person = self.db.get_person(card["person_id"])
-            await self.controller.remove_credential(card["axis_credential_token"])
+            if not card["missing_since"]:
+                await self.controller.remove_credential(card["axis_credential_token"])
             self.db.delete_card(card_id)
             self.db.add_audit(user, "tessera eliminata", f"{person['name']}, tessera {card['number']}")
             self._changed()
@@ -446,7 +567,8 @@ class AccessService:
         async with self.lock:
             person = self._person(person_id)
             for card in person["cards"]:
-                await self.controller.remove_credential(card["axis_credential_token"])
+                if not card["missing_since"]:
+                    await self.controller.remove_credential(card["axis_credential_token"])
                 self.db.delete_card(card["id"])
             await self._remove_axis_user(person)
             self.db.delete_person(person_id)
@@ -523,8 +645,8 @@ class AccessService:
                 return
             card = self.db.card_by_number(number)
             if card is None:
-                self.db.note_unknown_card(number, ts)
-                self.log_event(ts=ts, kind="sconosciuta", card=number, source="lettore", raw=data, door=door)
+                if self.log_event(ts=ts, kind="sconosciuta", card=number, source="lettore", raw=data, door=door):
+                    self.db.note_unknown_card(number, ts)
             else:
                 self.log_event(
                     ts=ts,
@@ -577,6 +699,27 @@ class AccessService:
         elif topic.startswith("Device/Casing/Open") and str(data.get("Open")) == "1":
             # Coperchio del controller: non riguarda una porta
             self.log_event(ts=ts, kind="manomissione", detail=CASING_OPEN, source=self.controller_name())
+
+    async def recover_events(self, since: datetime) -> int:
+        """Eventi persi (MQTT o add-on fermi) letti dal registro interno del controller; restituisce quanti."""
+        start = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self._recovered = 0
+        row_id, read = None, 0
+        while read < RECOVER_MAX:
+            entries, more = await self.controller.fetch_events(start, RECOVER_PAGE, row_id)
+            read += len(entries)
+            self._recovering = True
+            try:
+                for entry in entries:
+                    event = event_from_log(entry)
+                    if event and event.topic.startswith(RECOVER_TOPICS):
+                        self.record_event(event)
+            finally:
+                self._recovering = False
+            if not more or not entries:
+                break
+            row_id = entries[-1].get("rowid")
+        return self._recovered
 
     def controller_name(self) -> str:
         controllers = self.db.list_controllers()

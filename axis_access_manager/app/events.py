@@ -49,6 +49,26 @@ def parse_event(prefix: str, topic: str, payload: bytes) -> Event | None:
     return Event(category=path.split("/", 1)[0], topic=path, timestamp=timestamp, data=data)
 
 
+def event_from_log(entry: dict) -> Event | None:
+    """Evento del registro interno del controller nello stesso formato di quelli MQTT.
+
+    Il topic è spezzato in topic0..topic3; sorgente e dati (DoorToken, Card, AccessPointToken...) sono le altre chiavi.
+    """
+    values = {str(kv.get("Key")): kv.get("Value") for kv in entry.get("KeyValues") or [] if kv.get("Key")}
+    levels = [str(values[f"topic{i}"]) for i in range(8) if values.get(f"topic{i}")]
+    if not levels:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(str(entry.get("UtcTime") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+    data = {k: v for k, v in values.items() if not k.startswith("topic")}
+    # Barra finale come nei topic MQTT, che proseguono con le sorgenti (…/DoorToken/<porta>)
+    return Event(category=levels[0], topic="/".join(levels) + "/", timestamp=timestamp, data=data)
+
+
 def door_of_topic(topic: str) -> str:
     """Token della porta nei topic come Door/State/DoorMode/.../DoorToken/<token>."""
     marker = "/DoorToken/"
@@ -103,6 +123,8 @@ class EventMonitor:
     client: aiomqtt.Client | None = field(default=None, repr=False)
     # Altri topic da seguire (anche con # e +): filtro → funzione(topic, payload, conservato dal broker)
     extra_subscriptions: dict[str, Callable[[str, bytes, bool], None]] = field(default_factory=dict)
+    # Interruzioni (broker perso o controller offline): dopo ognuna si recuperano gli eventi persi
+    outages: int = 0
     _tasks: set = field(default_factory=set, repr=False)
 
     @property
@@ -151,7 +173,10 @@ class EventMonitor:
 
     def handle(self, topic: str, payload: bytes, retained: bool = False) -> None:
         if topic == f"{self.prefix}/stato":
-            self.controller_online = payload.decode(errors="replace") == "online"
+            online = payload.decode(errors="replace") == "online"
+            if not online and self.controller_online is not False:
+                self.outages += 1
+            self.controller_online = online
             if self.on_status:
                 self.on_status()
             return
@@ -234,6 +259,8 @@ class EventMonitor:
                             continue
                         self.handle(topic, payload, bool(message.retain))
             except aiomqtt.MqttError as err:
+                if self.connected:
+                    self.outages += 1
                 self.client = None
                 self.connected = False
                 self.last_error = str(err)

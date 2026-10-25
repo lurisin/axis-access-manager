@@ -31,11 +31,32 @@ TYPES = {
     ),
     "expiring": ("Tessere in Scadenza", "Persone con tessere che scadono nei prossimi tre giorni.", "urgent"),
     "camera": ("Telecamere Non Disponibili", "L'ultima foto di una telecamera delle porte non è riuscita.", "urgent"),
+    "controller_changed": (
+        "Controller Cambiato",
+        "All'indirizzo del controller risponde un apparecchio diverso: scritture sospese finché non si conferma.",
+        "urgent",
+    ),
+    "clock": (
+        "Orologio del Controller",
+        "L'ora del controller è sbagliata di oltre un minuto: le fasce orarie scattano all'ora sbagliata.",
+        "urgent",
+    ),
+    "missing_cards": (
+        "Tessere Non Presenti Sul Controller",
+        "Tessere che l'app conosce ma che sul controller non ci sono più: da riscrivere o togliere dall'app.",
+        "urgent",
+    ),
 }
 # Guasti dell'impianto: restano finché non si risolvono, anche dopo la presa visione
-FAULT_TYPES = ("controller", "mqtt", "camera")
+FAULT_TYPES = ("controller", "mqtt", "camera", "controller_changed", "clock", "missing_cards")
 # Tipi con nomi o eventi: permesso necessario per vederli
-VISIBILITY = {"door_alarm": "registro", "denied": "registro", "unknown_card": "persone", "expiring": "persone"}
+VISIBILITY = {
+    "door_alarm": "registro",
+    "denied": "registro",
+    "unknown_card": "persone",
+    "expiring": "persone",
+    "missing_cards": "persone",
+}
 # Attiva: compare in Da Gestire e conta sulla campanella. "info" (fino alla 0.13) vale come attiva.
 LEVELS = {"urgent": "Attiva", "off": "Disattivata"}
 OLD_LEVELS = {"info": "urgent"}
@@ -103,6 +124,8 @@ class NotificationService:
         sync: dict,
         door_names: dict[str, str],
         cameras: list[dict] | None = None,
+        controllers: list[dict] | None = None,
+        missing: dict | None = None,
         now: datetime | None = None,
     ) -> list[dict]:
         """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente."""
@@ -178,7 +201,33 @@ class NotificationService:
                     now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
-            if controller_online is False or sync.get("ok") is False:
+            controllers = controllers or []
+            unreachable = [c for c in controllers if c.get("unreachable")]
+            for c in unreachable:
+                # Controllo periodico di ogni controller: non risponde da almeno un minuto
+                add(
+                    "controller",
+                    f"controller:{c['id']}",
+                    "crit",
+                    "Controller Non Raggiungibile",
+                    f"{c['name']} · {_capital(c.get('error') or 'non risponde')}",
+                    c.get("checked_at") or now.isoformat(timespec="seconds"),
+                    link="#impianti/stato",
+                )
+            reachable = bool(controllers) and not unreachable
+            if mqtt_connected and controller_online is False and reachable:
+                # Il controller risponde all'add-on ma non pubblica sul broker
+                add(
+                    "mqtt",
+                    "mqtt:controller",
+                    "crit",
+                    "Eventi del Controller Non Arrivano",
+                    "Il controller risponde ma non è collegato al broker MQTT: "
+                    "registro e stato porta non si aggiornano.",
+                    now.isoformat(timespec="seconds"),
+                    link="#impianti/stato",
+                )
+            elif not unreachable and (sync.get("ok") is False or (controller_online is False and not controllers)):
                 detail = sync.get("error") if sync.get("ok") is False else "il controller risulta offline"
                 add(
                     "controller",
@@ -189,6 +238,39 @@ class NotificationService:
                     sync.get("at") or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
+            for c in controllers:
+                if c.get("identity_change"):
+                    add(
+                        "controller_changed",
+                        f"changed:{c['id']}:{c.get('serial') or ''}",
+                        "crit",
+                        "Controller Cambiato",
+                        _capital(c["identity_change"]) + ". Fino ad allora le modifiche non vengono scritte.",
+                        c.get("checked_at") or now.isoformat(timespec="seconds"),
+                        link="#impianti",
+                    )
+                if c.get("clock_problem"):
+                    offset = c["clock_offset"]
+                    add(
+                        "clock",
+                        f"clock:{c['id']}",
+                        "warn",
+                        "Orologio del Controller",
+                        f"{c['name']} · {_offset_text(offset)} rispetto a Home Assistant",
+                        c.get("checked_at") or now.isoformat(timespec="seconds"),
+                        link="#impianti",
+                    )
+        if missing and missing.get("count"):
+            add(
+                "missing_cards",
+                f"missing:{missing['since']}",
+                "crit" if missing.get("mass") else "warn",
+                "Tessere Non Presenti Sul Controller",
+                f"{missing['count']} tessere di {missing['persons']} persone non sono più sul controller: "
+                "riscrivile o toglile dall'app",
+                missing["since"],
+                link="#persone/mancanti",
+            )
         titles = {"allarme": "Allarme Porta", "manomissione": "Manomissione"}
         if levels["door_alarm"] != "off":
             alarms = self.db.list_events(kind="allarme,manomissione", since=since, limit=MAX_EVENTS)
@@ -273,6 +355,17 @@ class NotificationService:
             "types": self.types(),
             "levels": LEVELS,
         }
+
+
+def _offset_text(seconds: float) -> str:
+    """Scarto dell'orologio: "3 min avanti", "45 s indietro"."""
+    way = "avanti" if seconds > 0 else "indietro"
+    value = abs(seconds)
+    if value >= 3600:
+        return f"{value / 3600:.1f} ore {way}".replace(".", ",")
+    if value >= 120:
+        return f"{round(value / 60)} min {way}"
+    return f"{round(value)} s {way}"
 
 
 def _capital(text: str) -> str:

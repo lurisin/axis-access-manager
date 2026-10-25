@@ -18,20 +18,30 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .backup_copy import ha_copy_path, update_copies
 from .config import Settings, load_settings, normalize_host, resolve_mqtt
 from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
 from .ha import HomeAssistant
 from .ha_mqtt import HaBridge, parse_command
+from .health import HEALTH_INTERVAL, HealthMonitor, clock_problem, paused_reason
 from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
 from .notifications import FAULT_TYPES, NotificationService
 from .programming import INPUT_ROLES, ProgrammingService
 from .rules_service import RulesService
-from .service import CASING_OPEN, DENIED_REASONS, INPUT_TERMINALS, AccessService, ServiceError
+from .service import (
+    CASING_OPEN,
+    CONTROLLER_KINDS,
+    DENIED_REASONS,
+    INPUT_TERMINALS,
+    AccessService,
+    ServiceError,
+    mass_missing,
+)
 from .transfer import events_csv, import_persons, persons_csv
 from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
-from .vapix import A1210Client, VapixError
+from .vapix import A1210Client, ControllerGuard, VapixError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -49,6 +59,10 @@ GRANTED_KINDS = {"concesso"}
 # e le chiamate al citofono non sono accessi; le aperture dal citofono arrivano come apertura remota.
 ACCESS_COUNT_KINDS = ("concesso", "apertura_remota")
 EXPORT_LIMIT = 50000
+
+# Recupero degli eventi persi: da poco prima dell'ultimo registrato, al massimo degli ultimi 7 giorni
+RECOVER_OVERLAP = 10
+RECOVER_LIMIT = timedelta(days=7)
 
 SYNC_INTERVAL = 15 * 60
 SYNC_RETRY = 60
@@ -261,6 +275,11 @@ class DashboardLayoutIn(BaseModel):
     widgets: list[DashboardWidgetIn] = Field(max_length=len(DASHBOARD_WIDGETS))
 
 
+class MissingCardsIn(BaseModel):
+    # Nessun elenco = tutte le tessere non presenti
+    ids: list[int] | None = None
+
+
 class HardwareAccessPointIn(BaseModel):
     name: str | None = None
     door: str | None = None
@@ -323,7 +342,11 @@ def create_app(
         options = settings or load_settings()
         app.state.options = options
         app.state.injected_controller = controller
-        app.state.db = Database(db_path or os.environ.get("AAM_DB_PATH") or DB_PATH)
+        app.state.db = Database(db_path or os.environ.get("AAM_DB_PATH") or DB_PATH, __version__)
+        if app.state.db.recovered:
+            _LOGGER.error("All'avvio: %s", app.state.db.recovered)
+        if app.state.db.copied:
+            _LOGGER.info("Copia del database prima dell'aggiornamento: %s", app.state.db.copied)
         app.state.users = UserDirectory(app.state.db, options.readonly_users)
         app.state.users.add_status_permission()
         app.state.installation = InstallationService(app.state.db)
@@ -343,12 +366,19 @@ def create_app(
             _LOGGER.warning("Nessun broker MQTT: installa Mosquitto o imposta mqtt_host")
         if moved := await asyncio.to_thread(app.state.ha.move_snapshots):
             _LOGGER.info("%s istantanee spostate in %s", moved, app.state.ha.snapshot_dir)
+        app.state.health = HealthMonitor(app.state.db, lambda row: _health_client(app, row))
+        # La prima sincronizzazione aspetta il primo controllo: un controller cambiato non va letto
+        app.state.health_ready = asyncio.Event()
+        app.state.last_recovery = None
         await _start_runtime(app)
         maintenance = asyncio.create_task(_maintenance(app))
+        health = asyncio.create_task(_health_loop(app))
         yield
-        maintenance.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await maintenance
+        for task in (maintenance, health):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await app.state.health.aclose()
         await _stop_runtime(app)
         await app.state.ha.aclose()
         app.state.db.close()
@@ -420,6 +450,13 @@ def create_app(
                 "mqtt_override": bool(state.options.mqtt),
             },
             "intercoms": [_intercom_status(i) for i in state.intercoms],
+            "controllers": _controllers_health(state),
+            "recovery": state.last_recovery,
+            "database": {
+                "schema": state.db.schema_version,
+                "copies": await asyncio.to_thread(update_copies, state.db.path) if state.db.path else [],
+                "ha_copy": _file_time(ha_copy_path(state.db.path)) if state.db.path else "",
+            },
         }
 
     @app.get("/api/summary")
@@ -553,6 +590,19 @@ def create_app(
         request.app.state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
         request.app.state.db.add_audit(request_user(request), "sincronizzazione", _sync_text(result))
         return result
+
+    @app.get("/api/missing-cards", dependencies=[need("persone")])
+    async def missing_cards(request: Request) -> list[dict]:
+        """Tessere che l'app conosce ma che sul controller non ci sono più."""
+        return request.app.state.db.missing_cards()
+
+    @app.post("/api/missing-cards/restore", dependencies=[need("persone_modifica")])
+    async def restore_missing_cards(body: MissingCardsIn, request: Request) -> dict:
+        return await request.app.state.service.restore_missing(request_user(request), body.ids)
+
+    @app.post("/api/missing-cards/forget", dependencies=[need("persone_modifica")])
+    async def forget_missing_cards(body: MissingCardsIn, request: Request) -> dict:
+        return request.app.state.service.forget_missing(request_user(request), body.ids)
 
     # Persone e tessere
 
@@ -987,8 +1037,13 @@ def create_app(
     async def installation(request: Request) -> dict:
         service = request.app.state.installation
         places = service.controller_places()
+        health = {h["id"]: h for h in _controllers_health(request.app.state)}
         controllers = [
-            {**c, "place": places.get(c["id"], {"site": "", "area": "", "site_id": 0, "area_id": 0})}
+            {
+                **c,
+                "place": places.get(c["id"], {"site": "", "area": "", "site_id": 0, "area_id": 0}),
+                "health": health.get(c["id"]),
+            }
             for c in service.controllers()
         ]
         return {"controllers": controllers, "max_controllers": MAX_CONTROLLERS}
@@ -1037,6 +1092,21 @@ def create_app(
         primary = state.installation.primary
         state.controller_camera = (primary or {}).get("snapshot_camera") or ""
         return result
+
+    @app.post("/api/controllers/{controller_id}/identity/accept")
+    async def accept_controller_identity(controller_id: int, request: Request, user: Admin) -> dict:
+        """Un amministratore conferma il controller trovato all'indirizzo: le scritture ripartono."""
+        state = request.app.state
+        try:
+            state.health.accept_identity(controller_id, user.label)
+        except LookupError as err:
+            raise HTTPException(404, str(err)) from err
+        _apply_pause(state)
+        with contextlib.suppress(VapixError, ServiceError):
+            if state.settings.a1210_host:
+                result = await state.service.sync_from_controller()
+                state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
+        return {"ok": True}
 
     @app.delete("/api/controllers/{controller_id}", dependencies=[need("impianti")])
     async def delete_controller(controller_id: int, request: Request) -> dict:
@@ -1165,12 +1235,18 @@ async def _start_runtime(app: FastAPI) -> None:
     state = app.state
     cfg = state.installation.effective_settings(state.options)
     state.settings = cfg
-    state.controller = state.injected_controller or A1210Client(
+    state.raw_controller = state.injected_controller or A1210Client(
         cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl
     )
+    # Le scritture si sospendono se all'indirizzo risponde un controller diverso da quello memorizzato
+    state.controller = ControllerGuard(state.raw_controller)
+    _apply_pause(state)
     state.doors = state.installation.doors()
     state.controller_camera = (state.installation.primary or {}).get("snapshot_camera") or ""
     state.monitor = EventMonitor(prefix=cfg.mqtt_topic_prefix, door_token=cfg.door_token)
+    # Eventi persi da recuperare dal registro del controller: all'avvio e dopo ogni interruzione
+    state.recover_pending = True
+    state.recover_outages = 0
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
         _LOGGER.info("Motivi di %s dinieghi tradotti in italiano", translated)
@@ -1196,7 +1272,7 @@ async def _stop_runtime(app: FastAPI) -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await task
     if state.injected_controller is None:
-        await state.controller.aclose()
+        await state.raw_controller.aclose()
 
 
 async def reload_runtime(app: FastAPI) -> None:
@@ -1204,7 +1280,13 @@ async def reload_runtime(app: FastAPI) -> None:
     async with app.state.reload_lock:
         await _stop_runtime(app)
         await _start_runtime(app)
-    with contextlib.suppress(VapixError):
+    # Indirizzo cambiato: prima di leggere o scrivere si controlla chi risponde
+    try:
+        await app.state.health.check_all()
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Controllo dei controller non riuscito")
+    _apply_pause(app.state)
+    with contextlib.suppress(VapixError, ServiceError):
         if app.state.settings.a1210_host:
             result = await app.state.service.sync_from_controller()
             app.state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
@@ -1235,6 +1317,10 @@ def _wire(app: FastAPI) -> None:
     doors = {d["door_token"]: d for d in state.doors}
 
     async def after_event(row: dict) -> None:
+        if row.get("recovered"):
+            # Recuperato dal registro del controller: la foto di adesso non c'entra, e le automazioni
+            # di Home Assistant non devono scattare in ritardo
+            return
         door = doors.get(row.get("door") or cfg.door_token) or {}
         camera = door.get("snapshot_camera") or ""
         if row.get("kind") == "manomissione" and not row.get("door"):
@@ -1372,6 +1458,8 @@ def _current_notifications(state) -> list[dict]:
             for camera, problem in state.snapshot_errors.items()
             if camera == state.controller_camera or any(d["snapshot_camera"] == camera for d in state.doors)
         ],
+        controllers=_controllers_health(state),
+        missing=_missing_summary(state.db),
     )
 
 
@@ -1449,7 +1537,105 @@ def _week_series(rows: list[dict]) -> list[dict]:
 
 
 def _sync_text(result: dict) -> str:
-    return f"{result['cards']} tessere, {result['added']} nuove, {result['removed']} rimosse"
+    text = f"{result['cards']} tessere, {result['added']} nuove"
+    return text + (f", {result['missing']} non presenti sul controller" if result.get("missing") else "")
+
+
+def _health_client(app: FastAPI, row: dict):
+    """Client per il controllo periodico: uno per controller, separato da quello delle scritture."""
+    if app.state.injected_controller is not None:
+        return app.state.injected_controller
+    return A1210Client(row["host"], row["username"], row["password"], bool(row["verify_ssl"]))
+
+
+def _apply_pause(state) -> None:
+    """Scritture verso il controller in uso sospese se è cambiato e nessuno ha confermato."""
+    state.controller.paused = paused_reason(state.installation.primary)
+
+
+async def _health_loop(app: FastAPI) -> None:
+    """Ogni HEALTH_INTERVAL: tutti i controller in parallelo (raggiungibile, identità, orologio)."""
+    state = app.state
+    while True:
+        try:
+            before = state.controller.paused
+            await state.health.check_all()
+            _apply_pause(state)
+            if before != state.controller.paused:
+                state.service.notify_change()
+            await _recover_if_needed(state)
+        except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
+            _LOGGER.exception("Controllo dei controller non riuscito")
+        state.health_ready.set()
+        await asyncio.sleep(HEALTH_INTERVAL)
+
+
+async def _recover_if_needed(state) -> None:
+    """Dopo l'avvio o un'interruzione (broker perso, controller offline), appena gli eventi tornano ad arrivare
+    si recuperano quelli persi dal registro interno del controller."""
+    monitor = state.monitor
+    pending = state.recover_pending or monitor.outages != state.recover_outages
+    primary = state.installation.primary
+    health = state.health.states.get(primary["id"]) if primary else None
+    if not pending or not health or not health.online or state.controller.paused:
+        return
+    if state.mqtt and (not monitor.connected or monitor.controller_online is False):
+        return
+    outages = monitor.outages
+    last = state.db.last_controller_event(CONTROLLER_KINDS)
+    if not last:
+        # Primo avvio: niente da recuperare, gli eventi arrivano da ora
+        state.recover_pending, state.recover_outages = False, outages
+        return
+    since = max(datetime.fromisoformat(last) - timedelta(seconds=RECOVER_OVERLAP), datetime.now(tz=UTC) - RECOVER_LIMIT)
+    try:
+        recovered = await state.service.recover_events(since)
+    except VapixError as err:
+        _LOGGER.warning("Eventi persi non recuperati dal controller: %s", err)
+        return
+    state.recover_pending, state.recover_outages = False, outages
+    state.last_recovery = {"at": _now(), "since": since.isoformat(timespec="seconds"), "events": recovered}
+    if recovered:
+        _LOGGER.info("Recuperati %s eventi dal registro del controller", recovered)
+        state.db.add_audit("sistema", "eventi recuperati dal controller", f"{recovered} eventi dal {since:%d/%m %H:%M}")
+
+
+def _controllers_health(state) -> list[dict]:
+    """Stato di ogni controller con quanto serve a notifiche e pagina Impianti."""
+    rows = {c["id"]: c for c in state.db.list_controllers()}
+    result = []
+    for controller_id, health in state.health.states.items():
+        row = rows.get(controller_id)
+        if row is None:
+            continue
+        result.append(
+            {
+                **health.as_dict(),
+                "identity_change": paused_reason(row),
+                "clock_problem": clock_problem(health),
+                "known": {k: row.get(k) or "" for k in ("serial", "model", "firmware", "cert_fingerprint")},
+            }
+        )
+    return result
+
+
+def _missing_summary(db: Database) -> dict:
+    cards = db.missing_cards()
+    if not cards:
+        return {"count": 0}
+    return {
+        "count": len(cards),
+        "persons": len({c["person_id"] for c in cards}),
+        "since": min(c["missing_since"] for c in cards),
+        "mass": mass_missing(len(db.all_cards()), len(cards)),
+    }
+
+
+def _file_time(path: Path) -> str:
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec="seconds")
+    except OSError:
+        return ""
 
 
 def _csv_response(text: str, name: str) -> Response:
@@ -1475,9 +1661,15 @@ async def _maintenance(app: FastAPI) -> None:
     last_prune = 0.0
     groups_checked = False
     loop = asyncio.get_running_loop()
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(state.health_ready.wait(), HEALTH_INTERVAL)
     while True:
         delay = SYNC_INTERVAL
-        if state.settings.a1210_host:
+        if state.controller.paused:
+            # Controller cambiato: niente sincronizzazione finché un amministratore non conferma
+            state.last_sync = {"ok": None, "error": "", "result": None, "at": _now(), "paused": state.controller.paused}
+            delay = SYNC_RETRY
+        elif state.settings.a1210_host:
             try:
                 result = await state.service.sync_from_controller()
                 state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
@@ -1493,7 +1685,7 @@ async def _maintenance(app: FastAPI) -> None:
                     # Dalla 0.10 i gruppi sono dentro le tipologie
                     if adopted := await state.rules.adopt_groups():
                         _LOGGER.info("Gruppi passati alle tipologie: %s modifiche", adopted)
-            except VapixError as err:
+            except (VapixError, ServiceError) as err:
                 state.last_sync = {"ok": False, "error": str(err), "result": None, "at": _now()}
                 _LOGGER.warning("Sincronizzazione non riuscita: %s", err)
                 delay = SYNC_RETRY
