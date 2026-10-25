@@ -329,11 +329,12 @@ def create_app(
         }
 
     @app.get("/api/status")
-    async def status(request: Request) -> dict:
+    async def status(request: Request, controller: bool = True) -> dict:
+        """Stato di collegamenti e integrazioni; controller=false evita di interrogare il controller."""
         state = request.app.state
         cfg = state.settings
         return {
-            "controller": await _controller_status(state.controller, cfg),
+            "controller": await _controller_status(state.controller, cfg) if controller else None,
             "mqtt": _mqtt_status(state.monitor, state.mqtt_configured),
             "sync": state.last_sync,
             "home_assistant": {

@@ -120,7 +120,7 @@ class NotificationService:
                     "Collegamento MQTT Perso",
                     "Gli eventi del controller non arrivano all'add-on.",
                     now.isoformat(timespec="seconds"),
-                    "#impostazioni",
+                    "#impianti/stato",
                 )
             if controller_online is False or sync.get("ok") is False:
                 detail = sync.get("error") if sync.get("ok") is False else "il controller risulta offline"
@@ -130,7 +130,7 @@ class NotificationService:
                     "Controller Non Raggiungibile",
                     detail or "",
                     sync.get("at") or now.isoformat(timespec="seconds"),
-                    "#impianti",
+                    "#impianti/stato",
                 )
         titles = {"allarme": "Allarme Porta", "manomissione": "Manomissione"}
         for event in self.db.list_events(kind="allarme,manomissione", since=since, limit=MAX_EVENTS):
