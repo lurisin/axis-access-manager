@@ -13,6 +13,12 @@ configuration:
   door_token:
     name: Token porta
     description: Token Axis della porta da gestire
+  access_profile:
+    name: Profilo di accesso
+    description: Profilo Axis assegnato alle nuove tessere (porta e fascia oraria)
+  event_retention_days:
+    name: Conservazione log (giorni)
+    description: Gli eventi più vecchi vengono cancellati
   mqtt_topic_prefix:
     name: Prefisso topic MQTT
     description: Prefisso configurato nel client MQTT dell'A1210; gli eventi arrivano sotto <prefisso>/eventi/...

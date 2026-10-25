@@ -38,6 +38,8 @@ class Settings:
     mqtt_topic_prefix: str
     mqtt: MqttSettings | None
     log_level: str = "info"
+    access_profile: str = ""
+    event_retention_days: int = 365
 
 
 def normalize_host(value: str) -> str:
@@ -78,6 +80,8 @@ def parse_options(options: dict) -> Settings:
         mqtt_topic_prefix=options.get("mqtt_topic_prefix", "").strip().rstrip("/"),
         mqtt=mqtt,
         log_level=options.get("log_level", "info"),
+        access_profile=options.get("access_profile", "").strip(),
+        event_retention_days=int(options.get("event_retention_days") or 365),
     )
 
 

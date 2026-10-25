@@ -1,5 +1,5 @@
 name: Axis Access Manager
-version: "0.1.2"
+version: "0.2.0"
 slug: axis_access_manager
 description: Gestione tessere e controllo accessi per il controller Axis A1210
 url: https://github.com/lurisin/axis-access-manager
@@ -18,6 +18,8 @@ options:
   a1210_password: ""
   a1210_verify_ssl: false
   door_token: porta_via_consulta_ingresso_scala
+  access_profile: profilo_via_consulta_ingresso_scala_sempre
+  event_retention_days: 365
   mqtt_topic_prefix: accessi/via_consulta_controller
   log_level: info
 schema:
@@ -26,6 +28,8 @@ schema:
   a1210_password: password
   a1210_verify_ssl: bool
   door_token: str
+  access_profile: str
+  event_retention_days: int(1,3650)
   mqtt_topic_prefix: str
   mqtt_host: str?
   mqtt_port: port?

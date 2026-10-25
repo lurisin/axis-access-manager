@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -65,8 +66,12 @@ class EventMonitor:
     last_error: str = ""
     categories: dict[str, CategoryStats] = field(default_factory=dict)
     last_card: dict | None = None
+    door_token: str = ""
+    door_mode: str | None = None
+    # Chiamata per ogni evento; retained=True per i messaggi conservati dal broker
+    on_event: Callable[[Event, bool], None] | None = None
 
-    def handle(self, topic: str, payload: bytes) -> None:
+    def handle(self, topic: str, payload: bytes, retained: bool = False) -> None:
         if topic == f"{self.prefix}/stato":
             self.controller_online = payload.decode(errors="replace") == "online"
             return
@@ -79,6 +84,18 @@ class EventMonitor:
         stats.last_seen = event.timestamp
         if event.topic.startswith("IdPoint/Request/IdData") and "Card" in event.data:
             self.last_card = {"card": event.data["Card"], "read_at": event.timestamp}
+        if (
+            event.topic.startswith("Door/State/DoorMode/")
+            and self.door_token
+            and event.topic.endswith(f"/DoorToken/{self.door_token}")
+            and "State" in event.data
+        ):
+            self.door_mode = event.data["State"]
+        if self.on_event:
+            try:
+                self.on_event(event, retained)
+            except Exception:
+                _LOGGER.exception("Errore nella gestione dell'evento %s", event.topic)
 
     async def run(self, settings: MqttSettings) -> None:
         """Resta collegato al broker, riconnettendosi in caso di errore."""
@@ -99,7 +116,7 @@ class EventMonitor:
                         payload = message.payload
                         if not isinstance(payload, bytes):
                             payload = str(payload).encode()
-                        self.handle(message.topic.value, payload)
+                        self.handle(message.topic.value, payload, bool(message.retain))
             except aiomqtt.MqttError as err:
                 self.connected = False
                 self.last_error = str(err)
