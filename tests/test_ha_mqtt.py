@@ -136,3 +136,19 @@ async def test_input_entities_take_the_name_chosen_in_the_app(bridge, db):
     # Stesso id dell'entità (storico e automazioni restano), nome nuovo
     assert config("ingresso_aux_1")["name"] == "Relè Citofono"
     assert config("ingresso_aux_2")["name"] == "Ingresso AUX 2"
+
+
+async def test_renaming_an_input_republishes_only_input_entities(bridge, db, monkeypatch):
+    sent = []
+
+    async def publish(topic, payload, retain=False):
+        sent.append((topic, json.loads(payload)["name"]))
+        return True
+
+    monkeypatch.setattr(bridge.monitor, "publish", publish)
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    db.save_controller_input(controller_id, "IO2", {"name": "Pulsante Magazzino", "role": "rex", "door_token": "porta"})
+    await bridge.publish_input_names()
+    # Niente riconnessione: lo stato della porta e le altre entità non passano da "sconosciuto"
+    assert len(sent) == 4 and all("/ingresso_" in topic for topic, _ in sent)
+    assert ("homeassistant/binary_sensor/axis_access_manager/ingresso_aux_2/config", "Pulsante Magazzino") in sent

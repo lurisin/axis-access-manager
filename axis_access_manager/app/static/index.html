@@ -274,6 +274,8 @@
   .rule-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--border);
               border-radius: 10px; margin-bottom: 8px; background: var(--surface-2); }
   .field .rule-row input[type=time] { width: 116px; }
+  /* L'icona dell'orologio copre le cifre (soprattutto con AM/PM): l'ora si scrive o si cambia con le frecce */
+  input[type=time]::-webkit-calendar-picker-indicator { display: none; }
 
   /* Finestre */
   dialog { border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); padding: 0;
@@ -446,6 +448,9 @@ const allDoors = () => store.summary.doors || [];
 const multiDoor = () => allDoors().length > 1;
 const doorByToken = (token) => allDoors().find((d) => d.token === token);
 const doorLabel = (token) => doorByToken(token)?.name || (multiDoor() ? token || "" : allDoors()[0]?.name || "");
+// Manomissione del coperchio: riguarda il controller, non una porta (l'origine è il nome del controller)
+const controllerEvent = (e) => e.kind === "manomissione" && !e.door && e.source !== "porta";
+const eventPlace = (e) => controllerEvent(e) ? e.source || "Controller" : doorLabel(e.door);
 const placeOf = (d) => [d.site, d.area].filter((x) => x && !x.startsWith("Senza ")).join(" › ");
 // Tipi di evento del registro: etichetta, colore, icona
 const KINDS = {
@@ -1215,19 +1220,19 @@ function logRow(e) {
   return `<div class="ev ${e.id === logSelected ? "sel" : ""}" data-event="${e.id}" role="button" tabindex="0" title="${esc(fmtFull(e.ts))}">
     <span class="time">${esc(fmtTime(e.ts))}</span><span class="dot ${KIND_DOT[cls] || ""}"></span>
     <span class="what">${who ? `<b>${esc(who)}</b> <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="con istantanea">${icon("camera", "icon")}</span>` : ""}</span>
-    ${multiDoor() ? `<span class="where">${esc(doorLabel(e.door))}</span>` : "<span></span>"}
+    ${multiDoor() ? `<span class="where">${esc(eventPlace(e))}</span>` : "<span></span>"}
   </div>`;
 }
 function eventDetail(e) {
   const [label, cls] = KINDS[e.kind] || [e.kind, "k-muted"];
-  const door = doorByToken(e.door) || (!multiDoor() ? allDoors()[0] : null);
+  const door = doorByToken(e.door) || (!multiDoor() && !controllerEvent(e) ? allDoors()[0] : null);
   const rows = [
     ["Quando", esc(fmtFull(e.ts))],
     door ? ["Porta", `<a href="#porte/${door.id}">${esc(door.name)}</a>${placeOf(door) ? ` <span class="muted">· ${esc(placeOf(door))}</span>` : ""}`] : e.door ? ["Porta", `<code>${esc(e.door)}</code>`] : null,
     e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
     e.detail ? ["Dettaglio", esc(e.detail)] : null,
-    e.source ? ["Origine", esc(e.source)] : null,
+    controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
     ${e.snapshot ? `<img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="istantanea" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
@@ -1819,11 +1824,14 @@ async function viewController(el, ctrl, tab) {
   paintControllerState();
   const body = $("#c-body");
   const primary = (await api("api/installation")).controllers[0];
+  // Nel frattempo si è cambiata pagina o scheda: questa risposta non serve più
+  if (!body.isConnected) return;
   if (!primary || primary.id !== ctrl.id) { body.innerHTML = '<div class="card"><div class="empty">La programmazione è disponibile per il controller in uso.</div></div>'; return; }
   // Lo stato non legge la programmazione: deve funzionare anche quando il controller non risponde
   if (tab === "stato") return controllerStatus(body, ctrl);
   let p;
-  try { p = await api("api/programming"); } catch (err) { body.innerHTML = errorBox("Programmazione Non Leggibile", err) + '<p class="hint">Controlla il collegamento con l\'ingranaggio Connessione.</p>'; return; }
+  try { p = await api("api/programming"); } catch (err) { if (!body.isConnected) return; body.innerHTML = errorBox("Programmazione Non Leggibile", err) + '<p class="hint">Controlla il collegamento con l\'ingranaggio Connessione.</p>'; return; }
+  if (!body.isConnected) return;
   const errors = p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "";
   const appDoor = (token) => ctrl.doors.find((d) => d.door_token === token);
   const doorName = (d) => appDoor(d.token)?.name || d.name || p.doors.find((x) => x.token === d.token)?.name || d.token;
@@ -1861,7 +1869,8 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   const inputOf = (io) => inputs.find((i) => i.io === io);
   const linkedDoor = (i) => DOOR_INPUT_ROLES.includes(i.role) && i.door ? i.door : "";
   const inputMeta = (i) => [p.input_roles?.[i.role] || "Non Usato", linkedDoor(i) ? doorName({token: i.door}) : "", i.pins.join(", ")].filter(Boolean).join(" · ");
-  const inputDot = (i) => i.active === true ? '<span class="dot warn" title="Attivo"></span>' : i.active === false ? '<span class="dot ok" title="A riposo"></span>' : "";
+  const inputDot = (i) => i.port == null ? '<span class="muted" title="Stato non disponibile: il controller non invia eventi per questo ingresso">–</span>'
+    : i.active === true ? '<span class="dot warn" title="Attivo"></span>' : i.active === false ? '<span class="dot ok" title="A riposo"></span>' : "";
   const readerName = (token) => { const r = p.readers.find((x) => x.token === token); return r?.name || token; };
   const directionsOf = (door) => [...new Set(p.access_points.filter((a) => a.door === door).map((a) => a.direction || ""))];
   const changes = () => {
@@ -1989,8 +1998,8 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     if (door && !DOOR_INPUT_ROLES.includes(role)) { toast(`${i.name}: questo ingresso non si collega a una porta`, true); return; }
     const doorOptions = p.doors.map((d) => `<option value="${esc(d.token)}" ${d.token === (door || i.door) ? "selected" : ""}>${esc(doorName(d))}</option>`).join("");
     const startName = role !== i.role && (i.name === i.default_name || Object.values(p.input_roles).includes(i.name)) ? p.input_roles[role] || i.default_name : i.name;
-    const ok = await modal({title: `Ingresso ${i.name}`,
-      body: `${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}. È anche il nome dell'entità in Home Assistant.`)}
+    const ok = await modal({title: i.name,
+      body: `${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? " È anche il nome dell'entità in Home Assistant." : ""} Compare nel registro per le aperture da questo ingresso.`)}
         ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(INPUT_ROLE_HINTS[role] || "")}</span>${i.io === "DPS" ? " Il ruolo Sensore Porta arriva dopo una prova al banco." : ""}`)}
         <div data-door-field ${DOOR_INPUT_ROLES.includes(role) ? "" : "hidden"}>${field("Porta", `<select name="door">${doorOptions}</select>`)}</div>
         ${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.")}

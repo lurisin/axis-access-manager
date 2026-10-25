@@ -210,7 +210,9 @@ class A1210Client:
         await self._post("/vapix/idpoint", {"axtid:SetIdPointConfiguration": {"IdPointConfiguration": [item]}})
 
     async def remove_idpoint(self, token: str) -> None:
+        """Toglie l'IdPoint e la sua configurazione, che il controller altrimenti tiene orfana."""
         await self._post("/vapix/idpoint", {"axtid:RemoveIdPoint": {"Token": [token]}})
+        await self._post("/vapix/idpoint", {"axtid:RemoveIdPointConfiguration": {"Token": [token]}})
 
     async def set_io_assignment(self, io: str, mode: str, users: list[dict]) -> None:
         """Assegna un I/O fisico (lista vuota = libera). Il controller risponde 200 anche se rifiuta: si controlla."""

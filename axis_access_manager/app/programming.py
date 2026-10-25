@@ -382,7 +382,7 @@ class ProgrammingService:
                 tokens["access_point_token"] = ""
             if not wanted:
                 if tokens["idpoint_token"]:
-                    await self.controller.set_io_assignment(io, _plain_mode(io), [])
+                    await self._release_io(io, tokens["idpoint_token"], current)
                     await self.controller.remove_idpoint(tokens["idpoint_token"])
                     tokens["idpoint_token"] = ""
             else:
@@ -391,6 +391,20 @@ class ProgrammingService:
             self.db.save_controller_input(controller_id, io, {**current, **tokens})
             raise ServiceError(f"il controller ha rifiutato la configurazione dell'ingresso: {err}") from err
         self.db.save_controller_input(controller_id, io, {**values, **tokens})
+
+    async def _release_io(self, io: str, idpoint: str, current: dict) -> None:
+        """Libera l'I/O tornando al modo semplice. Senza utenti il firmware accetta il cambio di modo ma lo ignora:
+        da supervisionato si passa prima al modo semplice con l'IdPoint come REX normale, poi si toglie l'utente."""
+        if current.get("supervised"):
+            _, device = await self._device_uuids(await self.controller.list_access_points())
+            await self.controller.set_idpoint_configuration(
+                idpoint,
+                device,
+                {"IdPoint.Reader.Type": "None", "IdPoint.REX.Type": "ActiveLow", "IdPoint.Keypress.Type": "Auto"},
+            )
+            user = {"Type": "idpoint", "token": idpoint, "Usage": "REX", "MultiIo": False}
+            await self.controller.set_io_assignment(io, _plain_mode(io), [user])
+        await self.controller.set_io_assignment(io, _plain_mode(io), [])
 
     async def _write_rex(self, io: str, values: dict, tokens: dict) -> None:
         supervised = values["supervised"]

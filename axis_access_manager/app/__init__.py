@@ -1,4 +1,4 @@
 """Axis Access Manager: gestione tessere per il controller Axis A1210."""
 
 # Deve coincidere con version in config.yaml
-__version__ = "0.9.0"
+__version__ = "0.9.1"

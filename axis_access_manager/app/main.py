@@ -26,7 +26,7 @@ from .intercom import IntercomBridge, IntercomSettings
 from .notifications import NotificationService
 from .programming import ProgrammingService
 from .rules_service import RulesService
-from .service import DENIED_REASONS, AccessService, ServiceError
+from .service import CASING_OPEN, DENIED_REASONS, AccessService, ServiceError
 from .transfer import events_csv, import_persons, persons_csv
 from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError
 from .vapix import A1210Client, VapixError
@@ -944,7 +944,7 @@ def create_app(
     async def program_input(io: str, body: ControllerInputIn, request: Request) -> dict:
         saved = await request.app.state.programming.update_input(io, body.model_dump(), request_user(request))
         # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
-        await reload_runtime(request.app)
+        await request.app.state.bridge.publish_input_names()
         return saved
 
     @app.put("/api/programming/access-points/{token:path}", dependencies=[need("impianti")])
@@ -962,7 +962,7 @@ def create_app(
     @app.post("/api/programming/changes/{change_id}/undo", dependencies=[need("impianti")])
     async def undo_change(change_id: int, request: Request) -> dict:
         if await request.app.state.programming.undo(change_id, request_user(request)) == "input":
-            await reload_runtime(request.app)
+            await request.app.state.bridge.publish_input_names()
         return {"ok": True}
 
     @app.get("/api/cameras", dependencies=[need("impianti")])
@@ -1008,6 +1008,7 @@ async def _start_runtime(app: FastAPI) -> None:
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
         _LOGGER.info("Motivi di %s dinieghi tradotti in italiano", translated)
+    state.db.rename_controller_events("alloggiamento controller aperto", CASING_OPEN, state.service.controller_name())
     state.rules = RulesService(state.service)
     primary = state.installation.primary
     state.programming = ProgrammingService(

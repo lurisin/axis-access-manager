@@ -143,6 +143,11 @@ async def test_rex_input_is_written_to_the_controller_and_can_be_undone(db, cont
     ap = next(a for a in controller.access_points if a["token"] == point)
     assert ap["IdPointDevice"][0]["IdPoint"] == idpoint
 
+    # Relè tolto da supervisionato: il firmware ignora il cambio di modo senza utenti, si passa dal REX normale
+    await service.update_input("IO1", {"role": ""}, "admin")
+    assert controller.io_assignments["IO1"] == {"IoMode": "inout:pu/gnd", "IoUser": []}
+    assert relay["idpoint_token"] not in controller.idpoint_configs
+
     # Ruolo tolto: punto di accesso e punto di identificazione rimossi, ingresso liberato in un modo innocuo
     await service.update_input("REX", {"role": ""}, "admin")
     assert idpoint not in controller.idpoints and all(a["token"] != point for a in controller.access_points)
