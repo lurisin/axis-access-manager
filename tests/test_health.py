@@ -307,3 +307,27 @@ def test_identity_change_json_kept(db, controller_row):
     db.set_controller_identity_change(controller_row, json.dumps({"serial": "Z"}))
     # Senza identità memorizzata da confrontare il motivo resta generico
     assert "apparecchio diverso" in paused_reason(db.get_controller(controller_row))
+
+
+async def test_access_points_the_controller_does_not_manage_are_a_fault(monitor, controller, controller_row, db):
+    # Come dopo un reset: punto di accesso ricreato, ma nessun controllo accessi decide per lui
+    controller.access_controllers["Axis-x AccessController"]["AccessPoint"] = []
+    await monitor.check_all()
+    state = monitor.states[controller_row]
+    assert state.unmanaged == ["Ingresso"]
+
+    items = NotificationService(db).collect(
+        mqtt_configured=True,
+        mqtt_connected=True,
+        controller_configured=True,
+        controller_online=True,
+        sync={"ok": True},
+        door_names={},
+        controllers=[{**state.as_dict(), "id": controller_row}],
+    )
+    assert [(i["title"], i["severity"]) for i in items] == [("Punti di Accesso Non Gestiti", "crit")]
+    assert items[0]["text"].startswith("Quadro Teatro · Ingresso: il controller legge tessere e pulsanti")
+
+    controller.access_controllers["Axis-x AccessController"]["AccessPoint"] = ["ap-in"]
+    await monitor.recheck_managed(db.get_controller(controller_row))
+    assert state.unmanaged == []

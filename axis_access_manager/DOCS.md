@@ -283,7 +283,7 @@ Prima, dalla pagina web del controller:
 Cosa fa, nell'ordine in cui scrive:
 
 - **Impostazioni del Controller**: fuso orario, server NTP, collegamento al broker MQTT (lo riattiva subito, così gli accessi tornano in diretta) ed eventi MQTT. La password del broker non è nei backup: si scrive nell'anteprima e non si salva. Se il controller usa lo stesso utente MQTT dell'add-on non viene chiesta.
-- **Programmazione del Controller**: fasce orarie, modi di identificazione, porte con la configurazione della serratura, lettori con la loro configurazione, morsetti, punti di accesso e profili di accesso. Tutto con **gli stessi token del backup**: tipologie, tessere, ingressi dell'app, registro ed entità di Home Assistant restano collegati senza rifare niente. Se un controller rifiutasse un token, l'oggetto si crea con uno nuovo e l'app lo cambia ovunque (tipologie, tessere, ingressi).
+- **Programmazione del Controller**: fasce orarie, modi di identificazione, porte con la configurazione della serratura, lettori con la loro configurazione, morsetti, punti di accesso, l'elenco dei **punti di accesso gestiti dal controller** e profili di accesso. Tutto con **gli stessi token del backup**: tipologie, tessere, ingressi dell'app, registro ed entità di Home Assistant restano collegati senza rifare niente. Se un controller rifiutasse un token, l'oggetto si crea con uno nuovo e l'app lo cambia ovunque (tipologie, tessere, ingressi).
 - **Tessere sul Controller**: riscrive le tessere che il controller non ha più, con titolare, accesso, validità e stato salvati nell'app.
 
 Le regole di sempre valgono anche qui:
@@ -293,6 +293,8 @@ Le regole di sempre valgono anche qui:
 - quello che sul controller c'è ma nel backup no (per esempio una porta di fabbrica) si toglie solo se lo spunti. È già spuntato quando il controller è appena stato resettato, cioè quando non ha nessuna tessera;
 - con un controller sostituito, porte e lettori passano al dispositivo nuovo (il DeviceUUID lo assegna il controller);
 - prima del ripristino l'app crea il backup "Prima del Ripristino", come sempre.
+
+Il controller decide solo per i punti di accesso nell'elenco del suo controllo accessi (AccessController). Il reset svuota quell'elenco: se manca, le tessere vengono lette ma la porta non si apre. Il ripristino lo rimette; con un backup fatto prima della 0.21.1, che non lo contiene, fa gestire tutti i punti di accesso del backup. Se un controller ha punti di accesso non gestiti compare l'avviso **Punti di Accesso Non Gestiti**, e nella pagina del controller il pulsante **Fai Gestire al Controller** li sistema.
 
 Non si ripristinano l'indirizzo IP, gli utenti del controller e i certificati: servono già per collegarsi. Va rifatto a mano anche il collegamento del lettore OSDP con canale sicuro, se era attivo.
 

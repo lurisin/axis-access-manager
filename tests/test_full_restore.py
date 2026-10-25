@@ -7,6 +7,7 @@ from app.restore import Runtime, apply, plan
 
 FULL = ["dispositivo", "controller", "tessere"]
 OLD_UUID = "e6689c2d-4eca-4637-9a0e-b8a44fe6a074"
+NEW_UUID = "11111111-2222-4333-8444-accc8e000001"
 MQTT = {
     "server": {"protocol": "tcp", "host": "172.27.120.21", "port": 1883},
     "username": "axis_mqtt",
@@ -24,6 +25,7 @@ EVENTS = {
 def bench_like(controller):
     """Come l'A1210 del banco: dispositivo nelle configurazioni, MQTT con utente dedicato, un ingresso dell'app."""
     controller.serial = "B8A44FE6A074"
+    controller.device_uuid = OLD_UUID
     controller.door_configs["porta"]["DeviceUUID"] = OLD_UUID
     controller.door_configs["porta"]["DoorScheduleConfiguration"] = ""
     controller.idpoint_configs = {
@@ -45,6 +47,7 @@ def bench_like(controller):
             "Attribute": [{"Name": "Direction", "Value": "out"}],
         }
     )
+    controller.access_controllers["Axis-x AccessController"]["AccessPoint"].append("Axis-b8a44fe6a074:1.2")
     controller.io_assignments = {
         "Ser0hd": {"IoMode": "rs485hd", "IoUser": [{"Type": "idpoint", "token": "lettore-1", "Usage": "RS-485HD"}]},
         "REX": {
@@ -116,8 +119,16 @@ async def test_full_restore_after_factory_reset(plant, controller, db):
     assert "prog-fascia:standard_office_hours" in keys and "prog-fascia:standard_always" not in keys
     assert keys.index("prog-porta:porta") < keys.index("prog-lettore:lettore-1") < keys.index("prog-io:Ser0hd")
     assert keys.index("prog-io:REX") < keys.index("prog-punto:ap-in") < keys.index("prog-profilo:profilo_sempre")
+    # Il reset svuota l'elenco dei punti di accesso gestiti: si rimette dopo averli ricreati
+    managed = next(i for i in items if i["key"] == "prog-gestiti")
+    assert managed["action"] == "ricrea" and managed["default"] is True
+    assert managed["changes"] == [{"label": "Gestiti", "old": "nessuno", "new": "Ingresso, Relè Citofono"}]
+    assert keys.index("prog-punto:Axis-b8a44fe6a074:1.2") < keys.index("prog-gestiti")
     assert keys[-1] == "tessere" and "2 tessere di 2 persone" in items[-1]["text"]
-    assert [i["key"] for i in items if i["section"] == "controller" and i["action"] != "ricrea"] == []
+    # La fascia di fabbrica che nel backup non c'era si toglie, di serie perché il controller è appena resettato
+    extra = next(i for i in items if i["key"] == "prog-fascia-togli:standard_after_hours")
+    assert extra["action"] == "togli" and extra["default"] is True
+    assert [i["key"] for i in items if i["section"] == "controller" and i["action"] not in ("ricrea", "togli")] == []
     assert not result["failed"], result["failed"]
     assert result["reload"] is True
 
@@ -129,8 +140,16 @@ async def test_full_restore_after_factory_reset(plant, controller, db):
     assert controller.profiles["profilo_sempre"]["AccessPolicy"][0]["AccessPoint"] == "ap-in"
     assert controller.io_assignments["REX"]["IoUser"][0]["token"] == "Axis-b8a44fe6a074:1.1"
     assert controller.idpoint_configs["Axis-b8a44fe6a074:1.1"]["IdPoint.REX.Type"] == "ActiveLow"
-    # Stesso controller: il dispositivo resta quello di prima; la programmazione oraria della porta non si scrive
+    # Configurazioni scritte senza dispositivo: il controller ci mette il suo e le collega a sé (con l'UUID esplicito
+    # al banco il lettore restava scollegato). La programmazione oraria della porta non si scrive.
+    assert ("set_door_configuration", "porta", "") in controller.calls
+    assert set(written(controller, "set_idpoint_configuration")) == {
+        ("set_idpoint_configuration", "lettore-1", ""),
+        ("set_idpoint_configuration", "Axis-b8a44fe6a074:1.1", ""),
+    }
     assert controller.door_configs["porta"]["DeviceUUID"] == OLD_UUID
+    assert controller.idpoint_configs["lettore-1"]["DeviceUUID"] == OLD_UUID
+    assert "standard_after_hours" not in controller.schedules and "standard_always" in controller.schedules
     assert "DoorScheduleConfiguration" not in controller.door_configs["porta"]
     assert controller.time_zone == "Europe/Rome" and controller.mqtt["password"] == "segreta"
     assert controller.mqtt_events == EVENTS
@@ -139,6 +158,8 @@ async def test_full_restore_after_factory_reset(plant, controller, db):
     assert order.index("set_schedule") < order.index("set_door") < order.index("set_door_configuration")
     assert order.index("create_idpoint") < order.index("set_io_assignment") < order.index("create_access_point")
     assert order.index("set_access_profile") < order.index("set_credential")
+    assert controller.managed() == {"ap-in", "Axis-b8a44fe6a074:1.2"}
+    assert max(i for i, c in enumerate(order) if c == "create_access_point") < order.index("set_access_controller")
     cards = {c["number"]: c for c in db.all_cards()}
     assert not db.missing_cards()
     credential = controller.credentials[cards["04aa"]["axis_credential_token"]]
@@ -153,20 +174,40 @@ async def test_full_restore_after_factory_reset(plant, controller, db):
 
 async def test_replaced_controller_gets_its_own_device(plant, controller):
     backup = await plant.backup()
-    controller.factory_reset()
     controller.serial = "ACCC8E000001"
+    controller.factory_reset()
+    controller.device_uuid = NEW_UUID
 
     items, result = await full_restore(plant, backup["id"], password="segreta")
 
     assert not result["failed"], result["failed"]
     # Configurazioni senza dispositivo: il controller nuovo ci mette il suo
     assert ("set_door_configuration", "porta", "") in controller.calls
-    assert controller.idpoint_configs["lettore-1"]["DeviceUUID"] == ""
-    assert controller.door_configs["porta"]["DeviceUUID"] == "uuid-locale"
+    assert ("set_idpoint_configuration", "lettore-1", "") in controller.calls
+    assert controller.idpoint_configs["lettore-1"]["DeviceUUID"] == NEW_UUID
+    assert controller.door_configs["porta"]["DeviceUUID"] == NEW_UUID
+    # I punti di accesso passano al dispositivo nuovo
     points = {p["token"]: p for p in controller.access_points}
-    assert points["ap-in"]["DoorDeviceUUID"] == "uuid-locale"
-    assert points["Axis-b8a44fe6a074:1.2"]["IdPointDevice"][0]["DeviceUUID"] == "uuid-locale"
+    assert points["ap-in"]["DoorDeviceUUID"] == NEW_UUID
+    assert points["Axis-b8a44fe6a074:1.2"]["IdPointDevice"][0]["DeviceUUID"] == NEW_UUID
     assert OLD_UUID not in str(controller.access_points)
+    # Gestiti dal controllo accessi del controller nuovo, che ha un altro token
+    assert list(controller.access_controllers) == ["Axis-accc8e000001 AccessController"]
+    assert controller.managed() == {"ap-in", "Axis-b8a44fe6a074:1.2"}
+
+
+async def test_backup_without_access_controllers_links_all_its_access_points(plant, controller):
+    """Backup fatti fino alla 0.21.0: non sanno quali punti erano gestiti, si fanno gestire tutti."""
+    backup = await plant.backup()
+    _, saved = plant.backups.load(backup["id"])
+    saved[f"controller:{plant.controller_id}"].pop("access_controllers")
+    controller.factory_reset()
+    current, _ = await plant.backups.snapshot(plant.clients)
+
+    items = plan(saved, current, FULL, plant.controller_id, set())
+
+    managed = next(i for i in items if i["key"] == "prog-gestiti")
+    assert set(managed["_points"]) == {"ap-in", "Axis-b8a44fe6a074:1.2"}
 
 
 async def test_tokens_refused_by_the_new_controller_are_renamed_everywhere(plant, controller, db):
@@ -226,12 +267,28 @@ async def test_door_times_are_capped_and_extra_objects_removed_after_reset(plant
     assert controller.doors["porta"]["AccessTime"] == "PT30S" and "Door1" not in controller.doors
 
 
+async def test_extra_access_point_is_unlinked_before_removal(plant, controller):
+    backup = await plant.backup()
+    controller.access_points.append({"token": "ap-extra", "Name": "In più", "Entity": "porta"})
+    controller.access_controllers["Axis-x AccessController"]["AccessPoint"].append("ap-extra")
+
+    items, result = await full_restore(plant, backup["id"], keys=["prog-punto-togli:ap-extra"])
+
+    assert not result["failed"], result["failed"]
+    assert "ap-extra" not in controller.managed() and "ap-extra" not in {p["token"] for p in controller.access_points}
+    order = [c[0] for c in controller.calls]
+    assert order.index("set_access_controller") < order.index("remove_access_point")
+    # Il resto resta gestito
+    assert controller.managed() == {"ap-in", "Axis-b8a44fe6a074:1.2"}
+
+
 async def test_partial_differences_on_a_working_controller(plant, controller):
     await plant.access.create_person("Anna", "04aa", "admin")
     backup = await plant.backup()
     controller.doors["Door9"] = {"token": "Door9", "Name": "Aggiunta"}
     controller.door_configs["porta"]["Configuration"] = [{"Name": "Lock.Type", "Value": "FailSafe"}]
     controller.idpoints["lettore-2"]["Name"] = "Cambiato"
+    controller.schedules["fascia_nuova"] = {"token": "fascia_nuova", "Name": "Nuova", "ScheduleDefinition": ""}
 
     items, result = await full_restore(plant, backup["id"], keys=[])
 
@@ -239,7 +296,8 @@ async def test_partial_differences_on_a_working_controller(plant, controller):
     assert set(by_key) == {"prog-porta:porta", "prog-lettore:lettore-2", "prog-porta-togli:Door9"}
     assert by_key["prog-porta:porta"]["changes"] == [{"label": "Lock.Type", "old": "FailSafe", "new": "FailSecure"}]
     assert by_key["prog-lettore:lettore-2"]["changes"][0]["new"] == "Lettore interno"
-    # Con le tessere sul controller un oggetto in più è lavoro fatto dopo il backup: non spuntato
+    # Con le tessere sul controller un oggetto in più è lavoro fatto dopo il backup: non spuntato. Le fasce in più
+    # non si propongono affatto: possono servire a tipologie e ingressi creati dopo
     assert by_key["prog-porta-togli:Door9"]["default"] is False
     assert result["applied"] == []
 
@@ -302,3 +360,6 @@ def test_full_restore_api(client, controller):
     assert next(iter(controller.credentials.values()))["IdData"][0]["Value"] == "04aa"
     actions = [a["action"] for a in client.get("/api/audit", headers=admin).json()]
     assert "ripristino completo del controller da backup" in actions
+    # Il ripristino li ha già fatti gestire: dalla programmazione non resta niente da fare
+    assert client.get("/api/programming", headers=admin).json()["unmanaged"] == []
+    assert client.post("/api/programming/manage", headers=admin).json() == {"managed": 0}

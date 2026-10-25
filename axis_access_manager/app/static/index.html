@@ -1669,9 +1669,9 @@ function renderMissingBanner() {
   const reset = cards.length * 2 > total && can("backup") && store.me.admin;
   box.innerHTML = `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} Sul Controller</b>
       ${plural(persons, "persona ha", "persone hanno")} tessere che l'app conosce ma che sul controller non ci sono più, per esempio dopo un reset o una sostituzione. L'app non le cancella da sola: riscrivile sul controller con gruppo e validità salvati, oppure toglile dall'app.
-      ${reset ? '<br>Controller resettato o sostituito? Con <a href="#impianti/ripristino">Ripristino Completo</a> dalla scheda Backup del controller rimetti anche porte, lettori, ingressi e profili, poi le tessere.' : ""}
+      ${reset ? "<br>Controller resettato o sostituito? Il Ripristino Completo rimette anche porte, lettori, ingressi e profili, poi le tessere." : ""}
       ${personFilters.state === "mancanti" ? "" : ' <a href="#persone/mancanti">Mostra Solo Queste</a>'}</div>
-    <div class="row w-persone" style="flex-wrap:nowrap"><button type="button" class="small primary" id="m-restore">Riscrivi Sul Controller</button><button type="button" class="small danger" id="m-forget">Togli dall'App</button></div></div>`;
+    <div class="row w-persone">${reset ? '<a class="btn small primary" href="#impianti/ripristino">Ripristino Completo</a>' : ""}<button type="button" class="small${reset ? "" : " primary"}" id="m-restore">Riscrivi Sul Controller</button><button type="button" class="small danger" id="m-forget">Togli dall'App</button></div></div>`;
   paintIcons(box);
   $("#m-restore").onclick = () => restoreMissing();
   $("#m-forget").onclick = () => forgetMissing();
@@ -2789,7 +2789,18 @@ async function viewController(el, ctrl, tab) {
   let p;
   try { p = await api("api/programming"); } catch (err) { if (!body.isConnected) return; body.innerHTML = errorBox("Programmazione Non Leggibile", err) + '<p class="hint">Controlla il collegamento con l\'ingranaggio Connessione.</p>'; return; }
   if (!body.isConnected) return;
-  const errors = p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "";
+  // Punti di accesso che il controller non gestisce (dopo un reset): legge tessere e pulsanti ma non decide
+  const unmanaged = p.unmanaged?.length ? `<div class="alert err">${icon("alert")}<div class="grow"><b>${p.unmanaged.length === 1 ? "Punto di Accesso Non Gestito" : "Punti di Accesso Non Gestiti"}</b>${p.unmanaged.map((a) => esc(a.name)).join(", ")}: il controller legge tessere e pulsanti ma non decide, quindi la porta non si apre. Succede dopo un reset del controller.</div><button type="button" class="small primary" data-manage>Fai Gestire al Controller</button></div>` : "";
+  const errors = unmanaged + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "");
+  if (unmanaged) setTimeout(() => {
+    const button = body.querySelector("[data-manage]");
+    if (button) button.onclick = async () => {
+      button.disabled = true;
+      const r = await run(() => api("api/programming/manage", {method: "POST"}));
+      if (r) { toast(`${plural(r.managed, "punto di accesso gestito", "punti di accesso gestiti")} dal controller`); render(); }
+      else button.disabled = false;
+    };
+  });
   const appDoor = (token) => ctrl.doors.find((d) => d.door_token === token);
   const doorName = (d) => appDoor(d.token)?.name || d.name || p.doors.find((x) => x.token === d.token)?.name || d.token;
   if (tab === "porte") return controllerDoors(body, ctrl, p, errors, appDoor);

@@ -123,6 +123,9 @@ async def test_rex_input_is_written_to_the_controller_and_can_be_undone(db, cont
     assert ap["Entity"] == "porta" and ap["AuthenticationProfile"] == ["REXOnly"]
     assert {"Name": "Direction", "Value": "out"} in ap["Attribute"]
     assert ap["IdPointDevice"][0]["IdPoint"] == idpoint
+    # Gestito dal controller (senza, il controller vede il pulsante ma non decide); configurazione senza dispositivo
+    assert controller.managed() == {"ap-in", point}
+    assert controller.idpoint_configs[idpoint]["DeviceUUID"] == "uuid-locale"
 
     # Relè del citofono su AUX, linea supervisionata e contatto NC: tipo e uso supervisionati
     await service.update_input(
@@ -151,6 +154,7 @@ async def test_rex_input_is_written_to_the_controller_and_can_be_undone(db, cont
     # Ruolo tolto: punto di accesso e punto di identificazione rimossi, ingresso liberato in un modo innocuo
     await service.update_input("REX", {"role": ""}, "admin")
     assert idpoint not in controller.idpoints and all(a["token"] != point for a in controller.access_points)
+    assert point not in controller.managed()
     assert controller.io_assignments["REX"] == {"IoMode": "in:pu/gnd", "IoUser": []}
     assert db.controller_inputs(controller_id)["REX"]["idpoint_token"] == ""
 
@@ -166,6 +170,21 @@ async def test_rex_input_is_written_to_the_controller_and_can_be_undone(db, cont
         await service.update_input("IO2", {"role": "rex", "door": "porta"}, "admin")
     assert db.controller_inputs(controller_id)["IO2"]["idpoint_token"].startswith("idpoint-")
     assert db.controller_inputs(controller_id)["IO2"]["role"] == ""
+
+
+async def test_unmanaged_access_points_are_shown_and_can_be_managed(db, controller):
+    service = ProgrammingService(db, controller, 1, asyncio.Lock())
+    controller.access_controllers["Axis-x AccessController"]["AccessPoint"] = []
+
+    assert (await service.read())["unmanaged"] == [{"token": "ap-in", "name": "Ingresso"}]
+    assert await service.manage_access_points("admin") == 1
+    assert controller.managed() == {"ap-in"}
+    assert (await service.read())["unmanaged"] == []
+    assert db.list_audit()[0]["detail"] == "punti di accesso gestiti dal controller: Ingresso"
+    # Già tutti gestiti: niente da scrivere
+    controller.calls.clear()
+    assert await service.manage_access_points("admin") == 0
+    assert not [c for c in controller.calls if c[0] == "set_access_controller"]
 
 
 async def test_programming_changes_can_be_undone(db, controller):

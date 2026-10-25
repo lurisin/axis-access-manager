@@ -400,6 +400,13 @@ async def test_exit_button_and_intercom_relay_are_logged_as_openings(service, db
     assert relay["kind"] == "apertura_remota" and relay["source"] == "Relè Citofono"
     assert relay["detail"] == "Relè Citofono · Aux 1"
 
+    # Negato (al banco: InvalidAccessProfile): nel registro con il nome dell'ingresso, non come tessera anonima
+    denied = event("AccessControl/Denied/Anonymous/z", {"AccessPointToken": "ap-relay", "Reason": "Boh"})
+    service.record_event(dataclasses.replace(denied, timestamp=datetime(2026, 10, 25, 10, tzinfo=UTC)))
+    row = db.list_events()[0]
+    assert row["kind"] == "negato" and row["source"] == "Relè Citofono" and row["card"] == ""
+    assert row["detail"] == "Relè Citofono · Aux 1 · Boh"
+
 
 async def test_controller_casing_tamper_names_the_controller_not_a_door(service, db):
     db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210 Banco", "verify_ssl": 0})

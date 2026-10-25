@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
 from .db import Database, now_iso
+from .programming import unlinked_points
 from .vapix import VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class ControllerHealth:
     clock_offset: float | None = None
     time_zone: str = ""
     ntp: dict = field(default_factory=dict)
+    # Punti di accesso per cui il controller non decide (dopo un reset): lì tessere e pulsanti non aprono
+    unmanaged: list[str] = field(default_factory=list)
     # Controlli riusciti da quando risponde: decide quando rileggere ora e NTP
     answered: int = 0
 
@@ -184,6 +187,7 @@ class HealthMonitor:
                 _LOGGER.debug("Certificato di %s non letto: %s", row["name"], err)
         if state.answered % CLOCK_EVERY == 0:
             await self._clock(client, state)
+            await self._managed(client, state)
         state.answered += 1
         self.check_identity(row, state)
         return state
@@ -212,6 +216,25 @@ class HealthMonitor:
         # A metà della richiesta: il ritardo della rete non conta come scarto
         state.clock_offset = round(controller_time.timestamp() - (asked + answered) / 2, 1) if controller_time else None
         state.time_zone = str(info.get("timeZone") or info.get("posixTimeZone") or "")
+
+    async def recheck_managed(self, row: dict | None) -> None:
+        """Dopo averli fatti gestire (programmazione, ripristino): l'avviso sparisce subito, non al giro dell'ora."""
+        state = self.states.get(row["id"]) if row else None
+        if state is not None:
+            await self._managed(self._client(row), state)
+
+    async def _managed(self, client, state: ControllerHealth) -> None:
+        if getattr(client, "list_access_controllers", None) is None:
+            return
+        try:
+            points = await client.list_access_points()
+            controllers = await client.list_access_controllers()
+        except VapixError as err:
+            _LOGGER.debug("Punti di accesso di %s non letti: %s", state.name, err)
+            return
+        state.unmanaged = [
+            p.get("Name") or p["token"] for p in unlinked_points(points, controllers) if p.get("Enabled") is not False
+        ]
 
     def check_identity(self, row: dict, state: ControllerHealth) -> None:
         """Primo collegamento: si memorizza l'identità. Apparecchio diverso: cambio da confermare."""

@@ -144,6 +144,41 @@ def _attribute(item: dict, name: str) -> str:
     return ""
 
 
+def unlinked_points(points: list[dict], controllers: list[dict]) -> list[dict]:
+    """Punti di accesso che nessun controllo accessi (AccessController) gestisce: lì tessere e ingressi non aprono,
+    il controller legge la tessera ma non decide niente."""
+    listed = {t for c in controllers for t in c.get("AccessPoint") or []}
+    return [p for p in points if p.get("token") and p["token"] not in listed]
+
+
+async def link_access_points(controller, add=(), remove=()) -> int:
+    """Mette nel controllo accessi del controller i punti di accesso in add che nessuno gestisce ancora e toglie da
+    tutti quelli in remove. Restituisce quanti controlli accessi ha riscritto."""
+    controllers = await controller.list_access_controllers()
+    listed = {t for c in controllers for t in c.get("AccessPoint") or []}
+    missing = [t for t in dict.fromkeys(add) if t and t not in listed]
+    target = await _own_access_controller(controller, controllers) if missing else None
+    written = 0
+    for item in controllers:
+        before = list(item.get("AccessPoint") or [])
+        after = [t for t in before if t not in remove] + (missing if item is target else [])
+        if after != before:
+            await controller.set_access_controller({**item, "AccessPoint": after})
+            written += 1
+    return written
+
+
+async def _own_access_controller(controller, controllers: list[dict]) -> dict:
+    """Il controllo accessi di questo controller: quello di fabbrica ha il numero di serie nel token."""
+    if len(controllers) == 1:
+        return controllers[0]
+    serial = str((await controller.device_info()).get("SerialNumber") or "").lower()
+    mine = [c for c in controllers if serial and serial in str(c.get("token") or "").lower()]
+    if len(mine) != 1:
+        raise VapixError("non trovo il controllo accessi (AccessController) di questo controller")
+    return mine[0]
+
+
 class ProgrammingService:
     def __init__(self, db: Database, controller: A1210Client, controller_id: int | None, lock) -> None:
         self.db = db
@@ -176,6 +211,8 @@ class ProgrammingService:
         readers = await safe("lettori", self.controller.list_idpoints)
         reader_configs = await safe("configurazione lettori", self.controller.list_idpoint_configurations)
         points = await safe("punti di accesso", self.controller.list_access_points)
+        access_controllers = await safe("controllo accessi", self.controller.list_access_controllers)
+        unmanaged = unlinked_points(points, access_controllers) if access_controllers else []
         owned_points, owned_idpoints = self._input_tokens()
         readers = [r for r in readers if r.get("token") not in owned_idpoints]
         points = [p for p in points if p.get("token") not in owned_points]
@@ -223,6 +260,8 @@ class ProgrammingService:
                 }
                 for a in points
             ],
+            # Punti di accesso per cui il controller non decide (dopo un reset): tessere e pulsanti non aprono
+            "unmanaged": [{"token": a["token"], "name": a.get("Name") or a["token"]} for a in unmanaged],
             "inputs": _inputs(io_info, io_assigned, self.db.controller_inputs(self.controller_id)),
             "input_roles": INPUT_ROLES,
             "contacts": CONTACTS,
@@ -378,6 +417,7 @@ class ProgrammingService:
         try:
             point = tokens["access_point_token"]
             if point and (not wanted or values["door_token"] != current.get("door_token")):
+                await link_access_points(self.controller, remove={point})
                 await self.controller.remove_access_point(point)
                 tokens["access_point_token"] = ""
             if not wanted:
@@ -396,10 +436,9 @@ class ProgrammingService:
         """Libera l'I/O tornando al modo semplice. Senza utenti il firmware accetta il cambio di modo ma lo ignora:
         da supervisionato si passa prima al modo semplice con l'IdPoint come REX normale, poi si toglie l'utente."""
         if current.get("supervised"):
-            _, device = await self._device_uuids(await self.controller.list_access_points())
             await self.controller.set_idpoint_configuration(
                 idpoint,
-                device,
+                "",
                 {"IdPoint.Reader.Type": "None", "IdPoint.REX.Type": "ActiveLow", "IdPoint.Keypress.Type": "Auto"},
             )
             user = {"Type": "idpoint", "token": idpoint, "Usage": "REX", "MultiIo": False}
@@ -425,9 +464,10 @@ class ProgrammingService:
         points = await self.controller.list_access_points()
         _, device = await self._device_uuids(points)
         level = "High" if values["contact"] == "nc" else "Low"
+        # Senza dispositivo: il controller ci mette il suo e lega la configurazione a sé (come dice VAPIX)
         await self.controller.set_idpoint_configuration(
             idpoint,
-            device,
+            "",
             {
                 "IdPoint.Reader.Type": "None",
                 "IdPoint.REX.Type": f"{'Supervised' if supervised else ''}Active{level}",
@@ -469,6 +509,22 @@ class ProgrammingService:
         if not point.get("DoorDeviceUUID"):
             point["DoorDeviceUUID"] = device
         tokens["access_point_token"] = await self.controller.create_access_point(point)
+        # Senza questo il controller vede l'ingresso ma non decide niente
+        await link_access_points(self.controller, add=[tokens["access_point_token"]])
+
+    async def manage_access_points(self, user: str) -> int:
+        """Fa gestire al controller tutti i punti di accesso che non gestisce. Restituisce quanti erano."""
+        self._check()
+        async with self.lock:
+            points = await self.controller.list_access_points()
+            missing = unlinked_points(points, await self.controller.list_access_controllers())
+            if missing:
+                await link_access_points(self.controller, add=[p["token"] for p in missing])
+                names = ", ".join(p.get("Name") or p["token"] for p in missing)
+                self.db.add_audit(
+                    user, "programmazione controller", f"punti di accesso gestiti dal controller: {names}"
+                )
+            return len(missing)
 
     async def update_access_point(self, token: str, data: dict, user: str) -> None:
         """Nome, porta comandata, lettori collegati, direzione e attivazione di un punto di accesso."""
