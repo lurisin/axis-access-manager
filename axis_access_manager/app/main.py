@@ -28,7 +28,7 @@ from .programming import ProgrammingService
 from .rules_service import RulesService
 from .service import CASING_OPEN, DENIED_REASONS, AccessService, ServiceError
 from .transfer import events_csv, import_persons, persons_csv
-from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError
+from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
 from .vapix import A1210Client, VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -289,6 +289,7 @@ def create_app(
         app.state.injected_controller = controller
         app.state.db = Database(db_path or os.environ.get("AAM_DB_PATH") or DB_PATH)
         app.state.users = UserDirectory(app.state.db, options.readonly_users)
+        app.state.users.add_status_permission()
         app.state.installation = InstallationService(app.state.db)
         app.state.installation.migrate_from_options(options)
         app.state.installation.ensure_default_site()
@@ -343,13 +344,14 @@ def create_app(
             "username": user.username,
             "perms": perms,
             "admin": user.can("utenti"),
+            "role": ROLES.get(role_of(perms), ("",))[0],
             "default_group": request.app.state.service.default_group,
             "default_category": request.app.state.rules.default_category,
             "door": request.app.state.settings.door_token,
             "version": __version__,
         }
 
-    @app.get("/api/status")
+    @app.get("/api/status", dependencies=[need("impianti", "import_export", "utenti", any_of=True)])
     async def status(request: Request, controller: bool = True) -> dict:
         """Stato di collegamenti e integrazioni; controller=false evita di interrogare il controller."""
         state = request.app.state
@@ -377,23 +379,29 @@ def create_app(
 
     @app.get("/api/summary")
     async def summary(request: Request) -> dict:
-        """Dati leggeri per l'intestazione: porta e tessere da registrare."""
+        """Dati leggeri per l'intestazione: porta e tessere da registrare.
+
+        Tutti leggono i nomi delle porte (registro, tipologie); stato e notifiche solo con il permesso "stato".
+        """
         state = request.app.state
+        user = current_user(request)
+        status = user.can("stato")
+        doors = _doors_status(state)
         return {
-            "door_mode": state.monitor.door_mode,
-            "doors": _doors_status(state),
+            "door_mode": state.monitor.door_mode if status else None,
+            "doors": doors if status else [{**d, "mode": None} for d in doors],
             "configured": bool(state.settings.a1210_host),
-            "mqtt_connected": state.monitor.connected,
-            "unknown_cards": len(state.db.list_unknown_cards()),
+            "mqtt_connected": state.monitor.connected if status else None,
+            "unknown_cards": len(state.db.list_unknown_cards()) if user.can("persone") else 0,
             "sync": state.last_sync,
-            "notifications": _notification_listing(request)["urgent"],
+            "notifications": _notification_listing(request)["urgent"] if status else 0,
         }
 
-    @app.get("/api/notifications")
+    @app.get("/api/notifications", dependencies=[need("stato")])
     async def notifications(request: Request) -> dict:
         return _notification_listing(request)
 
-    @app.post("/api/notifications/seen")
+    @app.post("/api/notifications/seen", dependencies=[need("stato")])
     async def notifications_seen(body: SeenIn, request: Request) -> dict:
         """Segna come viste le notifiche indicate, o tutte quelle che l'utente vede."""
         listing = _notification_listing(request)
@@ -407,7 +415,7 @@ def create_app(
         request.app.state.notifications.set_levels(body, request_user(request))
         return {"types": request.app.state.notifications.types()}
 
-    @app.get("/api/dashboard")
+    @app.get("/api/dashboard", dependencies=[need("stato")])
     async def dashboard(request: Request) -> dict:
         user = current_user(request)
         db = request.app.state.db
@@ -720,11 +728,11 @@ def create_app(
 
     # Porte: dove sono, come stanno, cosa è successo
 
-    @app.get("/api/locations")
+    @app.get("/api/locations", dependencies=[need("stato", "persone", "regole", "impianti", any_of=True)])
     async def locations(request: Request) -> list[dict]:
         return request.app.state.installation.locations()
 
-    @app.get("/api/door-overview")
+    @app.get("/api/door-overview", dependencies=[need("stato")])
     async def door_overview(request: Request) -> list[dict]:
         """Porte con struttura, stato e numeri di oggi; l'ultimo passaggio solo a chi vede il registro."""
         state = request.app.state
@@ -758,7 +766,7 @@ def create_app(
             )
         return result
 
-    @app.get("/api/door-detail/{door_id}")
+    @app.get("/api/door-detail/{door_id}", dependencies=[need("stato")])
     async def door_detail(door_id: int, request: Request) -> dict:
         """Tutto su una porta: dispositivi, chi può entrare e ultimi eventi, secondo i permessi."""
         state = request.app.state

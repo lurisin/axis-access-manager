@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0
+
+- **Ogni permesso mostra solo le sue sezioni.** Nuovo permesso **Stato** per Cruscotto, Porte e Notifiche: senza di esso le tre sezioni spariscono dal menu e il server non dà più i loro dati. Impostazioni compare solo a chi può esportare e importare, configurare gli impianti o gestire gli utenti.
+- Dopo l'accesso l'utente arriva sulla prima sezione che gli è permessa; chi non ha permessi vede un avviso.
+- Nuovi ruoli: **Tessere** (anagrafica, tipologie e fasce orarie), **Solo Registro** e **Nessun Accesso**. In fondo al menu compare il ruolo dell'utente.
+- Gli utenti già presenti ricevono il permesso Stato all'aggiornamento, una volta sola: nessuno perde sezioni finché l'amministratore non toglie la spunta.
+- Scheda della persona: nel riquadro Accesso Personalizzato il profilo appare con il suo nome anche se è stato creato da poco, non più come codice.
+
 ## 0.10.0
 
 - **Tipologie al posto di gruppi e tipologie.** La tipologia, in Persone → Tipologie, dice chi è la persona e con le righe **Dove e Quando** quali porte, aree o strutture apre e in quale fascia. L'app crea e aggiorna il suo profilo sul controller. In Regole restano Fasce Orarie e Festività; la scheda della persona chiede solo la tipologia.

@@ -579,7 +579,7 @@ function showImage(src, title) {
 // ---------- Stato condiviso ----------
 const store = {me: {perms: [], admin: false}, persons: [], groups: null, schedules: null, categories: [], summary: {}};
 const can = (perm) => Boolean(store.me.admin || store.me.perms.includes(perm));
-const ALL_PERMS = ["persone", "persone_modifica", "registro", "regole", "regole_modifica", "import_export", "impianti", "utenti"];
+const ALL_PERMS = ["stato", "persone", "persone_modifica", "registro", "regole", "regole_modifica", "import_export", "impianti", "utenti"];
 async function loadGroups(force = false) {
   if (store.groups && !force) return store.groups;
   try {
@@ -681,21 +681,32 @@ async function loadSummary() {
 // ---------- Navigazione ----------
 // Pagina: titolo, vista, permesso necessario per vederla
 const ROUTES = {
-  cruscotto: ["Cruscotto", viewDashboard, ""],
-  porte: ["Porte", viewDoorsPage, ""],
+  cruscotto: ["Cruscotto", viewDashboard, "stato"],
+  porte: ["Porte", viewDoorsPage, "stato"],
   persone: ["Persone", viewPersons, "persone"],
   "da-registrare": ["Da Registrare", viewUnknown, "persone"],
   registro: ["Registro Accessi", viewLog, "registro"],
   regole: ["Regole di Accesso", viewRules, "regole"],
   impianti: ["Impianti", viewInstallation, "impianti"],
-  notifiche: ["Notifiche", viewNotifications, ""],
-  impostazioni: ["Impostazioni", viewSettings, ""],
+  notifiche: ["Notifiche", viewNotifications, "stato"],
+  impostazioni: ["Impostazioni", viewSettings, ["import_export", "impianti", "utenti"]],
+  "nessun-accesso": ["Controllo Accessi", viewNoAccess, ""],
 };
+// Permesso della pagina: uno solo, o un elenco di cui ne basta uno
+const allowedRoute = (name) => { const need = ROUTES[name]?.[2]; return Boolean(ROUTES[name]) && (!need || [].concat(need).some(can)); };
+// Chi non vede il cruscotto parte dalla prima pagina che gli è permessa
+const homeRoute = () => Object.keys(ROUTES).find((k) => k !== "nessun-accesso" && allowedRoute(k)) || "nessun-accesso";
 let route = {name: "cruscotto", sub: ""};
 function parseHash() {
   const [name, ...rest] = location.hash.replace(/^#/, "").split("/");
   const sub = rest.join("/");
-  return ROUTES[name] && (!ROUTES[name][2] || can(ROUTES[name][2])) ? {name, sub} : {name: "cruscotto", sub: ""};
+  return name !== "nessun-accesso" && allowedRoute(name) ? {name, sub} : {name: homeRoute(), sub: ""};
+}
+function viewNoAccess(el) {
+  el.innerHTML = store.me.user
+    ? `<div class="card"><div class="empty">${icon("block")}<br><b>Nessuna Sezione Disponibile</b><br>Il tuo utente non ha permessi in questa app: chiedi a un amministratore di assegnarti un ruolo.</div></div>`
+    : `<div class="alert err">L'add-on non risponde: ricarica la pagina tra qualche secondo.</div>`;
+  paintIcons(el);
 }
 async function render() {
   route = parseHash();
@@ -1070,8 +1081,10 @@ async function openPerson(id) {
   const sheet = $("#sheet");
   let p;
   try { p = await api(`api/persons/${id}`); } catch (err) { toast(err.message, true); location.hash = "#persone"; return; }
-  await loadGroups();
   const a = personAccess(p);
+  await loadGroups();
+  // Profilo creato dopo l'ultimo caricamento (altra scheda, importazione): rilegge gruppi e tipologie
+  if (a.group && !store.groups.some((g) => g.token === a.group)) await loadGroups(true);
   const vs = validityState(a.from, a.to);
   const category = categoryOf(p.category_id);
   const custom = customAccess(p);
@@ -1086,7 +1099,7 @@ async function openPerson(id) {
           ${category && !custom ? `<dt>Dove e Quando</dt><dd>${ruleLines(category)}</dd>` : ""}
           <dt>Validità</dt><dd>${esc(validityText(a.from, a.to))} ${VALIDITY_PILL[vs] || ""}</dd>
         </dl>
-        ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b>${esc(owner.name)}</b>` : `il profilo <code>${esc(groupName(a.group))}</code>`}, non come ${esc(category.name)}.`; })()}</div>
+        ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b>${esc(owner.name)}</b>` : (store.groups.some((g) => g.token === a.group) ? `il profilo <b>${esc(groupName(a.group))}</b>` : "un profilo che non è più sul controller")}, non come ${esc(category.name)}.`; })()}</div>
           <button type="button" class="small w-persone" data-align>Allinea alla Tipologia</button></div>` : ""}</div>
       <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
@@ -1241,7 +1254,7 @@ function eventDetail(e) {
   const door = doorByToken(e.door) || (!multiDoor() && !controllerEvent(e) ? allDoors()[0] : null);
   const rows = [
     ["Quando", esc(fmtFull(e.ts))],
-    door ? ["Porta", `<a href="#porte/${door.id}">${esc(door.name)}</a>${placeOf(door) ? ` <span class="muted">· ${esc(placeOf(door))}</span>` : ""}`] : e.door ? ["Porta", `<code>${esc(e.door)}</code>`] : null,
+    door ? ["Porta", `${can("stato") ? `<a href="#porte/${door.id}">${esc(door.name)}</a>` : esc(door.name)}${placeOf(door) ? ` <span class="muted">· ${esc(placeOf(door))}</span>` : ""}`] : e.door ? ["Porta", `<code>${esc(e.door)}</code>`] : null,
     e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
     e.detail ? ["Dettaglio", esc(e.detail)] : null,
@@ -2471,8 +2484,8 @@ async function start() {
   } catch (err) { /* la pagina funziona anche senza */ }
   // Nasconde pagine e pulsanti per cui l'utente non ha il permesso
   ALL_PERMS.forEach((perm) => document.body.classList.toggle("no-" + perm, !can(perm)));
-  $$("#nav a").forEach((a) => { const need = ROUTES[a.dataset.route]?.[2]; a.hidden = Boolean(need) && !can(need); });
-  $("#nav-foot").textContent = store.me.user ? `${store.me.user}${store.me.admin ? " · Amministratore" : store.me.perms.length ? "" : " · Solo Stato"}` : "";
+  $$("#nav a").forEach((a) => { a.hidden = !allowedRoute(a.dataset.route); });
+  $("#nav-foot").textContent = store.me.user ? [store.me.user, store.me.role].filter(Boolean).join(" · ") : "";
   await loadSummary();
   await render();
   setInterval(loadSummary, 5000);
