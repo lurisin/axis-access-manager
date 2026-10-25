@@ -74,6 +74,40 @@ Le modifiche restano in sospeso, con il filo arancione tratteggiato, finché non
 
 Sull'Axis un collegamento è un lettore dentro un **punto di accesso** della porta, che ha la sua direzione: lo schema sposta i lettori tra i punti di accesso già presenti sul controller, senza crearne di nuovi. Nel menu Direzione compaiono solo le direzioni che la porta ha già sul controller (sull'A1210 di prova c'è solo l'ingresso). La creazione di nuovi punti di accesso dall'app arriverà in una versione successiva: la pagina web dell'A1210 non la permette. Spegnere un collegamento spegne il suo punto di accesso, quindi vale per tutti i lettori che lo usano (l'app lo dice).
 
+### Ingressi del controller
+
+Sotto i lettori, nello stesso schema, ci sono gli **ingressi fisici** del controller:
+- il connettore Door ha due ingressi: pin 1-2 contatto porta, pin 3-4 REX;
+- i due AUX (Aux pin 3 e 4);
+- gli ingressi Manomissione e Allarme del connettore External.
+
+Il pallino accanto al nome mostra lo stato in tempo reale degli ingressi che lo mandano (AUX, Manomissione e Allarme).
+
+**Tocca un ingresso e poi una porta** per collegarlo, oppure tocca due volte l'ingresso per aprirne la scheda:
+- **Nome**: è anche il nome dell'entità in Home Assistant, che mantiene il suo identificativo.
+- **Ruolo**:
+  - **Pulsante Uscita**: chiede l'apertura della porta e sblocca la serratura, ad esempio dal pulsante della portineria. Più pulsanti in parallelo sulla stessa linea vanno bene.
+  - **Relè Citofono**: il contatto del relè del citofono. Apre la porta anche con Home Assistant spento.
+  - **Ingresso di Allarme**: solo stato in Home Assistant.
+  - **Non Usato**.
+- **Porta**: per Pulsante Uscita e Relè Citofono.
+- **Contatto**: Normalmente Aperto o Normalmente Chiuso.
+- **Linea Supervisionata**: con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. È consigliata per il citofono esterno.
+
+Con **Scrivi sul Controller**, per Pulsante Uscita e Relè Citofono l'app crea sul controller:
+- un punto di identificazione senza lettore, con il tipo di contatto scelto;
+- l'assegnazione dell'ingresso fisico a quel punto;
+- un punto di accesso in uscita sulla porta, con il profilo REXOnly di fabbrica.
+
+Togliendo il ruolo, l'app li rimuove. Ogni modifica compare nello Storico Modifiche e si può annullare. Lo schema dei lettori non mostra questi punti e non li tocca.
+
+Nel registro l'apertura compare con il nome dato all'ingresso, ad esempio "Pulsante Portineria", e nel dettaglio il ruolo e il morsetto, ad esempio "Pulsante Uscita · Aux 1". Il nome resta quello che aveva al momento dell'apertura, anche se poi lo cambi.
+
+Da sapere:
+- Sull'A1210 un ingresso, una volta assegnato, non torna mai "mai usato": togliendo il ruolo resta un ingresso semplice libero.
+- Dopo aver tolto la linea supervisionata, l'ingresso può risultare attivo finché non riavvii il controller.
+- Il ruolo **Sensore Porta** sul contatto porta arriverà dopo una prova al banco.
+
 ### Porte, lettori e storico
 
 - **Porte**: per ogni porta del controller le impostazioni dell'app (nome, pulsanti Apri e Apri a Lungo in Home Assistant, **telecamera** per le istantanee, **videocitofono**) e, con **Nome e Tempi**, nome, descrizione e tempi sul controller (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme). L'apertura arriva al massimo a 30 secondi e quella estesa a 60, per non tenere alimentata a lungo la serratura. Una porta del controller non ancora usata dall'app si aggiunge con **Gestisci nell'App**.

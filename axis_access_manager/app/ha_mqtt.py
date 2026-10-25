@@ -11,6 +11,7 @@ import aiomqtt
 from .config import Settings
 from .db import Database, local_day_start
 from .events import EventMonitor
+from .programming import CONTROLLER_INPUTS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -138,6 +139,11 @@ class HaBridge:
             "model": "Axis A1210",
         }
 
+    def _input_names(self) -> dict[str, str]:
+        """Nome scelto nell'app per gli ingressi che danno gli eventi Device/IO/Port, per numero di porta."""
+        ports = {io: port for io, (_, port) in CONTROLLER_INPUTS.items() if port is not None}
+        return {ports[row["io"]]: row["name"] for row in self.db.all_controller_inputs() if row["io"] in ports}
+
     def _entities(self) -> list[tuple[str, str, dict]]:
         """(componente, id oggetto, configurazione) di ogni entità."""
         common = {
@@ -145,6 +151,7 @@ class HaBridge:
             "device": self._device(),
         }
         state = {"state_topic": self.state_topic}
+        names = self._input_names()
         entities = [
             (
                 "sensor",
@@ -240,7 +247,7 @@ class HaBridge:
                     object_id,
                     {
                         **state,
-                        "name": name,
+                        "name": names.get(port) or name,
                         **({"device_class": device_class} if device_class else {}),
                         "icon": "mdi:electric-switch",
                         "value_template": f"{{{{ value_json.ingressi['{port}'] }}}}",

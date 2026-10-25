@@ -127,6 +127,19 @@ CREATE TABLE IF NOT EXISTS controller_changes (
     after TEXT NOT NULL,
     undone INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS controller_inputs (
+    controller_id INTEGER NOT NULL REFERENCES controllers(id) ON DELETE CASCADE,
+    io TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    role TEXT NOT NULL DEFAULT '',
+    door_token TEXT NOT NULL DEFAULT '',
+    contact TEXT NOT NULL DEFAULT 'no',
+    supervised INTEGER NOT NULL DEFAULT 0,
+    schedule TEXT NOT NULL DEFAULT '',
+    idpoint_token TEXT NOT NULL DEFAULT '',
+    access_point_token TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (controller_id, io)
+);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY,
     ts TEXT NOT NULL,
@@ -572,6 +585,39 @@ class Database:
             "INSERT INTO controller_changes (ts, user, controller_id, kind, token, summary, before, after) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (now_iso(), user, controller_id, kind, token, summary, json.dumps(before), json.dumps(after)),
+        )
+
+    # Ingressi fisici del controller: nome, ruolo e porta decisi nell'app
+
+    def controller_inputs(self, controller_id: int) -> dict[str, dict]:
+        rows = self._query("SELECT * FROM controller_inputs WHERE controller_id = ?", (controller_id,))
+        for row in rows:
+            row["supervised"] = bool(row["supervised"])
+        return {row["io"]: row for row in rows}
+
+    def all_controller_inputs(self) -> list[dict]:
+        return self._query("SELECT * FROM controller_inputs ORDER BY controller_id")
+
+    def save_controller_input(self, controller_id: int, io: str, values: dict) -> None:
+        self._execute(
+            "INSERT INTO controller_inputs (controller_id, io, name, role, door_token, contact, supervised, schedule, "
+            "idpoint_token, access_point_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (controller_id, io) DO UPDATE SET name = excluded.name, role = excluded.role, "
+            "door_token = excluded.door_token, contact = excluded.contact, supervised = excluded.supervised, "
+            "schedule = excluded.schedule, idpoint_token = excluded.idpoint_token, "
+            "access_point_token = excluded.access_point_token",
+            (
+                controller_id,
+                io,
+                values.get("name", ""),
+                values.get("role", ""),
+                values.get("door_token", ""),
+                values.get("contact", "no"),
+                int(bool(values.get("supervised"))),
+                values.get("schedule", ""),
+                values.get("idpoint_token", ""),
+                values.get("access_point_token", ""),
+            ),
         )
 
     def list_controller_changes(self, controller_id: int, limit: int = 30) -> list[dict]:

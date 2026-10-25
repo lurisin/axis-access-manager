@@ -193,6 +193,14 @@ class HardwareReaderIn(BaseModel):
     description: str = ""
 
 
+class ControllerInputIn(BaseModel):
+    name: str = ""
+    role: str = ""
+    door: str = ""
+    contact: str = "no"
+    supervised: bool = False
+
+
 class LinkIn(BaseModel):
     reader: str
     door: str
@@ -915,7 +923,12 @@ def create_app(
 
     @app.get("/api/programming", dependencies=[need("impianti")])
     async def programming(request: Request) -> dict:
-        return await request.app.state.programming.read()
+        data = await request.app.state.programming.read()
+        # Stato in tempo reale degli ingressi che mandano gli eventi Device/IO/Port
+        ports = request.app.state.monitor.io_ports
+        for item in data.get("inputs", []):
+            item["active"] = ports.get(item["port"]) if item["port"] is not None else None
+        return data
 
     @app.put("/api/programming/doors/{token:path}", dependencies=[need("impianti")])
     async def program_door(token: str, body: HardwareDoorIn, request: Request) -> dict:
@@ -926,6 +939,13 @@ def create_app(
     async def program_reader(token: str, body: HardwareReaderIn, request: Request) -> dict:
         await request.app.state.programming.update_reader(token, body.model_dump(), request_user(request))
         return {"ok": True}
+
+    @app.put("/api/programming/inputs/{io}", dependencies=[need("impianti")])
+    async def program_input(io: str, body: ControllerInputIn, request: Request) -> dict:
+        saved = await request.app.state.programming.update_input(io, body.model_dump(), request_user(request))
+        # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
+        await reload_runtime(request.app)
+        return saved
 
     @app.put("/api/programming/access-points/{token:path}", dependencies=[need("impianti")])
     async def program_access_point(token: str, body: HardwareAccessPointIn, request: Request) -> dict:
@@ -941,7 +961,8 @@ def create_app(
 
     @app.post("/api/programming/changes/{change_id}/undo", dependencies=[need("impianti")])
     async def undo_change(change_id: int, request: Request) -> dict:
-        await request.app.state.programming.undo(change_id, request_user(request))
+        if await request.app.state.programming.undo(change_id, request_user(request)) == "input":
+            await reload_runtime(request.app)
         return {"ok": True}
 
     @app.get("/api/cameras", dependencies=[need("impianti")])

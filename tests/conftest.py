@@ -17,6 +17,9 @@ class FakeController:
         self.calls: list[tuple] = []
         self.door = "Locked"
         self.fail_set_credential = False
+        self.fail_io_assignment = False
+        self.idpoint_configs: dict[str, dict] = {}
+        self.io_assignments: dict[str, dict] = {}
         self._ids = itertools.count(1)
         self.access_points = [
             {
@@ -104,6 +107,69 @@ class FakeController:
 
     async def list_idpoint_configurations(self):
         raise VapixError("non supportato")
+
+    async def create_idpoint(self, idpoint):
+        token = idpoint.get("token") or f"idpoint-{next(self._ids)}"
+        self.calls.append(("create_idpoint", token))
+        self.idpoints[token] = {**copy.deepcopy(idpoint), "token": token}
+        return token
+
+    async def set_idpoint_configuration(self, token, device_uuid, configuration):
+        self.calls.append(("set_idpoint_configuration", token))
+        self.idpoint_configs[token] = {"DeviceUUID": device_uuid, **configuration}
+
+    async def remove_idpoint(self, token):
+        self.calls.append(("remove_idpoint", token))
+        self.idpoints.pop(token, None)
+        self.idpoint_configs.pop(token, None)
+
+    async def set_io_assignment(self, io, mode, users):
+        if self.fail_io_assignment:
+            raise VapixError(f"assegnazione di {io} rifiutata: ModeNotAllowedForIoUser")
+        self.calls.append(("set_io_assignment", io, mode))
+        self.io_assignments[io] = {"IoMode": mode, "IoUser": copy.deepcopy(users)}
+
+    async def create_access_point(self, access_point):
+        token = access_point.get("token") or f"ap-{next(self._ids)}"
+        self.calls.append(("create_access_point", token))
+        self.access_points = [a for a in self.access_points if a["token"] != token]
+        self.access_points.append({**copy.deepcopy(access_point), "token": token})
+        return token
+
+    async def remove_access_point(self, token):
+        self.calls.append(("remove_access_point", token))
+        self.access_points = [a for a in self.access_points if a["token"] != token]
+
+    async def list_io(self):
+        """Come risponde l'A1210 del banco: assegnati solo lettore e relè."""
+        info = [
+            {"IoName": "Ser0hd", "IoMode": ["rs485hd"], "PinInfo": [{"Name": "Reader 1:3", "Description": "A"}]},
+            {
+                "IoName": "DPS",
+                "IoMode": ["in:pu/gnd", "supervised"],
+                "PinInfo": [{"Name": "Door 1:1", "Description": "GND"}, {"Name": "Door 1:2", "Description": "I"}],
+            },
+            {
+                "IoName": "REX",
+                "IoMode": ["in:pu/gnd", "in:float/gnd", "supervised"],
+                "PinInfo": [{"Name": "Door 1:3", "Description": "GND"}, {"Name": "Door 1:4", "Description": "I"}],
+            },
+            {
+                "IoName": "IO1",
+                "IoMode": ["inout:pu/gnd", "inout:float/gnd", "supervised"],
+                "PinInfo": [{"Name": "Aux IO:3", "Description": "I/O"}],
+            },
+            {"IoName": "ALARM", "IoMode": ["in:pu/gnd"], "PinInfo": [{"Name": "External:4", "Description": "I"}]},
+        ]
+        assigned = [
+            {
+                "IoName": "Ser0hd",
+                "IoMode": "rs485hd",
+                "IoUser": [{"Type": "idpoint", "token": "lettore-1", "Usage": "RS-485HD"}],
+            },
+            {"IoName": "REX", "IoMode": "", "IoUser": []},
+        ]
+        return info, assigned
 
     async def get_access_points(self, tokens):
         return [copy.deepcopy(a) for a in self.access_points if a["token"] in tokens]

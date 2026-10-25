@@ -28,6 +28,45 @@ DOOR_TIMES = {
     "PreAlarmTime": ("pre_alarm_time", "Preallarme", 0, 3600),
 }
 DIRECTIONS = {"in": "Ingresso", "out": "Uscita"}
+# Ingressi fisici dell'A1210 (nomi del servizio axisio) → nome di serie e porta I/O degli eventi, se c'è.
+# Contatto porta e REX sono il connettore Door (pin 1-2 e 3-4); gli altri danno anche gli eventi Device/IO/Port.
+CONTROLLER_INPUTS = {
+    "DPS": ("Ingresso Contatto Porta", None),
+    "REX": ("Ingresso REX", None),
+    "IO1": ("Ingresso AUX 1", "0"),
+    "IO2": ("Ingresso AUX 2", "1"),
+    "EXTERNAL_TAMPER": ("Ingresso Manomissione", "2"),
+    "ALARM": ("Ingresso Allarme", "3"),
+}
+INPUT_ROLES = {
+    "": "Non Usato",
+    "rex": "Pulsante Uscita",
+    "intercom": "Relè Citofono",
+    "door_monitor": "Sensore Porta",
+    "alarm": "Ingresso di Allarme",
+}
+# Ruoli che aprono o sorvegliano una porta: vanno collegati a una porta del controller
+DOOR_ROLES = {"rex", "intercom", "door_monitor"}
+# Ruoli possibili per ogni ingresso: il contatto porta e il REX sono del connettore Door, gli AUX sono liberi
+ALLOWED_ROLES = {
+    # Sensore Porta: da provare al banco prima di scriverlo sul controller
+    "DPS": {""},
+    "REX": {"", "rex", "intercom"},
+    "IO1": {"", "rex", "intercom", "alarm"},
+    "IO2": {"", "rex", "intercom", "alarm"},
+    "EXTERNAL_TAMPER": {"", "alarm"},
+    "ALARM": {"", "alarm"},
+}
+CONTACTS = {"no": "Normalmente Aperto", "nc": "Normalmente Chiuso"}
+# Ruoli che il controller gestisce come richiesta di apertura (REX): un punto di identificazione senza lettore
+# con l'ingresso assegnato e un punto di accesso in uscita con il profilo REXOnly di fabbrica
+REX_ROLES = {"rex", "intercom"}
+INPUT_SETTINGS = ("name", "role", "door_token", "contact", "supervised", "schedule")
+
+
+def _plain_mode(io: str) -> str:
+    """Modo dell'ingresso senza linea supervisionata: gli AUX sono I/O configurabili, gli altri solo ingressi."""
+    return "inout:pu/gnd" if io.startswith("IO") else "in:pu/gnd"
 
 
 def parse_duration(value: str | None) -> float | None:
@@ -54,6 +93,48 @@ def _configuration(items: list[dict], token: str) -> list[dict]:
                 for c in item.get("Configuration") or []
             ]
     return []
+
+
+def _terminals(pins: list[dict]) -> list[str]:
+    """Morsetti come li stampa il controller ("Door 1:3", "Door 1:4") raccolti per connettore: "Door 1:3+4"."""
+    grouped: dict[str, list[str]] = {}
+    for pin in pins:
+        connector, _, number = str(pin.get("Name", "")).rpartition(":")
+        grouped.setdefault(connector, []).append(number)
+    return [f"{name}:{'+'.join(numbers)}" if name else "+".join(numbers) for name, numbers in grouped.items()]
+
+
+def _inputs(info: list[dict], assigned: list[dict], saved: dict[str, dict] | None = None) -> list[dict]:
+    """Ingressi fisici del controller: morsetti, supervisione, a chi sono assegnati ora e cosa ne fa l'app."""
+    saved = saved or {}
+    users = {a.get("IoName"): a.get("IoUser") or [] for a in assigned}
+    found = {i.get("IoName"): i for i in info}
+    result = []
+    for io, (name, port) in CONTROLLER_INPUTS.items():
+        item = found.get(io)
+        if item is None:
+            continue
+        mine = saved.get(io, {})
+        result.append(
+            {
+                "io": io,
+                "name": mine.get("name") or name,
+                "default_name": name,
+                "role": mine.get("role", ""),
+                "door": mine.get("door_token", ""),
+                "contact": mine.get("contact", "no"),
+                "supervised": bool(mine.get("supervised")),
+                "roles": [r for r in INPUT_ROLES if r in ALLOWED_ROLES.get(io, {""})],
+                "pins": _terminals(item.get("PinInfo") or []),
+                "can_supervise": "supervised" in (item.get("IoMode") or []),
+                "port": port,
+                "assigned": [
+                    {"type": u.get("Type", ""), "token": u.get("token", ""), "usage": u.get("Usage", "")}
+                    for u in users.get(io, [])
+                ],
+            }
+        )
+    return result
 
 
 def _attribute(item: dict, name: str) -> str:
@@ -95,6 +176,10 @@ class ProgrammingService:
         readers = await safe("lettori", self.controller.list_idpoints)
         reader_configs = await safe("configurazione lettori", self.controller.list_idpoint_configurations)
         points = await safe("punti di accesso", self.controller.list_access_points)
+        owned_points, owned_idpoints = self._input_tokens()
+        readers = [r for r in readers if r.get("token") not in owned_idpoints]
+        points = [p for p in points if p.get("token") not in owned_points]
+        io_info, io_assigned = await safe("ingressi", self.controller.list_io, ([], []))
         reader_names = {r.get("token"): r.get("Name") or r.get("token") for r in readers}
         door_names = {d.get("token"): d.get("Name") or d.get("token") for d in doors}
         return {
@@ -138,6 +223,9 @@ class ProgrammingService:
                 }
                 for a in points
             ],
+            "inputs": _inputs(io_info, io_assigned, self.db.controller_inputs(self.controller_id)),
+            "input_roles": INPUT_ROLES,
+            "contacts": CONTACTS,
             "directions": DIRECTIONS,
             "changes": self.db.list_controller_changes(self.controller_id),
             "errors": errors,
@@ -152,6 +240,15 @@ class ProgrammingService:
         await setter(after)
         self.db.add_controller_change(user, self.controller_id, kind, token, summary, before, after)
         self.db.add_audit(user, "programmazione controller", summary)
+
+    def _input_tokens(self) -> tuple[set[str], set[str]]:
+        """Punti di accesso e punti di identificazione creati per gli ingressi di questo controller."""
+        rows = self.db.controller_inputs(self.controller_id).values() if self.controller_id else []
+        rows = list(rows)
+        return (
+            {r["access_point_token"] for r in rows if r["access_point_token"]},
+            {r["idpoint_token"] for r in rows if r["idpoint_token"]},
+        )
 
     async def _device_uuids(self, points: list[dict]) -> tuple[dict[str, str], str]:
         """Dispositivo (DeviceUUID) di ogni lettore: dalla configurazione del lettore, dai punti di accesso
@@ -224,6 +321,141 @@ class ProgrammingService:
             )
             await self._save("reader", token, before, after, f"lettore {after['Name']}", user)
 
+    async def update_input(self, io: str, data: dict, user: str) -> dict:
+        """Nome, ruolo, porta e cablaggio di un ingresso fisico. Restituisce i valori salvati."""
+        controller_id = self._check()
+        if io not in CONTROLLER_INPUTS:
+            raise ServiceError("ingresso non trovato")
+        role = data.get("role") or ""
+        if role not in INPUT_ROLES:
+            raise ServiceError("ruolo non valido")
+        if role not in ALLOWED_ROLES[io]:
+            raise ServiceError(f"{INPUT_ROLES[role]}: non disponibile su questo ingresso")
+        door = (data.get("door") or "") if role in DOOR_ROLES else ""
+        if role in DOOR_ROLES:
+            if not door:
+                raise ServiceError(f"{INPUT_ROLES[role]}: scegli la porta")
+            if door not in {d.get("token") for d in await self.controller.door_info_list()}:
+                raise ServiceError("porta non trovata sul controller")
+        contact = data.get("contact") or "no"
+        if contact not in CONTACTS:
+            raise ServiceError("tipo di contatto non valido")
+        name = " ".join(normalize_text(data.get("name"), 64, "nome").split())
+        values = {
+            "name": name or (INPUT_ROLES[role] if role else CONTROLLER_INPUTS[io][0]),
+            "role": role,
+            "door_token": door,
+            "contact": contact,
+            "supervised": bool(data.get("supervised")),
+            "schedule": "",
+        }
+        async with self.lock:
+            current = self.db.controller_inputs(controller_id).get(io) or {
+                "name": CONTROLLER_INPUTS[io][0],
+                "role": "",
+                "door_token": "",
+                "contact": "no",
+                "supervised": False,
+                "schedule": "",
+            }
+            before = {k: current.get(k) for k in INPUT_SETTINGS}
+            if before == values:
+                return values
+            await self._apply_input(controller_id, io, current, values)
+            summary = f"ingresso {values['name']}: {INPUT_ROLES[role]}"
+            self.db.add_controller_change(user, controller_id, "input", io, summary, before, values)
+            self.db.add_audit(user, "programmazione controller", summary)
+        return values
+
+    async def _apply_input(self, controller_id: int, io: str, current: dict, values: dict) -> None:
+        """Porta il controller allo stato chiesto per l'ingresso e salva le impostazioni con i token creati.
+        Se il controller rifiuta a metà, i token già creati restano salvati: il prossimo salvataggio li riusa."""
+        tokens = {
+            "idpoint_token": current.get("idpoint_token", ""),
+            "access_point_token": current.get("access_point_token", ""),
+        }
+        wanted = values["role"] in REX_ROLES
+        try:
+            point = tokens["access_point_token"]
+            if point and (not wanted or values["door_token"] != current.get("door_token")):
+                await self.controller.remove_access_point(point)
+                tokens["access_point_token"] = ""
+            if not wanted:
+                if tokens["idpoint_token"]:
+                    await self.controller.set_io_assignment(io, _plain_mode(io), [])
+                    await self.controller.remove_idpoint(tokens["idpoint_token"])
+                    tokens["idpoint_token"] = ""
+            else:
+                await self._write_rex(io, values, tokens)
+        except VapixError as err:
+            self.db.save_controller_input(controller_id, io, {**current, **tokens})
+            raise ServiceError(f"il controller ha rifiutato la configurazione dell'ingresso: {err}") from err
+        self.db.save_controller_input(controller_id, io, {**values, **tokens})
+
+    async def _write_rex(self, io: str, values: dict, tokens: dict) -> None:
+        supervised = values["supervised"]
+        idpoint = await self.controller.create_idpoint(
+            {
+                **({"token": tokens["idpoint_token"]} if tokens["idpoint_token"] else {}),
+                "Name": values["name"][:64],
+                "Description": f"Ingresso {io} (Axis Access Manager)",
+                "Location": "",
+                "Action": "Access",
+                "Timeout": "PT10S",
+                "MinPINSize": 4,
+                "MaxPINSize": 4,
+                "EndOfPIN": "#",
+            }
+        )
+        tokens["idpoint_token"] = idpoint
+        points = await self.controller.list_access_points()
+        _, device = await self._device_uuids(points)
+        level = "High" if values["contact"] == "nc" else "Low"
+        await self.controller.set_idpoint_configuration(
+            idpoint,
+            device,
+            {
+                "IdPoint.Reader.Type": "None",
+                "IdPoint.REX.Type": f"{'Supervised' if supervised else ''}Active{level}",
+                "IdPoint.Keypress.Type": "Auto",
+            },
+        )
+        await self.controller.set_io_assignment(
+            io,
+            "supervised" if supervised else _plain_mode(io),
+            [
+                {
+                    "Type": "idpoint",
+                    "token": idpoint,
+                    "Usage": "REXSupervised" if supervised else "REX",
+                    "MultiIo": False,
+                }
+            ],
+        )
+        door = values["door_token"]
+        existing = next((p for p in points if p.get("token") == tokens["access_point_token"]), None)
+        # Un punto di accesso già sulla porta fa da modello per i campi che il controller si aspetta
+        template = existing or next((p for p in points if p.get("Entity") == door), {})
+        point = copy.deepcopy(template)
+        if existing is None:
+            point.pop("token", None)
+        attributes = [a for a in point.get("Attribute") or [] if a.get("Name") != "Direction"]
+        point.update(
+            {
+                "Name": values["name"][:64],
+                "Description": f"Ingresso {io} (Axis Access Manager)",
+                "Entity": door,
+                "EntityType": "axtdc:Door",
+                "Enabled": True,
+                "IdPointDevice": [{"IdPoint": idpoint, "DeviceUUID": device}],
+                "AuthenticationProfile": ["REXOnly"],
+                "Attribute": [*attributes, {"Name": "Direction", "Value": "out"}],
+            }
+        )
+        if not point.get("DoorDeviceUUID"):
+            point["DoorDeviceUUID"] = device
+        tokens["access_point_token"] = await self.controller.create_access_point(point)
+
     async def update_access_point(self, token: str, data: dict, user: str) -> None:
         """Nome, porta comandata, lettori collegati, direzione e attivazione di un punto di accesso."""
         self._check()
@@ -274,7 +506,10 @@ class ProgrammingService:
             points = await self.controller.list_access_points()
             readers = {r.get("token") for r in await self.controller.list_idpoints()}
             doors = {d.get("token"): d.get("Name") or d.get("token") for d in await self.controller.door_info_list()}
-            points = [p for p in points if p.get("Entity") in doors]
+            # I punti degli ingressi (pulsante, relè del citofono) sono gestiti dalle loro schede, non dallo schema
+            owned_points, owned_idpoints = self._input_tokens()
+            readers -= owned_idpoints
+            points = [p for p in points if p.get("Entity") in doors and p.get("token") not in owned_points]
             known, fallback = await self._device_uuids(points)
             wanted: dict[str, list[str]] = {p["token"]: [] for p in points}
             enabled: dict[str, bool] = {}
@@ -327,8 +562,8 @@ class ProgrammingService:
                 )
             return len(updates)
 
-    async def undo(self, change_id: int, user: str) -> None:
-        """Riporta l'oggetto com'era prima della modifica."""
+    async def undo(self, change_id: int, user: str) -> str:
+        """Riporta l'oggetto com'era prima della modifica. Restituisce il tipo di oggetto."""
         self._check()
         change = self.db.get_controller_change(change_id)
         if change is None or change["controller_id"] != self.controller_id:
@@ -336,9 +571,14 @@ class ProgrammingService:
         if change["undone"]:
             raise ServiceError("modifica già annullata")
         async with self.lock:
-            setter = {"door": self.controller.set_door, "reader": self.controller.set_idpoint}.get(
-                change["kind"], self.controller.set_access_point
-            )
-            await setter(change["before"])
+            if change["kind"] == "input":
+                current = self.db.controller_inputs(self.controller_id).get(change["token"]) or {}
+                await self._apply_input(self.controller_id, change["token"], current, change["before"])
+            else:
+                setter = {"door": self.controller.set_door, "reader": self.controller.set_idpoint}.get(
+                    change["kind"], self.controller.set_access_point
+                )
+                await setter(change["before"])
             self.db.mark_change_undone(change_id)
             self.db.add_audit(user, "programmazione controller annullata", change["summary"])
+        return change["kind"]
