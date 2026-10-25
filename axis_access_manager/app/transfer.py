@@ -7,6 +7,7 @@ import io
 import re
 from datetime import datetime
 
+from .rules import RuleError, normalize_validity
 from .service import AccessService, ServiceError, normalize_card, normalize_name
 from .vapix import VapixError
 
@@ -130,8 +131,72 @@ def read_import(text: str) -> list[dict]:
     return result
 
 
+def _validity(value: str) -> str:
+    try:
+        return normalize_validity(value)
+    except RuleError as err:
+        raise ServiceError(str(err)) from err
+
+
+def _changes(item: dict, person: dict, card: dict, group: str, category: dict | None, names: dict) -> dict:
+    """Cosa cambia per una persona già registrata, solo per le colonne presenti nel file.
+
+    Gruppo e tipologia vuoti lasciano quelli attuali; date, ditta e note vuote li svuotano (come nel file esportato).
+    """
+    changes: dict = {}
+    if group and group != card.get("access_profile"):
+        changes["gruppo"] = group
+    for column, field in (("valida_dal", "valid_from"), ("valida_al", "valid_to")):
+        if column in item:
+            value = _validity(parse_date(item[column]))
+            if value != (card.get(field) or ""):
+                changes[column] = value
+    for column, field in (("ditta", "company"), ("note", "notes")):
+        if column in item and item[column] != (person.get(field) or ""):
+            changes[column] = item[column]
+    if category and category["id"] != person.get("category_id"):
+        changes["tipologia"] = category
+    labels = {
+        "gruppo": lambda v: f"gruppo {names.get(card.get('access_profile'), card.get('access_profile') or '—')} → "
+        f"{names.get(v, v)}",
+        "valida_dal": lambda v: f"valida dal {_local(card.get('valid_from') or '') or '—'} → {_local(v) or '—'}",
+        "valida_al": lambda v: f"valida al {_local(card.get('valid_to') or '') or '—'} → {_local(v) or '—'}",
+        "ditta": lambda v: f"ditta {person.get('company') or '—'} → {v or '—'}",
+        "note": lambda v: "note modificate",
+        "tipologia": lambda v: f"tipologia → {v['name']}",
+    }
+    return {key: (value, labels[key](value)) for key, value in changes.items()}
+
+
+async def _update(service: AccessService, person: dict, card: dict, changes: dict, user: str) -> None:
+    """Applica le modifiche a una persona: ditta e note solo nell'add-on, gruppo e validità anche sul controller."""
+    if "ditta" in changes or "note" in changes:
+        await service.update_person(
+            person["id"],
+            user,
+            company=changes["ditta"][0] if "ditta" in changes else None,
+            notes=changes["note"][0] if "note" in changes else None,
+        )
+    if {"gruppo", "valida_dal", "valida_al", "tipologia"} & changes.keys():
+        await service.set_person_access(
+            person["id"],
+            changes["gruppo"][0] if "gruppo" in changes else card.get("access_profile") or "",
+            changes["valida_dal"][0] if "valida_dal" in changes else card.get("valid_from") or "",
+            changes["valida_al"][0] if "valida_al" in changes else card.get("valid_to") or "",
+            user,
+            changes["tipologia"][0]["id"] if "tipologia" in changes else None,
+        )
+
+
 async def import_persons(service: AccessService, text: str, groups: list[dict], user: str, apply: bool) -> dict:
-    """Controlla (apply=False) o esegue l'importazione. Le tessere già registrate vengono saltate."""
+    """Controlla (apply=False) o esegue l'importazione.
+
+    Le tessere nuove si aggiungono; per quelle già registrate si aggiornano gruppo, validità, ditta, note e
+    tipologia della persona se nel file sono diversi, altrimenti la riga è saltata.
+    """
+    names = {g["token"]: g["name"] for g in groups}
+    # Persone già viste in una riga precedente (una persona ha una riga per tessera): id → valori chiesti
+    planned: dict[int, tuple] = {}
     by_name = {g["name"].lower(): g["token"] for g in groups}
     tokens = {g["token"] for g in groups}
     categories = {c["name"].lower(): c for c in service.db.list_categories()}
@@ -158,7 +223,29 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
             seen_cards.add(number.lower())
             existing = service.db.card_by_number(number)
             if existing:
-                outcome.update(esito="saltata", dettaglio=f"già registrata a {existing['person_name']}")
+                person = service.db.get_person(existing["person_id"])
+                # Valori chiesti dalla riga: le righe della stessa persona devono essere d'accordo
+                wanted = (
+                    group,
+                    category["id"] if category else 0,
+                    *(item.get(c) for c in ("ditta", "note")),
+                    *(_validity(parse_date(item[c])) if c in item else None for c in ("valida_dal", "valida_al")),
+                )
+                if person["id"] in planned:
+                    if wanted != planned[person["id"]]:
+                        raise ServiceError("valori diversi da un'altra riga della stessa persona")
+                    changes = {}
+                else:
+                    planned[person["id"]] = wanted
+                    changes = _changes(item, person, existing, group, category, names)
+                if not changes:
+                    outcome.update(esito="saltata", dettaglio=f"già registrata a {existing['person_name']}")
+                    results.append(outcome)
+                    continue
+                if apply:
+                    await _update(service, person, existing, changes, user)
+                detail = "; ".join(label for _, label in changes.values())
+                outcome.update(esito="aggiornata" if apply else "da aggiornare", dettaglio=detail)
                 results.append(outcome)
                 continue
             matches = [p for p in service.db.all_persons() if p["name"].lower() == name.lower()]
@@ -189,6 +276,7 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
     summary = {
         "righe": len(results),
         "ok": sum(1 for r in results if r["esito"] in ("ok", "da importare")),
+        "aggiornate": sum(1 for r in results if r["esito"] in ("aggiornata", "da aggiornare")),
         "saltate": sum(1 for r in results if r["esito"] == "saltata"),
         "errori": sum(1 for r in results if r["esito"] == "errore"),
     }

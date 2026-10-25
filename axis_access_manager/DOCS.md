@@ -142,7 +142,9 @@ Con una telecamera impostata sulla porta (Impianti), l'add-on chiede un'immagine
 
 ## Importazione CSV
 
-File con separatore `;` o `,` e intestazione facoltativa: `nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia`. Obbligatori solo nome e tessera; gruppo e tipologia si indicano per nome (la tipologia assegna il suo gruppo se il gruppo è vuoto); le date nel formato `gg/mm/aaaa` (con ora facoltativa `hh:mm`). Prima viene mostrata un'anteprima riga per riga; le tessere già registrate vengono saltate, e se il nome corrisponde a una persona esistente la tessera le viene aggiunta.
+File con separatore `;` o `,` e intestazione facoltativa: `nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia`. Obbligatori solo nome e tessera; gruppo e tipologia si indicano per nome (la tipologia assegna il suo gruppo se il gruppo è vuoto); le date nel formato `gg/mm/aaaa` (con ora facoltativa `hh:mm`). Prima viene mostrata un'anteprima riga per riga; se il nome corrisponde a una persona esistente la tessera nuova le viene aggiunta.
+
+Per le tessere **già registrate** il file aggiorna la persona: gruppo, validità, ditta, note e tipologia, se diversi da quelli attuali. Nell'anteprima queste righe compaiono come "da aggiornare", con cosa cambia (ad esempio "valida al 31/10/2026 → 31/12/2026"), e si applicano solo dopo la conferma. Si confrontano solo le colonne presenti nel file. Gruppo e tipologia vuoti lasciano quelli attuali; date, ditta e note vuote li svuotano, come nel file esportato. Il modo più semplice per una modifica in blocco: esporta l'anagrafica, cambia le colonne nel foglio di calcolo e reimporta. Una persona con più tessere ha una riga per tessera, e le righe devono avere gli stessi valori. Il nome non si cambia dal file.
 
 ## Eventi MQTT dell'A1210
 
