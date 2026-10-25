@@ -170,6 +170,16 @@ async def test_access_control_events(service, db):
     assert denied["kind"] == "negato" and denied["detail"] == "tessera scaduta"
 
 
+async def test_same_denial_on_two_topics_is_logged_once(service, db):
+    """Il controller manda lo stesso diniego su più topic: una riga sola nel registro."""
+    data = {"AccessPointToken": "ap-in", "IdData": "c011a0d0", "Reason": "CredentialNotFound"}
+    service.record_event(event("IdPoint/Request/IdData/x", {"Card": "c011a0d0"}))
+    service.record_event(event("AccessControl/Denied/CredentialNotFound/Card/x", data))
+    service.record_event(event("AccessControl/Denied/Credential/x", data))
+    assert [e["kind"] for e in db.list_events()] == ["negato", "sconosciuta"]
+    assert db.count_events("")["negato"] == 1
+
+
 def test_retained_and_irrelevant_events_are_not_logged(service, db):
     service.record_event(event("IdPoint/Request/IdData/x", {"Card": "05ff"}), retained=True)
     service.record_event(event("Door/State/DoorAlarm/x", {"State": "Normal"}))
