@@ -3,7 +3,15 @@ import json
 import pytest
 
 from app.db import SCHEMA_VERSION, Database
-from app.health import CLOCK_TOLERANCE, HealthMonitor, clock_problem, ntp_summary, paused_reason
+from app.health import (
+    CLOCK_EVERY,
+    CLOCK_TOLERANCE,
+    HealthMonitor,
+    clock_fault,
+    clock_problem,
+    ntp_summary,
+    paused_reason,
+)
 from app.notifications import NotificationService
 from app.vapix import ControllerGuard, VapixError
 
@@ -109,15 +117,39 @@ async def test_unreachable_after_two_failures(monitor, controller, controller_ro
     assert state.unreachable and "non risponde" in state.error
 
 
-async def test_clock_offset(monitor, controller, controller_row):
+async def test_clock_fault_says_which_clock_is_wrong(monitor, controller, controller_row):
     controller.clock_skew = CLOCK_TOLERANCE + 120
     await monitor.check_all()
     state = monitor.states[controller_row]
     assert abs(state.clock_offset - (CLOCK_TOLERANCE + 120)) < 3
-    assert clock_problem(state)
-    controller.clock_skew = 5
+    # Controller sincronizzato via NTP (come al banco): a essere indietro è Home Assistant
+    assert clock_fault(state) == "home_assistant" and not clock_problem(state)
+    controller.ntp_synced = False
+    state.answered = 0
     await monitor.check_all()
-    assert not clock_problem(monitor.states[controller_row])
+    assert clock_fault(state) == "controller" and clock_problem(state)
+    controller.clock_skew = 5
+    state.answered = 0
+    await monitor.check_all()
+    assert clock_fault(state) == "" and not clock_problem(state)
+
+
+async def test_clock_read_every_few_checks(monitor, controller, controller_row):
+    await monitor.check_all()
+    controller.clock_skew = 300
+    for _ in range(CLOCK_EVERY - 1):
+        await monitor.check_all()
+    state = monitor.states[controller_row]
+    assert abs(state.clock_offset) < 3
+    await monitor.check_all()
+    assert state.clock_offset > 290
+    # Tornato raggiungibile: ora e NTP si rileggono subito
+    controller.clock_skew = 0
+    controller.offline = True
+    await monitor.check_all()
+    controller.offline = False
+    await monitor.check_all()
+    assert abs(state.clock_offset) < 3
 
 
 def test_ntp_summary_variants():
@@ -138,6 +170,7 @@ def test_fault_notifications(db):
             "serial": "Y",
             "identity_change": "il controller Quadro Teatro è cambiato (numero di serie X → Y): conferma",
             "clock_problem": True,
+            "clock_fault": "controller",
             "clock_offset": -300.0,
             "checked_at": "2026-10-25T10:00:00+00:00",
         },
@@ -156,7 +189,10 @@ def test_fault_notifications(db):
     by_type = {i["type"]: i for i in items}
     assert by_type["controller"]["text"] == "Villa 1 · Il controller non risponde"
     assert by_type["controller_changed"]["title"] == "Controller Cambiato"
-    assert by_type["clock"]["text"] == "Quadro Teatro · 5 min indietro rispetto a Home Assistant"
+    assert by_type["clock"]["title"] == "Orologio del Controller"
+    assert by_type["clock"]["text"] == (
+        "Quadro Teatro · 5 min indietro rispetto a Home Assistant, NTP non sincronizzato"
+    )
     assert by_type["missing_cards"]["severity"] == "crit"
     assert "3 tessere di 2 persone" in by_type["missing_cards"]["text"]
 
@@ -172,6 +208,22 @@ def test_controller_mqtt_offline_but_reachable(db):
         controllers=[{"id": 1, "name": "Quadro", "unreachable": False}],
     )
     assert [i["title"] for i in items] == ["Eventi del Controller Non Arrivano"]
+
+
+def test_home_assistant_clock_notification(db):
+    synced = {"unreachable": False, "clock_fault": "home_assistant", "clock_offset": 36.0 + 60, "checked_at": ""}
+    items = NotificationService(db).collect(
+        mqtt_configured=True,
+        mqtt_connected=True,
+        controller_configured=True,
+        controller_online=True,
+        sync={"ok": True},
+        door_names={},
+        controllers=[{**synced, "id": 1, "name": "Quadro"}, {**synced, "id": 2, "name": "Villa"}],
+    )
+    # Una sola notifica anche con più controller: l'orologio sbagliato è quello di Home Assistant
+    assert [(i["title"], i["severity"]) for i in items] == [("Orologio di Home Assistant", "low")]
+    assert items[0]["text"].startswith("Home Assistant è 96 s indietro rispetto a Quadro")
 
 
 def test_numbered_migrations_copy_old_database(tmp_path):

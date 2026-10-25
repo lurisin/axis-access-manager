@@ -647,7 +647,7 @@ const KINDS = {
 };
 const DAYS = [["MO", "L", "lun"], ["TU", "M", "mar"], ["WE", "M", "mer"], ["TH", "G", "gio"], ["FR", "V", "ven"], ["SA", "S", "sab"], ["SU", "D", "dom"]];
 
-const fmtDateTime = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {dateStyle: "short", timeStyle: "short"}) : "";
+const fmtDateTime = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"}) : "";
 const fmtFull = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {dateStyle: "medium", timeStyle: "medium"}) : "";
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", {day: "numeric", month: "short", year: "numeric"}) : "";
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("it-IT", {hour: "2-digit", minute: "2-digit"}) : "";
@@ -1101,7 +1101,7 @@ const WIDGET_BODY = {
   accessi_oggi: ({d: {today: t}}) => kpi("Accessi Oggi", t.granted + t.remote, `${t.remote ? `di cui ${plural(t.remote, "apertura remota", "aperture remote")}` : "con tessera"}${!t.granted && t.reads ? ` · ${plural(t.reads, "lettura", "letture")}` : ""}`),
   negati_oggi: ({d: {today: t}}) => kpi("Negati Oggi", t.denied, t.unknown ? plural(t.unknown, "tessera sconosciuta", "tessere sconosciute") : "nessuna tessera sconosciuta", t.denied ? "var(--warn)" : ""),
   allarmi_oggi: ({d: {today: t}}) => kpi("Allarmi Oggi", t.alarms, t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme", t.alarms ? "var(--err)" : ""),
-  persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${d.cards_suspended} sospese` : ""}${can("persone") ? ' · <a href="#persone">anagrafica</a>' : ""}`),
+  persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">anagrafica</a>' : ""}`),
   porte: ({doors}) => `<h2>${doors.length > 1 ? "Porte" : "Porta"}<span class="spacer"></span>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</h2>
     ${doors.length ? doorGroups(doors) : `<div class="empty">Nessuna porta configurata.</div>`}`,
   settimana({d}) {
@@ -1489,7 +1489,7 @@ async function viewPersons(el, sub) {
     e.target.disabled = true;
     const r = await run(() => api("api/sync", {method: "POST"}));
     e.target.disabled = false;
-    if (r) { toast(`Riletto dal controller: ${r.cards} tessere (${r.added} nuove${r.missing ? `, ${r.missing} non presenti sul controller` : ""})`); await loadPersons(); renderPersonList(); }
+    if (r) { toast(`Riletto dal controller: ${plural(r.cards, "tessera", "tessere")} (${plural(r.added, "nuova", "nuove")}${r.missing ? `, ${plural(r.missing, "non presente", "non presenti")} sul controller` : ""})`); await loadPersons(); renderPersonList(); }
   });
   $("#p-list").addEventListener("click", (e) => {
     const item = e.target.closest("[data-person]");
@@ -1574,7 +1574,7 @@ async function restoreMissing(ids = null) {
 }
 async function forgetMissing(ids = null) {
   const n = ids ? ids.length : store.persons.reduce((k, p) => k + p.cards.filter((c) => c.missing_since).length, 0);
-  if (!await confirmBox("Togli dall'App", `Togliere dall'app ${plural(n, "la tessera non presente", "le tessere non presenti")} sul controller? Le persone rimaste senza tessere spariscono con ditta, note e tipologia. Il registro dei passaggi resta.`, "Togli", true)) return false;
+  if (!await confirmBox("Togli dall'App", `Togliere dall'app ${n === 1 ? "la tessera non presente" : `le ${n} tessere non presenti`} sul controller? Le persone rimaste senza tessere spariscono con ditta, note e tipologia. Il registro dei passaggi resta.`, "Togli", true)) return false;
   const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids}}), "Tessere tolte dall'app");
   if (!r) return false;
   loadSummary();
@@ -2213,7 +2213,7 @@ async function viewHolidays(body) {
 }
 
 // ---------- Notifiche ----------
-const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera"};
+const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", clock: "clock", missing_cards: "card"};
 const SEVERITY = {crit: "Critica", warn: "Media", low: "Bassa"};
 // Schede del registro delle notifiche: eventi che possono diventare una notifica
 const NOTIF_TABS = {tutte: ["Tutte", "negato,allarme,manomissione"], negati: ["Accessi Negati", "negato"], allarmi: ["Allarmi e Manomissioni", "allarme,manomissione"]};
@@ -2973,20 +2973,28 @@ function controllerReaders(body, p, errors, doorName) {
 async function controllerStatus(body, ctrl) {
   let s;
   try { s = await api("api/status"); } catch (err) { body.innerHTML = errorBox("Stato Non Leggibile", err); return; }
+  // Ora di Home Assistant rispetto a questo dispositivo: terzo parere quando controller e Home Assistant non concordano
+  const haVsDevice = s.now ? (Date.parse(s.now) - Date.now()) / 1000 : 0;
   const c = s.controller, m = s.mqtt;
   const connection = ` <a href="#impianti/c${ctrl.id}/connessione">Controlla la Connessione</a>`;
   const h = s.controllers.find((x) => x.id === ctrl.id);
   const ntp = h?.ntp || {};
-  const clock = !h || h.clock_offset === null ? "—"
-    : `${statusDot(h.clock_problem ? "err" : "ok")} ${Math.abs(h.clock_offset) < 2 ? "Allineato a Home Assistant" : `${offsetText(h.clock_offset)} rispetto a Home Assistant`}${h.time_zone ? ` · ${esc(h.time_zone)}` : ""}`;
-  const ntpText = ntp.servers?.length || ntp.source ? `${ntp.active === false ? statusDot("warn") + " Non sincronizzato · " : ntp.active ? statusDot("ok") + " " : ""}${esc((ntp.servers || []).join(", ") || "nessun server")}${ntp.source ? ` <span class="muted">(${esc(ntp.source)})</span>` : ""}` : "—";
+  const off = h?.clock_offset, tz = h?.time_zone ? ` · ${esc(h.time_zone)}` : "";
+  // Lo scarto dice solo che i due orologi non concordano: se il controller è sincronizzato via NTP, l'ora giusta è la sua
+  const clock = !h || off === null || off === undefined ? "—"
+    : Math.abs(off) < 2 ? `${statusDot("ok")} Allineato a Home Assistant${tz}`
+    : h.clock_synced ? `${statusDot("ok")} Giusto, sincronizzato via NTP · <span${h.clock_fault ? ' style="color:var(--warn)"' : ""}>Home Assistant è ${offsetText(-off)}</span>${tz}`
+    : `${statusDot(h.clock_problem ? "err" : "ok")} ${offsetText(off)} rispetto a Home Assistant${tz}`;
+  const ntpText = ntp.servers?.length || ntp.source ? `${ntp.active === false ? statusDot("warn") + " Non sincronizzato · " : ntp.active ? statusDot("ok") + " " : ""}${esc((ntp.servers || []).join(", ") || "nessun server")}${ntp.source ? ` <span class="muted">(${esc(ntp.source)})</span>` : ""}${ntp.active && ntp.offset !== null && ntp.offset !== undefined ? ` <span class="muted">· scarto ${String(ntp.offset).replace(".", ",")} s</span>` : ""}` : "—";
   const ctrlInfo = c.ok ? props([
     ["Stato", `${statusDot("ok")} Raggiungibile${h?.latency_ms != null ? ` <span class="muted">· risponde in ${h.latency_ms} ms, controllato ${esc(relTime(h.checked_at))}</span>` : ""}`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
     ["Certificato", h?.cert_fingerprint ? `<code class="small-text" style="overflow-wrap:anywhere">${esc(h.cert_fingerprint)}</code>` : "—"],
     ["Orologio", clock], ["Server NTP", ntpText],
+    ...(Math.abs(haVsDevice) >= 5 ? [["Ora di Home Assistant", `${statusDot("warn")} ${offsetText(haVsDevice)} rispetto a questo dispositivo`]] : []),
     ["Indirizzo", `<code>${esc(ctrl.host)}</code>`], ["Porte sul Controller", c.doors.map((d, i) => `<span title="${esc(d)}">${esc(c.door_names?.[i] || d)}</span>`).join(", ")],
     ["Lettori", esc(c.readers ?? "—")], ["Tessere sul Controller", esc(c.credentials)],
-  ]) + (h?.clock_problem ? '<p class="hint" style="color:var(--err)">Le fasce orarie scattano con l\'ora del controller: imposta un server NTP raggiungibile nel controller (Sistema → Data e Ora).</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
+  ]) + (h?.clock_problem ? '<p class="hint" style="color:var(--err)">Le fasce orarie scattano con l\'ora del controller: imposta un server NTP raggiungibile nel controller (Sistema → Data e Ora).</p>' : "")
+    + (h?.clock_fault === "home_assistant" ? '<p class="hint">A essere sbagliata è l\'ora di Home Assistant: controlla il suo server NTP. Le fasce orarie non ne risentono, perché le applica il controller con la sua ora.</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
   const cats = Object.entries(m.categories || {});
   const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta mqtt_host nelle opzioni dell'add-on.</div></div>` : props([
     ["Broker", m.connected ? `${statusDot("ok")} Collegato` : `${statusDot("err")} Non Collegato ${esc(m.error)}`],

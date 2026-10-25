@@ -80,6 +80,11 @@ def mass_missing(total: int, missing: int) -> bool:
     return missing == total or (missing >= MASS_MISSING_MIN and missing > total * MASS_MISSING_SHARE)
 
 
+def plural(count: int, one: str, many: str) -> str:
+    """ "1 tessera", "3 tessere"."""
+    return f"{count} {one if count == 1 else many}"
+
+
 class ServiceError(Exception):
     """Richiesta non valida o non eseguibile: il messaggio va mostrato all'utente."""
 
@@ -306,7 +311,7 @@ class AccessService:
                 self.db.set_card_token(card["id"], token)
                 restored += 1
             if restored:
-                self.db.add_audit(user, "tessere riscritte sul controller", f"{restored} tessere")
+                self.db.add_audit(user, "tessere riscritte sul controller", plural(restored, "tessera", "tessere"))
                 self._changed()
         return {"restored": restored, "failed": failed}
 
@@ -324,7 +329,9 @@ class AccessService:
                 removed_persons += 1
         if cards:
             numbers = ", ".join(c["number"] for c in cards[:20]) + ("…" if len(cards) > 20 else "")
-            self.db.add_audit(user, "tessere non presenti tolte dall'app", f"{len(cards)} tessere: {numbers}")
+            self.db.add_audit(
+                user, "tessere non presenti tolte dall'app", f"{plural(len(cards), 'tessera', 'tessere')}: {numbers}"
+            )
             self._changed()
         return {"cards": len(cards), "persons": removed_persons}
 

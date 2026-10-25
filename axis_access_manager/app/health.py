@@ -26,6 +26,9 @@ HEALTH_INTERVAL = 30
 OFFLINE_AFTER = 2
 # Scarto massimo dell'orologio del controller rispetto a Home Assistant
 CLOCK_TOLERANCE = 60
+# Ora e NTP cambiano di rado: si rileggono un controllo su CLOCK_EVERY (ogni 5 minuti) e quando il controller
+# torna raggiungibile. Collegamento e identità si controllano sempre.
+CLOCK_EVERY = 10
 IDENTITY_FIELDS = ("serial", "model", "firmware", "cert_fingerprint")
 
 
@@ -46,13 +49,17 @@ class ControllerHealth:
     clock_offset: float | None = None
     time_zone: str = ""
     ntp: dict = field(default_factory=dict)
+    # Controlli riusciti da quando risponde: decide quando rileggere ora e NTP
+    answered: int = 0
 
     @property
     def unreachable(self) -> bool:
         return self.failures >= OFFLINE_AFTER
 
     def as_dict(self) -> dict:
-        return {**asdict(self), "unreachable": self.unreachable}
+        data = asdict(self)
+        data.pop("answered")
+        return {**data, "unreachable": self.unreachable}
 
 
 def parse_utc(value: str) -> datetime | None:
@@ -113,6 +120,9 @@ class HealthMonitor:
             return current[1]
         if current:
             asyncio.get_running_loop().create_task(_close(current[1]))
+        if row["id"] in self.states:
+            # Indirizzo o credenziali cambiati: al prossimo controllo si rileggono anche ora e NTP
+            self.states[row["id"]].answered = 0
         client = self.make_client(row)
         self._clients[row["id"]] = (key, client)
         return client
@@ -148,24 +158,29 @@ class HealthMonitor:
             state.failures += 1
             state.error = str(err)
             state.latency_ms = None
+            state.answered = 0
             return state
         except Exception as err:  # noqa: BLE001 - un controller che risponde male non deve fermare gli altri
             _LOGGER.exception("Controllo del controller %s non riuscito", row["name"])
             state.online, state.error = False, str(err)
             state.failures += 1
+            state.answered = 0
             return state
         state.latency_ms = round((time.monotonic() - started) * 1000)
         state.online, state.failures, state.error = True, 0, ""
         state.model = str(info.get("ProdNbr") or info.get("ProdShortName") or "")
         state.firmware = str(info.get("Version") or "")
         state.serial = str(info.get("SerialNumber") or "")
+        # Il certificato a ogni controllo: è solo l'avvio di un collegamento TLS, senza richieste al controller
         fingerprint = getattr(client, "certificate_fingerprint", None)
         if fingerprint:
             try:
                 state.cert_fingerprint = await fingerprint()
             except VapixError as err:
                 _LOGGER.debug("Certificato di %s non letto: %s", row["name"], err)
-        await self._clock(client, state)
+        if state.answered % CLOCK_EVERY == 0:
+            await self._clock(client, state)
+        state.answered += 1
         self.check_identity(row, state)
         return state
 
@@ -258,8 +273,26 @@ def paused_reason(row: dict | None) -> str:
     return f"il controller {row['name']} è cambiato ({what}): conferma il cambio in Impianti"
 
 
+def controller_synced(state: ControllerHealth) -> bool:
+    """Il controller dice di essere sincronizzato con un server NTP, con uno scarto entro la tolleranza."""
+    offset = state.ntp.get("offset")
+    return state.ntp.get("active") is True and (offset is None or abs(offset) <= CLOCK_TOLERANCE)
+
+
+def clock_fault(state: ControllerHealth) -> str:
+    """Quale orologio è sbagliato: "controller", "home_assistant" o vuoto se lo scarto è nella tolleranza.
+
+    Lo scarto misura solo la differenza tra i due. Se il controller è sincronizzato via NTP l'ora giusta è la sua,
+    e a essere fuori è Home Assistant (per esempio perché il suo server NTP non risponde).
+    """
+    if state.online is not True or state.clock_offset is None or abs(state.clock_offset) <= CLOCK_TOLERANCE:
+        return ""
+    return "home_assistant" if controller_synced(state) else "controller"
+
+
 def clock_problem(state: ControllerHealth) -> bool:
-    return state.online is True and state.clock_offset is not None and abs(state.clock_offset) > CLOCK_TOLERANCE
+    """Orologio del controller sbagliato: le fasce orarie scattano all'ora sbagliata."""
+    return clock_fault(state) == "controller"
 
 
 async def _close(client) -> None:

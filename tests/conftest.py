@@ -82,6 +82,7 @@ class FakeController:
     fingerprint = "AA:BB"
     # Secondi di scarto dell'orologio rispetto all'ora vera
     clock_skew = 0
+    ntp_synced = True
     offline = False
 
     async def device_info(self):
@@ -104,7 +105,7 @@ class FakeController:
                 "serversSource": "static",
                 "staticServers": ["it.pool.ntp.org"],
                 "advertisedServers": ["172.27.202.1"],
-                "synced": True,
+                "synced": self.ntp_synced,
                 "timeOffset": 0.36650896072387695,
             }
         }
