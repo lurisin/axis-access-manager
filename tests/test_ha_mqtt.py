@@ -64,6 +64,18 @@ async def test_publish_event_updates_last_access(bridge, monkeypatch):
     assert len(sent) == 2
 
 
+async def test_last_access_survives_restart(db, settings):
+    # Dopo un riavvio il sensore riparte dall'ultimo passaggio del registro, non da "nessuno"
+    db.add_event(ts="2026-10-25T08:00:00+00:00", kind="concesso", person_name="Anna", card="04aa")
+    db.add_event(ts="2026-10-25T08:05:00+00:00", kind="apertura_remota")
+    db.add_event(ts="2026-10-25T08:06:00+00:00", kind="citofono", detail="ha suonato")
+    bridge = HaBridge(settings, EventMonitor(prefix="accessi/x", door_token="porta"), db)
+    client = FakeClient()
+    await bridge.on_connect(client)
+    last = json.loads(client.published["axis_access_manager/ultimo"])
+    assert last["persona"] == "Apertura Remota" and last["esito"] == "apertura_remota"
+
+
 def test_second_door_gets_its_own_entities_and_commands(settings, db):
     from app.events import EventMonitor
     from app.ha_mqtt import HaBridge, parse_command
