@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.18.1
+
+Correzioni dalla prova al banco della 0.18.0.
+
+- **Orologio: si dice quale è sbagliato.** Lo scarto confronta il controller con Home Assistant, ma da solo non dice chi dei due è fuori. Se il controller è sincronizzato via NTP l'ora giusta è la sua: la scheda Stato scrive "Giusto, sincronizzato via NTP · Home Assistant è 36 s indietro" e oltre un minuto compare la notifica "Orologio di Home Assistant", di gravità bassa, perché le fasce orarie le applica il controller. Il guasto "Orologio del Controller" resta solo per un controller non sincronizzato. In più la scheda Stato mostra lo scarto dal server NTP e, se Home Assistant non concorda con l'ora del telefono o del PC, anche quello.
+- **Controllo ogni 30 secondi più leggero**: ora e NTP si rileggono ogni 5 minuti e quando il controller torna raggiungibile; ogni 30 secondi resta solo la verifica del collegamento. Nel log dell'add-on non compare più una riga per ogni richiesta al controller (resta con il livello debug).
+- Testi al singolare corretti: "Togliere dall'app la tessera non presente…", "1 tessera" nelle attività, nelle notifiche e nella rilettura dal controller.
+- Date con l'anno a quattro cifre (25/10/2026) in Impostazioni, Attività e negli altri elenchi.
+
 ## 0.18.0
 
 Stabilità: l'app non perde dati se il controller viene resettato o sostituito, se Mosquitto si ferma o se un backup viene preso nel momento sbagliato.

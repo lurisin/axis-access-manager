@@ -24,7 +24,7 @@ from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
 from .ha import HomeAssistant
 from .ha_mqtt import HaBridge, parse_command
-from .health import HEALTH_INTERVAL, HealthMonitor, clock_problem, paused_reason
+from .health import HEALTH_INTERVAL, HealthMonitor, clock_fault, clock_problem, controller_synced, paused_reason
 from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
 from .notifications import FAULT_TYPES, NotificationService
@@ -38,6 +38,7 @@ from .service import (
     AccessService,
     ServiceError,
     mass_missing,
+    plural,
 )
 from .transfer import events_csv, import_persons, persons_csv
 from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
@@ -457,6 +458,8 @@ def create_app(
                 "copies": await asyncio.to_thread(update_copies, state.db.path) if state.db.path else [],
                 "ha_copy": _file_time(ha_copy_path(state.db.path)) if state.db.path else "",
             },
+            # Ultima voce, a risposta pronta: il browser la confronta con la sua ora
+            "now": _now(),
         }
 
     @app.get("/api/summary")
@@ -1537,7 +1540,7 @@ def _week_series(rows: list[dict]) -> list[dict]:
 
 
 def _sync_text(result: dict) -> str:
-    text = f"{result['cards']} tessere, {result['added']} nuove"
+    text = f"{plural(result['cards'], 'tessera', 'tessere')}, {plural(result['added'], 'nuova', 'nuove')}"
     return text + (f", {result['missing']} non presenti sul controller" if result.get("missing") else "")
 
 
@@ -1597,7 +1600,11 @@ async def _recover_if_needed(state) -> None:
     state.last_recovery = {"at": _now(), "since": since.isoformat(timespec="seconds"), "events": recovered}
     if recovered:
         _LOGGER.info("Recuperati %s eventi dal registro del controller", recovered)
-        state.db.add_audit("sistema", "eventi recuperati dal controller", f"{recovered} eventi dal {since:%d/%m %H:%M}")
+        state.db.add_audit(
+            "sistema",
+            "eventi recuperati dal controller",
+            f"{plural(recovered, 'evento', 'eventi')} dal {since:%d/%m %H:%M}",
+        )
 
 
 def _controllers_health(state) -> list[dict]:
@@ -1613,6 +1620,8 @@ def _controllers_health(state) -> list[dict]:
                 **health.as_dict(),
                 "identity_change": paused_reason(row),
                 "clock_problem": clock_problem(health),
+                "clock_fault": clock_fault(health),
+                "clock_synced": controller_synced(health),
                 "known": {k: row.get(k) or "" for k in ("serial", "model", "firmware", "cert_fingerprint")},
             }
         )

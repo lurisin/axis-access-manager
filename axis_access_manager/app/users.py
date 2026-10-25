@@ -124,7 +124,11 @@ class UserDirectory:
                     changed += 1
             self.db.set_setting(SETTING_STATUS_ADDED, "1")
         if changed:
-            self.db.add_audit("sistema", "permesso Stato aggiunto agli utenti esistenti", f"{changed} utenti")
+            self.db.add_audit(
+                "sistema",
+                "permesso Stato aggiunto agli utenti esistenti",
+                f"{changed} utent{'e' if changed == 1 else 'i'}",
+            )
         return changed
 
     def _touch(self, username: str, display_name: str, row: dict) -> None:

@@ -12,7 +12,7 @@ import json
 from datetime import UTC, datetime, timedelta
 
 from .db import Database
-from .service import ServiceError
+from .service import ServiceError, plural
 
 # Tipo → nome, descrizione, livello predefinito
 TYPES = {
@@ -37,8 +37,9 @@ TYPES = {
         "urgent",
     ),
     "clock": (
-        "Orologio del Controller",
-        "L'ora del controller è sbagliata di oltre un minuto: le fasce orarie scattano all'ora sbagliata.",
+        "Orologio Sbagliato",
+        "L'ora del controller o di Home Assistant è sbagliata di oltre un minuto. Se è quella del controller "
+        "le fasce orarie scattano all'ora sbagliata.",
         "urgent",
     ),
     "missing_cards": (
@@ -238,6 +239,7 @@ class NotificationService:
                     sync.get("at") or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
+            ha_clock = False
             for c in controllers:
                 if c.get("identity_change"):
                     add(
@@ -249,14 +251,27 @@ class NotificationService:
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link="#impianti",
                     )
-                if c.get("clock_problem"):
-                    offset = c["clock_offset"]
+                offset = c.get("clock_offset")
+                if c.get("clock_fault") == "controller":
                     add(
                         "clock",
                         f"clock:{c['id']}",
                         "warn",
                         "Orologio del Controller",
-                        f"{c['name']} · {_offset_text(offset)} rispetto a Home Assistant",
+                        f"{c['name']} · {_offset_text(offset)} rispetto a Home Assistant, NTP non sincronizzato",
+                        c.get("checked_at") or now.isoformat(timespec="seconds"),
+                        link="#impianti",
+                    )
+                elif c.get("clock_fault") == "home_assistant" and not ha_clock:
+                    # Il controller è sincronizzato via NTP: è l'ora di Home Assistant a essere sbagliata
+                    ha_clock = True
+                    add(
+                        "clock",
+                        "clock:home_assistant",
+                        "low",
+                        "Orologio di Home Assistant",
+                        f"Home Assistant è {_offset_text(-offset)} rispetto a {c['name']}, "
+                        "che è sincronizzato via NTP: controlla il server NTP di Home Assistant",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link="#impianti",
                     )
@@ -266,8 +281,15 @@ class NotificationService:
                 f"missing:{missing['since']}",
                 "crit" if missing.get("mass") else "warn",
                 "Tessere Non Presenti Sul Controller",
-                f"{missing['count']} tessere di {missing['persons']} persone non sono più sul controller: "
-                "riscrivile o toglile dall'app",
+                (
+                    f"{plural(missing['count'], 'tessera', 'tessere')} di "
+                    f"{plural(missing['persons'], 'persona', 'persone')} "
+                    + (
+                        "non è più sul controller: riscrivila o toglila dall'app"
+                        if missing["count"] == 1
+                        else "non sono più sul controller: riscrivile o toglile dall'app"
+                    )
+                ),
                 missing["since"],
                 link="#persone/mancanti",
             )
