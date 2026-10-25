@@ -1,9 +1,10 @@
 import gzip
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.backup import COMMON, BackupError, BackupService, BackupStore
+from app.backup import COMMON, DEFAULT_POLICY, BackupError, BackupService, BackupStore, retention
 from app.main import create_app
 from app.notifications import NotificationService
 from app.programming import ProgrammingService
@@ -356,3 +357,243 @@ def test_controller_counts_readers_apart_from_inputs():
     }
     counts = part_counts("controller:1", part)
     assert counts["lettori"] == 1 and counts["ingressi"] == 2
+
+
+def _manifests(*moments, locked=()):
+    """Backup finti, dal più recente, con l'ora locale indicata."""
+    items = [
+        {"id": f"b{n}", "created_at": moment.astimezone(UTC).isoformat(timespec="seconds"), "locked": n in locked}
+        for n, moment in enumerate(moments)
+    ]
+    return sorted(items, key=lambda m: m["created_at"], reverse=True)
+
+
+def test_retention_keeps_like_restic_forget():
+    base = datetime(2026, 10, 25, 12, 0).astimezone()
+    # Due al giorno per 40 giorni, dal più recente
+    moments = [base - timedelta(days=d, hours=h) for d in range(40) for h in (0, 6)]
+    items = _manifests(*moments, locked=(79,))
+    policy = DEFAULT_POLICY | {"keep_last": 3, "keep_daily": 5, "keep_weekly": 2, "keep_monthly": 2, "keep_yearly": 1}
+    reasons = retention(items, policy)
+    kept = [m for m in items if reasons[m["id"]]]
+
+    assert [reasons[m["id"]] for m in items[:3]] == [
+        ["Ultimi", "Giornaliero", "Settimanale", "Mensile", "Annuale"],
+        ["Ultimi"],
+        ["Ultimi", "Giornaliero"],
+    ]
+    # Il più recente di ognuno degli ultimi 5 giorni
+    daily = [m["created_at"][:10] for m in items if "Giornaliero" in reasons[m["id"]]]
+    assert len(daily) == 5 and len(set(daily)) == 5
+    # Settimana precedente e mese precedente: il più recente di ciascuno
+    assert sum("Settimanale" in reasons[m["id"]] for m in items) == 2
+    assert sum("Mensile" in reasons[m["id"]] for m in items) == 2
+    # Il bloccato (il più vecchio) resta, gli altri senza motivo scadono
+    assert reasons["b79"] == ["Bloccato"]
+    # Ultimi 3, altri 3 giorni, la settimana e il mese precedenti, il bloccato
+    assert len(kept) == 3 + 3 + 1 + 1 + 1
+    # Ultimi è almeno 1: il backup più recente non scade mai
+    assert retention(items, policy | {"keep_last": 0, "keep_daily": 0, "keep_weekly": 0})[items[0]["id"]]
+
+
+async def test_expired_backups_are_removed_after_each_new_one(plant, db):
+    await plant.backups.set_policy(
+        {"keep_last": 2, "keep_daily": 0, "keep_weekly": 0, "keep_monthly": 0, "keep_yearly": 0}, "admin"
+    )
+    first = await plant.backup()
+    await plant.backups.set_locked(first["id"], True, "admin")
+    second = await plant.backup(name="secondo")
+    await plant.access.create_person("Anna", "04aa", "admin")
+    third = await plant.backup(name="terzo")
+    await plant.access.create_person("Bruno", "04bb", "admin")
+    fourth = await plant.backup(name="quarto")
+
+    listing = plant.backups.listing()
+    assert [m["id"] for m in listing["backups"]] == [fourth["id"], third["id"], first["id"]]
+    assert listing["backups"][2]["keep"] == ["Bloccato"]
+    assert second["id"] not in {m["id"] for m in listing["backups"]}
+    # Le parti del secondo erano quelle del primo (bloccato): restano le due parti di ognuno dei tre
+    assert len(list(plant.backups.store.parts.glob("*.json.gz"))) == 6
+
+
+async def test_policy_that_removes_backups_needs_confirmation(plant):
+    for name in ("uno", "due", "tre"):
+        await plant.backup(name=name)
+    rules = {"keep_last": 1, "keep_daily": 0, "keep_weekly": 0, "keep_monthly": 0, "keep_yearly": 0}
+
+    answer = await plant.backups.set_policy(rules, "admin")
+    assert answer == {"saved": False, "would_remove": 2, "policy": answer["policy"]}
+    assert plant.backups.policy()["keep_last"] == 24
+    assert len(plant.backups.store.list()) == 3
+
+    answer = await plant.backups.set_policy(rules, "admin", confirm=True)
+    assert answer["saved"] and answer["removed"] == 2
+    assert [m["name"] for m in plant.backups.store.list()] == ["tre"]
+    with pytest.raises(BackupError, match="orario"):
+        await plant.backups.set_policy({"night": "25:00"}, "admin")
+
+
+async def test_scheduled_backups(plant):
+    now = datetime.now(tz=UTC)
+    # Nessun backup: il notturno della notte scorsa è dovuto subito, e lontano dalla sua ora si chiama Automatico
+    await plant.backups.set_policy({"night": (now - timedelta(minutes=5)).astimezone().strftime("%H:%M")}, "admin")
+    first = await plant.backups.run_scheduled(plant.clients, now=now)
+    assert first["kind"] == "notturno" and first["summary"] == "Primo backup"
+    assert await plant.backups.run_scheduled(plant.clients, now=now) is None
+    due = plant.backups.next_run(now)
+    assert due["kind"] == "automatico"
+    assert abs(
+        datetime.fromisoformat(due["at"]) - (datetime.fromisoformat(first["created_at"]) + timedelta(hours=1))
+    ) < timedelta(seconds=2)
+
+    # Dopo un'ora senza modifiche: si controlla ma non si crea niente, e il prossimo controllo slitta
+    later = now + timedelta(minutes=61)
+    assert await plant.backups.run_scheduled(plant.clients, now=later) is None
+    assert plant.backups.checked_at == later
+    await plant.access.create_person("Anna", "04aa", "admin")
+    changed = await plant.backups.run_scheduled(plant.clients, now=later + timedelta(minutes=61))
+    assert changed["kind"] == "automatico" and changed["summary"].startswith("+1 persona")
+
+    # Solo notturno: alla sua ora si fa anche se non è cambiato niente
+    night = (now + timedelta(hours=3)).astimezone()
+    await plant.backups.set_policy({"frequency": "notte", "night": night.strftime("%H:%M")}, "admin")
+    assert await plant.backups.run_scheduled(plant.clients, now=now + timedelta(hours=2)) is None
+    nightly = await plant.backups.run_scheduled(plant.clients, now=now + timedelta(hours=3, minutes=1))
+    assert nightly["kind"] == "notturno" and nightly["summary"] == "Nessuna modifica"
+    # Automatico spento: niente di pianificato
+    await plant.backups.set_policy({"auto": False}, "admin")
+    assert plant.backups.next_run(now) is None
+
+
+async def test_backup_before_changes_once_per_session(plant, db):
+    await plant.backup()
+    await plant.access.create_person("Anna", "04aa", "admin")
+    made = await plant.backups.before_change("prima_modifica", "admin", plant.clients)
+    assert made["kind"] == "prima_modifica" and made["user"] == "admin"
+    await plant.access.create_person("Bruno", "04bb", "admin")
+    # Seconda modifica di seguito: niente backup
+    assert await plant.backups.before_change("prima_modifica", "admin", plant.clients) is None
+    # L'importazione lo fa sempre
+    imported = await plant.backups.before_change("prima_importazione", "admin", plant.clients, window=False)
+    assert imported["kind"] == "prima_importazione"
+    plant.backups.change_checked_at -= timedelta(minutes=11)
+    # Niente di nuovo dall'ultimo: niente backup
+    assert await plant.backups.before_change("prima_modifica", "admin", plant.clients) is None
+    await plant.backups.set_policy({"before_changes": False}, "admin")
+    plant.backups.change_checked_at = None
+    await plant.access.create_person("Carla", "04cc", "admin")
+    assert await plant.backups.before_change("prima_modifica", "admin", plant.clients) is None
+    # Nell'attività solo i backup chiesti da una persona
+    assert [a["action"] for a in db.list_audit()].count("backup creato") == 1
+
+
+async def test_backup_after_add_on_update(plant, db, tmp_path):
+    await plant.backup()
+    updated = BackupService(db, tmp_path / "backup", "0.20.0")
+    made = await updated.after_update(plant.clients)
+    assert made["kind"] == "aggiornamento" and made["name"] == "Versione 0.20.0"
+    assert await updated.after_update(plant.clients) is None
+
+
+async def test_offline_controller_is_not_waited(plant, controller):
+    first = await plant.backup()
+    controller.offline = True
+    manifest = await plant.backups.create(
+        "automatico", "", "", plant.clients, offline={plant.controller_id: "non raggiungibile (timeout)"}
+    )
+    key = f"controller:{plant.controller_id}"
+    assert manifest["parts"][key]["stale"] == first["id"]
+    assert manifest["errors"] == ["A1210: non raggiungibile (timeout)"]
+
+
+async def test_daily_verification_finds_damaged_backups(plant, db):
+    first = await plant.backup()
+    await plant.access.create_person("Anna", "04aa", "admin")
+    await plant.backup()
+    assert plant.backups.verify_due()
+    result = await plant.backups.verify_now()
+    assert result["ok"] and result["backups"] == 2 and result["parts"] == 4
+    assert not plant.backups.verify_due()
+
+    path = plant.backups.store.parts / f"{first['parts'][COMMON]['hash']}.json.gz"
+    path.write_bytes(b"rovinato")
+    (plant.backups.store.root / "20260101-000000.json").write_text("{")
+    result = await plant.backups.verify_now()
+    assert not result["ok"] and result["damaged"] == 2
+    assert result["errors"][0] == "indice 20260101-000000.json illeggibile"
+    items = NotificationService(db).collect(
+        mqtt_configured=False,
+        mqtt_connected=False,
+        controller_configured=True,
+        controller_online=None,
+        sync={},
+        door_names={},
+        backup_verify=plant.backups.last_verify(),
+    )
+    assert [(i["title"], i["text"]) for i in items] == [
+        ("Backup Rovinati", "2 backup non si possono ripristinare: file mancanti o rovinati")
+    ]
+
+
+def test_backup_before_programming_and_policy_api(client):
+    admin = {"X-Remote-User-Name": "rising", "X-Remote-User-Display-Name": "Rising"}
+    client.get("/api/me", headers=admin)
+    client.post("/api/users", json={"username": "mario", "perms": ["backup", "regole"]}, headers=admin)
+    mario = {"X-Remote-User-Name": "mario"}
+    # Senza permesso la modifica è rifiutata prima del backup
+    assert client.post("/api/holidays", json={"day": "2026-12-25"}, headers=mario).status_code == 403
+    assert client.get("/api/backups", headers=admin).json()["backups"] == []
+
+    assert client.post("/api/holidays", json={"day": "2026-12-25"}, headers=admin).status_code == 200
+    listing = client.get("/api/backups", headers=admin).json()
+    assert [b["kind_label"] for b in listing["backups"]] == ["Prima di una Modifica"]
+    assert listing["policy"]["keep_daily"] == 14 and listing["next"]["kind"] in ("notturno", "automatico")
+    assert listing["backups"][0]["keep"][0] == "Ultimi"
+
+    # Impostazioni: solo amministratori; regole che eliminano backup chiedono conferma
+    rules = {"keep_last": 1, "keep_daily": 0, "keep_weekly": 0, "keep_monthly": 0, "keep_yearly": 0}
+    assert client.put("/api/backups/policy", json=rules, headers=mario).status_code == 403
+    assert client.put("/api/backups/policy", json={"night": "3"}, headers=admin).status_code == 422
+    assert client.put("/api/backups/policy", json={"keep_last": 0}, headers=admin).status_code == 422
+    assert client.post("/api/backups", json={}, headers=admin).status_code == 200
+    answer = client.put("/api/backups/policy", json=rules, headers=admin).json()
+    assert answer["saved"] is False and answer["would_remove"] == 1
+    answer = client.put("/api/backups/policy", json=rules | {"confirm": True}, headers=admin).json()
+    assert answer["saved"] and answer["removed"] == 1
+    assert client.post("/api/backups/verify", headers=mario).json()["ok"]
+    # Riquadro del cruscotto
+    board = client.get("/api/dashboard", headers=admin).json()["backup"]
+    assert board["count"] == 1 and board["last"]["kind_label"] == "Manuale" and board["verify"]["ok"]
+    assert (
+        client.put(
+            "/api/dashboard/layout", json={"widgets": [{"type": "backup", "size": 2}]}, headers=admin
+        ).status_code
+        == 200
+    )
+
+
+def test_backup_loop_makes_the_first_backup(settings, controller, tmp_path, monkeypatch):
+    import time
+
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    app = create_app(
+        settings, allow_any_client=True, controller=controller, db_path=tmp_path / "loop.db", scheduled_backups=True
+    )
+    with TestClient(app) as client:
+        listing = {}
+        for _ in range(50):
+            listing = client.get("/api/backups").json()
+            # Il primo backup e subito dopo la prima verifica
+            if listing["verify"]:
+                break
+            time.sleep(0.1)
+        # Il notturno della notte scorsa, recuperato ora: si chiama Automatico (salvo prove fatte alle 3)
+        assert [b["kind_label"] for b in listing["backups"]] in (["Automatico"], ["Notturno"])
+        assert listing["verify"]["ok"] and listing["verify"]["backups"] == 1
+
+
+async def test_late_nightly_is_called_automatic(plant):
+    now = datetime.now(tz=UTC)
+    await plant.backups.set_policy({"night": (now - timedelta(hours=2)).astimezone().strftime("%H:%M")}, "admin")
+    made = await plant.backups.run_scheduled(plant.clients, now=now)
+    assert made["kind"] == "automatico" and made["summary"] == "Primo backup"

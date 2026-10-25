@@ -12,7 +12,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -71,6 +71,8 @@ RECOVER_LIMIT = timedelta(days=7)
 SYNC_INTERVAL = 15 * 60
 SYNC_RETRY = 60
 PRUNE_INTERVAL = 24 * 3600
+# Ogni quanto si guarda se è ora di un backup pianificato o della verifica
+BACKUP_TICK = 60
 
 
 class PersonIn(BaseModel):
@@ -260,6 +262,7 @@ DASHBOARD_WIDGETS = (
     "scadenze",
     "da_registrare",
     "impianto",
+    "backup",
 )
 SETTING_DASHBOARD = "dashboard_layout:"
 CAMERA_NAMES_TTL = 300
@@ -298,6 +301,20 @@ class BackupIn(BaseModel):
 
 class BackupLockIn(BaseModel):
     locked: bool
+
+
+class BackupPolicyIn(BaseModel):
+    auto: bool | None = None
+    frequency: Literal["ora", "6ore", "notte"] | None = None
+    night: str | None = Field(None, pattern=r"^([01]?\d|2[0-3]):[0-5]\d$")
+    before_changes: bool | None = None
+    keep_last: int | None = Field(None, ge=1, le=1000)
+    keep_daily: int | None = Field(None, ge=0, le=1000)
+    keep_weekly: int | None = Field(None, ge=0, le=1000)
+    keep_monthly: int | None = Field(None, ge=0, le=1000)
+    keep_yearly: int | None = Field(None, ge=0, le=100)
+    # Se le regole nuove eliminano dei backup serve la conferma: senza, la risposta dice solo quanti
+    confirm: bool = False
 
 
 class RestorePreviewIn(BaseModel):
@@ -349,15 +366,32 @@ def need(*perms: str, any_of: bool = False) -> Any:
 Admin = Annotated[AppUser, need("utenti")]
 
 
+def before_change(kind: str = "prima_modifica") -> Any:
+    """Dipendenza: backup prima di una modifica rischiosa, se è cambiato qualcosa. Va dopo il controllo dei
+    permessi; una serie di modifiche di seguito fa un solo backup."""
+
+    async def backup(request: Request) -> None:
+        state = request.app.state
+        await state.backups.before_change(
+            kind, request_user(request), _backup_clients(state), _offline_controllers(state)
+        )
+
+    return Depends(backup)
+
+
 def create_app(
     settings: Settings | None = None,
     allow_any_client: bool | None = None,
     controller: A1210Client | None = None,
     db_path: Path | str | None = None,
     home_assistant: HomeAssistant | None = None,
+    scheduled_backups: bool | None = None,
 ) -> FastAPI:
     if allow_any_client is None:
         allow_any_client = os.environ.get("AAM_ALLOW_ANY_CLIENT") == "1"
+    if scheduled_backups is None:
+        # I test li spengono: un backup che parte da solo cambierebbe notifiche e attività sotto i loro piedi
+        scheduled_backups = os.environ.get("AAM_SCHEDULED_BACKUPS", "1") != "0"
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -397,8 +431,11 @@ def create_app(
         await _start_runtime(app)
         maintenance = asyncio.create_task(_maintenance(app))
         health = asyncio.create_task(_health_loop(app))
+        tasks = [maintenance, health]
+        if scheduled_backups:
+            tasks.append(asyncio.create_task(_backup_loop(app)))
         yield
-        for task in (maintenance, health):
+        for task in tasks:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
@@ -574,6 +611,7 @@ def create_app(
             # Nomi e passaggi solo a chi può vedere anagrafica e registro
             "expiring": sorted(expiring, key=lambda e: e["valid_to"]) if user.can("persone") else [],
             "recent": db.list_events(limit=8) if user.can("registro") else [],
+            "backup": await asyncio.to_thread(request.app.state.backups.overview) if user.can("backup") else None,
             "system": {
                 "controller_online": request.app.state.monitor.controller_online,
                 "mqtt_connected": request.app.state.monitor.connected if request.app.state.mqtt else None,
@@ -800,6 +838,15 @@ def create_app(
         except VapixError as err:
             _LOGGER.warning("Gruppi non leggibili per l'importazione: %s", err)
             groups = []
+        if body.apply:
+            # Un'importazione cambia molte persone insieme: il backup si fa sempre, non una volta ogni tanto
+            await state.backups.before_change(
+                "prima_importazione",
+                request_user(request),
+                _backup_clients(state),
+                _offline_controllers(state),
+                window=False,
+            )
         return await import_persons(state.service, body.csv, groups, request_user(request), body.apply)
 
     @app.get("/api/audit", dependencies=[need("utenti")])
@@ -812,19 +859,19 @@ def create_app(
     async def groups(request: Request) -> dict:
         return await request.app.state.rules.list_groups()
 
-    @app.post("/api/groups", dependencies=[need("regole_modifica")])
+    @app.post("/api/groups", dependencies=[need("regole_modifica"), before_change()])
     async def create_group(body: GroupIn, request: Request) -> dict:
         return await request.app.state.rules.create_group(
             body.name, body.description, body.schedule, request_user(request)
         )
 
-    @app.put("/api/groups/{token:path}", dependencies=[need("regole_modifica")])
+    @app.put("/api/groups/{token:path}", dependencies=[need("regole_modifica"), before_change()])
     async def update_group(token: str, body: GroupIn, request: Request) -> dict:
         return await request.app.state.rules.update_group(
             token, body.name, body.description, body.schedule, request_user(request)
         )
 
-    @app.delete("/api/groups/{token:path}", dependencies=[need("regole_modifica")])
+    @app.delete("/api/groups/{token:path}", dependencies=[need("regole_modifica"), before_change()])
     async def delete_group(token: str, request: Request) -> dict:
         await request.app.state.rules.delete_group(token, request_user(request))
         return {"ok": True}
@@ -833,13 +880,13 @@ def create_app(
     async def schedules(request: Request) -> list[dict]:
         return await request.app.state.rules.list_schedules()
 
-    @app.post("/api/schedules", dependencies=[need("regole_modifica")])
+    @app.post("/api/schedules", dependencies=[need("regole_modifica"), before_change()])
     async def create_schedule(body: ScheduleIn, request: Request) -> dict:
         return await request.app.state.rules.create_schedule(
             body.name, body.description, [r.model_dump() for r in body.rules], body.holidays, request_user(request)
         )
 
-    @app.put("/api/schedules/{token:path}", dependencies=[need("regole_modifica")])
+    @app.put("/api/schedules/{token:path}", dependencies=[need("regole_modifica"), before_change()])
     async def update_schedule(token: str, body: ScheduleIn, request: Request) -> dict:
         return await request.app.state.rules.update_schedule(
             token,
@@ -850,7 +897,7 @@ def create_app(
             request_user(request),
         )
 
-    @app.delete("/api/schedules/{token:path}", dependencies=[need("regole_modifica")])
+    @app.delete("/api/schedules/{token:path}", dependencies=[need("regole_modifica"), before_change()])
     async def delete_schedule(token: str, request: Request) -> dict:
         await request.app.state.rules.delete_schedule(token, request_user(request))
         return {"ok": True}
@@ -859,17 +906,17 @@ def create_app(
     async def holidays(request: Request) -> list[dict]:
         return request.app.state.db.list_holidays()
 
-    @app.post("/api/holidays", dependencies=[need("regole_modifica")])
+    @app.post("/api/holidays", dependencies=[need("regole_modifica"), before_change()])
     async def add_holiday(body: HolidayIn, request: Request) -> dict:
         await request.app.state.rules.add_holidays([body.model_dump()], request_user(request))
         return {"ok": True}
 
-    @app.post("/api/holidays/italia", dependencies=[need("regole_modifica")])
+    @app.post("/api/holidays/italia", dependencies=[need("regole_modifica"), before_change()])
     async def add_italian_holidays(body: ItalianHolidaysIn, request: Request) -> dict:
         await request.app.state.rules.add_italian_holidays(body.year, request_user(request))
         return {"ok": True}
 
-    @app.delete("/api/holidays/{day}", dependencies=[need("regole_modifica")])
+    @app.delete("/api/holidays/{day}", dependencies=[need("regole_modifica"), before_change()])
     async def delete_holiday(day: str, request: Request) -> dict:
         await request.app.state.rules.delete_holiday(day, request_user(request))
         return {"ok": True}
@@ -888,15 +935,15 @@ def create_app(
     async def categories(request: Request) -> list[dict]:
         return request.app.state.rules.list_categories()
 
-    @app.post("/api/categories", dependencies=[need("regole_modifica")])
+    @app.post("/api/categories", dependencies=[need("regole_modifica"), before_change()])
     async def create_category(body: CategoryIn, request: Request) -> dict:
         return await request.app.state.rules.save_category(None, body.model_dump(), request_user(request))
 
-    @app.put("/api/categories/{category_id}", dependencies=[need("regole_modifica")])
+    @app.put("/api/categories/{category_id}", dependencies=[need("regole_modifica"), before_change()])
     async def update_category(category_id: int, body: CategoryIn, request: Request) -> dict:
         return await request.app.state.rules.save_category(category_id, body.model_dump(), request_user(request))
 
-    @app.delete("/api/categories/{category_id}", dependencies=[need("regole_modifica")])
+    @app.delete("/api/categories/{category_id}", dependencies=[need("regole_modifica"), before_change()])
     async def delete_category(category_id: int, request: Request) -> dict:
         await request.app.state.rules.delete_category(category_id, request_user(request))
         return {"ok": True}
@@ -1145,7 +1192,7 @@ def create_app(
                 state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
         return {"ok": True}
 
-    @app.delete("/api/controllers/{controller_id}", dependencies=[need("impianti")])
+    @app.delete("/api/controllers/{controller_id}", dependencies=[need("impianti"), before_change()])
     async def delete_controller(controller_id: int, request: Request) -> dict:
         request.app.state.installation.delete_controller(controller_id, request_user(request))
         await reload_runtime(request.app)
@@ -1178,7 +1225,7 @@ def create_app(
         await reload_runtime(request.app)
         return result
 
-    @app.delete("/api/doors/{door_id}", dependencies=[need("impianti")])
+    @app.delete("/api/doors/{door_id}", dependencies=[need("impianti"), before_change()])
     async def delete_door(door_id: int, request: Request) -> dict:
         request.app.state.rules.check_place_unused("door", door_id)
         request.app.state.installation.delete_door(door_id, request_user(request))
@@ -1196,36 +1243,36 @@ def create_app(
             item["active"] = ports.get(item["port"]) if item["port"] is not None else None
         return data
 
-    @app.put("/api/programming/doors/{token:path}", dependencies=[need("impianti")])
+    @app.put("/api/programming/doors/{token:path}", dependencies=[need("impianti"), before_change()])
     async def program_door(token: str, body: HardwareDoorIn, request: Request) -> dict:
         await request.app.state.programming.update_door(token, body.model_dump(), request_user(request))
         return {"ok": True}
 
-    @app.put("/api/programming/readers/{token:path}", dependencies=[need("impianti")])
+    @app.put("/api/programming/readers/{token:path}", dependencies=[need("impianti"), before_change()])
     async def program_reader(token: str, body: HardwareReaderIn, request: Request) -> dict:
         await request.app.state.programming.update_reader(token, body.model_dump(), request_user(request))
         return {"ok": True}
 
-    @app.put("/api/programming/inputs/{io}", dependencies=[need("impianti")])
+    @app.put("/api/programming/inputs/{io}", dependencies=[need("impianti"), before_change()])
     async def program_input(io: str, body: ControllerInputIn, request: Request) -> dict:
         saved = await request.app.state.programming.update_input(io, body.model_dump(), request_user(request))
         # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
         await request.app.state.bridge.publish_input_names()
         return saved
 
-    @app.put("/api/programming/access-points/{token:path}", dependencies=[need("impianti")])
+    @app.put("/api/programming/access-points/{token:path}", dependencies=[need("impianti"), before_change()])
     async def program_access_point(token: str, body: HardwareAccessPointIn, request: Request) -> dict:
         data = {k: v for k, v in body.model_dump().items() if v is not None}
         await request.app.state.programming.update_access_point(token, data, request_user(request))
         return {"ok": True}
 
-    @app.put("/api/programming/links", dependencies=[need("impianti")])
+    @app.put("/api/programming/links", dependencies=[need("impianti"), before_change()])
     async def program_links(body: LinksIn, request: Request) -> dict:
         links = [link.model_dump() for link in body.links]
         changed = await request.app.state.programming.set_links(links, request_user(request))
         return {"changed": changed}
 
-    @app.post("/api/programming/changes/{change_id}/undo", dependencies=[need("impianti")])
+    @app.post("/api/programming/changes/{change_id}/undo", dependencies=[need("impianti"), before_change()])
     async def undo_change(change_id: int, request: Request) -> dict:
         if await request.app.state.programming.undo(change_id, request_user(request)) == "input":
             await request.app.state.bridge.publish_input_names()
@@ -1254,7 +1301,19 @@ def create_app(
     @app.post("/api/backups", dependencies=[need("backup")])
     async def create_backup(body: BackupIn, request: Request) -> dict:
         state = request.app.state
-        return await state.backups.create("manuale", body.name, request_user(request), _backup_clients(state))
+        return await state.backups.create(
+            "manuale", body.name, request_user(request), _backup_clients(state), offline=_offline_controllers(state)
+        )
+
+    @app.put("/api/backups/policy")
+    async def backup_policy(body: BackupPolicyIn, request: Request, user: Admin) -> dict:
+        """Backup automatico e ritenzione. Regole che eliminano backup: prima la risposta dice quanti."""
+        values = body.model_dump(exclude_none=True, exclude={"confirm"})
+        return await request.app.state.backups.set_policy(values, user.label, body.confirm)
+
+    @app.post("/api/backups/verify", dependencies=[need("backup")])
+    async def verify_backups(request: Request) -> dict:
+        return await request.app.state.backups.verify_now()
 
     @app.get("/api/backups/{backup_id}/compare", dependencies=[need("backup")])
     async def compare_backup(request: Request, backup_id: str, other: str = "precedente", part: str = "") -> dict:
@@ -1293,7 +1352,9 @@ def create_app(
         label = manifest.get("name") or _local_text(manifest["created_at"])
         # Con la data e non con il nome: "Prima del ripristino di Prima del ripristino di …" non si legge
         name = f"Prima del ripristino del backup del {_local_text(manifest['created_at'])}"
-        before = await state.backups.create("prima_ripristino", name, user.label, _backup_clients(state))
+        before = await state.backups.create(
+            "prima_ripristino", name, user.label, _backup_clients(state), offline=_offline_controllers(state)
+        )
         _, current = await asyncio.to_thread(state.backups.load, before["id"])
         stale = {k for k, info in before["parts"].items() if info.get("stale")}
         current = {k: v for k, v in current.items() if k not in stale}
@@ -1567,6 +1628,7 @@ def _current_notifications(state) -> list[dict]:
         controllers=_controllers_health(state),
         missing=_missing_summary(state.db),
         backup=state.backups.last_error(),
+        backup_verify=state.backups.last_verify(),
     )
 
 
@@ -1730,6 +1792,45 @@ def _controllers_health(state) -> list[dict]:
             }
         )
     return result
+
+
+def _offline_controllers(state) -> dict[int, str]:
+    """Controller da non leggere per il backup: irraggiungibili per il controllo di stato (inutile aspettarli)
+    o cambiati e non ancora confermati (la loro configurazione non va mescolata con quella del vecchio)."""
+    offline: dict[int, str] = {}
+    for row in state.db.list_controllers():
+        health = state.health.states.get(row["id"])
+        if row.get("identity_change"):
+            offline[row["id"]] = "controller cambiato, in attesa di conferma"
+        elif health and health.unreachable:
+            offline[row["id"]] = f"non raggiungibile ({health.error or 'nessuna risposta'})"
+    return offline
+
+
+async def _backup_loop(app: FastAPI) -> None:
+    """Backup all'aggiornamento dell'add-on, backup pianificati e verifica giornaliera dei file."""
+    state = app.state
+    with contextlib.suppress(TimeoutError):
+        # Prima il controllo di stato: dice quali controller non rispondono o sono cambiati
+        await asyncio.wait_for(state.health_ready.wait(), HEALTH_INTERVAL)
+    try:
+        if made := await state.backups.after_update(_backup_clients(state), _offline_controllers(state)):
+            _LOGGER.info("Backup dopo l'aggiornamento: %s", made["summary"])
+    except BackupError as err:
+        _LOGGER.warning("Backup dopo l'aggiornamento non riuscito: %s", err)
+    while True:
+        try:
+            if made := await state.backups.run_scheduled(_backup_clients(state), _offline_controllers(state)):
+                _LOGGER.debug("Backup %s: %s", made["kind"], made["summary"])
+            if state.backups.verify_due():
+                result = await state.backups.verify_now()
+                if not result["ok"]:
+                    _LOGGER.error("Verifica dei backup: %s", "; ".join(result["errors"]))
+        except BackupError as err:
+            _LOGGER.warning("Backup pianificato non riuscito: %s", err)
+        except Exception:  # noqa: BLE001 - si riprova al giro successivo
+            _LOGGER.exception("Backup pianificato non riuscito")
+        await asyncio.sleep(BACKUP_TICK)
 
 
 def _backup_clients(state) -> dict[int, object]:

@@ -9,6 +9,11 @@ poco più di uno, e confrontare due backup vuol dire confrontare le loro parti.
 
 Restano fuori le password degli account del controller (non si possono leggere), la chiave privata del
 certificato e il firmware (se ne annota la versione); registro eventi e foto sono nel backup di Home Assistant.
+
+Dalla 0.20 i backup si fanno anche da soli: ogni ora (o ogni 6 ore) se è cambiato qualcosa, uno ogni notte
+comunque, prima delle modifiche rischiose e dopo un aggiornamento dell'add-on. La ritenzione segue le regole di
+restic forget (ultimi N, poi il più recente di ogni giorno, settimana, mese e anno); i bloccati restano sempre.
+Una verifica al giorno rilegge tutte le parti e ne ricontrolla l'impronta.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ import json
 import logging
 import os
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .db import Database, now_iso
@@ -34,7 +39,17 @@ FORMAT = 1
 BACKUP_DIR = "backup"
 PARTS_DIR = "parti"
 COMMON = "comuni"
-KINDS = {"manuale": "Manuale", "automatico": "Automatico", "prima_ripristino": "Prima del Ripristino"}
+KINDS = {
+    "manuale": "Manuale",
+    "automatico": "Automatico",
+    "notturno": "Notturno",
+    "prima_modifica": "Prima di una Modifica",
+    "prima_importazione": "Prima dell'Importazione",
+    "aggiornamento": "Aggiornamento",
+    "prima_ripristino": "Prima del Ripristino",
+}
+# Backup chiesti da una persona: finiscono nell'attività degli utenti (gli altri sarebbero decine al giorno)
+AUDITED_KINDS = ("manuale", "prima_ripristino")
 ID_PATTERN = re.compile(r"^\d{8}-\d{6}(?:-\d+)?$")
 HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 NAME_MAX = 80
@@ -43,6 +58,40 @@ SETTINGS_KEPT = ("default_group", "default_category", "notifications")
 SETTINGS_PREFIXES = ("dashboard_layout:",)
 # Ultimo backup non riuscito o incompleto (JSON): diventa un guasto finché un backup non riesce
 SETTING_ERROR = "backup_error"
+SETTING_POLICY = "backup_policy"
+SETTING_VERIFY = "backup_verify"
+
+# Frequenza del backup automatico: etichetta e ore tra un controllo e l'altro (None: solo quello notturno)
+FREQUENCIES = {
+    "ora": ("Ogni Ora Se Cambiato", 1),
+    "6ore": ("Ogni 6 Ore Se Cambiato", 6),
+    "notte": ("Solo Notturno", None),
+}
+DEFAULT_POLICY = {
+    "auto": True,
+    "frequency": "ora",
+    "night": "03:00",
+    "before_changes": True,
+    "keep_last": 24,
+    "keep_daily": 14,
+    "keep_weekly": 8,
+    "keep_monthly": 12,
+    "keep_yearly": 3,
+}
+# Regole di ritenzione: chiave della politica, etichetta e "periodo" di ogni backup (ora locale)
+KEEP_RULES = (
+    ("keep_daily", "Giornaliero", lambda t: t.strftime("%Y-%m-%d")),
+    ("keep_weekly", "Settimanale", lambda t: t.strftime("%G-%V")),
+    ("keep_monthly", "Mensile", lambda t: t.strftime("%Y-%m")),
+    ("keep_yearly", "Annuale", lambda t: t.strftime("%Y")),
+)
+# Prima delle modifiche: un backup per "sessione", non uno per ogni clic
+CHANGE_WINDOW = timedelta(minutes=10)
+# Dopo un backup non riuscito il prossimo tentativo pianificato aspetta un po'
+RETRY_AFTER = timedelta(minutes=15)
+VERIFY_EVERY = timedelta(hours=24)
+# Un notturno fatto molto dopo la sua ora (add-on spento di notte, primo avvio) si chiama Automatico
+NIGHT_LATE = timedelta(hours=1)
 
 # Sezioni di un confronto: (singolare, plurale, femminile)
 SECTIONS = {
@@ -209,18 +258,27 @@ class BackupStore:
 
     def list(self) -> list[dict]:
         """Backup dal più recente; un indice illeggibile si salta (e si segnala nel log)."""
+        items, unreadable = self.scan()
+        for name in unreadable:
+            _LOGGER.warning("Indice di backup illeggibile: %s", name)
+        return items
+
+    def scan(self) -> tuple[list[dict], list[str]]:
+        """Backup dal più recente e nomi degli indici illeggibili."""
         if not self.root.exists():
-            return []
-        items = []
+            return [], []
+        items, unreadable = [], []
         for path in self.root.glob("*.json"):
             try:
                 manifest = json.loads(path.read_text())
             except (OSError, ValueError):
-                _LOGGER.warning("Indice di backup illeggibile: %s", path.name)
+                unreadable.append(path.name)
                 continue
             if isinstance(manifest, dict) and manifest.get("id") == path.stem:
                 items.append(manifest)
-        return sorted(items, key=lambda m: (m.get("created_at") or "", m["id"]), reverse=True)
+            else:
+                unreadable.append(path.name)
+        return sorted(items, key=lambda m: (m.get("created_at") or "", m["id"]), reverse=True), unreadable
 
     def get(self, backup_id: str) -> dict:
         path = self._path(backup_id)
@@ -232,7 +290,11 @@ class BackupStore:
             raise BackupError("indice del backup rovinato") from err
 
     def delete(self, backup_id: str) -> None:
-        self._path(backup_id).unlink(missing_ok=True)
+        self.remove([backup_id])
+
+    def remove(self, backup_ids: list[str]) -> None:
+        for backup_id in backup_ids:
+            self._path(backup_id).unlink(missing_ok=True)
         self.collect_garbage()
 
     def collect_garbage(self) -> int:
@@ -868,6 +930,56 @@ def summary_text(groups: list[dict], limit: int = 6) -> str:
     return ", ".join(phrases[:limit]) + ("…" if len(phrases) > limit else "")
 
 
+def _parsed(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def night_time(value: str) -> tuple[int, int]:
+    """Ora e minuti del backup notturno da "HH:MM"."""
+    match = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(value or ""))
+    if not match:
+        raise BackupError("orario del backup notturno non valido (HH:MM)")
+    return int(match[1]), int(match[2])
+
+
+def retention(items: list[dict], policy: dict) -> dict[str, list[str]]:
+    """Perché si tiene ogni backup, con le regole di restic forget; senza motivi il backup è scaduto.
+
+    items dal più recente. Ultimi N; poi, per gli ultimi N giorni (settimane, mesi, anni) che hanno backup, il più
+    recente di ciascuno. I bloccati restano sempre e non occupano i posti delle regole.
+    """
+    reasons: dict[str, list[str]] = {m["id"]: ["Bloccato"] if m.get("locked") else [] for m in items}
+    free = [m for m in items if not m.get("locked")]
+    for manifest in free[: max(1, int(policy.get("keep_last") or 0))]:
+        reasons[manifest["id"]].append("Ultimi")
+    moments = {m["id"]: (_parsed(m.get("created_at")) or datetime.min.replace(tzinfo=UTC)).astimezone() for m in free}
+    for key, label, period in KEEP_RULES:
+        wanted = int(policy.get(key) or 0)
+        seen: set[str] = set()
+        for manifest in free:
+            if len(seen) >= wanted:
+                break
+            bucket = period(moments[manifest["id"]])
+            if bucket not in seen:
+                seen.add(bucket)
+                reasons[manifest["id"]].append(label)
+    return reasons
+
+
+def policy_text(policy: dict) -> str:
+    auto = FREQUENCIES[policy["frequency"]][0].lower() if policy["auto"] else "disattivato"
+    return (
+        f"automatico {auto}, notturno alle {policy['night']}, prima delle modifiche "
+        f"{'sì' if policy['before_changes'] else 'no'}, si tengono {policy['keep_last']} ultimi, "
+        f"{policy['keep_daily']} giornalieri, {policy['keep_weekly']} settimanali, {policy['keep_monthly']} mensili, "
+        f"{policy['keep_yearly']} annuali"
+    )
+
+
 def clean_name(value: str | None) -> str:
     name = " ".join(str(value or "").split())
     if len(name) > NAME_MAX:
@@ -901,6 +1013,11 @@ class BackupService:
         self.app_version = app_version
         # Un backup alla volta: la pulizia delle parti non deve togliere quelle di un backup in corso
         self.lock = asyncio.Lock()
+        # Ultimo controllo periodico che non ha trovato modifiche, ultimo backup prima di una modifica e ultimo
+        # backup pianificato non riuscito: decidono quando riprovare
+        self.checked_at: datetime | None = None
+        self.change_checked_at: datetime | None = None
+        self.failed_at: datetime | None = None
 
     def _parts_of(self, manifest: dict) -> dict[str, dict]:
         return {key: self.store.read_part(info["hash"]) for key, info in (manifest.get("parts") or {}).items()}
@@ -909,10 +1026,14 @@ class BackupService:
         items = self.store.list()
         return items[0] if items else None
 
-    async def snapshot(self, clients: dict[int, object]) -> tuple[dict[str, dict], dict[str, str]]:
+    async def snapshot(
+        self, clients: dict[int, object], offline: dict[int, str] | None = None
+    ) -> tuple[dict[str, dict], dict[str, str]]:
         """Fotografia dello stato attuale ed errori per parte. clients: controller → client con cui leggerlo.
         Un controller che non risponde non ha la sua parte; le fasce orarie dei Dati Comuni si leggono dal primo
-        controller che risponde, altrimenti si tengono quelle dell'ultimo backup."""
+        controller che risponde, altrimenti si tengono quelle dell'ultimo backup.
+        offline: controller da non leggere, con il motivo (irraggiungibile per il controllo di stato, da non
+        aspettare, o cambiato e non ancora confermato, da non mescolare con quello vecchio)."""
         parts: dict[str, dict] = {}
         errors: dict[str, str] = {}
         schedules = None
@@ -921,6 +1042,9 @@ class BackupService:
             if not row["host"] or client is None:
                 continue
             key = f"controller:{row['id']}"
+            if offline and row["id"] in offline:
+                errors[key] = f"{row['name']}: {offline[row['id']]}"
+                continue
             try:
                 part = await controller_snapshot(self.db, row, client)
             except VapixError as err:
@@ -947,16 +1071,23 @@ class BackupService:
         return [{"token": s["token"], "Name": s["name"], "Description": s["description"]} for s in common["schedules"]]
 
     async def create(
-        self, kind: str, name: str, user: str, clients: dict[int, object], skip_unchanged: bool = False
+        self,
+        kind: str,
+        name: str,
+        user: str,
+        clients: dict[int, object],
+        skip_unchanged: bool = False,
+        offline: dict[int, str] | None = None,
     ) -> dict | None:
         """Nuovo backup. Con skip_unchanged non si crea se è tutto uguale all'ultimo (restituisce None).
-        Un controller che non risponde tiene la parte dell'ultimo backup, segnata: il backup è incompleto."""
+        Un controller che non risponde tiene la parte dell'ultimo backup, segnata: il backup è incompleto.
+        Dopo ogni backup si tolgono quelli scaduti secondo la ritenzione."""
         if kind not in KINDS:
             raise BackupError("tipo di backup sconosciuto")
         name = clean_name(name)
         async with self.lock:
             try:
-                parts, errors = await self.snapshot(clients)
+                parts, errors = await self.snapshot(clients, offline)
                 last = self.latest()
                 try:
                     last_parts = self._parts_of(last) if last else {}
@@ -977,6 +1108,9 @@ class BackupService:
                 manifest["errors"] = list(errors.values())
                 hashes = {k: v["hash"] for k, v in manifest["parts"].items()}
                 if skip_unchanged and last and hashes == {k: v["hash"] for k, v in last["parts"].items()}:
+                    if not errors:
+                        # Lo stato attuale è già tutto nell'ultimo backup: un errore vecchio non vale più
+                        self.db.set_setting(SETTING_ERROR, "")
                     return None
                 if last:
                     groups = compare_parts(last_parts, parts)
@@ -987,6 +1121,7 @@ class BackupService:
                 else:
                     manifest["summary"] = "Primo backup"
                 self.store.save(manifest)
+                expired = self._prune()
             except OSError as err:
                 self._note_error(f"backup non salvato: {err}")
                 raise BackupError(f"backup non salvato: {err.strerror or err}") from err
@@ -994,8 +1129,11 @@ class BackupService:
             self._note_error("; ".join(manifest["errors"]), manifest["id"])
         else:
             self.db.set_setting(SETTING_ERROR, "")
-        label = manifest["name"] or KINDS[kind]
-        self.db.add_audit(user, "backup creato", f"{label}: {manifest['summary']}")
+        if expired:
+            _LOGGER.info("Backup scaduti eliminati: %s", ", ".join(expired))
+        if kind in AUDITED_KINDS:
+            label = manifest["name"] or KINDS[kind]
+            self.db.add_audit(user, "backup creato", f"{label}: {manifest['summary']}")
         return manifest
 
     def _note_error(self, error: str, backup_id: str = "") -> None:
@@ -1008,13 +1146,216 @@ class BackupService:
             return None
         return value if isinstance(value, dict) else None
 
-    def listing(self) -> dict:
+    def listing(self, now: datetime | None = None) -> dict:
         items = self.store.list()
+        policy = self.policy()
+        reasons = retention(items, policy)
         return {
-            "backups": [{**m, "kind_label": KINDS.get(m.get("kind"), m.get("kind"))} for m in items],
+            "backups": [
+                {**m, "kind_label": KINDS.get(m.get("kind"), m.get("kind")), "keep": reasons[m["id"]]} for m in items
+            ],
             "size": self.store.usage(),
             "error": self.last_error(),
+            "policy": policy,
+            "next": self.next_run(now or datetime.now(tz=UTC), items),
+            "verify": self.last_verify(),
         }
+
+    def overview(self, now: datetime | None = None) -> dict:
+        """Riassunto per il cruscotto: ultimo backup, automatico, prossimo e verifica."""
+        items = self.store.list()
+        policy = self.policy()
+        last = items[0] if items else None
+        return {
+            "last": {**_brief(last), "summary": last.get("summary", ""), "errors": last.get("errors", [])}
+            if last
+            else None,
+            "count": len(items),
+            "auto": policy["auto"],
+            "frequency": FREQUENCIES[policy["frequency"]][0],
+            "next": self.next_run(now or datetime.now(tz=UTC), items),
+            "verify": self.last_verify(),
+            "error": self.last_error(),
+        }
+
+    # Politica: backup automatico e ritenzione
+
+    def policy(self) -> dict:
+        try:
+            saved = json.loads(self.db.get_setting(SETTING_POLICY) or "{}")
+        except ValueError:
+            saved = {}
+        policy = dict(DEFAULT_POLICY)
+        if isinstance(saved, dict):
+            policy.update({k: v for k, v in saved.items() if k in DEFAULT_POLICY})
+        if policy["frequency"] not in FREQUENCIES:
+            policy["frequency"] = DEFAULT_POLICY["frequency"]
+        return policy
+
+    def expiring_with(self, policy: dict) -> list[dict]:
+        """Backup che con questa politica scadrebbero subito."""
+        items = self.store.list()
+        reasons = retention(items, policy)
+        return [m for m in items if not reasons[m["id"]]]
+
+    async def set_policy(self, values: dict, user: str, confirm: bool = False) -> dict:
+        """Salva la politica. Se elimina dei backup serve la conferma: senza, dice solo quanti."""
+        policy = {**self.policy(), **{k: v for k, v in values.items() if k in DEFAULT_POLICY}}
+        if policy["frequency"] not in FREQUENCIES:
+            raise BackupError("frequenza sconosciuta")
+        night_time(policy["night"])
+        policy["keep_last"] = max(1, int(policy["keep_last"]))
+        async with self.lock:
+            expiring = self.expiring_with(policy)
+            if expiring and not confirm:
+                return {"saved": False, "would_remove": len(expiring), "policy": policy}
+            before = self.policy()
+            self.db.set_setting(SETTING_POLICY, json.dumps(policy))
+            removed = self._prune()
+        changed = [k for k in DEFAULT_POLICY if before[k] != policy[k]]
+        if changed:
+            self.db.add_audit(user, "impostazioni backup", policy_text(policy))
+        return {"saved": True, "removed": len(removed), "policy": policy}
+
+    def _prune(self) -> list[str]:
+        """Toglie i backup scaduti (da chiamare con il lock preso)."""
+        items = self.store.list()
+        reasons = retention(items, self.policy())
+        expired = [m["id"] for m in items if not reasons[m["id"]]]
+        if expired:
+            self.store.remove(expired)
+        return expired
+
+    # Pianificazione
+
+    def next_run(self, now: datetime, items: list[dict] | None = None) -> dict | None:
+        """Prossimo backup pianificato: notturno (si fa comunque) o controllo periodico (solo se è cambiato)."""
+        policy = self.policy()
+        if not policy["auto"]:
+            return None
+        items = self.store.list() if items is None else items
+        local = now.astimezone()
+        hour, minute = night_time(policy["night"])
+        night = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if night > local:
+            night -= timedelta(days=1)
+        # La notte è coperta da un backup qualsiasi fatto dopo l'orario notturno
+        latest = _parsed(items[0].get("created_at")) if items else None
+        if latest and latest >= night:
+            night += timedelta(days=1)
+        runs = [{"kind": "notturno", "at": night}]
+        hours = FREQUENCIES[policy["frequency"]][1]
+        if hours:
+            moments = [t for t in (_parsed(items[0]["created_at"]) if items else None, self.checked_at) if t]
+            runs.append({"kind": "automatico", "at": max(moments) + timedelta(hours=hours) if moments else local})
+        if self.failed_at:
+            runs = [{**r, "at": max(r["at"], self.failed_at + RETRY_AFTER)} for r in runs]
+        run = min(runs, key=lambda r: (r["at"], r["kind"] != "notturno"))
+        return {"kind": run["kind"], "at": run["at"].astimezone(UTC).isoformat(timespec="seconds")}
+
+    async def run_scheduled(
+        self, clients: dict[int, object], offline: dict[int, str] | None = None, now: datetime | None = None
+    ) -> dict | None:
+        """Fa il backup pianificato se è ora. Il controllo periodico senza modifiche non crea niente."""
+        now = now or datetime.now(tz=UTC)
+        due = self.next_run(now)
+        if not due or _parsed(due["at"]) > now:
+            return None
+        kind = due["kind"]
+        periodic = kind == "automatico"
+        if kind == "notturno" and now - _parsed(due["at"]) > NIGHT_LATE:
+            kind = "automatico"
+        try:
+            manifest = await self.create(kind, "", "", clients, skip_unchanged=periodic, offline=offline)
+        except BackupError:
+            self.failed_at = now
+            raise
+        self.failed_at = None
+        if manifest is None:
+            self.checked_at = now
+        return manifest
+
+    async def before_change(
+        self,
+        kind: str,
+        user: str,
+        clients: dict[int, object],
+        offline: dict[int, str] | None = None,
+        window: bool = True,
+    ) -> dict | None:
+        """Backup prima di una modifica rischiosa, se è cambiato qualcosa dall'ultimo. Con window, uno ogni
+        CHANGE_WINDOW: una serie di modifiche di seguito ne fa uno solo. Se non riesce la modifica va avanti."""
+        if not self.policy()["before_changes"]:
+            return None
+        now = datetime.now(tz=UTC)
+        if window and self.change_checked_at and now - self.change_checked_at < CHANGE_WINDOW:
+            return None
+        self.change_checked_at = now
+        try:
+            return await self.create(kind, "", user, clients, skip_unchanged=True, offline=offline)
+        except BackupError as err:
+            _LOGGER.warning("Backup prima della modifica non riuscito: %s", err)
+            return None
+
+    async def after_update(self, clients: dict[int, object], offline: dict[int, str] | None = None) -> dict | None:
+        """All'avvio di una versione nuova dell'add-on: un backup che segna il punto dell'aggiornamento."""
+        latest = self.latest()
+        if not latest or latest.get("app_version") == self.app_version or not self.policy()["before_changes"]:
+            return None
+        return await self.create(
+            "aggiornamento", f"Versione {self.app_version}", "", clients, skip_unchanged=False, offline=offline
+        )
+
+    # Verifica
+
+    def verify(self) -> dict:
+        """Rilegge ogni parte di ogni backup e ne ricontrolla l'impronta (da chiamare con il lock preso)."""
+        items, unreadable = self.store.scan()
+        checked: dict[str, str] = {}
+        errors = [f"indice {name} illeggibile" for name in unreadable]
+        damaged = 0
+        for manifest in items:
+            problems = []
+            for info in (manifest.get("parts") or {}).values():
+                digest = info.get("hash") or ""
+                if digest not in checked:
+                    try:
+                        self.store.read_part(digest)
+                        checked[digest] = ""
+                    except BackupError as err:
+                        checked[digest] = str(err)
+                if checked[digest]:
+                    problems.append(checked[digest])
+            if problems:
+                damaged += 1
+                title = manifest.get("name") or KINDS.get(manifest.get("kind"), "")
+                errors.append(f"backup del {_when(manifest['created_at'])} ({title}): {problems[0]}")
+        result = {
+            "at": now_iso(),
+            "ok": not errors,
+            "backups": len(items),
+            "parts": len(checked),
+            "damaged": damaged + len(unreadable),
+            "errors": errors[:20],
+        }
+        self.db.set_setting(SETTING_VERIFY, json.dumps(result))
+        return result
+
+    async def verify_now(self) -> dict:
+        async with self.lock:
+            return await asyncio.to_thread(self.verify)
+
+    def last_verify(self) -> dict | None:
+        try:
+            value = json.loads(self.db.get_setting(SETTING_VERIFY) or "null")
+        except ValueError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def verify_due(self, now: datetime | None = None) -> bool:
+        last = self.last_verify()
+        at = _parsed(last.get("at")) if last else None
+        return at is None or (now or datetime.now(tz=UTC)) - at >= VERIFY_EVERY
 
     def get(self, backup_id: str) -> dict:
         return self.store.get(backup_id)

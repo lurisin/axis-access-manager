@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.20.0
+
+Backup automatico.
+
+- **Backup automatico**, attivo di serie. Ogni ora l'app guarda se è cambiato qualcosa e solo in quel caso crea un backup (si può scegliere ogni 6 ore o solo di notte). Alle 03:00 fa comunque un backup notturno, anche se non è cambiato niente. Tutto si imposta in **Impostazioni → Backup**.
+- **Backup prima delle modifiche rischiose**:
+  - prima di programmare porte, lettori, ingressi e punti di accesso, e prima di cambiare tipologie, fasce orarie e festività (uno ogni 10 minuti per una serie di modifiche);
+  - prima di ogni importazione CSV;
+  - subito dopo ogni aggiornamento dell'add-on.
+- **Ritenzione come restic**: si tengono gli ultimi 24, poi il più recente di ogni giorno per 14 giorni, di ogni settimana per 8 settimane, di ogni mese per 12 mesi e di ogni anno per 3 anni. I bloccati restano sempre. Se cambi le regole in modo che dei backup scadano subito, l'app chiede conferma dicendo quanti sono.
+- **Verifica giornaliera** dei file dei backup, e a richiesta con **Verifica Ora**. I backup rovinati diventano il guasto "Backup Rovinati", con l'elenco nella pagina Backup.
+- **Pagina Backup** con lo stato in cima: frequenza, prossimo backup e ultima verifica. Passando il mouse sulla data di un backup si vede perché si tiene.
+- **Riquadro Backup** per il cruscotto: ultimo backup, prossimo automatico e verifica.
+- **Controller irraggiungibili o cambiati**: il backup non aspetta i controller che il controllo di stato dà per irraggiungibili, e non salva la configurazione di un apparecchio diverso non ancora confermato. Per quel controller tiene la configurazione del backup precedente.
+- Nell'attività degli utenti finiscono solo i backup chiesti da una persona (manuali e prima di un ripristino), non quelli automatici.
+
 ## 0.19.5
 
 - **Registro in ordine di orario**: gli eventi recuperati dal controller dopo un'interruzione (per esempio Mosquitto fermo con l'add-on acceso) finivano in cima al Registro perché arrivati per ultimi. Ora Registro, Notifiche, Ultimi Eventi, la pagina della porta e quella della persona li mostrano al loro orario, con il segno "recuperato". I separatori Oggi/Ieri restano interi, "Carica Altri" prosegue dall'ultimo evento mostrato senza saltarne o ripeterne e l'export CSV segue lo stesso ordine.
