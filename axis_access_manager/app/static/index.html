@@ -176,7 +176,56 @@
     .sch-node b { white-space: normal; overflow-wrap: anywhere; font-size: 13px; line-height: 1.25; }
     .sch-meta { white-space: normal; font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   }
-  .item.notif.seen .title { color: var(--muted); font-weight: 500; }
+  /* Notifiche: il colore dice solo la gravità (riquadro dell'icona, etichetta, pallino); righe e sfondi neutri */
+  .n-head input[type=search] { flex: 0 1 240px; }
+  .n-sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .n-sec-head h2 { font-size: 17px; font-weight: 600; }
+  .n-section { margin-bottom: 20px; }
+  .n-cards { display: flex; flex-direction: column; gap: 10px; }
+  .n-card { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 14px 16px; background: var(--surface);
+            border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .n-tile { width: 44px; height: 44px; border-radius: 10px; display: grid; place-items: center; flex: none;
+            background: var(--surface-2); color: var(--muted); }
+  .n-body { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .n-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .n-title b { font-size: 15px; font-weight: 600; }
+  .n-sev { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--muted); }
+  .n-line { font-size: 14px; }
+  .n-meta { font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .sev-crit .n-tile, .sev-crit .n-sev { background: var(--err-soft); color: var(--err); }
+  .sev-warn .n-tile, .sev-warn .n-sev { background: var(--warn-soft); color: var(--warn); }
+  .n-snap { width: 128px; height: 72px; border-radius: 8px; object-fit: cover; border: 1px solid var(--border); flex: none; cursor: zoom-in; background: var(--surface-2); }
+  .n-snap.none { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: var(--muted); font-size: 11px; cursor: help; }
+  .n-actions { display: flex; gap: 8px; flex: none; }
+  .n-empty { display: flex; align-items: center; gap: 10px; padding: 22px; border: 1px dashed var(--border-strong); border-radius: var(--radius); color: var(--muted); }
+  .n-empty svg { color: var(--ok); }
+  .n-log { padding-bottom: 8px; }
+  .n-chk { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; min-height: 32px; cursor: pointer; }
+  .n-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .n-tab { height: 36px; padding: 0 12px; font-size: 14px; gap: 8px; color: var(--muted); }
+  .n-tab span { font-size: 12px; font-variant-numeric: tabular-nums; }
+  .n-tab[aria-selected=true] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .n-table { min-width: 640px; }
+  .n-table td { vertical-align: middle; height: 46px; padding-top: 4px; padding-bottom: 4px; }
+  .n-table tbody tr { cursor: pointer; }
+  .n-table tbody tr:hover td, .n-table tbody tr:focus-visible td { background: var(--surface-2); }
+  .n-time { font-variant-numeric: tabular-nums; white-space: nowrap; width: 80px; }
+  .n-ev { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+  .n-unk { font-size: 12px; padding: 1px 6px; border-radius: 4px; background: var(--err-soft); color: var(--err); }
+  .n-reason { color: var(--muted); }
+  .n-state { font-size: 13px; font-weight: 600; color: var(--warn); white-space: nowrap; }
+  .n-go { width: 36px; color: var(--muted); padding-left: 0 !important; padding-right: 4px !important; }
+  .n-more { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 8px 0 4px; flex-wrap: wrap; }
+  @media (max-width: 860px) {
+    .n-head input[type=search] { flex: 1 1 100%; }
+    .n-actions { flex-basis: 100%; }
+    .n-actions > * { flex: 1; }
+    .n-snap { width: 100%; max-width: 360px; height: auto; aspect-ratio: 16/9; }
+    .n-snap.none { aspect-ratio: auto; height: 44px; flex-direction: row; gap: 6px; }
+    .n-card { gap: 10px 12px; padding: 12px 14px; }
+    .n-tile { width: 36px; height: 36px; align-self: flex-start; }
+    .n-body { flex: 1 1 0; }
+  }
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center; }
   .toolbar input[type=search] { flex: 1 1 220px; }
   .muted { color: var(--muted); }
@@ -682,7 +731,7 @@ async function loadSummary() {
     $("#offline-pill").hidden = true;
     const badges = [["#nav-unknown", s.unknown_cards], ["#nav-notif", s.notifications]];
     badges.forEach(([sel, n]) => { const b = $(sel); b.hidden = !n; b.textContent = n > 99 ? "99+" : n; });
-    $("#nav [data-route=notifiche]").title = s.notifications ? `Notifiche: ${plural(s.notifications, "urgente", "urgenti")}` : "Notifiche";
+    $("#nav [data-route=notifiche]").title = s.notifications ? `Notifiche: ${s.notifications} da gestire` : "Notifiche";
   } catch (err) {
     $("#offline-pill").hidden = false;
   }
@@ -1408,6 +1457,9 @@ function doorOptionGroups(doors, selected = "") {
   return Object.entries(groups).map(([place, list]) => `<optgroup label="${esc(place)}">${list.map((d) => `<option value="${esc(d.token)}" ${d.token === selected ? "selected" : ""}>${esc(d.name)}</option>`).join("")}</optgroup>`).join("");
 }
 function bindSnapshots(root) {
+  // #view resta lo stesso fra le pagine: un solo ascoltatore, altrimenti a ogni visita si apre una foto in più
+  if (root.dataset.snapBound) return;
+  root.dataset.snapBound = "1";
   root.addEventListener("click", (e) => {
     const img = e.target.closest("[data-snap]");
     if (img) { e.stopPropagation(); showImage(`api/events/${img.dataset.snap}/snapshot`, img.dataset.title); }
@@ -1663,35 +1715,185 @@ async function viewHolidays(body) {
 }
 
 // ---------- Notifiche ----------
-const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", mqtt: "refresh", unknown_card: "cardplus", expiring: "clock", denied: "block"};
+const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block"};
+const SEVERITY = {crit: "Critica", warn: "Media", low: "Bassa"};
+// Schede del registro delle notifiche: eventi che possono diventare una notifica
+const NOTIF_TABS = {tutte: ["Tutte", "negato,allarme,manomissione"], negati: ["Accessi Negati", "negato"], allarmi: ["Allarmi e Manomissioni", "allarme,manomissione"]};
+const NOTIF_PAGE = 50;
+const notifFilters = {q: "", door: "", tab: "tutte", onlyOpen: false};
+let notifData = null, notifEvents = [];
+// "oggi 13:34", "ieri 13:34" o "24/10 13:34"
+function dayTime(iso) {
+  const d = new Date(iso), today = new Date();
+  const yesterday = new Date(Date.now() - 86400000);
+  const day = d.toDateString() === today.toDateString() ? "oggi" : d.toDateString() === yesterday.toDateString() ? "ieri"
+    : d.toLocaleDateString("it-IT", {day: "2-digit", month: "2-digit"});
+  return `${day} ${fmtTime(iso)}`;
+}
+const notifSince = () => new Date(Date.now() - 86400000).toISOString();
+function notifCard(i) {
+  const ic = i.type === "door_alarm" && i.title.startsWith("Manomissione") ? "shield" : NOTIF_ICONS[i.type] || "bell";
+  const minutes = Math.max(1, Math.round((new Date(i.ts) - new Date(i.first_ts)) / 60000));
+  const meta = [
+    i.door ? esc(i.door) : "",
+    i.count > 1 ? `${i.count} tentativi in ${plural(minutes, "minuto", "minuti")}` : "",
+    i.count > 1 ? `${esc(dayTime(i.first_ts))} – ${esc(fmtTime(i.ts))}` : i.type === "expiring" ? "" : `<span title="${esc(fmtFull(i.ts))}">${esc(dayTime(i.ts))}</span>`,
+  ].filter(Boolean).join(" · ");
+  const link = i.link && (!i.link.startsWith("#impianti") || can("impianti")) && (i.link !== "#da-registrare" || can("persone")) ? i.link : "";
+  const details = i.event && can("registro") ? `<button type="button" data-n-event="${i.event}">Dettagli</button>`
+    : link ? `<a class="btn" href="${esc(link)}">Dettagli</a>` : "";
+  const snap = i.snapshot && can("registro")
+    ? `<img class="n-snap" loading="lazy" src="api/events/${i.snapshot}/snapshot" alt="istantanea" data-snap="${i.snapshot}" data-title="${esc(i.title + " · " + fmtFull(i.ts))}">`
+    : i.snapshot_error ? `<div class="n-snap none" title="${esc(i.snapshot_error)}">${icon("camera")}<span>Foto non scattata</span></div>` : "";
+  return `<article class="n-card sev-${i.severity}">
+    <div class="n-tile">${icon(ic)}</div>
+    <div class="n-body"><div class="n-title"><b>${esc(i.title)}</b><span class="n-sev">${SEVERITY[i.severity]}</span></div>
+      ${i.text ? `<div class="n-line">${esc(i.text)}</div>` : ""}${meta ? `<div class="n-meta">${meta}</div>` : ""}</div>
+    ${snap}
+    <div class="n-actions">${details}<button type="button" class="primary" data-seen="${esc(i.id)}">${icon("check")}Presa Visione</button></div>
+  </article>`;
+}
+function notifMatches(i) {
+  if (notifFilters.door && i.door_token !== notifFilters.door) return false;
+  const q = notifFilters.q.toLowerCase();
+  return !q || [i.title, i.text, i.door, i.card].some((x) => (x || "").toLowerCase().includes(q));
+}
+function renderNotifCards() {
+  const open = notifData.items.filter((i) => !i.seen);
+  const shown = open.filter(notifMatches);
+  $("#n-open").textContent = `· ${shown.length}`;
+  $("#n-all").hidden = !open.length;
+  $("#n-cards").innerHTML = shown.length ? shown.map(notifCard).join("")
+    : `<div class="n-empty">${icon("check")}${open.length ? "Nessuna notifica da gestire con questi filtri." : "Nessun evento da gestire. Tutto sotto controllo."}</div>`;
+  paintIcons($("#n-cards"));
+}
+// Evento → notifica a cui appartiene, per la colonna Stato del registro
+function notifOfEvent(id) {
+  return notifData.items.find((i) => i.events.includes(id));
+}
+function notifRow(e) {
+  const [label] = KINDS[e.kind] || [e.kind];
+  const n = notifOfEvent(e.id);
+  const unknown = e.kind === "negato" && !e.person_id && !e.person_name;
+  const who = e.person_name ? esc(e.person_name) : e.card ? `<code>${esc(e.card)}</code>` : '<span class="muted">—</span>';
+  return `<tr data-event="${e.id}" tabindex="0" title="${esc(fmtFull(e.ts))}">
+    <td class="n-time">${esc(new Date(e.ts).toDateString() === new Date().toDateString() ? fmtTime(e.ts) : dayTime(e.ts))}</td>
+    <td><span class="n-ev"><span class="dot ${e.kind === "negato" ? "warn" : "err"}"></span>${esc(label)}</span></td>
+    <td>${who}${unknown && e.card ? ' <span class="n-unk">sconosciuta</span>' : ""}</td>
+    <td class="n-reason">${esc(e.detail || "")}</td>
+    ${multiDoor() ? `<td>${esc(eventPlace(e))}</td>` : ""}
+    <td>${n ? (n.seen ? '<span class="muted small-text">Visto</span>' : '<span class="n-state">Da Gestire</span>') : '<span class="muted small-text" title="Non è diventato una notifica: tipo disattivato o già passato">—</span>'}</td>
+    <td class="n-go">${icon("arrow")}</td>
+  </tr>`;
+}
+function renderNotifRows() {
+  const rows = notifEvents.filter((e) => !notifFilters.onlyOpen || notifOfEvent(e.id)?.seen === false);
+  $("#n-rows").innerHTML = rows.map(notifRow).join("");
+  $("#n-table").hidden = !rows.length;
+  $("#n-norows").hidden = Boolean(rows.length);
+  paintIcons($("#n-rows"));
+}
+function notifParams(kinds) {
+  const p = new URLSearchParams({since: notifSince()});
+  if (kinds) p.set("kind", kinds);
+  if (notifFilters.q) p.set("q", notifFilters.q);
+  if (notifFilters.door) p.set("door", notifFilters.door);
+  return p;
+}
+async function loadNotifLog(more = false) {
+  if (!$("#n-rows")) return;
+  const p = notifParams(NOTIF_TABS[notifFilters.tab][1]);
+  p.set("limit", NOTIF_PAGE);
+  if (more && notifEvents.length) p.set("before_id", notifEvents[notifEvents.length - 1].id);
+  const [data, ...counts] = await Promise.all([api("api/events?" + p).catch(() => []),
+    ...(more ? [] : Object.values(NOTIF_TABS).map(([, kinds]) => api("api/events/count?" + notifParams(kinds)).then((r) => r.count).catch(() => 0)))]);
+  if (!$("#n-rows")) return;
+  notifEvents = more ? notifEvents.concat(data) : data;
+  if (!more) {
+    Object.keys(NOTIF_TABS).forEach((k, idx) => { $(`[data-n-tab="${k}"] span`).textContent = counts[idx]; });
+    const last = notifFilters.tab === "tutte" ? notifEvents[0] : null;
+    if (notifFilters.tab === "tutte" && !notifFilters.q && !notifFilters.door) {
+      $("#n-sub").textContent = counts[0] ? `Ultime 24 ore · ${plural(counts[0], "evento", "eventi")}${last ? ` · ultimo ${dayTime(last.ts)}` : ""}` : "Ultime 24 ore · nessun accesso negato o allarme";
+    }
+  }
+  renderNotifRows();
+  $("#n-more").hidden = data.length < NOTIF_PAGE;
+}
 async function viewNotifications(el) {
-  let n;
-  try { n = await api("api/notifications"); } catch (err) { el.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }
-  const urgent = n.items.filter((i) => i.level === "urgent"), info = n.items.filter((i) => i.level === "info");
-  const row = (i) => `<div class="item notif ${i.seen ? "seen" : ""}">
-      <div class="ev-icon ${i.level === "urgent" ? (i.seen ? "k-muted" : "k-err") : "k-info"}">${icon(NOTIF_ICONS[i.type] || "bell")}</div>
-      <div class="grow"><div class="title">${esc(i.title)}</div><div class="meta"><span>${esc(i.text)}</span><span>${esc(relTime(i.ts))}</span></div></div>
-      <div class="row item-actions">${i.link && (!i.link.startsWith("#impianti") || can("impianti")) ? `<a class="btn small ghost" href="${esc(i.link)}">Apri</a>` : ""}
-      ${i.level === "urgent" && !i.seen ? `<button type="button" class="small" data-seen="${esc(i.id)}">${icon("check")}Presa Visione</button>` : ""}</div>
-    </div>`;
-  const section = (title, hint, list, empty) => `<div class="card flush"><h2>${title}<span class="spacer"></span><span class="muted small-text">${hint}</span></h2>
-    <div class="list" style="margin-top:8px">${list.length ? list.map(row).join("") : `<div class="empty">${empty}</div>`}</div></div>`;
+  try { notifData = await api("api/notifications"); } catch (err) { el.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }
+  const doors = allDoors();
+  if (notifFilters.door && !doors.some((d) => d.token === notifFilters.door)) notifFilters.door = "";
+  const log = can("registro");
   el.innerHTML = `
-    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Il numero sulla campanella conta le notifiche urgenti non ancora viste. Allarmi ed eventi restano qui per 24 ore; i problemi di collegamento finché non si risolvono.</p>
-      ${urgent.some((i) => !i.seen) ? `<button type="button" id="n-all">${icon("check")}Segna Tutte Come Viste</button>` : ""}
-      ${store.me.admin ? `<a class="btn" href="#impostazioni/notifiche">${icon("cog")}Scegli Notifiche</a>` : ""}</div>
-    ${section("Da Gestire", plural(urgent.filter((i) => !i.seen).length, "da vedere", "da vedere"), urgent, "Nessuna notifica urgente: tutto in ordine.")}
-    ${section("Informative", "non contano sulla campanella", info, "Niente da segnalare.")}`;
+    <div class="toolbar n-head">
+      <p class="muted" id="n-sub" style="margin:0;flex:1 1 220px">Ultime 24 ore</p>
+      <input type="search" id="n-q" placeholder="Persona, tessera, porta…" value="${esc(notifFilters.q)}" aria-label="Cerca persona, tessera o porta">
+      ${doors.length > 1 ? `<select id="n-door" aria-label="Porta"><option value="">Tutte le Porte</option>${doorOptionGroups(doors, notifFilters.door)}</select>` : ""}
+      <button type="button" id="n-all" hidden>${icon("check")}Segna Tutte Come Viste</button>
+      ${store.me.admin ? `<a class="btn ghost" href="#impostazioni/notifiche" title="Quali notifiche ricevere">${icon("cog")}Scegli Notifiche</a>` : ""}
+    </div>
+    <section class="n-section">
+      <div class="n-sec-head"><h2 class="section-title" style="margin:0">Da Gestire <span class="muted" id="n-open"></span></h2><span class="muted small-text">Ordinate per gravità</span></div>
+      <div id="n-cards" class="n-cards"></div>
+    </section>
+    ${log ? `<section class="card n-log">
+      <div class="n-sec-head"><h2 style="margin:0">Registro Eventi</h2>
+        <label class="n-chk"><input type="checkbox" id="n-only" ${notifFilters.onlyOpen ? "checked" : ""}> Solo da gestire</label></div>
+      <div class="n-tabs" role="tablist" aria-label="Categoria">${Object.entries(NOTIF_TABS).map(([k, [label]]) => `<button type="button" role="tab" class="n-tab" data-n-tab="${k}" aria-selected="${notifFilters.tab === k}">${esc(label)}<span></span></button>`).join("")}</div>
+      <div class="table-wrap" id="n-table" hidden><table class="table n-table"><thead><tr>
+        <th>Ora</th><th>Evento</th><th>Persona / Tessera</th><th>Motivo</th>${multiDoor() ? "<th>Porta</th>" : ""}<th>Stato</th><th aria-label="Dettagli"></th>
+      </tr></thead><tbody id="n-rows"></tbody></table></div>
+      <p class="muted" id="n-norows" hidden style="margin:0;padding:20px 4px">Nessun evento in questa vista.</p>
+      <div class="n-more"><button type="button" class="ghost" id="n-more" hidden>Carica Altri</button>
+        <a class="small-text" href="#registro" id="n-older">Eventi precedenti nel Registro</a></div>
+    </section>` : ""}`;
+  paintIcons(el);
+  renderNotifCards();
   const mark = async (ids) => { if (await run(() => api("api/notifications/seen", {method: "POST", body: ids ? {ids} : {}}))) { await loadSummary(); render(); } };
-  if ($("#n-all")) $("#n-all").onclick = () => mark(null);
-  el.onclick = (e) => { const b = e.target.closest("[data-seen]"); if (b) mark([b.dataset.seen]); };
+  $("#n-all").onclick = () => mark(notifData.items.filter((i) => !i.seen && notifMatches(i)).map((i) => i.id));
+  let timer;
+  $("#n-q").addEventListener("input", (e) => {
+    notifFilters.q = e.target.value.trim();
+    renderNotifCards();
+    clearTimeout(timer);
+    timer = setTimeout(() => loadNotifLog(), 300);
+  });
+  if ($("#n-door")) $("#n-door").addEventListener("change", (e) => { notifFilters.door = e.target.value; renderNotifCards(); loadNotifLog(); });
+  const openEvent = async (id) => {
+    let ev = notifEvents.find((x) => x.id === id);
+    if (!ev) [ev] = await api(`api/events?before_id=${id + 1}&limit=1`).catch(() => []);
+    if (ev && ev.id === id) showEvent(ev);
+  };
+  el.onclick = (e) => {
+    const seen = e.target.closest("[data-seen]");
+    if (seen) return mark([seen.dataset.seen]);
+    const det = e.target.closest("[data-n-event]");
+    if (det) return openEvent(Number(det.dataset.nEvent));
+    const tab = e.target.closest("[data-n-tab]");
+    if (tab) {
+      notifFilters.tab = tab.dataset.nTab;
+      $$("[data-n-tab]", el).forEach((t) => t.setAttribute("aria-selected", String(t === tab)));
+      return loadNotifLog();
+    }
+    if (e.target.closest("#n-more")) return loadNotifLog(true);
+    if (e.target.closest("#n-older")) { Object.assign(logFilters, {view: "controllo", q: notifFilters.q, door: notifFilters.door}); return; }
+    const row = e.target.closest("tr[data-event]");
+    if (row && !e.target.closest("a, img")) openEvent(Number(row.dataset.event));
+  };
+  el.onkeydown = (e) => {
+    const row = e.target.closest("tr[data-event]");
+    if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openEvent(Number(row.dataset.event)); }
+  };
+  if ($("#n-only")) $("#n-only").onchange = (e) => { notifFilters.onlyOpen = e.target.checked; renderNotifRows(); };
+  bindSnapshots(el);
+  if (log) await loadNotifLog();
 }
 
 async function viewNotificationSettings(body) {
   let n;
   try { n = await api("api/notifications"); } catch (err) { body.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }
   body.innerHTML = `<div class="card flush" style="max-width:760px"><h2>${icon("bell")}Quali Notifiche Ricevere</h2>
-    <p class="muted small-text" style="margin:0 18px 8px">Urgente: conta sulla campanella e va presa visione. Informativa: compare nella pagina Notifiche senza contare. Disattivata: non compare. Vale per tutti gli utenti dell'app.</p>
+    <p class="muted small-text" style="margin:0 18px 8px">Attiva: compare in Da Gestire e conta sulla campanella finché non premi Presa Visione. Disattivata: non compare in Da Gestire; gli eventi restano nel registro. Vale per tutti gli utenti dell'app.</p>
     <div class="list">${n.types.map((t) => `<div class="item"><div class="ev-icon k-accent">${icon(NOTIF_ICONS[t.key] || "bell")}</div>
       <div class="grow"><div class="title">${esc(t.name)}</div><div class="meta">${esc(t.description)}</div></div>
       <select data-level="${esc(t.key)}" style="width:auto">${Object.entries(n.levels).map(([k, label]) => `<option value="${k}" ${k === t.level ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></div>`).join("")}</div></div>`;

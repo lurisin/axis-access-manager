@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.14.0
+
+- **Pagina Notifiche rifatta.**
+  - In alto, **Da Gestire**: le notifiche sono ordinate per gravità, Critica, Media o Bassa.
+    - Critica: allarmi, manomissioni, controller o MQTT persi, tessera sconosciuta ripetuta.
+    - Media: più accessi negati di fila alla stessa persona, oppure una tessera sconosciuta passata una volta.
+    - Bassa: un singolo accesso negato, una tessera in scadenza.
+  - Gli eventi uguali vengono raggruppati in una sola notifica con il conteggio, ad esempio "×3 · 3 tentativi in 3 minuti". Sono uguali quando hanno stessa persona o tessera, stessa porta e stesso motivo, e arrivano a meno di 5 minuti l'uno dall'altro.
+  - Ogni notifica ha la foto della porta (o il motivo per cui manca), Dettagli e Presa Visione. Un nuovo tentativo dopo la Presa Visione la rimette da gestire.
+  - Sotto, il **Registro Eventi** delle ultime 24 ore, con le schede Tutte, Accessi Negati e Allarmi e Manomissioni, il conteggio di ciascuna e la colonna Stato (Da Gestire o Visto). La spunta "Solo da gestire" filtra le righe.
+  - Ricerca per persona, tessera o porta, filtro per porta se ce n'è più di una, e "Segna Tutte Come Viste".
+- Il numero sulla campanella conta le notifiche da gestire. In Impostazioni → Notifiche ogni tipo è **Attiva** o **Disattivata**: le informative non esistono più e contano come attive.
+  - Accessi Negati è ora attiva in modo predefinito.
+  - Una tessera sconosciuta compare come notifica solo quando viene letta: l'elenco completo resta in Da Registrare.
+- Corretto: aprendo più volte il registro, un clic su una foto la apriva più volte.
+
 ## 0.13.2
 
 - Scelta della telecamera: segnate anche le telecamere ferme (stato "idle" di Home Assistant, che Frigate usa per quelle spente) e quelle la cui ultima foto non è riuscita. Prima erano segnate solo quelle non disponibili, che con Frigate non capitano quasi mai.

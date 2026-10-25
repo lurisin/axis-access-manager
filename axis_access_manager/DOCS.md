@@ -27,7 +27,7 @@ Il pannello ora è visibile anche agli utenti di Home Assistant che non sono amm
 
 ### Novità della 0.7
 
-- **Notifiche**: nel menu c'è la campanella con il numero delle notifiche urgenti non ancora viste. Lo stato della porta non è più in alto: si vede nel dettaglio di ogni porta.
+- **Notifiche**: in fondo al menu c'è la campanella con il numero delle notifiche da gestire. Lo stato della porta non è più in alto: si vede nel dettaglio di ogni porta.
 - **Impianti** mostra i controller come schede per struttura e area. Toccando la scheda si apre la pagina del controller con lo **schema lettori ↔ porte**; l'ingranaggio apre la pagina **Connessione** (indirizzo, credenziali, area, descrizione della posizione).
 - L'area ora è del **controller**: porte e lettori la ereditano. Al primo avvio della 0.7 l'area che avevi dato alla porta passa al suo controller.
 - **Porte** è un elenco essenziale (nome, area, stato): il clic apre il dettaglio, anche con una porta sola.
@@ -57,7 +57,15 @@ Restano solo quelle tecniche:
 - **Persone**: elenco essenziale in ordine alfabetico, con il colore della tipologia e un'etichetta solo se c'è qualcosa da sistemare (tessera sospesa, scaduta, in scadenza, accesso personalizzato). Filtri rapidi per tipologia, ricerca per nome, ditta o tessera, filtro per stato. Un clic apre la scheda della persona: tipologia con le sue porte e fasce, validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi. La scheda **Tipologie** gestisce le tipologie (vedi Regole di accesso).
 - **Da Registrare**: tessere lette dal lettore ma non registrate, da assegnare a una persona nuova o esistente senza digitare il numero.
 - **Registro**: una riga per evento (ora, esito, chi, porta) e i dettagli al clic, a lato sul computer e in una finestra sul telefono. Le viste **Da Controllare** (rifiuti, tessere sconosciute, allarmi), Solo Negati, Solo Accessi, Allarmi e Tutto servono quando il passaggio è tanto: nelle viste filtrate un contatore dice quanti accessi riusciti non sono mostrati. Poi ricerca, porta, intervallo di date, istantanee ed esportazione CSV. La vista scelta viene ricordata.
-- **Notifiche**: cosa richiede attenzione, diviso in **Da Gestire** (urgenti, contano sulla campanella finché non premi Presa Visione) e **Informative**. Allarmi ed eventi restano per 24 ore; i problemi di collegamento finché non si risolvono, e se tornano si ripresentano. Quali tipi ricevere, e se urgenti o informativi, lo sceglie l'amministratore in Impostazioni → Notifiche.
+- **Notifiche**: in alto **Da Gestire**, ordinate per gravità.
+  - Critica: allarmi, manomissioni, controller o MQTT non raggiungibili, tessera sconosciuta ripetuta.
+  - Media: tentativi ripetuti di una persona, tessera sconosciuta passata una volta.
+  - Bassa: singolo accesso negato, tessera in scadenza.
+  - Gli eventi uguali (stessa persona o tessera, stessa porta, stesso motivo, a meno di 5 minuti l'uno dall'altro) diventano una sola notifica con il numero dei tentativi.
+  - Ogni notifica ha la foto della porta, Dettagli e Presa Visione. Un nuovo tentativo la rimette da gestire.
+  - Sotto c'è il **Registro Eventi** delle ultime 24 ore, con le schede per categoria e lo stato Da Gestire o Visto di ogni evento.
+  - Allarmi ed eventi restano per 24 ore. I problemi di collegamento restano finché non si risolvono, e se tornano si ripresentano.
+  - Quali tipi sono attivi lo sceglie l'amministratore in Impostazioni → Notifiche.
 - **Regole**: fasce orarie e festività (vedi sotto).
 - **Impianti**: controller, schema lettori ↔ porte, porte con citofono e telecamera, strutture e aree, programmazione del controller (vedi sotto).
 - **Impostazioni**: solo l'applicazione, in fondo al menu insieme a Notifiche e all'utente collegato (che per l'amministratore apre la gestione degli utenti). Generale (Home Assistant, opzioni dell'add-on, esportazione e importazione CSV) e, per gli amministratori, **Notifiche**, **Utenti** e **Attività**. Lo stato di controller, porte, eventi MQTT e citofoni è nella scheda Stato del controller.
