@@ -297,6 +297,7 @@ def create_app(
         app.state.installation.ensure_default_site()
         app.state.notifications = NotificationService(app.state.db)
         app.state.ha = home_assistant or HomeAssistant()
+        app.state.snapshot_errors = {}
         app.state.reload_lock = asyncio.Lock()
         app.state.last_sync = {"ok": None, "error": "", "result": None, "at": None}
         app.state.mqtt = await resolve_mqtt(options)
@@ -1026,7 +1027,9 @@ def create_app(
 
     @app.get("/api/cameras", dependencies=[need("impianti")])
     async def cameras(request: Request) -> list[dict]:
-        return await request.app.state.ha.states()
+        """Telecamere di Home Assistant con l'ultima istantanea non riuscita, se c'è."""
+        errors = request.app.state.snapshot_errors
+        return [{**c, "last_error": errors.get(c["entity_id"])} for c in await request.app.state.ha.states()]
 
     # Utenti dell'app
 
@@ -1132,9 +1135,13 @@ def _wire(app: FastAPI) -> None:
         camera = door.get("snapshot_camera") or ""
         kinds = SNAPSHOT_KINDS | (GRANTED_KINDS if door.get("snapshot_on_granted") else set())
         if camera and row.get("kind") in kinds:
-            filename = await state.ha.save_snapshot(camera, f"{row['id']}_{_file_stamp(row.get('ts') or '')}")
-            if filename:
-                state.db.set_event_snapshot(row["id"], filename)
+            filename, error = await state.ha.save_snapshot(camera, f"{row['id']}_{_file_stamp(row.get('ts') or '')}")
+            if filename or error:
+                state.db.set_event_snapshot(row["id"], filename, error)
+            # Ultimo esito per telecamera, mostrato nella scheda Telecamere del controller
+            state.snapshot_errors.pop(camera, None)
+            if error:
+                state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}
         await bridge.publish_event(row)
 
     async def on_change() -> None:
