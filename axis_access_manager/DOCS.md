@@ -127,6 +127,8 @@ actions:
 
 Il nome esatto dell'entità evento è visibile in Impostazioni → Dispositivi → Controllo Accessi. Gli identificativi delle entità restano quelli delle versioni precedenti: cambia solo il nome mostrato.
 
+Nel registro le aperture dai pulsanti mostrano chi ha premuto, ad esempio "Luca (Home Assistant)": l'add-on legge l'utente dallo stato del pulsante e il nome dalla **persona** di Home Assistant collegata a quell'utente (Impostazioni → Persone). Se l'utente non ha una persona compare solo "Home Assistant"; le aperture da automazioni compaiono come "Automazione (Home Assistant)".
+
 ## Istantanee
 
 Con una telecamera impostata sulla porta (Impianti), l'add-on chiede un'immagine alla telecamera tramite Home Assistant per accessi negati, tessere sconosciute, chiamate del citofono e allarmi di quella porta (e per gli accessi concessi, se attivato). Le immagini compaiono nel registro e vengono cancellate insieme agli eventi più vecchi di `event_retention_days`.
