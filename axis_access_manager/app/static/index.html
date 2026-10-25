@@ -195,6 +195,7 @@
   .alert.err { background: var(--err-soft); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
   .alert.info { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
   .alert b { display: block; }
+  .alert b.inline { display: inline; }
   .alert .grow { flex: 1; }
   .todo { margin-bottom: 16px; }
   .todo .list .item .meta a { color: inherit; }
@@ -1099,7 +1100,7 @@ async function openPerson(id) {
           ${category && !custom ? `<dt>Dove e Quando</dt><dd>${ruleLines(category)}</dd>` : ""}
           <dt>Validità</dt><dd>${esc(validityText(a.from, a.to))} ${VALIDITY_PILL[vs] || ""}</dd>
         </dl>
-        ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b>${esc(owner.name)}</b>` : (store.groups.some((g) => g.token === a.group) ? `il profilo <b>${esc(groupName(a.group))}</b>` : "un profilo che non è più sul controller")}, non come ${esc(category.name)}.`; })()}</div>
+        ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b class="inline">${esc(owner.name)}</b>` : (store.groups.some((g) => g.token === a.group) ? `il profilo <b class="inline">${esc(groupName(a.group))}</b>` : "un profilo che non è più sul controller")}, non come ${esc(category.name)}.`; })()}</div>
           <button type="button" class="small w-persone" data-align>Allinea alla Tipologia</button></div>` : ""}</div>
       <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">

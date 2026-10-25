@@ -161,8 +161,9 @@ class UserDirectory:
                 raise UserError("serve almeno un amministratore: dai prima i permessi completi a un altro utente")
             self.db.save_app_user(username, name or (existing or {}).get("name", ""), perms)
         action = "utente creato" if create else "utente modificato"
-        self.db.add_audit(by.label, action, f"{username}: {role_label(perms)}")
-        return self.db.get_app_user(username)
+        saved = self.db.get_app_user(username)
+        self.db.add_audit(by.label, action, f"{saved['name'] or username}: {role_label(perms)}")
+        return saved
 
     def delete(self, username: str, by: AppUser) -> None:
         username = username.strip().lower()
@@ -175,7 +176,7 @@ class UserDirectory:
             if ADMIN in existing["perms"] and self._admins() <= 1:
                 raise UserError("è l'unico amministratore")
             self.db.delete_app_user(username)
-        self.db.add_audit(by.label, "utente eliminato", username)
+        self.db.add_audit(by.label, "utente eliminato", existing["name"] or username)
 
     def _admins(self) -> int:
         return sum(1 for u in self.db.list_app_users() if ADMIN in u["perms"])
