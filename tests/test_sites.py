@@ -148,12 +148,16 @@ def test_door_pages_through_api(client):
     detail = client.get(f"/api/door-detail/{door['id']}").json()
     assert detail["name"] == door["name"] and isinstance(detail["readers"], list)
     assert detail["events"] == [] and detail["groups"] is not None
+    before = client.get("/api/status").json()["controller"]
     # Un pulsante sull'ingresso REX compare con ruolo e morsetto, non come lettore d'uscita
     body = {"name": "Pulsante Portineria", "role": "rex", "door": door["token"]}
     assert client.put("/api/programming/inputs/REX", json=body).status_code == 200
     readers = client.get(f"/api/door-detail/{door['id']}").json()["readers"]
     button = next(r for r in readers if r["role"])
     assert (button["name"], button["role"], button["terminal"]) == ("Pulsante Portineria", "Pulsante Uscita", "REX")
+    # Nella scheda del controller il pulsante conta come ingresso, non come lettore
+    status = client.get("/api/status").json()["controller"]
+    assert before["inputs"] == 0 and status["inputs"] == 1 and status["readers"] == before["readers"]
     assert client.get("/api/door-detail/999").status_code == 404
 
     summary = client.get("/api/summary").json()

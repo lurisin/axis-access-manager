@@ -7,6 +7,7 @@
   - pulsanti e relè collegati agli ingressi del controller mostrano ruolo e morsetto ("Pulsante Uscita · morsetto Aux 1 del controller") invece di "Uscita · Ingresso IO1";
   - il videocitofono dice se apre la porta e con quale relè;
   - i bollini "Attivo" e "Apre la Porta" sono stati tolti: compare un bollino solo per un lettore disattivato.
+- Impianti: la scheda del controller conta a parte lettori e ingressi usati ("1 lettore · 2 ingressi"); prima pulsanti e relè sugli ingressi risultavano lettori.
 
 ## 0.11.1
 

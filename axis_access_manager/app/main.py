@@ -357,7 +357,9 @@ def create_app(
         state = request.app.state
         cfg = state.settings
         return {
-            "controller": await _controller_status(state.controller, cfg) if controller else None,
+            "controller": await _controller_status(state.controller, cfg, state.db.all_controller_inputs())
+            if controller
+            else None,
             "mqtt": _mqtt_status(state.monitor, state.mqtt_configured),
             "sync": state.last_sync,
             "home_assistant": {
@@ -1342,7 +1344,7 @@ async def _maintenance(app: FastAPI) -> None:
         await asyncio.sleep(delay)
 
 
-async def _controller_status(controller: A1210Client, settings: Settings) -> dict:
+async def _controller_status(controller: A1210Client, settings: Settings, inputs: list[dict]) -> dict:
     if not settings.a1210_host:
         return {"ok": False, "error": "indirizzo del controller non configurato"}
     try:
@@ -1352,8 +1354,10 @@ async def _controller_status(controller: A1210Client, settings: Settings) -> dic
     except VapixError as err:
         return {"ok": False, "error": str(err)}
     tokens = [door.get("token") for door in doors]
+    # Pulsanti e relè sugli ingressi sono punti di identificazione come i lettori: si contano a parte
+    wired = {row["idpoint_token"] for row in inputs if row["idpoint_token"]}
     try:
-        readers = len(await controller.list_idpoints())
+        readers = sum(1 for p in await controller.list_idpoints() if p.get("token") not in wired)
     except VapixError:
         readers = None
     return {
@@ -1366,6 +1370,7 @@ async def _controller_status(controller: A1210Client, settings: Settings) -> dic
         "door_found": settings.door_token in tokens,
         "credentials": len(credentials),
         "readers": readers,
+        "inputs": sum(1 for row in inputs if row["role"]),
     }
 
 
