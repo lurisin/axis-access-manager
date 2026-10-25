@@ -1072,8 +1072,21 @@ def _wire(app: FastAPI) -> None:
                 if parsed is None or door not in allowed:
                     _LOGGER.warning("Comando sconosciuto da Home Assistant: %s", command)
                     return
+                # Chi ha premuto il pulsante, se Home Assistant lo sa: "Luca (Home Assistant)"
+                # Al massimo 2 secondi, per non ritardare l'apertura se Home Assistant è lento
                 try:
-                    await service.open_door(parsed[0], "Home Assistant", door)
+                    who = await asyncio.wait_for(app.state.ha.button_presser(), 2)
+                except TimeoutError:
+                    who = None
+                source = (
+                    f"{who} (Home Assistant)"
+                    if who
+                    else "Automazione (Home Assistant)"
+                    if who == ""
+                    else "Home Assistant"
+                )
+                try:
+                    await service.open_door(parsed[0], source, door)
                 except (ServiceError, VapixError) as err:
                     _LOGGER.warning("Apertura da Home Assistant non eseguita: %s", err)
 
