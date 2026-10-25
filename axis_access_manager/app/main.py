@@ -1415,6 +1415,7 @@ async def _start_runtime(app: FastAPI) -> None:
     state.recover_pending = True
     state.recover_outages = 0
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
+    state.service.clock_offset = lambda: _controller_clock_offset(state)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
         _LOGGER.info("Motivi di %s dinieghi tradotti in italiano", translated)
     state.db.rename_controller_events("alloggiamento controller aperto", CASING_OPEN, state.service.controller_name())
@@ -1517,7 +1518,10 @@ def _wire(app: FastAPI) -> None:
             IntercomSettings(
                 door["intercom_name"], door["intercom_open_door"], door["intercom_relay"], door["intercom_mqtt_prefix"]
             ),
-            log=lambda door_token=door["door_token"], **fields: service.log_event(**fields, door=door_token),
+            # Con l'ora del controller, come gli altri eventi della porta (vedi AccessService.event_now)
+            log=lambda door_token=door["door_token"], **fields: service.log_event(
+                **(fields | {"ts": service.event_now()}), door=door_token
+            ),
             open_door=lambda source, note, door_token=door["door_token"]: service.open_door(
                 False, source, door_token, note
             ),
@@ -1792,6 +1796,15 @@ def _controllers_health(state) -> list[dict]:
             }
         )
     return result
+
+
+def _controller_clock_offset(state) -> float | None:
+    """Scarto dell'orologio del controller principale rispetto a Home Assistant, solo se è sincronizzato via NTP."""
+    primary = state.installation.primary
+    health = state.health.states.get(primary["id"]) if primary else None
+    if not health or health.clock_offset is None or not controller_synced(health):
+        return None
+    return health.clock_offset
 
 
 def _offline_controllers(state) -> dict[int, str]:

@@ -17,6 +17,8 @@ from .rules import RuleError, check_validity, normalize_validity
 from .vapix import A1210Client, VapixError
 
 _LOGGER = logging.getLogger(__name__)
+# Oltre questo scarto l'ora del controller non è credibile neanche se dice di essere sincronizzato
+MAX_CLOCK_CORRECTION = 24 * 3600
 
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
 
@@ -174,6 +176,9 @@ class AccessService:
         # Durante il recupero dal registro del controller: eventi segnati come recuperati, e quanti
         self._recovering = False
         self._recovered = 0
+        # Secondi di cui l'orologio del controller (sincronizzato via NTP) è avanti rispetto a Home Assistant;
+        # None se non si sa o se il controller non è sincronizzato
+        self.clock_offset: Callable[[], float | None] | None = None
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         try:
@@ -756,10 +761,20 @@ class AccessService:
             # Evita un secondo comando finché MQTT non segnala che la porta si è richiusa
             self.monitor.door_modes[door] = "Accessed"
         detail = ", ".join(x for x in ("tempo esteso" if extended else "", note) if x)
-        self.log_event(ts=now_iso(), kind="apertura_remota", detail=detail, source=user, door=door)
+        self.log_event(ts=self.event_now(), kind="apertura_remota", detail=detail, source=user, door=door)
         self.db.add_audit(user, "porta aperta", detail)
 
     # Eventi
+
+    def event_now(self) -> str:
+        """Ora degli eventi creati dall'app (aperture remote, citofono) sull'orologio del controller, lo stesso dei
+        passaggi con tessera: con Home Assistant indietro un'apertura remota non finisce nel registro prima del
+        passaggio che l'ha preceduta. Solo con il controller sincronizzato via NTP, altrimenti l'ora di HA."""
+        moment = datetime.now(tz=UTC)
+        offset = self.clock_offset() if self.clock_offset else None
+        if offset and abs(offset) < MAX_CLOCK_CORRECTION:
+            moment += timedelta(seconds=offset)
+        return moment.isoformat(timespec="seconds")
 
     def record_event(self, event: Event, retained: bool = False) -> None:
         """Salva nel log gli eventi utili. I messaggi conservati dal broker sono già stati registrati."""
@@ -938,4 +953,4 @@ class AccessService:
 
     def record_intercom(self, entity_id: str, name: str) -> dict:
         """Chiamata dal citofono (entità di Home Assistant)."""
-        return self.log_event(ts=now_iso(), kind="citofono", detail=name, source=entity_id)
+        return self.log_event(ts=self.event_now(), kind="citofono", detail=name, source=entity_id)

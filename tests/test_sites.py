@@ -122,6 +122,11 @@ def test_event_filters_by_door(db):
     assert "Porta" not in events_csv(rows, {"scala": "Scala"}).splitlines()[0]
     two = events_csv(rows, {"scala": "Accesso Scala", "hotel": "Ingresso Hotel"})
     assert "Porta" in two.splitlines()[0] and "Ingresso Hotel" in two
+    # Gli eventi recuperati dal registro del controller si riconoscono anche nel CSV
+    db.add_event(ts="2026-10-25T07:59:00+00:00", kind="concesso", person_name="Tardi", recovered=True)
+    lines = events_csv(db.list_events(), {}).splitlines()
+    assert lines[0].endswith("Recuperato")
+    assert next(line for line in lines if "Tardi" in line).endswith("sì")
 
 
 @pytest.fixture

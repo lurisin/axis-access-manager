@@ -48,7 +48,9 @@ def events_csv(events: list[dict], doors: dict[str, str] | None = None) -> str:
     doors = doors or {}
     with_door = len(doors) > 1
     rows = [
-        ["Data e Ora", "Evento"] + (["Porta"] if with_door else []) + ["Persona", "Tessera", "Dettaglio", "Origine"]
+        ["Data e Ora", "Evento"]
+        + (["Porta"] if with_door else [])
+        + ["Persona", "Tessera", "Dettaglio", "Origine", "Recuperato"]
     ]
     for event in events:
         door = [doors.get(event.get("door") or "", event.get("door") or "")] if with_door else []
@@ -61,6 +63,8 @@ def events_csv(events: list[dict], doors: dict[str, str] | None = None) -> str:
                 event.get("card") or "",
                 event.get("detail") or "",
                 event.get("source") or "",
+                # Arrivato dopo, dal registro interno del controller (MQTT o add-on fermi in quel momento)
+                "sì" if event.get("recovered") else "",
             ]
         )
     return _csv(rows)
