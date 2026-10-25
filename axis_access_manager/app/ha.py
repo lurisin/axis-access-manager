@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,15 +19,24 @@ CORE_API = "http://supervisor/core/api"
 # Pulsanti MQTT di Home Assistant: l'elenco serve per trovare quello appena premuto
 MQTT_BUTTONS = "{{ integration_entities('mqtt') | select('match', 'button\\.') | list | join(',') }}"
 PRESS_WINDOW = 15
-SNAPSHOT_DIR = Path("/data/snapshots")
+# Istantanee nella cartella Media di Home Assistant: si vedono da Media, File editor e Samba.
+# Fino alla 0.11 stavano nei dati dell'add-on, invisibili all'utente.
+MEDIA_DIR = Path("/media")
+SNAPSHOT_DIR = MEDIA_DIR / "axis_access_manager"
+LEGACY_SNAPSHOT_DIR = Path("/data/snapshots")
+
+
+def default_snapshot_dir() -> Path:
+    """Cartella Media se l'add-on la vede (map media:rw), altrimenti quella interna di prima."""
+    return SNAPSHOT_DIR if MEDIA_DIR.is_dir() else LEGACY_SNAPSHOT_DIR
 
 
 class HomeAssistant:
     """Client dell'API di Home Assistant; senza token del Supervisor ogni funzione è disattivata."""
 
-    def __init__(self, token: str | None = None, snapshot_dir: Path = SNAPSHOT_DIR) -> None:
+    def __init__(self, token: str | None = None, snapshot_dir: Path | None = None) -> None:
         self.token = token if token is not None else supervisor_token()
-        self.snapshot_dir = snapshot_dir
+        self.snapshot_dir = snapshot_dir or default_snapshot_dir()
         self._client = httpx.AsyncClient(
             base_url=CORE_API, timeout=10, headers={"Authorization": f"Bearer {self.token}"} if self.token else {}
         )
@@ -119,6 +130,19 @@ class HomeAssistant:
             if str(person.get("entity_id", "")).startswith("person.") and attributes.get("user_id") == user_id:
                 return attributes.get("friendly_name") or ""
         return None
+
+    def move_snapshots(self, source: Path = LEGACY_SNAPSHOT_DIR) -> int:
+        """Sposta nella cartella attuale le istantanee salvate dove stavano prima; restituisce quante."""
+        if source == self.snapshot_dir or not source.is_dir():
+            return 0
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        moved = 0
+        for path in source.glob("*.jpg"):
+            shutil.move(path, self.snapshot_dir / path.name)
+            moved += 1
+        with contextlib.suppress(OSError):
+            source.rmdir()
+        return moved
 
     def delete_snapshots(self, filenames: list[str]) -> None:
         for filename in filenames:

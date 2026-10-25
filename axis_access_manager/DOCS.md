@@ -120,6 +120,7 @@ Da sapere:
 ### Porte, lettori e storico
 
 - **Porte**: per ogni porta del controller le impostazioni dell'app (nome, pulsanti Apri e Apri a Lungo in Home Assistant, **telecamera** per le istantanee, **videocitofono**) e, con **Nome e Tempi**, nome, descrizione e tempi sul controller (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme). L'apertura arriva al massimo a 30 secondi e quella estesa a 60, per non tenere alimentata a lungo la serratura. Una porta del controller non ancora usata dall'app si aggiunge con **Gestisci nell'App**.
+- **Istantanee**: con una telecamera sulla porta l'app salva una foto su accessi negati, aperture a distanza (Home Assistant e citofono), chiamate al citofono e allarmi; con "Istantanea Anche sugli Accessi Concessi" anche a ogni tessera accettata. Una foto per passaggio, scattata sull'esito (accesso negato o concesso), non sulla lettura della tessera. Le foto si vedono nel registro e in Home Assistant in **Media → axis_access_manager** (cartella `/media/axis_access_manager`, raggiungibile anche con File editor o Samba); il nome del file è numero evento, data e ora dell'evento. Si cancellano insieme al registro dopo `event_retention_days` giorni e non entrano nel backup dell'add-on.
 - **Lettori**: nome e descrizione sul controller, e quali porte comandano.
 - **Storico Modifiche**: ogni scrittura legge prima l'oggetto dal controller, cambia solo i campi scelti e salva la versione precedente; con **Annulla** la riporti com'era. Da qui non passano comandi di apertura.
 

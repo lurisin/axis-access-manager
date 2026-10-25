@@ -1,5 +1,5 @@
 name: Axis Access Manager
-version: "0.11.3"
+version: "0.12.0"
 slug: axis_access_manager
 description: Gestione tessere e controllo accessi per il controller Axis A1210
 url: https://github.com/lurisin/axis-access-manager
@@ -12,6 +12,9 @@ panel_icon: mdi:card-account-details
 panel_title: Controllo Accessi
 panel_admin: false
 homeassistant_api: true
+# Istantanee delle telecamere in Media → axis_access_manager
+map:
+  - media:rw
 services:
   - mqtt:want
 options:
