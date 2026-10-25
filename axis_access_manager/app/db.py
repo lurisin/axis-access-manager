@@ -219,6 +219,22 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
             "AND ts < (SELECT created_at FROM persons WHERE persons.id = events.person_id)",
         ],
     ),
+    (
+        5,
+        "eventi staccati dalle persone eliminate",
+        [
+            # Prima si ricorda il numero più alto citato dagli eventi, che dopo non lo citano più
+            "INSERT INTO app_settings (key, value) SELECT 'persons_last_id', CAST(COALESCE(MAX(m), 0) AS TEXT) FROM ("
+            "SELECT MAX(id) AS m FROM persons UNION ALL SELECT MAX(person_id) FROM events "
+            "UNION ALL SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'persons_last_id') "
+            "WHERE true ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            "UPDATE events SET person_id = NULL WHERE person_id IS NOT NULL "
+            "AND person_id NOT IN (SELECT id FROM persons)",
+            # Persone ripristinate dopo la migrazione 4 con il numero di una eliminata: di nuovo gli eventi più vecchi
+            "UPDATE events SET person_id = NULL WHERE person_id IS NOT NULL "
+            "AND ts < (SELECT created_at FROM persons WHERE persons.id = events.person_id)",
+        ],
+    ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 SETTING_APP_VERSION = "app_version"
@@ -389,7 +405,11 @@ class Database:
         )
 
     def delete_person(self, person_id: int) -> None:
-        self._execute("DELETE FROM persons WHERE id = ?", (person_id,))
+        """Gli eventi restano nel registro con il nome, staccati dalla persona: nessuno li può ereditare."""
+        with self._lock:
+            self._conn.execute("UPDATE events SET person_id = NULL WHERE person_id = ?", (person_id,))
+            self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
+            self._conn.commit()
 
     def cards_of(self, person_id: int) -> list[dict]:
         cards = self._query("SELECT * FROM cards WHERE person_id = ? ORDER BY id", (person_id,))

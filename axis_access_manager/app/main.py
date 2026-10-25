@@ -430,7 +430,8 @@ def create_app(
 
     @app.get("/")
     async def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+        # Mai dalla cache: dopo un aggiornamento dell'add-on serve subito la pagina nuova
+        return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/me")
     async def me(request: Request) -> dict:
@@ -498,6 +499,7 @@ def create_app(
         names = await _camera_names(state)
         listing = _notification_listing(request) if status else None
         return {
+            "version": __version__,
             "door_mode": state.monitor.door_mode if status else None,
             "doors": doors if status else [{**d, "mode": None} for d in doors],
             "configured": bool(state.settings.a1210_host),

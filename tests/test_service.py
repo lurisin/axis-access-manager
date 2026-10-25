@@ -612,6 +612,9 @@ async def test_new_person_never_reuses_number_of_deleted_one(service, db):
     first = await service.create_person("Prova Stabilità", "c0118a01", "admin", group="profilo_sempre")
     db.add_event(ts="2026-10-25T17:28:41+00:00", kind="concesso", person_id=first["id"], person_name="Prova Stabilità")
     await service.delete_person(first["id"], "admin")
+    # Gli eventi restano con il nome, staccati dalla persona eliminata
+    [event] = db.list_events()
+    assert event["person_id"] is None and event["person_name"] == "Prova Stabilità"
     second = await service.create_person("Prova Backup", "c0118a02", "admin", group="profilo_sempre")
     assert second["id"] > first["id"]
     assert db.list_events(person_id=second["id"]) == []
@@ -644,4 +647,42 @@ def test_migration_detaches_events_older_than_person(tmp_path):
     db = Database(path, "0.19.2")
     rows = db._query("SELECT person_id, person_name FROM events ORDER BY ts")
     assert [(r["person_id"], r["person_name"]) for r in rows] == [(None, "Prova Stabilità"), (8, "Prova Backup")]
+    db.close()
+
+
+def test_migration_detaches_events_of_deleted_persons(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "v4.db"
+    Database(path).close()
+    conn = sqlite3.connect(path)
+    # Collaudo 0.19.2: la persona 8 era già eliminata quando è girata la migrazione 4,
+    # poi un ripristino l'ha rimessa con lo stesso numero e gli eventi di chi l'aveva avuto prima
+    conn.execute(
+        "INSERT INTO persons (id, name, created_at, updated_at) VALUES "
+        "(3, 'Anna', '2026-10-01T08:00:00+00:00', '2026-10-01T08:00:00+00:00'), "
+        "(5, 'Prova Backup', '2026-10-25T18:50:00+00:00', '2026-10-25T18:50:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO events (ts, kind, person_id, person_name) VALUES "
+        "('2026-10-25T10:00:00+00:00', 'concesso', 3, 'Anna'), "
+        "('2026-10-25T17:28:41+00:00', 'concesso', 8, 'Prova Stabilità'), "
+        "('2026-10-25T16:00:00+00:00', 'concesso', 5, 'Collaudo Prova'), "
+        "('2026-10-25T18:55:00+00:00', 'concesso', 5, 'Prova Backup')"
+    )
+    conn.execute("DELETE FROM app_settings WHERE key = 'persons_last_id'")
+    conn.execute("PRAGMA user_version = 4")
+    conn.commit()
+    conn.close()
+
+    db = Database(path, "0.19.3")
+    rows = db._query("SELECT person_id, person_name FROM events ORDER BY ts")
+    assert [(r["person_id"], r["person_name"]) for r in rows] == [
+        (3, "Anna"),
+        (None, "Collaudo Prova"),
+        (None, "Prova Stabilità"),
+        (5, "Prova Backup"),
+    ]
+    # Il numero 8 resta usato anche se nessun evento lo cita più
+    assert db.add_person("Nuova", None) == 9
     db.close()
