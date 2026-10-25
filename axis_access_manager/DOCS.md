@@ -160,13 +160,15 @@ Non parla direttamente con il citofono.
 - **Apri dal citofono**: quando si preme Apri sull'app Hik-Connect o sul monitor (in futuro anche dal centralino VoIP),
   il citofono attiva il suo relè e lo segnala. L'add-on manda allora all'A1210 **una sola apertura a tempo**,
   sulla porta associata: solo a serratura bloccata e al massimo una ogni 5 secondi.
-  Nel log compare come apertura remota con fonte "citofono".
+  Nel registro compare come apertura remota con il modo e il citofono, ad esempio "App Hik-Connect (Citofono)",
+  "Monitor Interno (Citofono)" o "Piattaforma Remota (Citofono)" (Hik-Connect o un software di gestione Hikvision);
+  se c'era una chiamata, il dettaglio dice dopo quanti secondi si è aperto.
 - Le aperture fatte con tessere, PIN o volti salvati sul citofono **non** vengono inoltrate: chi può entrare lo decide solo l'A1210.
 - Il relè del citofono non va collegato alla serratura.
 
 Topic letti (con nome del citofono `Citofono` e relè 1):
 `hmd/sensor/Citofono/Call-state/state`, `hmd/switch/Citofono/Door-1-relay/state` e `.../attributes`.
-La pagina Impostazioni mostra lo stato della chiamata e l'ora dell'ultimo messaggio ricevuto da ogni citofono.
+La scheda Stato del controller mostra lo stato della chiamata e l'ora dell'ultimo messaggio ricevuto da ogni citofono.
 Al primo collegamento il citofono può scaricare lo storico degli eventi e bloccarsi fino a un riavvio: tienine conto nella prima prova.
 Se il citofono usa un firmware recente senza evento di chiamata, attiva `call_state_poll` nell'add-on Hikvision Doorbell.
 

@@ -1054,7 +1054,9 @@ def _wire(app: FastAPI) -> None:
                 door["intercom_name"], door["intercom_open_door"], door["intercom_relay"], door["intercom_mqtt_prefix"]
             ),
             log=lambda door_token=door["door_token"], **fields: service.log_event(**fields, door=door_token),
-            open_door=lambda source, door_token=door["door_token"]: service.open_door(False, source, door_token),
+            open_door=lambda source, note, door_token=door["door_token"]: service.open_door(
+                False, source, door_token, note
+            ),
         )
         intercom.door = door
         state.intercoms.append(intercom)

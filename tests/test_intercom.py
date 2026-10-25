@@ -4,7 +4,7 @@ import aiomqtt
 import pytest
 
 from app.events import EventMonitor
-from app.intercom import IntercomBridge, IntercomSettings, topic_name
+from app.intercom import IntercomBridge, IntercomSettings, topic_name, unlock_source
 from app.service import AccessService
 
 CALL = "hmd/sensor/Citofono-scala/Call-state/state"
@@ -34,7 +34,7 @@ def bridge_for(service, db, clock, open_door=True):
     return IntercomBridge(
         IntercomSettings("Citofono scala", open_door=open_door),
         log=db.add_event,
-        open_door=lambda source: service.open_door(False, source),
+        open_door=lambda source, note: service.open_door(False, source, note=note),
         clock=clock,
     )
 
@@ -67,8 +67,8 @@ async def test_open_from_app_sends_one_access_door(service, db, controller, cloc
 
     assert controller.calls == [("access_door", "porta", False)]
     assert details(db) == [
-        ("citofono", "ha suonato", "citofono Citofono scala"),
-        ("apertura_remota", "", "citofono · app o monitor · 8 s dopo la chiamata"),
+        ("citofono", "ha suonato", "Citofono scala"),
+        ("apertura_remota", "8 s dopo la chiamata", "App Hik-Connect (Citofono)"),
     ]
 
 
@@ -115,7 +115,7 @@ async def test_credentials_stored_on_intercom_are_not_forwarded(service, db, con
     await settle()
 
     assert controller.calls == []
-    assert details(db)[-1][1] == "apertura con tessera del citofono non inoltrata all'A1210"
+    assert details(db)[-1][1] == "apertura con Tessera del citofono non inoltrata all'A1210"
 
 
 async def test_forwarding_disabled_only_logs(service, db, controller, clock):
@@ -156,3 +156,11 @@ def test_monitor_routes_extra_subscriptions():
     monitor._dispatch_extra(aiomqtt.Topic("hmd/sensor/Altro/Online/state"), b"x")
 
     assert seen == [(CALL, b"ringing", True)]
+
+
+def test_unlock_source_labels():
+    assert unlock_source({"unlock_type": "HOUSEHOLDER", "control_source": "app"}) == "App Hik-Connect"
+    assert unlock_source({"unlock_type": "HOUSEHOLDER", "control_source": "indoorMonitor"}) == "Monitor Interno"
+    assert unlock_source({"unlock_type": "HOUSEHOLDER"}) == "App O Monitor"
+    assert unlock_source({"unlock_type": "CENTER_PLATFORM"}) == "Piattaforma Remota"
+    assert unlock_source({}) == "App O Monitor"
