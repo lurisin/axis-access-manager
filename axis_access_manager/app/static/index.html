@@ -59,7 +59,13 @@
   .nav .count { position: absolute; top: 3px; left: 28px; background: var(--err); color: #fff; border-radius: 10px; font-size: 11px;
                 min-width: 18px; padding: 0 5px; text-align: center; line-height: 18px; }
   body.nav-open .nav .count { position: static; margin-left: auto; font-size: 12px; min-width: 20px; line-height: 20px; }
-  .nav .foot { margin-top: auto; padding: 8px 12px; color: var(--muted); font-size: 12px; }
+  .nav { overflow-y: auto; }
+  .nav-bottom { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
+  .nav-user .avatar.small { width: 26px; height: 26px; font-size: 11px; margin: -2px -1px; flex: none; }
+  .nav-user .lbl { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+  .nav-user .role { font-size: 12px; color: var(--muted); }
+  a.nav-user:not([href]) { cursor: default; }
+  a.nav-user:not([href]):hover { background: none; color: var(--muted); }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .topbar { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
             backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
@@ -376,11 +382,14 @@
     <a href="#persone" data-route="persone" title="Persone"><span data-icon="people"></span><span class="lbl">Persone</span></a>
     <a href="#da-registrare" data-route="da-registrare" title="Da Registrare"><span data-icon="cardplus"></span><span class="lbl">Da Registrare</span><span class="count" id="nav-unknown" hidden></span></a>
     <a href="#registro" data-route="registro" title="Registro"><span data-icon="list"></span><span class="lbl">Registro</span></a>
-    <a href="#notifiche" data-route="notifiche" title="Notifiche"><span data-icon="bell"></span><span class="lbl">Notifiche</span><span class="count" id="nav-notif" hidden></span></a>
     <a href="#regole" data-route="regole" title="Regole"><span data-icon="clock"></span><span class="lbl">Regole</span></a>
     <a href="#impianti" data-route="impianti" title="Impianti"><span data-icon="building"></span><span class="lbl">Impianti</span></a>
-    <a href="#impostazioni" data-route="impostazioni" title="Impostazioni"><span data-icon="cog"></span><span class="lbl">Impostazioni</span></a>
-    <div class="foot" id="nav-foot"></div>
+    <!-- In basso, separate dalle pagine dell'impianto: notifiche, impostazioni dell'app e utente, come in Home Assistant -->
+    <div class="nav-bottom">
+      <a href="#notifiche" data-route="notifiche" title="Notifiche"><span data-icon="bell"></span><span class="lbl">Notifiche</span><span class="count" id="nav-notif" hidden></span></a>
+      <a href="#impostazioni" data-route="impostazioni" title="Impostazioni dell'App"><span data-icon="cog"></span><span class="lbl">Impostazioni</span></a>
+      <a id="nav-user" class="nav-user" hidden><span class="avatar small" id="nav-avatar"></span><span class="lbl"><span id="nav-user-name"></span><span class="role" id="nav-user-role"></span></span></a>
+    </div>
   </nav>
   <div class="nav-backdrop" id="nav-backdrop"></div>
   <div class="main">
@@ -1818,7 +1827,7 @@ async function controllerEditor() {
 }
 
 function controllerHeader(ctrl, tab) {
-  const tabs = [["", "Schema"], ["porte", "Porte"], ["lettori", "Lettori"], ["stato", "Stato"], ["storico", "Storico Modifiche"]];
+  const tabs = [["", "Schema"], ["porte", "Porte"], ["lettori", "Lettori"], ["telecamere", "Telecamere"], ["citofoni", "Videocitofoni"], ["stato", "Stato"], ["storico", "Storico Modifiche"]];
   const place = placeOf(ctrl.place);
   return `<div class="ctl-head">
       <div class="small-text muted"><a href="#impianti">Impianti</a>${place ? ` › ${esc(place)}` : ""}</div>
@@ -1866,7 +1875,7 @@ async function viewConnection(el, ctrl) {
 
 // Pagina del controller: schema lettori ↔ porte, porte, lettori e storico delle modifiche
 async function viewController(el, ctrl, tab) {
-  tab = ["porte", "lettori", "stato", "storico"].includes(tab) ? tab : "";
+  tab = ["porte", "lettori", "telecamere", "citofoni", "stato", "storico"].includes(tab) ? tab : "";
   el.innerHTML = `${controllerHeader(ctrl, tab)}<div id="c-body">${loadingBox()}</div>`;
   paintIcons(el);
   paintControllerState();
@@ -1877,6 +1886,9 @@ async function viewController(el, ctrl, tab) {
   if (!primary || primary.id !== ctrl.id) { body.innerHTML = '<div class="card"><div class="empty">La programmazione è disponibile per il controller in uso.</div></div>'; return; }
   // Lo stato non legge la programmazione: deve funzionare anche quando il controller non risponde
   if (tab === "stato") return controllerStatus(body, ctrl);
+  // Telecamere e videocitofoni sono impostazioni dell'app sulle porte: non serve leggere il controller
+  if (tab === "telecamere") return controllerCameras(body, ctrl);
+  if (tab === "citofoni") return controllerIntercoms(body, ctrl);
   let p;
   try { p = await api("api/programming"); } catch (err) { if (!body.isConnected) return; body.innerHTML = errorBox("Programmazione Non Leggibile", err) + '<p class="hint">Controlla il collegamento con l\'ingranaggio Connessione.</p>'; return; }
   if (!body.isConnected) return;
@@ -2141,8 +2153,8 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
     if (!door) return `<p class="muted small-text" style="margin:8px 0 0">Non gestita dall'app: niente registro per porta, pulsanti in Home Assistant o citofono.</p>`;
     return props([
       ["Nome nell'App", esc(door.name)],
-      ["Telecamera", door.snapshot_camera ? `<code>${esc(door.snapshot_camera)}</code>${door.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'],
-      ["Citofono", door.intercom_name ? `${esc(door.intercom_name)} · relè ${door.intercom_relay}${door.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'],
+      ["Telecamera", `${door.snapshot_camera ? `<code>${esc(door.snapshot_camera)}</code>${door.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'} · <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a>`],
+      ["Citofono", `${door.intercom_name ? `${esc(door.intercom_name)} · relè ${door.intercom_relay}${door.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'} · <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a>`],
       ["Pulsanti HA", door.ha_buttons ? "Apri e Apri a Lungo" : '<span class="muted">Nessuno</span>'],
     ]);
   };
@@ -2332,12 +2344,117 @@ async function viewSites(body, data) {
   };
 }
 
-// Impostazioni della porta nell'app; l'area viene dal controller
-async function doorEditor(ctrl, door, token = "", controllerName = "") {
+// Scheda Telecamere: quale telecamera fotografa quale porta
+async function controllerCameras(body, ctrl) {
   const cameras = await api("api/cameras").catch(() => []);
+  if (!body.isConnected) return;
+  const label = (entity) => cameras.find((c) => c.entity_id === entity)?.name || entity;
+  const rows = ctrl.doors.filter((d) => d.snapshot_camera);
+  body.innerHTML = `
+    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Una telecamera di Home Assistant per porta: l'app salva una foto nel registro su accessi negati, aperture a distanza, chiamate al citofono e allarmi. Le foto sono anche in Media → axis_access_manager.</p>
+      ${ctrl.doors.length ? `<button type="button" class="primary" id="cam-new">${icon("plus")}Aggiungi Telecamera</button>` : ""}</div>
+    ${!ctrl.doors.length ? '<div class="card"><div class="empty">Prima aggiungi una porta all\'app nella scheda Porte.</div></div>'
+      : rows.length ? `<div class="card flush"><div class="list">${rows.map((d) => `<div class="item">
+        <div class="ev-icon k-accent">${icon("camera")}</div>
+        <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}</div>
+          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto solo sui rifiuti e le aperture a distanza"}</span><code>${esc(d.snapshot_camera)}</code></div></div>
+        <button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
+      : `<div class="card"><div class="empty">${icon("camera")}<br>Nessuna telecamera associata alle porte.</div></div>`}`;
+  paintIcons(body);
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const door = ctrl.doors.find((d) => String(d.id) === (b.dataset.camEdit || b.dataset.camDel));
+    if (b.id === "cam-new" || b.dataset.camEdit) return cameraEditor(ctrl, cameras, door);
+    if (b.dataset.camDel && await confirmBox("Togli Telecamera", `Togliere la telecamera dalla porta <b>${esc(door.name)}</b>? Le foto già salvate restano nel registro.`, "Togli", true) &&
+        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}), "Telecamera tolta")) { loadSummary(); render(); }
+  };
+}
+async function cameraEditor(ctrl, cameras, door) {
+  const current = door?.snapshot_camera || "";
   const cameraInput = cameras.length
-    ? `<select name="snapshot_camera"><option value="">Nessuna</option>${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === door?.snapshot_camera ? "selected" : ""}>${esc(c.name)} (${esc(c.entity_id)})</option>`).join("")}${door?.snapshot_camera && !cameras.some((c) => c.entity_id === door.snapshot_camera) ? `<option value="${esc(door.snapshot_camera)}" selected>${esc(door.snapshot_camera)}</option>` : ""}</select>`
-    : `<input name="snapshot_camera" class="mono" value="${esc(door?.snapshot_camera || "")}" placeholder="camera.ingresso">`;
+    ? `<select name="camera">${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === current ? "selected" : ""}>${esc(c.name)} (${esc(c.entity_id)})</option>`).join("")}${current && !cameras.some((c) => c.entity_id === current) ? `<option value="${esc(current)}" selected>${esc(current)}</option>` : ""}</select>`
+    : `<input name="camera" class="mono" value="${esc(current)}" placeholder="camera.ingresso">`;
+  const doorSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${d.id === door?.id ? "selected" : ""}>${esc(d.name)}${d.snapshot_camera && d.id !== door?.id ? ` (ora ${esc(d.snapshot_camera)})` : ""}</option>`).join("")}</select>`;
+  const result = await modal({
+    title: door ? "Modifica Telecamera" : "Aggiungi Telecamera",
+    body: `${field("Telecamera", cameraInput, cameras.length ? "Le entità camera.* di Home Assistant." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
+      ${field("Porta", doorSelect, "Se la porta ha già una telecamera, viene sostituita.")}
+      <div class="field inline"><input type="checkbox" name="granted" id="f-cg" ${door?.snapshot_on_granted ? "checked" : ""}><label for="f-cg">Istantanea Anche sugli Accessi Concessi</label></div>
+      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su rifiuti, aperture a distanza, citofono e allarmi.</p>`,
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+      const target = ctrl.doors.find((d) => String(d.id) === val(dlg, "door"));
+      const camera = val(dlg, "camera").trim();
+      if (!camera) { toast("Scegli la telecamera", true); return false; }
+      // Spostata su un'altra porta: la porta di prima resta senza telecamera
+      if (door && door.id !== target.id && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}))) return false;
+      return (await run(() => api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, {snapshot_camera: camera, snapshot_on_granted: val(dlg, "granted")})}), "Telecamera salvata")) || false;
+    }}],
+  });
+  if (result) { loadSummary(); render(); }
+}
+
+// Scheda Videocitofoni: citofoni Hikvision collegati alle porte
+async function controllerIntercoms(body, ctrl) {
+  const status = await api("api/status?controller=false").catch(() => null);
+  if (!body.isConnected) return;
+  const live = (d) => (status?.intercoms || []).find((i) => i.name === d.intercom_name && i.door === d.name);
+  const rows = ctrl.doors.filter((d) => d.intercom_name);
+  const seen = (d) => { const i = live(d); return i?.last_message_at ? `ultimo messaggio ${relTime(i.last_message_at)}` : "nessun messaggio dall'avvio"; };
+  body.innerHTML = `
+    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Videocitofoni Hikvision collegati con l'add-on Hikvision Doorbell: le chiamate finiscono nel registro e, se vuoi, "Apri" dal citofono apre la porta con un'apertura a tempo.</p>
+      ${ctrl.doors.length ? `<button type="button" class="primary" id="ic-new">${icon("plus")}Aggiungi Videocitofono</button>` : ""}</div>
+    ${!ctrl.doors.length ? '<div class="card"><div class="empty">Prima aggiungi una porta all\'app nella scheda Porte.</div></div>'
+      : rows.length ? `<div class="card flush"><div class="list">${rows.map((d) => `<div class="item">
+        <div class="ev-icon k-accent">${icon("phone")}</div>
+        <div class="grow"><div class="title">${esc(d.intercom_name)}</div>
+          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.intercom_open_door ? `apre la porta con il relè ${d.intercom_relay}` : "registra le chiamate, non apre la porta"}</span><span>${esc(seen(d))}</span></div></div>
+        <button type="button" class="small" data-ic-edit="${d.id}">${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost danger" data-ic-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
+      : `<div class="card"><div class="empty">${icon("phone")}<br>Nessun videocitofono associato alle porte.</div></div>`}`;
+  paintIcons(body);
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const door = ctrl.doors.find((d) => String(d.id) === (b.dataset.icEdit || b.dataset.icDel));
+    if (b.id === "ic-new" || b.dataset.icEdit) return intercomEditor(ctrl, door);
+    if (b.dataset.icDel && await confirmBox("Togli Videocitofono", `Togliere il videocitofono dalla porta <b>${esc(door.name)}</b>? Le chiamate non finiranno più nel registro.`, "Togli", true) &&
+        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}), "Videocitofono tolto")) { loadSummary(); render(); }
+  };
+}
+async function intercomEditor(ctrl, door) {
+  const d = door || {intercom_relay: 1, intercom_mqtt_prefix: "hmd"};
+  const doorSelect = `<select name="door">${ctrl.doors.map((x) => `<option value="${x.id}" ${x.id === door?.id ? "selected" : ""}>${esc(x.name)}${x.intercom_name && x.id !== door?.id ? ` (ora ${esc(x.intercom_name)})` : ""}</option>`).join("")}</select>`;
+  const result = await modal({
+    title: door ? "Modifica Videocitofono" : "Aggiungi Videocitofono",
+    wide: true,
+    body: `<div class="fields-2">${field("Nome del Citofono", `<input name="intercom_name" value="${esc(d.intercom_name || "")}" required>`, "Lo stesso nome dato al citofono nell'add-on Hikvision Doorbell.")}
+      ${field("Porta", doorSelect, "Se la porta ha già un videocitofono, viene sostituito.")}</div>
+      <div class="field inline"><input type="checkbox" name="intercom_open_door" id="f-iod" ${d.intercom_open_door ? "checked" : ""}><label for="f-iod">"Apri" dal Citofono Apre Questa Porta</label></div>
+      <p class="hint" style="margin-top:-8px">Dall'app Hik-Connect o dal monitor: l'add-on manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Spento = le chiamate finiscono solo nel registro.</p>
+      <div class="fields-2">${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}
+      ${field("Prefisso MQTT del Citofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}</div>`,
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+      const target = ctrl.doors.find((x) => String(x.id) === val(dlg, "door"));
+      const name = val(dlg, "intercom_name").trim();
+      if (!name) { toast("Scrivi il nome del citofono", true); return false; }
+      if (door && door.id !== target.id && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}))) return false;
+      const changes = {intercom_name: name, intercom_open_door: val(dlg, "intercom_open_door"), intercom_relay: Number(val(dlg, "intercom_relay")), intercom_mqtt_prefix: val(dlg, "intercom_mqtt_prefix")};
+      return (await run(() => api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, changes)}), "Videocitofono salvato")) || false;
+    }}],
+  });
+  if (result) { loadSummary(); render(); }
+}
+
+// Impostazioni della porta nell'app; l'area viene dal controller
+// Impostazioni complete della porta per il salvataggio, con le modifiche indicate
+function doorBody(door, changes = {}) {
+  const fields = ["name", "door_token", "ha_buttons", "snapshot_camera", "snapshot_on_granted", "intercom_name", "intercom_relay", "intercom_open_door", "intercom_mqtt_prefix", "area_id"];
+  const body = Object.fromEntries(fields.filter((k) => door[k] !== undefined).map((k) => [k, door[k]]));
+  return {...body, ...changes};
+}
+async function doorEditor(ctrl, door, token = "", controllerName = "") {
   const d = door || {name: controllerName, door_token: token, ha_buttons: true, intercom_relay: 1, intercom_mqtt_prefix: "hmd"};
   const result = await modal({
     title: door ? `Impostazioni App · ${door.name}` : "Gestisci nell'App",
@@ -2346,20 +2463,9 @@ async function doorEditor(ctrl, door, token = "", controllerName = "") {
       ${field("Porta del Controller", `<input class="mono" value="${esc(d.door_token)}" disabled>`)}</div>
       <div class="field inline"><input type="checkbox" name="ha_buttons" id="f-hab" ${d.ha_buttons ? "checked" : ""}><label for="f-hab">Pulsanti Apri e Apri a Lungo in Home Assistant</label></div>
       <p class="hint" style="margin-top:-8px">Da mettere nelle dashboard. L'apertura è sempre a tempo e solo a porta bloccata.</p>
-      <h3 class="section-title" style="margin-top:18px">${icon("camera")}Telecamera</h3>
-      ${field("Telecamera per le Istantanee", cameraInput, "Salva una foto nel registro su accessi negati (anche di tessere sconosciute), aperture a distanza, chiamate al citofono e allarmi.")}
-      <div class="field inline"><input type="checkbox" name="snapshot_on_granted" id="f-sog" ${d.snapshot_on_granted ? "checked" : ""}><label for="f-sog">Istantanea Anche sugli Accessi Concessi</label></div>
-      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta solo i rifiuti hanno la foto. Le foto sono anche in Home Assistant, in Media → axis_access_manager (e nella cartella /media con File editor o Samba), e si cancellano con il registro.</p>
-      <h3 class="section-title" style="margin-top:18px">${icon("bell")}Videocitofono</h3>
-      <div class="fields-2">${field("Nome del Citofono", `<input name="intercom_name" value="${esc(d.intercom_name || "")}" placeholder="vuoto = nessun citofono">`, "Lo stesso nome dato al citofono nell'add-on Hikvision Doorbell.")}
-      ${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}</div>
-      <div class="field inline"><input type="checkbox" name="intercom_open_door" id="f-iod" ${d.intercom_open_door ? "checked" : ""}><label for="f-iod">"Apri" dal Citofono Apre Questa Porta</label></div>
-      <p class="hint" style="margin-top:-8px">Dall'app Hik-Connect o dal monitor: l'add-on manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Spento = le chiamate finiscono solo nel registro.</p>
-      ${field("Prefisso MQTT del Citofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}`,
+      <p class="hint">Telecamera e videocitofono della porta si scelgono nelle schede <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a> e <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a> del controller.</p>`,
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
-      const body = {name: val(dlg, "name"), door_token: d.door_token, ha_buttons: val(dlg, "ha_buttons"), snapshot_camera: val(dlg, "snapshot_camera"),
-        snapshot_on_granted: val(dlg, "snapshot_on_granted"), intercom_name: val(dlg, "intercom_name"), intercom_relay: Number(val(dlg, "intercom_relay")),
-        intercom_open_door: val(dlg, "intercom_open_door"), intercom_mqtt_prefix: val(dlg, "intercom_mqtt_prefix")};
+      const body = doorBody(d, {name: val(dlg, "name"), ha_buttons: val(dlg, "ha_buttons")});
       return (await run(() => api(door ? `api/doors/${door.id}` : `api/controllers/${ctrl.id}/doors`, {method: door ? "PUT" : "POST", body}), "Porta salvata")) || false;
     }}],
   });
@@ -2501,8 +2607,17 @@ async function start() {
   } catch (err) { /* la pagina funziona anche senza */ }
   // Nasconde pagine e pulsanti per cui l'utente non ha il permesso
   ALL_PERMS.forEach((perm) => document.body.classList.toggle("no-" + perm, !can(perm)));
-  $$("#nav a").forEach((a) => { a.hidden = !allowedRoute(a.dataset.route); });
-  $("#nav-foot").textContent = store.me.user ? [store.me.user, store.me.role].filter(Boolean).join(" · ") : "";
+  $$("#nav a[data-route]").forEach((a) => { a.hidden = !allowedRoute(a.dataset.route); });
+  // Utente collegato in fondo al menu; per l'amministratore porta alla gestione degli utenti
+  if (store.me.user) {
+    const user = $("#nav-user");
+    user.hidden = false;
+    $("#nav-avatar").textContent = initials(store.me.user);
+    $("#nav-user-name").textContent = store.me.user;
+    $("#nav-user-role").textContent = store.me.role || "Permessi Personalizzati";
+    user.title = `${store.me.user}${store.me.admin ? " · gestisci gli utenti" : ""}`;
+    if (store.me.admin) { user.href = "#impostazioni/utenti"; user.dataset.routeLink = "impostazioni"; }
+  }
   await loadSummary();
   await render();
   setInterval(loadSummary, 5000);

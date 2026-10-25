@@ -60,7 +60,7 @@ Restano solo quelle tecniche:
 - **Notifiche**: cosa richiede attenzione, diviso in **Da Gestire** (urgenti, contano sulla campanella finché non premi Presa Visione) e **Informative**. Allarmi ed eventi restano per 24 ore; i problemi di collegamento finché non si risolvono, e se tornano si ripresentano. Quali tipi ricevere, e se urgenti o informativi, lo sceglie l'amministratore in Impostazioni → Notifiche.
 - **Regole**: fasce orarie e festività (vedi sotto).
 - **Impianti**: controller, schema lettori ↔ porte, porte con citofono e telecamera, strutture e aree, programmazione del controller (vedi sotto).
-- **Impostazioni**: solo l'applicazione. Generale (Home Assistant, opzioni dell'add-on, esportazione e importazione CSV) e, per gli amministratori, **Notifiche**, **Utenti** e **Attività**. Lo stato di controller, porte, eventi MQTT e citofoni è nella scheda Stato del controller.
+- **Impostazioni**: solo l'applicazione, in fondo al menu insieme a Notifiche e all'utente collegato (che per l'amministratore apre la gestione degli utenti). Generale (Home Assistant, opzioni dell'add-on, esportazione e importazione CSV) e, per gli amministratori, **Notifiche**, **Utenti** e **Attività**. Lo stato di controller, porte, eventi MQTT e citofoni è nella scheda Stato del controller.
 
 **L'app non apre la porta**: l'apertura è nei pulsanti di Home Assistant, da mettere nelle dashboard, e passa comunque dall'add-on con i suoi controlli di sicurezza.
 
@@ -119,7 +119,8 @@ Da sapere:
 
 ### Porte, lettori e storico
 
-- **Porte**: per ogni porta del controller le impostazioni dell'app (nome, pulsanti Apri e Apri a Lungo in Home Assistant, **telecamera** per le istantanee, **videocitofono**) e, con **Nome e Tempi**, nome, descrizione e tempi sul controller (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme). L'apertura arriva al massimo a 30 secondi e quella estesa a 60, per non tenere alimentata a lungo la serratura. Una porta del controller non ancora usata dall'app si aggiunge con **Gestisci nell'App**.
+- **Porte**: per ogni porta del controller le impostazioni dell'app (nome, pulsanti Apri e Apri a Lungo in Home Assistant) e, con **Nome e Tempi**, nome, descrizione e tempi sul controller (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme). L'apertura arriva al massimo a 30 secondi e quella estesa a 60, per non tenere alimentata a lungo la serratura. Una porta del controller non ancora usata dall'app si aggiunge con **Gestisci nell'App**.
+- **Telecamere** e **Videocitofoni**: schede del controller con le telecamere di Home Assistant per le istantanee e i videocitofoni Hikvision. Per ognuno scegli la porta; da qui li aggiungi, li sposti su un'altra porta o li togli.
 - **Istantanee**: con una telecamera sulla porta l'app salva una foto su accessi negati, aperture a distanza (Home Assistant e citofono), chiamate al citofono e allarmi; con "Istantanea Anche sugli Accessi Concessi" anche a ogni tessera accettata. Una foto per passaggio, scattata sull'esito (accesso negato o concesso), non sulla lettura della tessera. Le foto si vedono nel registro e in Home Assistant in **Media → axis_access_manager** (cartella `/media/axis_access_manager`, raggiungibile anche con File editor o Samba); il nome del file è numero evento, data e ora dell'evento. Si cancellano insieme al registro dopo `event_retention_days` giorni e non entrano nel backup dell'add-on.
 - **Lettori**: nome e descrizione sul controller, e quali porte comandano.
 - **Storico Modifiche**: ogni scrittura legge prima l'oggetto dal controller, cambia solo i campi scelti e salva la versione precedente; con **Annulla** la riporti com'era. Da qui non passano comandi di apertura.
