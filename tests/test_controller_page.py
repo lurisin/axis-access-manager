@@ -141,3 +141,9 @@ def test_controller_page_through_api(client, controller):
     types = client.put("/api/notifications/settings", json={"denied": "urgent"}).json()["types"]
     assert next(t for t in types if t["key"] == "denied")["level"] == "urgent"
     assert client.put("/api/notifications/settings", json={"x": "urgent"}).status_code == 400
+
+
+def test_status_without_controller(client, controller):
+    status = client.get("/api/status", params={"controller": "false"}).json()
+    assert status["controller"] is None and "home_assistant" in status
+    assert client.get("/api/status").json()["controller"]["ok"] is True

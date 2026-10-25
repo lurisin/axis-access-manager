@@ -46,7 +46,7 @@ Restano solo quelle tecniche:
 - **Notifiche**: cosa richiede attenzione, diviso in **Da Gestire** (urgenti, contano sulla campanella finché non premi Presa Visione) e **Informative**. Allarmi ed eventi restano per 24 ore; i problemi di collegamento finché non si risolvono, e se tornano si ripresentano. Quali tipi ricevere, e se urgenti o informativi, lo sceglie l'amministratore in Impostazioni → Notifiche.
 - **Regole**: tipologie, gruppi, fasce orarie e festività (vedi sotto).
 - **Impianti**: controller, schema lettori ↔ porte, porte con citofono e telecamera, strutture e aree, programmazione del controller (vedi sotto).
-- **Impostazioni**: stato di controller, porte, MQTT, citofoni e Home Assistant, esportazione e importazione CSV; per gli amministratori anche **Notifiche**, **Utenti** e **Attività**.
+- **Impostazioni**: solo l'applicazione. Generale (Home Assistant, opzioni dell'add-on, esportazione e importazione CSV) e, per gli amministratori, **Notifiche**, **Utenti** e **Attività**. Lo stato di controller, porte, eventi MQTT e citofoni è nella scheda Stato del controller.
 
 **L'app non apre la porta**: l'apertura è nei pulsanti di Home Assistant, da mettere nelle dashboard, e passa comunque dall'add-on con i suoi controlli di sicurezza.
 
@@ -57,7 +57,7 @@ Il controller resta la fonte di verità: all'avvio e ogni 15 minuti l'add-on ril
 La pagina mostra i **controller** come schede, raggruppati per struttura e area, con modello, numero di porte e lettori e stato del collegamento.
 
 - **Ingranaggio → Connessione**: nome, struttura e area, descrizione della posizione (es. "quadro sotto la scala"), indirizzo, utente, password (non viene mai mostrata, lasciala vuota per non cambiarla), prefisso MQTT e verifica del certificato. Con **Prova Collegamento** controlli i dati prima di salvarli. Salvando, l'add-on si ricollega subito senza riavvio.
-- **Scheda del controller**: la configurazione di lettori e porte, in quattro schede: Schema, Porte, Lettori, Storico Modifiche (vedi sotto).
+- **Scheda del controller**: la configurazione di lettori e porte, in cinque schede: Schema, Porte, Lettori, Stato e Storico Modifiche (vedi sotto). **Stato** mostra se il controller risponde (modello, firmware, tessere, ultima sincronizzazione), lo stato delle sue porte, gli eventi MQTT ricevuti e i citofoni; funziona anche quando il controller non risponde.
 - **Strutture e Aree**: dove si trovano i controller. Crei strutture (Teatro Eliseo, Hotel Giulia, Villa 1…) e al loro interno aree (Via Consulta, Primo Piano…); poi nella Connessione del controller scegli la sua area. Porte e lettori del controller la ereditano.
 - Per ora l'add-on gestisce un controller. Pagine e dati sono già organizzati per averne di più.
 

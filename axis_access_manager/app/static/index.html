@@ -744,7 +744,7 @@ async function viewDashboard(el) {
   if (d.expiring.length) alerts.push(`<div class="alert">${icon("clock")}<div class="grow"><b>Tessere in Scadenza nei Prossimi 7 Giorni</b>
     ${d.expiring.map((e) => `<a href="#persone/${e.id}">${esc(e.name)}</a> (${esc(fmtDateTime(e.valid_to))})`).join(", ")}</div></div>`);
   if (store.summary.mqtt_connected === false && store.summary.configured !== false) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>Eventi Non in Arrivo</b>
-    Il collegamento MQTT non è attivo: registro e stato porta non si aggiornano.</div><a class="btn small" href="#impostazioni">Dettagli</a></div>`);
+    Il collegamento MQTT non è attivo: registro e stato porta non si aggiornano.</div>${can("impianti") ? '<a class="btn small" href="#impianti/stato">Dettagli</a>' : ""}</div>`);
   if (t.alarms) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>${plural(t.alarms, "allarme", "allarmi")} oggi</b>Porta forzata, aperta troppo a lungo o manomissione.</div>${can("registro") ? '<a class="btn small" href="#registro">Vedi</a>' : ""}</div>`);
   const max = Math.max(1, ...d.week.map((w) => w.granted + w.denied + w.unknown));
   const chart = d.week.map((w) => {
@@ -1599,7 +1599,7 @@ async function viewNotifications(el) {
   const row = (i) => `<div class="item notif ${i.seen ? "seen" : ""}">
       <div class="ev-icon ${i.level === "urgent" ? (i.seen ? "k-muted" : "k-err") : "k-info"}">${icon(NOTIF_ICONS[i.type] || "bell")}</div>
       <div class="grow"><div class="title">${esc(i.title)}</div><div class="meta"><span>${esc(i.text)}</span><span>${esc(relTime(i.ts))}</span></div></div>
-      ${i.link ? `<a class="btn small ghost" href="${esc(i.link)}">Apri</a>` : ""}
+      ${i.link && (!i.link.startsWith("#impianti") || can("impianti")) ? `<a class="btn small ghost" href="${esc(i.link)}">Apri</a>` : ""}
       ${i.level === "urgent" && !i.seen ? `<button type="button" class="small" data-seen="${esc(i.id)}">${icon("check")}Presa Visione</button>` : ""}
     </div>`;
   const section = (title, hint, list, empty) => `<div class="card flush"><h2>${title}<span class="spacer"></span><span class="muted small-text">${hint}</span></h2>
@@ -1643,6 +1643,7 @@ async function viewInstallation(el, sub) {
   el.innerHTML = loadingBox();
   try { data = await api("api/installation"); } catch (err) { el.innerHTML = errorBox("Impianti Non Leggibili", err); return; }
   if (first === "programmazione" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}`); return; }
+  if (first === "stato" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}/stato`); return; }
   if (match) {
     const ctrl = data.controllers.find((c) => c.id === Number(match[1]));
     if (!ctrl) { el.innerHTML = `<div class="card"><div class="empty">Controller non trovato. <a href="#impianti">Torna agli Impianti</a></div></div>`; return; }
@@ -1747,7 +1748,7 @@ async function controllerEditor() {
 }
 
 function controllerHeader(ctrl, tab) {
-  const tabs = [["", "Schema"], ["porte", "Porte"], ["lettori", "Lettori"], ["storico", "Storico Modifiche"]];
+  const tabs = [["", "Schema"], ["porte", "Porte"], ["lettori", "Lettori"], ["stato", "Stato"], ["storico", "Storico Modifiche"]];
   const place = placeOf(ctrl.place);
   return `<div class="ctl-head">
       <div class="small-text muted"><a href="#impianti">Impianti</a>${place ? ` › ${esc(place)}` : ""}</div>
@@ -1795,13 +1796,15 @@ async function viewConnection(el, ctrl) {
 
 // Pagina del controller: schema lettori ↔ porte, porte, lettori e storico delle modifiche
 async function viewController(el, ctrl, tab) {
-  tab = ["porte", "lettori", "storico"].includes(tab) ? tab : "";
+  tab = ["porte", "lettori", "stato", "storico"].includes(tab) ? tab : "";
   el.innerHTML = `${controllerHeader(ctrl, tab)}<div id="c-body">${loadingBox()}</div>`;
   paintIcons(el);
   paintControllerState();
   const body = $("#c-body");
   const primary = (await api("api/installation")).controllers[0];
   if (!primary || primary.id !== ctrl.id) { body.innerHTML = '<div class="card"><div class="empty">La programmazione è disponibile per il controller in uso.</div></div>'; return; }
+  // Lo stato non legge la programmazione: deve funzionare anche quando il controller non risponde
+  if (tab === "stato") return controllerStatus(body, ctrl);
   let p;
   try { p = await api("api/programming"); } catch (err) { body.innerHTML = errorBox("Programmazione Non Leggibile", err) + '<p class="hint">Controlla il collegamento con l\'ingranaggio Connessione.</p>'; return; }
   const errors = p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "";
@@ -2057,6 +2060,53 @@ function controllerReaders(body, p, errors, doorName) {
   };
 }
 
+// Stato del controller, delle sue porte, degli eventi MQTT e dei citofoni
+async function controllerStatus(body, ctrl) {
+  let s;
+  try { s = await api("api/status"); } catch (err) { body.innerHTML = errorBox("Stato Non Leggibile", err); return; }
+  const c = s.controller, m = s.mqtt;
+  const connection = ` <a href="#impianti/c${ctrl.id}/connessione">Controlla la Connessione</a>`;
+  const ctrlInfo = c.ok ? props([
+    ["Stato", `${statusDot("ok")} Raggiungibile`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
+    ["Indirizzo", `<code>${esc(ctrl.host)}</code>`], ["Porte sul Controller", c.doors.map((d) => `<code>${esc(d)}</code>`).join(", ")],
+    ["Lettori", esc(c.readers ?? "—")], ["Tessere sul Controller", esc(c.credentials)],
+  ]) : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
+  const cats = Object.entries(m.categories || {});
+  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta mqtt_host nelle opzioni dell'add-on.</div></div>` : props([
+    ["Broker", m.connected ? `${statusDot("ok")} Collegato` : `${statusDot("err")} Non Collegato ${esc(m.error)}`],
+    ["Prefisso", `<code>${esc(m.prefix)}</code>`],
+    ["Controller", m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? `${statusDot("ok")} Online` : `${statusDot("err")} Offline`],
+    ["Ultima Tessera Letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
+    ["Eventi AccessControl", m.access_events_seen ? `${statusDot("ok")} Ricevuti` : `${statusDot("warn")} Non Ancora Ricevuti`],
+  ]) + (m.connected && !m.access_events_seen ? '<p class="hint">Se dopo il passaggio di una tessera compare solo IdPoint, aggiungi gli eventi AccessControl (accesso concesso e negato) al filtro eventi MQTT dell\'A1210: servono per sapere se la porta si è aperta e perché un accesso è stato negato.</p>' : "")
+    + (cats.length ? `<details style="margin-top:12px"><summary class="small-text muted" style="cursor:pointer">Eventi Ricevuti per Categoria (${cats.length})</summary><div class="table-wrap"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo Topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div></details>` : "");
+  const doors = s.doors.filter((d) => ctrl.doors.some((x) => x.id === d.id));
+  const doorList = doors.length ? `<div class="list">${doors.map((d) => `<a class="item door-row" href="#porte/${d.id}" style="padding-left:0;padding-right:0">
+      <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
+      <div class="grow"><div class="title">${esc(d.name)}</div>
+        <div class="meta">${d.camera ? `<span>telecamera ${esc(d.camera)}</span>` : ""}${d.intercom ? `<span>citofono ${esc(d.intercom)}</span>` : ""}${d.ha_buttons ? "<span>pulsanti in Home Assistant</span>" : ""}</div></div>
+      <span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span></a>`).join("")}</div>`
+    : `<p class="muted" style="margin:0">Nessuna porta gestita dall'app: aggiungile nella scheda <a href="#impianti/c${ctrl.id}/porte">Porte</a>.</p>`;
+  const names = doors.map((d) => d.name);
+  const intercoms = s.intercoms.filter((ic) => names.includes(ic.door));
+  const intercomCard = intercoms.length ? `<div class="card"><h2>${icon("phone")}Citofoni</h2>${intercoms.map((ic) => props([
+    ["Porta", esc(ic.door)], ["Nome", esc(ic.name)], ["Apertura dal Citofono", ic.open_door ? "Attiva" : "Disattivata"],
+    ["Stato Chiamata", esc(({idle: "Libero", ringing: "Sta Suonando", ring: "Sta Suonando", oncall: "In Conversazione", dismissed: "Chiusa"})[String(ic.call_state).toLowerCase()] || ic.call_state || "—")], ["Ultimo Messaggio", ic.last_message_at ? esc(relTime(ic.last_message_at)) : "—"],
+  ])).join('<hr style="border:none;border-top:1px solid var(--border);margin:12px 0">')}</div>` : "";
+  body.innerHTML = `<div class="grid two">
+      <div>
+        <div class="card"><h2>${statusDot(c.ok ? "ok" : "err")}Controller</h2>${ctrlInfo}
+          <p class="hint">Ultima sincronizzazione delle tessere: ${s.sync.at ? esc(relTime(s.sync.at)) : "non ancora eseguita"}${s.sync.ok === false ? ` · <span style="color:var(--err)">${esc(s.sync.error)}</span>` : ""}</p></div>
+        <div class="card"><h2>${icon("door")}Porte</h2>${doorList}</div>
+      </div>
+      <div>
+        <div class="card"><h2>${statusDot(!m.configured || !m.connected ? "err" : m.access_events_seen ? "ok" : "warn")}Eventi MQTT</h2>${mqtt}</div>
+        ${intercomCard}
+      </div>
+    </div>`;
+  paintIcons(body);
+}
+
 function controllerHistory(body, p) {
   body.innerHTML = `<div class="card flush"><h2>Storico Modifiche<span class="spacer"></span><span class="muted small-text">annulla per riportare com'era</span></h2>
     <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Modifica</th><th></th></tr></thead><tbody>
@@ -2167,66 +2217,39 @@ const props = (pairs) => `<dl class="props">${pairs.map(([k, v]) => `<dt>${esc(k
 const statusDot = (cls) => `<span class="dot ${cls}"></span>`;
 let auditRows = [];
 async function viewSettings(el, sub) {
-  const tabs = [["stato", "Stato"], ...(store.me.admin ? [["notifiche", "Notifiche"], ["utenti", "Utenti"], ["attivita", "Attività"]] : [])];
-  const tab = tabs.some(([k]) => k === sub) ? sub : "stato";
-  el.innerHTML = `${tabs.length > 1 ? `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impostazioni/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>` : ""}<div id="st-body"><div class="loading"><span class="spinner"></span> verifica del controller…</div></div>`;
+  const tabs = [["generale", "Generale"], ...(store.me.admin ? [["notifiche", "Notifiche"], ["utenti", "Utenti"], ["attivita", "Attività"]] : [])];
+  const tab = tabs.some(([k]) => k === sub) ? sub : "generale";
+  el.innerHTML = `${tabs.length > 1 ? `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impostazioni/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>` : ""}<div id="st-body">${loadingBox()}</div>`;
   const body = $("#st-body");
   if (tab === "notifiche") return viewNotificationSettings(body);
   if (tab === "utenti") return viewUsers(body);
   if (tab === "attivita") return viewAudit(body);
+  // Solo l'applicazione: lo stato di controller, porte, MQTT e citofoni è nella pagina del controller
   let s;
-  try { s = await api("api/status"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
-  const c = s.controller, m = s.mqtt, ha = s.home_assistant, o = s.options;
-  const configLink = can("impianti") ? ' <a href="#impianti">Configura in Impianti</a>' : "";
-  const ctrl = c.ok ? props([
-    ["Stato", `${statusDot("ok")} Raggiungibile`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
-    ["Porte", c.doors.map((d) => `<code>${esc(d)}</code>`).join(", ")],
-    ["Tessere sul Controller", esc(c.credentials)],
-  ]) : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${configLink}</div></div>`;
-  const cats = Object.entries(m.categories || {});
-  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta mqtt_host nelle opzioni dell'add-on.</div></div>` : props([
-    ["Broker", m.connected ? `${statusDot("ok")} Collegato` : `${statusDot("err")} Non Collegato ${esc(m.error)}`],
-    ["Prefisso", `<code>${esc(m.prefix)}</code>`],
-    ["Controller", m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? `${statusDot("ok")} Online` : `${statusDot("err")} Offline`],
-    ["Ultima Tessera Letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
-    ["Eventi AccessControl", m.access_events_seen ? `${statusDot("ok")} Ricevuti` : `${statusDot("warn")} Non Ancora Ricevuti`],
-  ]) + (m.connected && !m.access_events_seen ? '<p class="hint">Se dopo il passaggio di una tessera compare solo IdPoint, aggiungi gli eventi AccessControl (accesso concesso e negato) al filtro eventi MQTT dell\'A1210: servono per sapere se la porta si è aperta e perché un accesso è stato negato.</p>' : "")
-    + (cats.length ? `<div class="table-wrap" style="margin-top:12px"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo Topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div>` : "");
-  const doors = s.doors.length ? `<div class="list">${s.doors.map((d) => `<div class="item" style="padding-left:0;padding-right:0">
-      <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
-      <div class="grow"><div class="title">${esc(d.name)} <span class="muted" style="font-weight:400">· ${esc(d.mode ? DOOR_MODES[d.mode] || d.mode : "Stato Sconosciuto")}</span></div>
-        <div class="meta">${d.camera ? `<span>telecamera ${esc(d.camera)}</span>` : ""}${d.intercom ? `<span>citofono ${esc(d.intercom)}</span>` : ""}${d.ha_buttons ? "<span>pulsanti in Home Assistant</span>" : ""}</div></div></div>`).join("")}</div>`
-    : `<p class="muted" style="margin:0">Nessuna porta configurata.${configLink}</p>`;
-  const intercoms = s.intercoms.length ? `<div class="card"><h2>${icon("phone")}Citofoni</h2>${s.intercoms.map((ic) => props([
-    ["Porta", esc(ic.door)], ["Nome", esc(ic.name)], ["Apertura dal Citofono", ic.open_door ? "Attiva" : "Disattivata"],
-    ["Stato Chiamata", esc(({idle: "Libero", ringing: "Sta Suonando", ring: "Sta Suonando", oncall: "In Conversazione", dismissed: "Chiusa"})[String(ic.call_state).toLowerCase()] || ic.call_state || "—")], ["Ultimo Messaggio", ic.last_message_at ? esc(relTime(ic.last_message_at)) : "—"],
-  ])).join('<hr style="border:none;border-top:1px solid var(--border);margin:12px 0">')}</div>` : "";
+  try { s = await api("api/status?controller=false"); } catch (err) { body.innerHTML = errorBox("Stato Non Leggibile", err); return; }
+  const m = s.mqtt, ha = s.home_assistant, o = s.options;
   const haCard = props([
     ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} Attive, dispositivo "Controllo Accessi"` : `${statusDot("")} Disattivate nelle opzioni`],
     ...(ha.integration ? [["Entità", esc(ha.entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
     ["API di Home Assistant", ha.api ? `${statusDot("ok")} Disponibile` : `${statusDot("warn")} Non Disponibile`],
-  ]) + `<p class="hint">L'evento "Eventi Accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni. I pulsanti di apertura si attivano per ogni porta in Impianti.</p>`;
+  ]) + `<p class="hint">L'evento "Eventi Accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni. I pulsanti di apertura si attivano per ogni porta nella pagina del controller.</p>`;
   body.innerHTML = `
-    ${!c.ok && !s.doors.length && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b>Indirizzo, utente e password del controller, porte, citofono e telecamera si impostano nella pagina Impianti.</div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
+    ${store.summary.configured === false && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b>Controller, porte, citofono e telecamera si impostano nella pagina Impianti.</div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
     <div class="grid two">
       <div>
-        <div class="card"><h2>${statusDot(c.ok ? "ok" : "err")}Controller</h2>${ctrl}
-          <p class="hint">Ultima sincronizzazione: ${s.sync.at ? esc(relTime(s.sync.at)) : "non ancora eseguita"}${s.sync.ok === false ? ` · <span style="color:var(--err)">${esc(s.sync.error)}</span>` : ""}</p></div>
-        <div class="card"><h2>${icon("door")}Porte</h2>${doors}</div>
-        <div class="card"><h2>${statusDot(!m.configured || !m.connected ? "err" : m.access_events_seen ? "ok" : "warn")}Eventi MQTT</h2>${mqtt}</div>
-      </div>
-      <div>
-        ${intercoms}
         <div class="card"><h2>${icon("dashboard")}Home Assistant</h2>${haCard}</div>
         <div class="card"><h2>${icon("cog")}Opzioni dell'Add-on</h2>${props([
           ["Gruppo Predefinito", esc(o.default_group ? (await loadGroups(), groupName(o.default_group)) : "—")],
           ["Conservazione Registro", `${o.event_retention_days} giorni`],
           ["Broker MQTT", o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
         ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti Aggiuntivi → Axis Access Manager → Configurazione. Il gruppo predefinito si sceglie in Regole → Gruppi.</p></div>
+      </div>
+      <div>
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
           <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). Prima vedi un'anteprima, poi confermi. Le tessere già registrate vengono saltate.</p></div>
+        ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Stato del controller, delle porte, degli eventi MQTT e dei citofoni: nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
       </div>
     </div>
     <p class="muted small-text" style="text-align:center">Axis Access Manager ${esc(store.me.version || "")}</p>`;
