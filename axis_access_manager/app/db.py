@@ -596,6 +596,14 @@ class Database:
         )
         return row
 
+    def list_controller_change_objects(self, controller_id: int, kind: str) -> list[dict]:
+        """Oggetti salvati prima e dopo ogni modifica di un tipo, dalla più recente."""
+        rows = self._query(
+            "SELECT before, after FROM controller_changes WHERE controller_id = ? AND kind = ? ORDER BY id DESC",
+            (controller_id, kind),
+        )
+        return [json.loads(row[side]) for row in rows for side in ("before", "after")]
+
     def mark_change_undone(self, change_id: int) -> None:
         self._execute("UPDATE controller_changes SET undone = 1 WHERE id = ?", (change_id,))
 

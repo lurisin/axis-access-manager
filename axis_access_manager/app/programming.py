@@ -152,6 +152,30 @@ class ProgrammingService:
         self.db.add_controller_change(user, self.controller_id, kind, token, summary, before, after)
         self.db.add_audit(user, "programmazione controller", summary)
 
+    def _device_uuids(self, points: list[dict]) -> tuple[dict[str, str], str]:
+        """Dispositivo (DeviceUUID) di ogni lettore, preso dai punti di accesso o, se il lettore ora è
+        scollegato da tutto, dallo storico delle modifiche; il secondo valore è per i lettori mai visti.
+        """
+        objects = points + self.db.list_controller_change_objects(self._check(), "access_point")
+        known: dict[str, str] = {}
+        for item in objects:
+            for device in item.get("IdPointDevice") or []:
+                if device.get("IdPoint") and device.get("DeviceUUID"):
+                    known.setdefault(device["IdPoint"], device["DeviceUUID"])
+        # Lettori mai collegati: stesso dispositivo degli altri (i lettori sono del controller stesso)
+        return known, next(iter(known.values()), "")
+
+    @staticmethod
+    def _devices(readers: list[str], current: list[dict], known: dict[str, str], fallback: str) -> list[dict]:
+        """Voci IdPointDevice per i lettori scelti; chi non ha il dispositivo lo riprende da known."""
+        by_reader = {d.get("IdPoint"): d for d in current}
+        return [
+            by_reader[r]
+            if (by_reader.get(r) or {}).get("DeviceUUID")
+            else {"IdPoint": r, "DeviceUUID": known.get(r) or fallback}
+            for r in readers
+        ]
+
     async def update_door(self, token: str, data: dict, user: str) -> None:
         self._check()
         async with self.lock:
@@ -216,8 +240,8 @@ class ProgrammingService:
                 chosen = [r for r in data["readers"] if r]
                 if any(r not in readers for r in chosen):
                     raise ServiceError("lettore non trovato sul controller")
-                devices = {i.get("IdPoint"): i for i in before.get("IdPointDevice") or []}
-                after["IdPointDevice"] = [devices.get(r) or {"IdPoint": r, "DeviceUUID": ""} for r in chosen]
+                known, fallback = self._device_uuids(await self.controller.list_access_points())
+                after["IdPointDevice"] = self._devices(chosen, before.get("IdPointDevice") or [], known, fallback)
             if "direction" in data:
                 direction = data["direction"] or ""
                 if direction and direction not in DIRECTIONS:
@@ -243,12 +267,7 @@ class ProgrammingService:
             readers = {r.get("token") for r in await self.controller.list_idpoints()}
             doors = {d.get("token"): d.get("Name") or d.get("token") for d in await self.controller.door_info_list()}
             points = [p for p in points if p.get("Entity") in doors]
-            devices: dict[str, dict] = {}
-            for point in points:
-                for device in point.get("IdPointDevice") or []:
-                    devices.setdefault(device.get("IdPoint"), device)
-            # Lettori mai collegati: stesso dispositivo degli altri (i lettori sono del controller stesso)
-            uuid = next((d.get("DeviceUUID") for d in devices.values() if d.get("DeviceUUID")), "")
+            known, fallback = self._device_uuids(points)
             wanted: dict[str, list[str]] = {p["token"]: [] for p in points}
             enabled: dict[str, bool] = {}
             for link in links:
@@ -279,10 +298,12 @@ class ProgrammingService:
                 token = point["token"]
                 before_readers = [i.get("IdPoint") for i in point.get("IdPointDevice") or []]
                 after = copy.deepcopy(point)
-                if set(before_readers) != set(wanted[token]):
-                    after["IdPointDevice"] = [
-                        devices.get(r) or {"IdPoint": r, "DeviceUUID": uuid} for r in wanted[token]
-                    ]
+                current = point.get("IdPointDevice") or []
+                # Stessi lettori: si salva comunque se a uno manca il dispositivo e lo si conosce
+                order = before_readers if set(before_readers) == set(wanted[token]) else wanted[token]
+                devices = self._devices(order, current, known, fallback)
+                if devices != current:
+                    after["IdPointDevice"] = devices
                 if token in enabled and (point.get("Enabled", True) is not False) != enabled[token]:
                     after["Enabled"] = enabled[token]
                 if after != point:
