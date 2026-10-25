@@ -923,7 +923,12 @@ def create_app(
 
     @app.get("/api/programming", dependencies=[need("impianti")])
     async def programming(request: Request) -> dict:
-        return await request.app.state.programming.read()
+        data = await request.app.state.programming.read()
+        # Stato in tempo reale degli ingressi che mandano gli eventi Device/IO/Port
+        ports = request.app.state.monitor.io_ports
+        for item in data.get("inputs", []):
+            item["active"] = ports.get(item["port"]) if item["port"] is not None else None
+        return data
 
     @app.put("/api/programming/doors/{token:path}", dependencies=[need("impianti")])
     async def program_door(token: str, body: HardwareDoorIn, request: Request) -> dict:
@@ -956,7 +961,8 @@ def create_app(
 
     @app.post("/api/programming/changes/{change_id}/undo", dependencies=[need("impianti")])
     async def undo_change(change_id: int, request: Request) -> dict:
-        await request.app.state.programming.undo(change_id, request_user(request))
+        if await request.app.state.programming.undo(change_id, request_user(request)) == "input":
+            await reload_runtime(request.app)
         return {"ok": True}
 
     @app.get("/api/cameras", dependencies=[need("impianti")])

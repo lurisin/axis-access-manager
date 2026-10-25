@@ -150,6 +150,8 @@
   .sch-line { fill: none; stroke-width: 3; stroke: var(--accent); }
   .sch-line.new { stroke: var(--warn); stroke-dasharray: 8 6; }
   .sch-line.off { stroke: var(--muted); stroke-dasharray: 3 6; }
+  .sch-line.input { stroke: var(--info); }
+  .sch-gear.input { border-color: var(--info); }
   .sch-gear { position: absolute; z-index: 2; width: 34px; height: 34px; padding: 0; border-radius: 50%; border: 2px solid var(--accent); background: var(--surface);
     display: grid; place-items: center; color: var(--text); }
   .sch-gear.new { border-color: var(--warn); } .sch-gear.off { border-color: var(--muted); }
@@ -1841,10 +1843,25 @@ function linksOf(p) {
   return links;
 }
 
+const INPUT_ICONS = {"": "chip", rex: "arrow", intercom: "phone", door_monitor: "door", alarm: "alert"};
+const DOOR_INPUT_ROLES = ["rex", "intercom", "door_monitor"];
+const INPUT_ROLE_HINTS = {
+  "": "L'ingresso non fa niente; resta solo lo stato in Home Assistant, se il controller lo manda.",
+  rex: "Chiede l'apertura della porta, come un lettore in uscita: per il pulsante della portineria o di uscita.",
+  intercom: "Il contatto del relè del citofono: apre la porta anche con Home Assistant spento. Nel registro compare come Relè Citofono.",
+  door_monitor: "Il contatto magnetico della porta: abilita gli allarmi di porta forzata e aperta troppo a lungo.",
+  alarm: "Nessuna azione sulla porta: lo stato arriva in Home Assistant con il nome scelto.",
+};
+
 function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   const saved = linksOf(p);
   let pending = saved.map((l) => ({...l}));
-  let selected = null;
+  let selected = null, selectedInput = null;
+  const inputs = p.inputs || [];
+  const inputOf = (io) => inputs.find((i) => i.io === io);
+  const linkedDoor = (i) => DOOR_INPUT_ROLES.includes(i.role) && i.door ? i.door : "";
+  const inputMeta = (i) => [p.input_roles?.[i.role] || "Non Usato", linkedDoor(i) ? doorName({token: i.door}) : "", i.pins.join(", ")].filter(Boolean).join(" · ");
+  const inputDot = (i) => i.active === true ? '<span class="dot warn" title="Attivo"></span>' : i.active === false ? '<span class="dot ok" title="A riposo"></span>' : "";
   const readerName = (token) => { const r = p.readers.find((x) => x.token === token); return r?.name || token; };
   const directionsOf = (door) => [...new Set(p.access_points.filter((a) => a.door === door).map((a) => a.direction || ""))];
   const changes = () => {
@@ -1864,13 +1881,15 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
       <p class="muted small-text" id="sch-hint" style="margin-top:0"></p>
       ${p.readers.length && p.doors.length ? `<div class="schema" id="schema">
         <div class="sch-col"><div class="sch-head">Lettori</div>${p.readers.map((r) => `<button type="button" class="sch-node" data-reader="${esc(r.token)}">
-          <span class="ev-icon k-accent">${icon("card")}</span><span class="grow"><b>${esc(r.name || r.token)}</b><span class="sch-meta" data-reader-meta="${esc(r.token)}"></span></span></button>`).join("")}</div>
+          <span class="ev-icon k-accent">${icon("card")}</span><span class="grow"><b>${esc(r.name || r.token)}</b><span class="sch-meta" data-reader-meta="${esc(r.token)}"></span></span></button>`).join("")}
+          ${inputs.length ? `<div class="sch-head" style="margin-top:8px">Ingressi</div>${inputs.map((i) => `<button type="button" class="sch-node" data-input="${esc(i.io)}">
+          <span class="ev-icon ${i.role ? "k-info" : "k-muted"}">${icon(INPUT_ICONS[i.role] || "chip")}</span><span class="grow"><b>${esc(i.name)}</b><span class="sch-meta">${esc(inputMeta(i))}</span></span>${inputDot(i)}</button>`).join("")}` : ""}</div>
         <div class="sch-mid"></div>
         <div class="sch-col"><div class="sch-head" style="text-align:right">Porte</div>${p.doors.map((d) => `<button type="button" class="sch-node" data-door="${esc(d.token)}">
           <span class="ev-icon k-ok">${icon("door")}</span><span class="grow"><b>${esc(doorName(d))}</b><span class="sch-meta">${appDoor(d.token) ? esc(d.name && d.name !== doorName(d) ? `sul controller: ${d.name}` : d.token) : "non gestita dall'app"}</span></span></button>`).join("")}</div>
         <svg class="sch-lines" id="sch-svg" aria-hidden="true"></svg><div id="sch-gears"></div>
       </div>` : '<div class="empty">Sul controller non ci sono lettori o porte da collegare.</div>'}
-      <p class="hint">Ogni filo è un lettore che comanda una porta. Le modifiche si scrivono sul controller solo con Salva, e ognuna si può annullare dallo Storico Modifiche.</p>
+      <p class="hint">Ogni filo è un lettore o un ingresso che comanda una porta. I collegamenti dei lettori si scrivono sul controller solo con Salva; quelli degli ingressi con il Salva della loro scheda. Ogni modifica si può annullare dallo Storico Modifiche.</p>
     </div>
     <div class="save-bar" id="sch-bar" hidden><span class="grow" id="sch-changes"></span><button type="button" id="sch-discard">Scarta</button><button type="button" class="primary" id="sch-save">Salva</button></div>`;
   paintIcons(body);
@@ -1906,18 +1925,35 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
       used.push([gx, gy]);
       buttons += `<button type="button" class="sch-gear ${state}" data-link="${i}" style="left:${gx - 17}px;top:${gy - 17}px" title="${esc(readerName(l.reader))} → ${esc(doorName({token: l.door}))} · ${DIRECTION_LABELS[l.direction]}" aria-label="Impostazioni del collegamento ${esc(readerName(l.reader))} verso ${esc(doorName({token: l.door}))}">${icon("cog")}</button>`;
     });
+    inputs.forEach((i) => {
+      if (!linkedDoor(i)) return;
+      const n = $(`[data-input="${CSS.escape(i.io)}"]`, schema), d = $(`[data-door="${CSS.escape(i.door)}"]`, schema);
+      if (!n || !d) return;
+      const a = n.getBoundingClientRect(), b = d.getBoundingClientRect();
+      const x1 = a.right - box.left, y1 = a.top + a.height / 2 - box.top, x2 = b.left - box.left, y2 = b.top + b.height / 2 - box.top;
+      const mx = (x1 + x2) / 2;
+      paths += `<path d="M${x1} ${y1} C${mx} ${y1} ${mx} ${y2} ${x2} ${y2}" class="sch-line input"/>`;
+      // Ingranaggio verso l'ingresso, per non sovrapporsi a quelli dei lettori al centro
+      const t = 0.3, u = 1 - t;
+      const gx = u * u * u * x1 + 3 * u * u * t * mx + 3 * u * t * t * mx + t * t * t * x2;
+      const gy = u * u * u * y1 + 3 * u * u * t * y1 + 3 * u * t * t * y2 + t * t * t * y2;
+      buttons += `<button type="button" class="sch-gear input" data-input-gear="${esc(i.io)}" style="left:${gx - 17}px;top:${gy - 17}px" title="${esc(i.name)} → ${esc(doorName({token: i.door}))}" aria-label="Impostazioni dell'ingresso ${esc(i.name)}">${icon("cog")}</button>`;
+    });
     svg.innerHTML = paths;
     gears.innerHTML = buttons;
   }
 
   function update() {
     $$("[data-reader]", schema).forEach((n) => n.classList.toggle("sel", n.dataset.reader === selected));
-    $$("[data-door]", schema).forEach((n) => n.classList.toggle("target", Boolean(selected)));
+    $$("[data-input]", schema).forEach((n) => n.classList.toggle("sel", n.dataset.input === selectedInput));
+    $$("[data-door]", schema).forEach((n) => n.classList.toggle("target", Boolean(selected || selectedInput)));
     $$("[data-reader-meta]", schema).forEach((m) => {
       const mine = pending.filter((l) => l.reader === m.dataset.readerMeta);
       m.textContent = mine.length ? mine.map((l) => `${doorName({token: l.door})} · ${DIRECTION_LABELS[l.direction]}`).join(", ") : "non collegato";
     });
-    $("#sch-hint").textContent = selected ? `Ora tocca la porta da collegare a ${readerName(selected)}. Tocca di nuovo il lettore per annullare.` : "Tocca un lettore e poi una porta per collegarli. L'ingranaggio sul filo apre direzione e stato del collegamento.";
+    $("#sch-hint").textContent = selectedInput ? `Ora tocca la porta da collegare a ${inputOf(selectedInput)?.name}, oppure tocca di nuovo l'ingresso per nome, ruolo e cablaggio.`
+      : selected ? `Ora tocca la porta da collegare a ${readerName(selected)}. Tocca di nuovo il lettore per annullare.`
+      : "Tocca un lettore o un ingresso e poi una porta per collegarli. L'ingranaggio sul filo apre le impostazioni del collegamento.";
     const list = changes();
     $("#sch-bar").hidden = !list.length;
     $("#sch-changes").textContent = list.length ? `Modifiche non salvate: ${list.length === 1 ? list[0] : plural(list.length, "modifica", "modifiche")}` : "";
@@ -1947,11 +1983,56 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     update();
   }
 
+  async function editInput(i, door = "") {
+    let role = i.role;
+    if (door && !DOOR_INPUT_ROLES.includes(role)) role = i.roles.find((r) => DOOR_INPUT_ROLES.includes(r)) || "";
+    if (door && !DOOR_INPUT_ROLES.includes(role)) { toast(`${i.name}: questo ingresso non si collega a una porta`, true); return; }
+    const doorOptions = p.doors.map((d) => `<option value="${esc(d.token)}" ${d.token === (door || i.door) ? "selected" : ""}>${esc(doorName(d))}</option>`).join("");
+    const startName = role !== i.role && (i.name === i.default_name || Object.values(p.input_roles).includes(i.name)) ? p.input_roles[role] || i.default_name : i.name;
+    const ok = await modal({title: `Ingresso ${i.name}`,
+      body: `${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}. È anche il nome dell'entità in Home Assistant.`)}
+        ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(INPUT_ROLE_HINTS[role] || "")}</span>${i.io === "DPS" ? " Il ruolo Sensore Porta arriva dopo una prova al banco." : ""}`)}
+        <div data-door-field ${DOOR_INPUT_ROLES.includes(role) ? "" : "hidden"}>${field("Porta", `<select name="door">${doorOptions}</select>`)}</div>
+        ${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.")}
+        <div class="field inline"><input type="checkbox" name="supervised" id="f-sup" ${i.supervised ? "checked" : ""} ${i.can_supervise ? "" : "disabled"}><label for="f-sup">Linea Supervisionata</label></div>
+        <p class="hint" style="margin-top:-8px">${i.can_supervise ? "Con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. Attivala solo se le resistenze sono montate. Dopo averla tolta, l'ingresso può risultare attivo finché non riavvii il controller." : "Questo ingresso non supporta la linea supervisionata."}</p>`,
+      onOpen: (dlg) => {
+        const select = $('[name="role"]', dlg), name = $('[name="name"]', dlg);
+        select.onchange = () => {
+          // Il nome segue il ruolo finché è quello di serie
+          if (!name.value.trim() || name.value.trim() === i.default_name || Object.values(p.input_roles).includes(name.value.trim())) {
+            name.value = select.value ? p.input_roles[select.value] : i.default_name;
+          }
+          $("[data-door-field]", dlg).hidden = !DOOR_INPUT_ROLES.includes(select.value);
+          $("[data-role-hint]", dlg).textContent = INPUT_ROLE_HINTS[select.value] || "";
+        };
+      },
+      actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
+        (await saveProgramming(`api/programming/inputs/${encodeURIComponent(i.io)}`, {name: val(dlg, "name"), role: val(dlg, "role"), door: val(dlg, "door"), contact: val(dlg, "contact"), supervised: val(dlg, "supervised")}, "Ingresso salvato")) || false}]});
+    if (ok) render();
+  }
+
   schema.onclick = (e) => {
+    const inputGear = e.target.closest("[data-input-gear]");
+    if (inputGear) { selected = null; selectedInput = null; update(); editInput(inputOf(inputGear.dataset.inputGear)); return; }
+    const input = e.target.closest("[data-input]");
+    if (input) {
+      selected = null;
+      if (selectedInput === input.dataset.input) { selectedInput = null; update(); editInput(inputOf(input.dataset.input)); }
+      else { selectedInput = input.dataset.input; update(); }
+      return;
+    }
+    if (selectedInput && e.target.closest("[data-door]")) {
+      const i = inputOf(selectedInput);
+      selectedInput = null;
+      update();
+      editInput(i, e.target.closest("[data-door]").dataset.door);
+      return;
+    }
     const gear = e.target.closest("[data-link]");
     if (gear) { selected = null; editLink(pending[Number(gear.dataset.link)]); return; }
     const reader = e.target.closest("[data-reader]");
-    if (reader) { selected = selected === reader.dataset.reader ? null : reader.dataset.reader; update(); return; }
+    if (reader) { selectedInput = null; selected = selected === reader.dataset.reader ? null : reader.dataset.reader; update(); return; }
     const door = e.target.closest("[data-door]");
     if (!door || !selected) return;
     const token = door.dataset.door;

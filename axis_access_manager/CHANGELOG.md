@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0
+
+- **Ingressi del controller** nello schema, sotto i lettori: contatto porta e REX del connettore Door, i due AUX, Manomissione e Allarme, con lo stato in tempo reale dove il controller lo manda. Tocca un ingresso e poi una porta per collegarlo, oppure tocca due volte l'ingresso per aprirne la scheda: nome, ruolo, porta, contatto (Normalmente Aperto o Chiuso) e **Linea Supervisionata** sì o no.
+- Ruoli:
+  - **Pulsante Uscita**: sblocca la porta, per esempio dalla portineria;
+  - **Relè Citofono**: apre la porta anche con Home Assistant spento;
+  - **Ingresso di Allarme**;
+  - **Non Usato**.
+- Per pulsante e relè l'app scrive sul controller il punto di identificazione, l'assegnazione dell'ingresso e il punto di accesso in uscita. Ogni modifica si annulla dallo Storico Modifiche.
+- Registro: le aperture compaiono con il nome dato all'ingresso (ad esempio "Pulsante Portineria"), con ruolo e morsetto nel dettaglio ("Pulsante Uscita · Aux 1").
+- Home Assistant: le entità degli ingressi AUX, Manomissione e Allarme prendono il nome scelto nell'app.
+
 ## 0.8.4
 
 - Registro e Notifiche: anche i dinieghi salvati prima della 0.8.2 compaiono con il motivo in italiano ("fuori fascia oraria" invece di "NotPermittedAtThisTime"); la traduzione si fa una volta all'avvio.

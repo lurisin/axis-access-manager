@@ -107,6 +107,62 @@ async def test_controller_inputs_get_name_role_and_door(db, controller):
     assert saved["door_token"] == "" and saved["name"] == "Allagamento"
 
 
+async def test_rex_input_is_written_to_the_controller_and_can_be_undone(db, controller):
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+
+    await service.update_input("REX", {"name": "Pulsante Portineria", "role": "rex", "door": "porta"}, "admin")
+    row = db.controller_inputs(controller_id)["REX"]
+    idpoint, point = row["idpoint_token"], row["access_point_token"]
+    assert controller.idpoints[idpoint]["Name"] == "Pulsante Portineria"
+    assert controller.idpoint_configs[idpoint]["IdPoint.REX.Type"] == "ActiveLow"
+    assert controller.idpoint_configs[idpoint]["IdPoint.Reader.Type"] == "None"
+    assert controller.io_assignments["REX"]["IoMode"] == "in:pu/gnd"
+    assert controller.io_assignments["REX"]["IoUser"][0]["Usage"] == "REX"
+    ap = next(a for a in controller.access_points if a["token"] == point)
+    assert ap["Entity"] == "porta" and ap["AuthenticationProfile"] == ["REXOnly"]
+    assert {"Name": "Direction", "Value": "out"} in ap["Attribute"]
+    assert ap["IdPointDevice"][0]["IdPoint"] == idpoint
+
+    # Relè del citofono su AUX, linea supervisionata e contatto NC: tipo e uso supervisionati
+    await service.update_input(
+        "IO1", {"role": "intercom", "door": "porta", "supervised": True, "contact": "nc"}, "admin"
+    )
+    relay = db.controller_inputs(controller_id)["IO1"]
+    assert controller.idpoint_configs[relay["idpoint_token"]]["IdPoint.REX.Type"] == "SupervisedActiveHigh"
+    assert controller.io_assignments["IO1"] == {
+        "IoMode": "supervised",
+        "IoUser": [{"Type": "idpoint", "token": relay["idpoint_token"], "Usage": "REXSupervised", "MultiIo": False}],
+    }
+
+    # Lo schema dei lettori non vede pulsante e relè: salvarlo non li tocca
+    data = await service.read()
+    assert idpoint not in {r["token"] for r in data["readers"]}
+    assert point not in {a["token"] for a in data["access_points"]}
+    await service.set_links([{"reader": "lettore-1", "door": "porta", "direction": "in"}], "admin")
+    ap = next(a for a in controller.access_points if a["token"] == point)
+    assert ap["IdPointDevice"][0]["IdPoint"] == idpoint
+
+    # Ruolo tolto: punto di accesso e punto di identificazione rimossi, ingresso liberato in un modo innocuo
+    await service.update_input("REX", {"role": ""}, "admin")
+    assert idpoint not in controller.idpoints and all(a["token"] != point for a in controller.access_points)
+    assert controller.io_assignments["REX"] == {"IoMode": "in:pu/gnd", "IoUser": []}
+    assert db.controller_inputs(controller_id)["REX"]["idpoint_token"] == ""
+
+    # Annulla dallo Storico Modifiche: torna il pulsante
+    change = next(c for c in db.list_controller_changes(controller_id) if c["kind"] == "input" and c["token"] == "REX")
+    await service.undo(change["id"], "admin")
+    row = db.controller_inputs(controller_id)["REX"]
+    assert row["role"] == "rex" and row["idpoint_token"] in controller.idpoints
+
+    # Il controller rifiuta l'assegnazione: errore chiaro, i token creati restano per il prossimo tentativo
+    controller.fail_io_assignment = True
+    with pytest.raises(ServiceError, match="rifiutato la configurazione"):
+        await service.update_input("IO2", {"role": "rex", "door": "porta"}, "admin")
+    assert db.controller_inputs(controller_id)["IO2"]["idpoint_token"].startswith("idpoint-")
+    assert db.controller_inputs(controller_id)["IO2"]["role"] == ""
+
+
 async def test_programming_changes_can_be_undone(db, controller):
     service = ProgrammingService(db, controller, 1, asyncio.Lock())
     data = await service.read()
@@ -118,7 +174,7 @@ async def test_programming_changes_can_be_undone(db, controller):
     assert data["errors"] == ["configurazione lettori: non supportato"]
     inputs = {i["io"]: i for i in data["inputs"]}
     assert list(inputs) == ["DPS", "REX", "IO1", "ALARM"]
-    assert inputs["REX"]["pins"] == ["Door 1:4"] and inputs["REX"]["can_supervise"] is True
+    assert inputs["REX"]["pins"] == ["Door 1:3+4"] and inputs["REX"]["can_supervise"] is True
     assert inputs["REX"]["assigned"] == [] and inputs["IO1"]["port"] == "0"
     assert inputs["ALARM"]["name"] == "Ingresso Allarme" and inputs["ALARM"]["can_supervise"] is False
     assert inputs["REX"]["roles"] == ["", "rex", "intercom"] and inputs["REX"]["role"] == ""

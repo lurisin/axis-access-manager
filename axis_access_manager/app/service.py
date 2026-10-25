@@ -20,6 +20,9 @@ _LOGGER = logging.getLogger(__name__)
 
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
 
+# Ruoli degli ingressi del controller che aprono la porta: tipo di apertura per il registro
+INPUT_SOURCES = {"rex": "Pulsante Uscita", "intercom": "Relè Citofono"}
+INPUT_TERMINALS = {"REX": "REX", "IO1": "Aux 1", "IO2": "Aux 2"}
 DENIED_REASONS = {
     "CredentialNotEnabled": "tessera sospesa",
     "CredentialNotActive": "tessera non ancora valida",
@@ -541,11 +544,16 @@ class AccessService:
             if card is None and number:
                 card = self.db.card_by_number(number)
             reason = str(data.get("Reason") or ("CredentialNotFound" if "CredentialNotFound" in topic else ""))
+            pushed = self._input_source(str(data.get("AccessPointToken") or "")) if card is None and granted else None
             # Stesso esito, stesso punto di accesso, stesso secondo: è lo stesso passaggio
             key = (granted, data.get("AccessPointToken") or door, ts)
             if key in self._recent_decisions:
                 return
             self._recent_decisions.append(key)
+            if pushed:
+                # Pulsante di uscita o relè del citofono su un ingresso del controller: un'apertura senza tessera
+                self.log_event(ts=ts, kind="apertura_remota", source=pushed[0], detail=pushed[1], raw=data, door=door)
+                return
             self.log_event(
                 ts=ts,
                 kind="concesso" if granted else "negato",
@@ -566,6 +574,21 @@ class AccessService:
             self.log_event(ts=ts, kind="manomissione", detail="manomissione porta", source="porta", raw=data, door=door)
         elif topic.startswith("Device/Casing/Open") and str(data.get("Open")) == "1":
             self.log_event(ts=ts, kind="manomissione", detail="alloggiamento controller aperto", source="controller")
+
+    def _input_source(self, access_point: str) -> tuple[str, str] | None:
+        """Sorgente e dettaglio per il registro dell'ingresso del controller che usa questo punto di accesso:
+        il nome scelto nelle impostazioni ("Pulsante Portineria") e ruolo e morsetto ("Pulsante Uscita · Aux 1")."""
+        if not access_point:
+            return None
+        for row in self.db.all_controller_inputs():
+            if row.get("access_point_token") != access_point:
+                continue
+            role = INPUT_SOURCES.get(row["role"], "")
+            if not role:
+                return None
+            terminal = INPUT_TERMINALS.get(row["io"], row["io"])
+            return row["name"] or role, f"{role} · {terminal}"
+        return None
 
     def _door_of(self, event: Event) -> str:
         """Porta dell'evento: dal topic, dai dati o dal punto di accesso; altrimenti la porta principale."""

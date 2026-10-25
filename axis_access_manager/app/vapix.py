@@ -195,6 +195,40 @@ class A1210Client:
             # Nella documentazione Axis il metodo compare anche come SetIdPointList
             await self._post("/vapix/idpoint", {"axtid:SetIdPointList": {"IdPoint": [idpoint]}})
 
+    async def create_idpoint(self, idpoint: dict) -> str:
+        """Crea un punto di identificazione (senza token) o lo aggiorna; restituisce il token."""
+        data = await self._post("/vapix/idpoint", {"axtid:SetIdPoint": {"IdPoint": [idpoint]}})
+        return _first_token(data, idpoint)
+
+    async def set_idpoint_configuration(self, token: str, device_uuid: str, configuration: dict[str, str]) -> None:
+        """Configurazione hardware di un punto di identificazione: il controller completa le chiavi mancanti."""
+        item = {
+            "token": token,
+            "DeviceUUID": device_uuid,
+            "Configuration": [{"Name": k, "Value": v} for k, v in configuration.items()],
+        }
+        await self._post("/vapix/idpoint", {"axtid:SetIdPointConfiguration": {"IdPointConfiguration": [item]}})
+
+    async def remove_idpoint(self, token: str) -> None:
+        await self._post("/vapix/idpoint", {"axtid:RemoveIdPoint": {"Token": [token]}})
+
+    async def set_io_assignment(self, io: str, mode: str, users: list[dict]) -> None:
+        """Assegna un I/O fisico (lista vuota = libera). Il controller risponde 200 anche se rifiuta: si controlla."""
+        data = await self._post(
+            "/vapix/pin",
+            {"axisio:SetIoAssignment": {"IoAssignment": [{"IoName": io, "IoMode": mode, "IoUser": users}]}},
+        )
+        errors = [str(e.get("Error") or "errore") for e in data.get("IoAssignmentError") or []]
+        if errors:
+            raise VapixError(f"assegnazione di {io} rifiutata: {', '.join(errors)}")
+
+    async def create_access_point(self, access_point: dict) -> str:
+        data = await self._post("/vapix/pacs", {"pacsaxis:SetAccessPoint": {"AccessPoint": [access_point]}})
+        return _first_token(data, access_point)
+
+    async def remove_access_point(self, token: str) -> None:
+        await self._post("/vapix/pacs", {"pacsaxis:RemoveAccessPoint": {"Token": [token]}})
+
     async def list_io(self) -> tuple[list[dict], list[dict]]:
         """I/O fisici del controller e a chi sono assegnati. Il servizio axisio sull'A1210 risponde su /vapix/pin."""
         info = await self._post("/vapix/pin", {"axisio:GetIoInfoList": {}})

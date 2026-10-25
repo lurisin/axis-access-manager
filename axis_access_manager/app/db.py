@@ -136,6 +136,8 @@ CREATE TABLE IF NOT EXISTS controller_inputs (
     contact TEXT NOT NULL DEFAULT 'no',
     supervised INTEGER NOT NULL DEFAULT 0,
     schedule TEXT NOT NULL DEFAULT '',
+    idpoint_token TEXT NOT NULL DEFAULT '',
+    access_point_token TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (controller_id, io)
 );
 CREATE TABLE IF NOT EXISTS audit (
@@ -598,10 +600,12 @@ class Database:
 
     def save_controller_input(self, controller_id: int, io: str, values: dict) -> None:
         self._execute(
-            "INSERT INTO controller_inputs (controller_id, io, name, role, door_token, contact, supervised, schedule) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (controller_id, io) DO UPDATE SET name = excluded.name, "
-            "role = excluded.role, door_token = excluded.door_token, contact = excluded.contact, "
-            "supervised = excluded.supervised, schedule = excluded.schedule",
+            "INSERT INTO controller_inputs (controller_id, io, name, role, door_token, contact, supervised, schedule, "
+            "idpoint_token, access_point_token) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (controller_id, io) DO UPDATE SET name = excluded.name, role = excluded.role, "
+            "door_token = excluded.door_token, contact = excluded.contact, supervised = excluded.supervised, "
+            "schedule = excluded.schedule, idpoint_token = excluded.idpoint_token, "
+            "access_point_token = excluded.access_point_token",
             (
                 controller_id,
                 io,
@@ -611,6 +615,8 @@ class Database:
                 values.get("contact", "no"),
                 int(bool(values.get("supervised"))),
                 values.get("schedule", ""),
+                values.get("idpoint_token", ""),
+                values.get("access_point_token", ""),
             ),
         )
 

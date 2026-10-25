@@ -300,3 +300,21 @@ async def test_diagnostic_events_update_home_assistant(service, db):
     await asyncio.sleep(0)
     assert len(changes) == 3
     assert db.list_events() == []
+
+
+async def test_exit_button_and_intercom_relay_are_logged_as_openings(service, db):
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    db.save_controller_input(
+        controller_id, "REX", {"name": "Pulsante Portineria", "role": "rex", "access_point_token": "ap-rex"}
+    )
+    db.save_controller_input(
+        controller_id, "IO1", {"name": "Relè Citofono", "role": "intercom", "access_point_token": "ap-relay"}
+    )
+    service.record_event(event("AccessControl/AccessGranted/Anonymous/x", {"AccessPointToken": "ap-rex"}))
+    later = event("AccessControl/AccessGranted/Anonymous/y", {"AccessPointToken": "ap-relay"})
+    service.record_event(dataclasses.replace(later, timestamp=datetime(2026, 10, 25, 9, tzinfo=UTC)))
+    relay, button = db.list_events()[:2]
+    assert button["kind"] == "apertura_remota" and button["source"] == "Pulsante Portineria"
+    assert button["detail"] == "Pulsante Uscita · REX"
+    assert relay["kind"] == "apertura_remota" and relay["source"] == "Relè Citofono"
+    assert relay["detail"] == "Relè Citofono · Aux 1"
