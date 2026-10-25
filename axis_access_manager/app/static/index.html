@@ -2078,7 +2078,7 @@ async function controllerStatus(body, ctrl) {
   const connection = ` <a href="#impianti/c${ctrl.id}/connessione">Controlla la Connessione</a>`;
   const ctrlInfo = c.ok ? props([
     ["Stato", `${statusDot("ok")} Raggiungibile`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
-    ["Indirizzo", `<code>${esc(ctrl.host)}</code>`], ["Porte sul Controller", c.doors.map((d) => `<code>${esc(d)}</code>`).join(", ")],
+    ["Indirizzo", `<code>${esc(ctrl.host)}</code>`], ["Porte sul Controller", c.doors.map((d, i) => `<span title="${esc(d)}">${esc(c.door_names?.[i] || d)}</span>`).join(", ")],
     ["Lettori", esc(c.readers ?? "—")], ["Tessere sul Controller", esc(c.credentials)],
   ]) : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
   const cats = Object.entries(m.categories || {});
@@ -2258,7 +2258,7 @@ async function viewSettings(el, sub) {
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). Prima vedi un'anteprima, poi confermi. Le tessere già registrate vengono saltate.</p></div>
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano gruppo, validità, ditta, note e tipologia della persona, se nel file sono diversi.</p></div>
         ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Stato del controller, delle porte, degli eventi MQTT e dei citofoni: nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
       </div>
     </div>

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.4
+
+- Registro e Notifiche: anche i dinieghi salvati prima della 0.8.2 compaiono con il motivo in italiano ("fuori fascia oraria" invece di "NotPermittedAtThisTime"); la traduzione si fa una volta all'avvio.
+- Controller → Stato: **Porte sul Controller** mostra i nomi delle porte invece dei codici interni (il codice resta nel suggerimento al passaggio del mouse).
+- Impostazioni → Esporta e Importa: il testo spiega che le tessere già registrate vengono aggiornate, non più saltate.
+
 ## 0.8.3
 
 - Porte: **Accessi Oggi** conta come il cruscotto (accessi concessi e aperture remote). Prima sommava anche la lettura della tessera che precede ogni accesso e le chiamate al citofono, e il numero risultava quasi doppio.

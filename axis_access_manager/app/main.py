@@ -26,7 +26,7 @@ from .intercom import IntercomBridge, IntercomSettings
 from .notifications import NotificationService
 from .programming import ProgrammingService
 from .rules_service import RulesService
-from .service import AccessService, ServiceError
+from .service import DENIED_REASONS, AccessService, ServiceError
 from .transfer import events_csv, import_persons, persons_csv
 from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError
 from .vapix import A1210Client, VapixError
@@ -985,6 +985,8 @@ async def _start_runtime(app: FastAPI) -> None:
     state.doors = state.installation.doors()
     state.monitor = EventMonitor(prefix=cfg.mqtt_topic_prefix, door_token=cfg.door_token)
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
+    if translated := state.db.translate_details("negato", DENIED_REASONS):
+        _LOGGER.info("Motivi di %s dinieghi tradotti in italiano", translated)
     state.rules = RulesService(state.service)
     primary = state.installation.primary
     state.programming = ProgrammingService(
@@ -1270,6 +1272,7 @@ async def _controller_status(controller: A1210Client, settings: Settings) -> dic
         "firmware": info.get("Version", ""),
         "serial": info.get("SerialNumber", ""),
         "doors": tokens,
+        "door_names": [door.get("Name") or door.get("token") for door in doors],
         "door_found": settings.door_token in tokens,
         "credentials": len(credentials),
         "readers": readers,

@@ -777,6 +777,17 @@ class Database:
         )
         return {row["person_id"]: row["ts"] for row in rows}
 
+    def translate_details(self, kind: str, mapping: dict[str, str]) -> int:
+        """Traduce i dettagli salvati con il codice del controller (eventi delle versioni precedenti)."""
+        changed = 0
+        with self._lock:
+            for code, text in mapping.items():
+                changed += self._conn.execute(
+                    "UPDATE events SET detail = ? WHERE kind = ? AND detail = ?", (text, kind, code)
+                ).rowcount
+            self._conn.commit()
+        return changed
+
     def prune_events(self, days: int) -> list[str]:
         """Cancella gli eventi vecchi; restituisce i file delle istantanee da eliminare."""
         limit = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat(timespec="seconds")

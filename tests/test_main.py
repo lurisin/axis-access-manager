@@ -181,3 +181,24 @@ def test_categories_hidden_and_default_group_endpoints(client):
     assert client.put("/api/default-group", json={"token": group}).status_code == 200
     assert client.get("/api/me").json()["default_group"] == group
     assert client.delete(f"/api/categories/{category['id']}").status_code == 200
+
+
+def test_status_lists_controller_door_names(client):
+    controller = client.get("/api/status").json()["controller"]
+    assert controller["doors"] == ["porta", "porta2"]
+    assert controller["door_names"] == ["Ingresso scala", "Cantina"]
+
+
+def test_old_denial_reasons_are_translated_at_startup(settings, controller, tmp_path, monkeypatch):
+    """Dinieghi salvati prima della traduzione con il codice del controller: tradotti al riavvio."""
+    from app.db import Database
+
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    path = tmp_path / "old.db"
+    old = Database(path)
+    old.add_event(ts="2026-10-25T10:00:00+00:00", kind="negato", detail="NotPermittedAtThisTime")
+    old.add_event(ts="2026-10-25T10:00:01+00:00", kind="citofono", detail="Other")
+    old.close()
+    with TestClient(create_app(settings, allow_any_client=True, controller=controller, db_path=path)) as client:
+        details = {e["kind"]: e["detail"] for e in client.get("/api/events").json()}
+    assert details == {"negato": "fuori fascia oraria", "citofono": "Other"}
