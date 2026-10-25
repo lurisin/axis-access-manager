@@ -323,3 +323,29 @@ def test_snapshots_move_to_the_media_folder(tmp_path):
     assert ha.move_snapshots(old) == 1
     assert (new / "1_20261025_143828.jpg").read_bytes() == b"jpg" and not old.exists()
     assert ha.move_snapshots(old) == 0
+
+
+class NamedCameras(FakeCamera):
+    """Home Assistant finto con i nomi delle telecamere, per contare quante volte li rilegge."""
+
+    def __init__(self, snapshot_dir):
+        super().__init__(snapshot_dir)
+        self.reads = 0
+
+    async def states(self):
+        self.reads += 1
+        return [{"entity_id": "camera.x", "name": "Ingresso Teatro", "state": "streaming"}]
+
+
+def test_summary_gives_camera_friendly_names(controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    settings = parse_options({"a1210_host": "a", "door_token": "porta", "snapshot_camera": "camera.x"})
+    ha = NamedCameras(tmp_path / "shots")
+    app = create_app(
+        settings, allow_any_client=True, controller=controller, db_path=tmp_path / "n.db", home_assistant=ha
+    )
+    with TestClient(app) as client:
+        assert client.get("/api/summary").json()["camera_names"] == {"camera.x": "Ingresso Teatro"}
+        # Il riepilogo si legge a ogni evento: i nomi restano in memoria per qualche minuto
+        client.get("/api/summary")
+        assert ha.reads == 1
