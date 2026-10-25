@@ -248,6 +248,16 @@ class A1210Client:
     async def set_authentication_profile(self, profile: dict) -> None:
         await self._post("/vapix/pacs", {"pacsaxis:SetAuthenticationProfile": {"AuthenticationProfile": [profile]}})
 
+    async def list_access_controllers(self) -> list[dict]:
+        """Controllo accessi del controller: decide solo per i punti di accesso elencati nel suo AccessPoint.
+        Ce n'è uno di fabbrica ("Axis-<serie> AccessController") e il reset lo rimette con l'elenco vuoto."""
+        return await self._list_all(
+            "/vapix/pacs", "pacsaxis:GetAccessControllerList", "AccessController", required=True
+        )
+
+    async def set_access_controller(self, access_controller: dict) -> None:
+        await self._post("/vapix/pacs", {"pacsaxis:SetAccessController": {"AccessController": [access_controller]}})
+
     # Fasce orarie
 
     async def list_schedules(self) -> list[dict]:

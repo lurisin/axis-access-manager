@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21.1
+
+Correzioni dal collaudo del Ripristino Completo al banco: dopo il reset le tessere venivano lette ma la porta non si apriva.
+
+- **Punti di accesso gestiti dal controller**. Il controller decide solo per i punti di accesso nell'elenco del suo controllo accessi (AccessController). Il reset svuota quell'elenco e il backup non lo salvava: dopo il ripristino lettori e punti di accesso c'erano, ma nessuna tessera veniva concessa o negata. Ora il backup salva l'elenco e il Ripristino Completo lo rimette dopo aver ricreato i punti di accesso. Dai backup fatti prima di questa versione fa gestire tutti i punti di accesso del backup.
+- **Avviso "Punti di Accesso Non Gestiti"** se il controller ha punti di accesso per cui non decide, con il pulsante **Fai Gestire al Controller** nella pagina del controller.
+- **Ingressi dell'app gestiti dal controller**: un pulsante o il relè del citofono impostati dall'app finiscono nell'elenco quando li crei, ed escono quando li togli.
+- **Configurazioni di porte e lettori scritte senza dispositivo**, come dice VAPIX: il controller ci mette il suo DeviceUUID e le lega a sé.
+- **Fasce orarie di fabbrica tolte** dopo un reset: quelle che non erano nel backup (per esempio standard_after_hours) sono già spuntate per essere tolte. Su un controller che funziona le fasce in più non si propongono, perché possono servire a tipologie e ingressi.
+- **Pulsante Ripristino Completo** nel riquadro delle tessere non presenti della pagina Persone.
+- **Pulsante o relè negato**: nel registro compare con il nome dell'ingresso e non cambia più il sensore Ultimo Accesso di Home Assistant.
+
 ## 0.21.0
 
 Ripristino completo di un controller resettato o sostituito.

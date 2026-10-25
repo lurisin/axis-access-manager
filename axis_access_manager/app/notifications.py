@@ -260,6 +260,18 @@ class NotificationService:
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link="#impianti",
                     )
+                if c.get("unmanaged") and not c.get("unreachable"):
+                    names = c["unmanaged"]
+                    add(
+                        "controller",
+                        f"unmanaged:{c['id']}",
+                        "crit",
+                        "Punti di Accesso Non Gestiti",
+                        f"{c['name']} · {', '.join(names[:3])}{' e altri' if len(names) > 3 else ''}: il controller "
+                        "legge tessere e pulsanti ma non decide, la porta non si apre. Rimedia dalla programmazione",
+                        c.get("checked_at") or now.isoformat(timespec="seconds"),
+                        link=f"#impianti/c{c['id']}",
+                    )
                 offset = c.get("clock_offset")
                 if c.get("clock_fault") == "controller":
                     add(

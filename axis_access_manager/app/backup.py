@@ -183,6 +183,7 @@ FIELD_LABELS = {
     "supervised": "Linea Supervisionata",
     "schedule": "Fascia",
     "assigned": "Assegnato a",
+    "managed": "Gestito dal Controller",
     **{field: label for field, (_, label, *_) in DOOR_TIMES.items()},
 }
 COLOR_NAMES = {
@@ -479,6 +480,8 @@ async def controller_snapshot(db: Database, row: dict, client) -> dict:
     credentials = await read("tessere", client.list_credentials, [])
     # Modi di identificazione (CardOnly, REXOnly... e quelli fatti a mano): servono a ricreare i punti di accesso
     authentication = await _optional(client, "list_authentication_profiles")
+    # Quali punti di accesso il controller gestisce: il reset svuota l'elenco e senza le tessere non aprono
+    access_controllers = await _optional(client, "list_access_controllers")
     device = _device(
         info,
         await _optional(client, "date_time_info"),
@@ -510,6 +513,7 @@ async def controller_snapshot(db: Database, row: dict, client) -> dict:
         "access_points": _by(points),
         "access_profiles": _by(profiles),
         **({"authentication_profiles": _by(authentication)} if authentication is not None else {}),
+        **({"access_controllers": _by(access_controllers)} if access_controllers is not None else {}),
         "schedules": _by(schedules),
         "io_assignments": _by(io_assigned, "IoName"),
         "credentials": _by([_credential_ref(c) for c in credentials], "card"),
@@ -755,11 +759,18 @@ def controller_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
         )
     owned_points = {r.get("access_point_token") for r in part.get("app_inputs", [])} - {""}
     readers = {r.get("token"): r.get("Name") or r.get("token") for r in part.get("idpoints", [])}
+    managed = (
+        {t for c in part["access_controllers"] for t in c.get("AccessPoint") or []}
+        if "access_controllers" in part
+        else None
+    )
     for point in part.get("access_points", []):
         token = point.get("token", "")
         if token in owned_points:
             continue
         linked = [d.get("IdPoint") for d in point.get("IdPointDevice") or [] if d.get("IdPoint")]
+        # Solo quando non è gestito: i backup fino alla 0.21.0 non lo sanno e non devono sembrare diversi
+        unmanaged = {"managed": False} if managed is not None and token not in managed else {}
         view["punti"][token] = _item(
             point.get("Name") or token,
             {
@@ -768,12 +779,14 @@ def controller_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
                 "readers": linked,
                 "direction": _attribute(point, "Direction"),
                 "Enabled": point.get("Enabled", True) is not False,
+                **unmanaged,
             },
             {
                 "door": ctx["doors"].get(point.get("Entity"), point.get("Entity") or "—"),
                 "readers": ", ".join(readers.get(r, r) for r in linked) or "—",
                 "direction": {"in": "Entrata", "out": "Uscita"}.get(_attribute(point, "Direction"), "—"),
                 "Enabled": "attivo" if point.get("Enabled", True) is not False else "disattivato",
+                **({"managed": "no: legge le tessere ma non decide"} if unmanaged else {}),
             },
         )
     points = {p.get("token"): p for p in part.get("access_points", [])}

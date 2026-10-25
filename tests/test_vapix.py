@@ -115,3 +115,28 @@ async def test_door_and_its_configuration():
     config = {"token": "porta", "DeviceUUID": "", "Configuration": [{"Name": "Lock.Type", "Value": "Relay"}]}
     await client.set_door_configuration(config)
     assert requests[1] == {"axtdc:SetDoorConfiguration": {"DoorConfiguration": [config]}}
+
+
+async def test_access_controller_read_and_written_as_on_the_bench():
+    requests = []
+    factory = {
+        "token": "Axis-b8a44fe6a074 AccessController",
+        "Name": "Axis-b8a44fe6a074 AccessController",
+        "Description": "",
+        "AccessPoint": [],
+    }
+
+    def handler(request):
+        body = json.loads(request.content)
+        requests.append((request.url.path, body))
+        return httpx.Response(
+            200, json={"AccessController": [factory]} if "pacsaxis:GetAccessControllerList" in body else {}
+        )
+
+    client = client_with(handler)
+    assert await client.list_access_controllers() == [factory]
+    await client.set_access_controller({**factory, "AccessPoint": ["accesso_scala"]})
+    assert requests[1] == (
+        "/vapix/pacs",
+        {"pacsaxis:SetAccessController": {"AccessController": [{**factory, "AccessPoint": ["accesso_scala"]}]}},
+    )

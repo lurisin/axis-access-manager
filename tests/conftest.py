@@ -29,6 +29,8 @@ class FakeController:
             for t in ("CardOnly", "REXOnly")
         }
         self.time_zone = "Europe/Rome"
+        # Dispositivo del controller: lo mette nelle configurazioni scritte senza
+        self.device_uuid = "uuid-locale"
         self.mqtt: dict = {}
         self.mqtt_events: dict = {}
         # Come un controller che rifiuta i token generati da un altro (Axis-<serie>:...)
@@ -45,6 +47,15 @@ class FakeController:
                 "Attribute": [{"Name": "Direction", "Value": "in"}],
             }
         ]
+        # Controllo accessi di fabbrica: decide solo per i punti di accesso elencati
+        self.access_controllers = {
+            "Axis-x AccessController": {
+                "token": "Axis-x AccessController",
+                "Name": "Axis-x AccessController",
+                "Description": "",
+                "AccessPoint": ["ap-in"],
+            }
+        }
         self.doors = {
             "porta": {
                 "token": "porta",
@@ -140,10 +151,14 @@ class FakeController:
         self.doors, self.door_configs, self.idpoints, self.idpoint_configs = {}, {}, {}, {}
         self.access_points, self.profiles, self.users, self.credentials = [], {}, {}, {}
         self.schedules = {
-            "standard_always": {"token": "standard_always", "Name": "", "Description": "", "ScheduleDefinition": ""}
+            t: {"token": t, "Name": "", "Description": "", "ScheduleDefinition": ""}
+            for t in ("standard_always", "standard_after_hours")
         }
         self.io_assignments = {"Ser0hd": {"IoMode": "", "IoUser": []}}
         self.time_zone, self.mqtt, self.mqtt_events = "UTC", {}, {}
+        # Il controllo accessi resta, con l'elenco dei punti di accesso vuoto
+        token = f"Axis-{self.serial.lower()} AccessController"
+        self.access_controllers = {token: {"token": token, "Name": token, "Description": "", "AccessPoint": []}}
 
     async def ntp_info(self):
         return {
@@ -190,7 +205,7 @@ class FakeController:
         self.calls.append(("set_door_configuration", configuration["token"], configuration.get("DeviceUUID")))
         self.door_configs[configuration["token"]] = {
             **copy.deepcopy(configuration),
-            "DeviceUUID": configuration.get("DeviceUUID") or "uuid-locale",
+            "DeviceUUID": configuration.get("DeviceUUID") or self.device_uuid,
         }
 
     async def remove_door(self, token):
@@ -226,8 +241,8 @@ class FakeController:
         return token
 
     async def set_idpoint_configuration(self, token, device_uuid, configuration):
-        self.calls.append(("set_idpoint_configuration", token))
-        self.idpoint_configs[token] = {"DeviceUUID": device_uuid, **configuration}
+        self.calls.append(("set_idpoint_configuration", token, device_uuid))
+        self.idpoint_configs[token] = {"DeviceUUID": device_uuid or self.device_uuid, **configuration}
 
     async def remove_idpoint(self, token):
         self.calls.append(("remove_idpoint", token))
@@ -254,6 +269,20 @@ class FakeController:
     async def remove_access_point(self, token):
         self.calls.append(("remove_access_point", token))
         self.access_points = [a for a in self.access_points if a["token"] != token]
+
+    async def list_access_controllers(self):
+        return [copy.deepcopy(c) for c in self.access_controllers.values()]
+
+    async def set_access_controller(self, access_controller):
+        missing = set(access_controller["AccessPoint"]) - {p["token"] for p in self.access_points}
+        if missing:
+            raise VapixError(f"punto di accesso inesistente: {sorted(missing)}")
+        self.calls.append(("set_access_controller", access_controller["token"], list(access_controller["AccessPoint"])))
+        self.access_controllers[access_controller["token"]] = copy.deepcopy(access_controller)
+
+    def managed(self) -> set[str]:
+        """Punti di accesso per cui il controller decide."""
+        return {t for c in self.access_controllers.values() for t in c["AccessPoint"]}
 
     async def list_io(self):
         """Come risponde l'A1210 del banco: assegnati solo lettore e relè."""

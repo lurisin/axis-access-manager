@@ -78,6 +78,10 @@ def access_payload(row: dict) -> dict:
     }
 
 
+def _anonymous_denied(row: dict) -> bool:
+    return row.get("kind") == "negato" and not row.get("card") and not row.get("person_name")
+
+
 def parse_command(command: str) -> tuple[bool, str] | None:
     """Comando dei pulsanti: "apri" o "apri_lungo", seguito da ":<porta>" per le porte oltre la prima."""
     action, _, door = command.partition(":")
@@ -115,7 +119,7 @@ class HaBridge:
         self.event_topic = f"{base}/evento"
         self.command_topic = f"{base}/comando"
         # Dal registro, così dopo un riavvio il sensore non torna a "nessuno"
-        last = db.list_events(kind=",".join(ACCESS_KINDS), limit=1)
+        last = [r for r in db.list_events(kind=",".join(ACCESS_KINDS), limit=20) if not _anonymous_denied(r)]
         self.last_access: dict = access_payload(last[0]) if last else {}
 
     @property
@@ -431,6 +435,7 @@ class HaBridge:
             "ora": row.get("ts") or "",
         }
         await self.monitor.publish(self.event_topic, json.dumps(payload))
-        if row.get("kind") in ACCESS_KINDS:
+        # Un negato senza tessera né persona (pulsante o relè che il controller non fa aprire) non è un accesso
+        if row.get("kind") in ACCESS_KINDS and not _anonymous_denied(row):
             self.last_access = access_payload(row)
             await self.monitor.publish(self.last_topic, json.dumps(self.last_access), retain=True)

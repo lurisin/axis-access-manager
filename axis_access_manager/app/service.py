@@ -824,13 +824,25 @@ class AccessService:
             if card is None and number:
                 card = self.db.card_by_number(number)
             reason = str(data.get("Reason") or ("CredentialNotFound" if "CredentialNotFound" in topic else ""))
-            pushed = self._input_source(str(data.get("AccessPointToken") or "")) if card is None and granted else None
+            pushed = self._input_source(str(data.get("AccessPointToken") or "")) if card is None else None
             # Stesso esito, stesso punto di accesso, stesso secondo: è lo stesso passaggio
             key = (granted, data.get("AccessPointToken") or door, ts)
             if key in self._recent_decisions:
                 return
             self._recent_decisions.append(key)
             kind = "concesso" if granted else "negato"
+            if pushed and not granted:
+                # Pulsante o relè del citofono che il controller non fa aprire: nel registro con il nome dell'ingresso
+                self.log_event(
+                    ts=ts,
+                    kind=kind,
+                    source=pushed[0],
+                    detail=f"{pushed[1]} · {DENIED_REASONS.get(reason, reason) or 'negato'}",
+                    raw=data,
+                    door=door,
+                    ref=event_ref(kind, door),
+                )
+                return
             if pushed:
                 # Pulsante di uscita o relè del citofono su un ingresso del controller: un'apertura senza tessera
                 self.log_event(

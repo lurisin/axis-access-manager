@@ -53,6 +53,8 @@ async def test_publish_event_updates_last_access(bridge, monkeypatch):
     monkeypatch.setattr(bridge.monitor, "publish", publish)
     await bridge.publish_event({"kind": "negato", "person_name": "Anna", "card": "04aa", "ts": "t"})
     await bridge.publish_event({"kind": "sconosciuto_tipo"})
+    # Pulsante negato, senza tessera né persona: evento sì, ultimo accesso no
+    await bridge.publish_event({"kind": "negato", "source": "Relè Citofono", "ts": "t2"})
 
     assert sent[0][0] == "axis_access_manager/evento"
     assert sent[0][1]["event_type"] == "accesso_negato"
@@ -61,7 +63,8 @@ async def test_publish_event_updates_last_access(bridge, monkeypatch):
         {"persona": "Anna", "tessera": "04aa", "esito": "accesso_negato", "dettaglio": "", "ora": "t"},
         True,
     )
-    assert len(sent) == 2
+    assert sent[2][0] == "axis_access_manager/evento" and sent[2][1]["origine"] == "Relè Citofono"
+    assert len(sent) == 3 and bridge.last_access["persona"] == "Anna"
 
 
 async def test_last_access_survives_restart(db, settings):

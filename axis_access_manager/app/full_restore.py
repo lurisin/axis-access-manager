@@ -17,7 +17,7 @@ import copy
 import json
 
 from .backup import COMMON, FIELD_LABELS, context_of
-from .programming import CONTROLLER_INPUTS, DOOR_TIMES, format_duration, parse_duration
+from .programming import CONTROLLER_INPUTS, DOOR_TIMES, format_duration, link_access_points, parse_duration
 from .service import ServiceError, plural
 from .vapix import VapixError
 
@@ -152,26 +152,26 @@ def _uuids(part: dict) -> set[str]:
     return {u for u in found if u}
 
 
-def _remap(saved: dict, current: dict) -> tuple[list[str], str]:
-    """Controller sostituito: dispositivi del vecchio da cambiare e, se si sa già, il dispositivo del nuovo.
-    Sono del vecchio i DeviceUUID che finiscono con il suo numero di serie (sull'A1210 è così); se nessuno
-    finisce così, quelli delle configurazioni di porte e lettori, che sull'A1210 sono sempre locali."""
+def _devices(saved: dict, current: dict) -> tuple[list[str], bool, str]:
+    """Dispositivi (DeviceUUID) del controller del backup, se è stato sostituito e, se si sa già, il nuovo.
+    Sono suoi i DeviceUUID che finiscono con il suo numero di serie (sull'A1210 è così); se nessuno finisce così,
+    quelli delle configurazioni di porte e lettori, che sull'A1210 sono sempre locali."""
     old_serial = _hex((saved.get("device") or {}).get("serial") or "")
     new_serial = _hex((current.get("device") or {}).get("serial") or "")
-    if not old_serial or not new_serial or old_serial == new_serial:
-        return [], ""
     found = _uuids(saved)
-    local = {u for u in found if _hex(u).endswith(old_serial)}
+    local = {u for u in found if old_serial and _hex(u).endswith(old_serial)}
     if not local:
         configs = saved.get("door_configurations", []) + saved.get("idpoint_configurations", [])
         local = {c.get("DeviceUUID") for c in configs if c.get("DeviceUUID")}
+    if not old_serial or not new_serial or old_serial == new_serial:
+        return sorted(local), False, ""
     guess = next(iter(sorted(_uuids(current))), "")
     if not guess:
         # Stesso schema del vecchio con il numero di serie nuovo: si usa solo se il controller non dice il suo
         old = next((u for u in sorted(local) if _hex(u).endswith(old_serial)), "")
         if old and len(new_serial) == len(old_serial) == 12 and old.lower().endswith(old_serial):
             guess = old[: -len(old_serial)] + new_serial
-    return sorted(local), guess
+    return sorted(local), True, guess
 
 
 def _read_problem(part: dict, key: str) -> bool:
@@ -280,13 +280,16 @@ def _by(part: dict, key: str, field: str = "token") -> dict[str, dict]:
 
 
 def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
-    remap, guess = _remap(saved, current)
+    local, replaced, guess = _devices(saved, current)
     fresh = not current.get("credentials") and bool(saved.get("credentials"))
     names = {**ctx["doors"]}
     names.update({str(i.get("token")): i.get("Name") or i.get("token") for i in saved.get("idpoints") or []})
     for door in saved.get("doors") or []:
         names.setdefault(str(door.get("token")), door.get("Name") or door.get("token"))
-    common = {"_remap": remap, "_guess": guess}
+    # Configurazioni di porte e lettori: sempre senza dispositivo. Il controller ci mette il suo e così le collega
+    # a sé (con il DeviceUUID scritto esplicito il lettore restava scollegato dal controllo accessi: al banco le
+    # tessere davano solo CardPresented). I punti di accesso cambiano dispositivo solo con un controller sostituito.
+    common = {"_local": local, "_remap": local if replaced else [], "_guess": guess}
     items: list[dict] = []
     skipped = [k for k in READ_LABELS if k != "credentials" and (_read_problem(saved, k) or _read_problem(current, k))]
 
@@ -381,6 +384,10 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
     if points:
         for token, point in points[0].items():
             add("punto", token, f"Punto di Accesso {point.get('Name') or token}", point, points[1].get(token))
+        if current.get("access_controllers") is not None:
+            item = _plan_managed(saved, current, points[0])
+            if item is not None:
+                items.append(item)
     profiles = objects("access_profiles")
     if profiles:
         for token, profile in profiles[0].items():
@@ -407,9 +414,11 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
         ("access_points", "punto", "Punto di Accesso"),
         ("idpoints", "lettore", "Lettore"),
         ("doors", "porta", "Porta"),
+        ("schedules", "fascia", "Fascia Oraria"),
     ):
         found = objects(key)
-        if not found:
+        # Fasce in più solo dopo un reset (sono quelle di fabbrica): altrimenti possono servire a tipologie e ingressi
+        if not found or (key == "schedules" and not fresh):
             continue
         for token, obj in found[1].items():
             if token not in found[0]:
@@ -437,6 +446,48 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
             )
         )
     return items
+
+
+def _own_points(part: dict) -> list[str] | None:
+    """Punti di accesso che il controller gestisce, dal suo AccessController (in una rete di controller ci sono
+    anche quelli degli altri: il suo ha il numero di serie nel token). None se non è nel backup."""
+    controllers = part.get("access_controllers")
+    if controllers is None:
+        return None
+    serial = str((part.get("device") or {}).get("serial") or "").lower()
+    if len(controllers) > 1:
+        controllers = [c for c in controllers if serial and serial in str(c.get("token") or "").lower()]
+    return [t for c in controllers for t in c.get("AccessPoint") or []]
+
+
+def _plan_managed(saved: dict, current: dict, saved_points: dict) -> dict | None:
+    """Punti di accesso da far gestire al controller. Il reset svuota l'elenco: i punti ci sono, il controller legge
+    le tessere ma non decide niente. Dai backup che non lo hanno (fino alla 0.21.0) si fanno gestire tutti."""
+    wanted = _own_points(saved)
+    wanted = [t for t in dict.fromkeys(list(saved_points) if wanted is None else wanted) if t in saved_points]
+    linked = [t for c in current.get("access_controllers") or [] for t in c.get("AccessPoint") or []]
+    missing = [t for t in wanted if t not in linked]
+    if not missing:
+        return None
+    current_names = {p.get("token"): p.get("Name") or p.get("token") for p in current.get("access_points") or []}
+
+    def shown(tokens: list[str], names: dict) -> str:
+        return ", ".join(str(names.get(t) or t) for t in tokens) or "nessuno"
+
+    item = _row(
+        "prog-gestiti",
+        "controller",
+        "ricrea" if not linked else "riporta",
+        "Punti di Accesso Gestiti",
+        f"Fa gestire al controller {plural(len(missing), 'punto di accesso', 'punti di accesso')}: "
+        "senza, le tessere vengono lette ma non aprono",
+        _kind="gestiti",
+        _token="",
+        _points=missing,
+    )
+    names = {t: p.get("Name") or t for t, p in saved_points.items()}
+    item["changes"] = [{"label": "Gestiti", "old": shown(linked, current_names), "new": shown(wanted, names)}]
+    return item
 
 
 def _plan_pair(prefix, token, label, saved_obj, current_obj, saved_config, current_config, add) -> dict | None:
@@ -533,7 +584,7 @@ async def apply_item(item: dict, runtime, user: str) -> dict:
     return {}
 
 
-def _local(device: str, item: dict) -> bool:
+def _replaced(device: str, item: dict) -> bool:
     return bool(device) and device in item["_remap"]
 
 
@@ -557,7 +608,7 @@ def _config_payload(config: dict, item: dict, token: str) -> dict:
     device = config.get("DeviceUUID") or ""
     return {
         "token": token,
-        "DeviceUUID": "" if _local(device, item) else device,
+        "DeviceUUID": "" if device in item["_local"] else device,
         "Configuration": copy.deepcopy(config.get("Configuration") or []),
     }
 
@@ -613,22 +664,28 @@ async def _apply_programming(item: dict, runtime, controller) -> None:
     elif kind == "io":
         await controller.set_io_assignment(token, saved.get("IoMode") or "", saved.get("IoUser") or [])
     elif kind == "punto":
-        if _local(saved.get("DoorDeviceUUID") or "", item):
+        if _replaced(saved.get("DoorDeviceUUID") or "", item):
             saved["DoorDeviceUUID"] = await _new_device(item, runtime, controller)
         for device in saved.get("IdPointDevice") or []:
-            if _local(device.get("DeviceUUID") or "", item):
+            if _replaced(device.get("DeviceUUID") or "", item):
                 device["DeviceUUID"] = await _new_device(item, runtime, controller)
         await _create(runtime, controller.create_access_point, saved)
     elif kind == "profilo":
         await _create(runtime, controller.set_access_profile, saved)
     elif kind == "io-libera":
         await controller.set_io_assignment(token, saved.get("IoMode") or "", [])
+    elif kind == "gestiti":
+        existing = {p.get("token") for p in await controller.list_access_points()}
+        await link_access_points(controller, add=[t for t in _swap(item["_points"], tokens) if t in existing])
     elif kind == "punto-togli":
+        await link_access_points(controller, remove={token})
         await controller.remove_access_point(token)
     elif kind == "lettore-togli":
         await controller.remove_idpoint(token)
     elif kind == "porta-togli":
         await controller.remove_door(token)
+    elif kind == "fascia-togli":
+        await controller.remove_schedule(token)
     else:
         raise ServiceError("riga del ripristino non riconosciuta")
 

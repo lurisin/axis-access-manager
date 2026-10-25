@@ -1269,6 +1269,13 @@ def create_app(
         await request.app.state.programming.update_access_point(token, data, request_user(request))
         return {"ok": True}
 
+    @app.post("/api/programming/manage", dependencies=[need("impianti"), before_change()])
+    async def program_manage(request: Request) -> dict:
+        state = request.app.state
+        managed = await state.programming.manage_access_points(request_user(request))
+        await state.health.recheck_managed(state.installation.primary)
+        return {"managed": managed}
+
     @app.put("/api/programming/links", dependencies=[need("impianti"), before_change()])
     async def program_links(body: LinksIn, request: Request) -> dict:
         links = [link.model_dump() for link in body.links]
@@ -1381,6 +1388,8 @@ def create_app(
         )
         if result.pop("reload"):
             await reload_runtime(request.app)
+        if full:
+            await state.health.recheck_managed(state.installation.primary)
         return {**result, "backup_before": before["id"]}
 
     @app.get("/api/users", dependencies=[need("utenti")])
