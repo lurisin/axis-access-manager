@@ -11,6 +11,15 @@ Dalla 0.8 le vecchie opzioni "Obsoleta" non ci sono più: chi aggiorna da una ve
 Il primo utente di Home Assistant che apre l'app diventa **amministratore**. Gli altri entrano con il ruolo "Solo Stato" finché un amministratore non dà loro altri permessi (Impostazioni → Utenti).
 Il pannello ora è visibile anche agli utenti di Home Assistant che non sono amministratori di Home Assistant: cosa possono fare lo decidono i permessi dell'app.
 
+### Novità della 0.10
+
+- **Gruppi e tipologie diventano una cosa sola: la tipologia**, in Persone → Tipologie. Ogni tipologia dice chi è la persona e, con le righe **Dove e Quando**, quali porte, aree o strutture apre e in quale fascia oraria. In Regole restano solo Fasce Orarie e Festività.
+- Al primo avvio i gruppi passano da soli alle tipologie, **senza cambiare chi entra dove**:
+  - una tipologia prende il gruppo che usava già;
+  - chi non aveva una tipologia entra in una tipologia con il nome del suo gruppo;
+  - il gruppo predefinito diventa la tipologia predefinita.
+- Una persona con un accesso diverso da quello della sua tipologia è segnalata come **Accesso Personalizzato**, con il tasto per allinearla.
+
 ### Novità della 0.8
 
 - In Home Assistant arrivano anche lo stato del controller (**Controller Online**, **Coperchio Controller Aperto**, **Ultimo Avvio Controller**), gli **ingressi I/O** del controller e, per ogni porta, **Allarme**, **Preallarme** e **Manomissione** come sensori acceso/spento: tutto quello che serviva il vecchio package YAML.
@@ -44,12 +53,12 @@ Restano solo quelle tecniche:
 ## Sezioni
 
 - **Cruscotto**: accessi e rifiuti di oggi, persone e tessere, le porte raggruppate per struttura e area con stato e ultimo passaggio, grafico degli ultimi 7 giorni, ultimi eventi e avvisi (impianto da configurare, tessere da registrare, tessere in scadenza, allarmi, MQTT scollegato).
-- **Porte**: elenco essenziale per struttura e area, con nome, accessi di oggi e stato. Il clic apre il dettaglio: stato, numeri di oggi, dispositivi (lettori con direzione, citofono, telecamera, controller), i gruppi che la aprono e i suoi ultimi eventi.
-- **Persone**: elenco essenziale in ordine alfabetico, con il colore della tipologia e un'etichetta solo se c'è qualcosa da sistemare (tessera sospesa, scaduta, in scadenza). Filtri rapidi per tipologia, ricerca per nome, ditta o tessera, filtri per gruppo e stato. Un clic apre la scheda della persona: tipologia, gruppo e validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi.
+- **Porte**: elenco essenziale per struttura e area, con nome, accessi di oggi e stato. Il clic apre il dettaglio: stato, numeri di oggi, dispositivi (lettori con direzione, citofono, telecamera, controller), le tipologie che la aprono e i suoi ultimi eventi.
+- **Persone**: elenco essenziale in ordine alfabetico, con il colore della tipologia e un'etichetta solo se c'è qualcosa da sistemare (tessera sospesa, scaduta, in scadenza, accesso personalizzato). Filtri rapidi per tipologia, ricerca per nome, ditta o tessera, filtro per stato. Un clic apre la scheda della persona: tipologia con le sue porte e fasce, validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi. La scheda **Tipologie** gestisce le tipologie (vedi Regole di accesso).
 - **Da Registrare**: tessere lette dal lettore ma non registrate, da assegnare a una persona nuova o esistente senza digitare il numero.
 - **Registro**: una riga per evento (ora, esito, chi, porta) e i dettagli al clic, a lato sul computer e in una finestra sul telefono. Le viste **Da Controllare** (rifiuti, tessere sconosciute, allarmi), Solo Negati, Solo Accessi, Allarmi e Tutto servono quando il passaggio è tanto: nelle viste filtrate un contatore dice quanti accessi riusciti non sono mostrati. Poi ricerca, porta, intervallo di date, istantanee ed esportazione CSV. La vista scelta viene ricordata.
 - **Notifiche**: cosa richiede attenzione, diviso in **Da Gestire** (urgenti, contano sulla campanella finché non premi Presa Visione) e **Informative**. Allarmi ed eventi restano per 24 ore; i problemi di collegamento finché non si risolvono, e se tornano si ripresentano. Quali tipi ricevere, e se urgenti o informativi, lo sceglie l'amministratore in Impostazioni → Notifiche.
-- **Regole**: tipologie, gruppi, fasce orarie e festività (vedi sotto).
+- **Regole**: fasce orarie e festività (vedi sotto).
 - **Impianti**: controller, schema lettori ↔ porte, porte con citofono e telecamera, strutture e aree, programmazione del controller (vedi sotto).
 - **Impostazioni**: solo l'applicazione. Generale (Home Assistant, opzioni dell'add-on, esportazione e importazione CSV) e, per gli amministratori, **Notifiche**, **Utenti** e **Attività**. Lo stato di controller, porte, eventi MQTT e citofoni è nella scheda Stato del controller.
 
@@ -118,11 +127,16 @@ La creazione da zero di porte e lettori (tipo di serratura, protocollo OSDP del 
 
 ## Regole di accesso
 
-- Una **tipologia** dice che tipo di tessera ha una persona: ad esempio Manutentore, Pulizie, Dipendente, Ospite. Ha un colore, un gruppo e una durata facoltativa. Scegliendo la tipologia, la persona riceve in automatico il gruppo (cioè gli orari in cui apre) e la durata. Se cambi il gruppo di una tipologia puoi applicarlo subito a tutte le sue persone.
-- Una **fascia oraria** è un insieme di intervalli settimanali (ad esempio lun-ven 8-18 e sab 9-12). Se è attiva l'opzione "Non Valida nei Giorni Festivi", nei giorni della scheda Festività la fascia non vale.
-- Un **gruppo** (profilo di accesso Axis) collega la porta a una fascia oraria. Ogni persona appartiene a un gruppo; tutte le sue tessere lo seguono.
-- Tutti i gruppi e tutte le fasce si possono modificare, anche quelli predefiniti del controller. Quelli che non servono si **nascondono**: spariscono dagli elenchi e si ritrovano con "Mostra Nascosti".
-- Il **gruppo predefinito** (per le nuove tessere senza tipologia) si sceglie in Regole → Gruppi con "Rendi Predefinito". I nuovi gruppi ne copiano la configurazione cambiando solo la fascia oraria, così valgono sulla stessa porta. La fascia viene scritta sia nel profilo sia in ogni sua regola, perché l'A1210 le controlla entrambe.
+- Una **tipologia** dice chi è la persona (Manutentore, Pulizie, Dipendente, Ospite...) e decide dove e quando apre la sua tessera. Si gestisce in **Persone → Tipologie** e ha:
+  - un colore e una descrizione;
+  - le righe **Dove e Quando**, ognuna con una porta, un'area o un'intera struttura e la sua fascia oraria, ad esempio Pulizie → Via Consulta › Camere → 07–15;
+  - una durata facoltativa della tessera, in giorni dalla registrazione (ad esempio 1 per gli ospiti).
+- Un'area o una struttura vale per **tutte le sue porte, anche quelle aggiunte dopo**: quando una porta entra in un'area, le tipologie che la comprendono si aggiornano da sole. Una struttura comprende tutte le sue aree: per tenere fuori i locali tecnici mettili in un'area a parte e scegli le singole aree.
+- Per ogni tipologia l'app scrive e tiene aggiornato un **profilo di accesso** sul controller, con una regola per ogni lettore delle porte coperte. Pulsanti di uscita e relè del citofono aprono senza tessera e non ne hanno bisogno. Con fasce diverse per porta, la fascia del profilo è "Sempre", perché l'A1210 controlla sia quella del profilo sia quella della regola.
+- Scegliendo la tipologia di una persona, tutte le sue tessere ricevono l'accesso e la durata della tipologia. Modificando una tipologia, l'accesso cambia subito per tutte le sue persone.
+- **Accesso Personalizzato**: una persona le cui tessere usano un profilo diverso da quello della sua tipologia (rimasto dalle versioni precedenti, o scelto dall'importazione CSV). Ha un'etichetta nell'elenco e il tasto **Allinea alla Tipologia** nella scheda; salvando l'accesso della persona torna quello della tipologia.
+- La **tipologia predefinita** è proposta per le nuove tessere; si cambia con "Rendi Predefinita". Una tipologia con persone, o che è la predefinita, non si elimina. Una porta, un'area o una struttura usata in una riga non si elimina: toglila prima dalle righe.
+- Una **fascia oraria** è un insieme di intervalli settimanali (ad esempio lun-ven 8-18 e sab 9-12). Se è attiva l'opzione "Non Valida nei Giorni Festivi", nei giorni della scheda Festività la fascia non vale. Tutte le fasce si possono modificare, anche quelle predefinite del controller; quelle che non servono si **nascondono**.
 - La **validità** (dal/al) limita una persona a un periodo: utile per ospiti e imprese. Le date sono scritte sul controller, che rifiuta la tessera fuori periodo.
 
 ## Utenti e permessi

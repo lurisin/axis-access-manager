@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.0
+
+- **Tipologie al posto di gruppi e tipologie.** La tipologia, in Persone → Tipologie, dice chi è la persona e con le righe **Dove e Quando** quali porte, aree o strutture apre e in quale fascia. L'app crea e aggiorna il suo profilo sul controller. In Regole restano Fasce Orarie e Festività; la scheda della persona chiede solo la tipologia.
+- Aree e strutture valgono anche per le porte aggiunte dopo: spostare una porta in un'area aggiorna i profili delle tipologie che la comprendono.
+- Migrazione all'avvio, senza scritture sul controller e senza cambiare chi entra:
+  - le tipologie prendono il loro gruppo;
+  - chi non aveva una tipologia entra in quella del suo gruppo;
+  - il gruppo predefinito diventa la tipologia predefinita.
+- Un profilo in comune tra più tipologie si separa alla prima modifica: la tipologia modificata riceve il suo profilo e le altre non cambiano.
+- **Accesso Personalizzato**: etichetta nell'elenco Persone e tasto Allinea alla Tipologia nella scheda.
+- La pagina della porta mostra le tipologie che la aprono; le fasce orarie dicono quali tipologie le usano.
+- Porte, aree e strutture usate da una tipologia non si eliminano finché sono nelle sue righe.
+- Importazione CSV: una nuova tipologia porta con sé il suo accesso; la colonna gruppo serve solo per un accesso personalizzato.
+
 ## 0.9.1
 
 - Registro: l'apertura del coperchio del controller non mostra più una porta. Compare come "coperchio del controller aperto" con il nome del controller; anche gli eventi già salvati vengono corretti all'avvio.

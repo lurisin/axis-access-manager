@@ -63,6 +63,13 @@ CREATE TABLE IF NOT EXISTS categories (
     valid_days INTEGER NOT NULL DEFAULT 0,
     description TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS category_rules (
+    id INTEGER PRIMARY KEY,
+    category_id INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+    target TEXT NOT NULL,
+    target_id INTEGER NOT NULL,
+    schedule TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS hidden_items (
     kind TEXT NOT NULL,
     token TEXT NOT NULL,
@@ -408,6 +415,28 @@ class Database:
         return self._execute(
             "INSERT INTO categories (name, color, group_token, valid_days, description) VALUES (?, ?, ?, ?, ?)", values
         )
+
+    def category_rules(self, category_id: int) -> list[dict]:
+        """Righe di accesso della tipologia: porta, area o struttura, con la fascia oraria."""
+        return self._query(
+            "SELECT target, target_id, schedule FROM category_rules WHERE category_id = ? ORDER BY id", (category_id,)
+        )
+
+    def all_category_rules(self) -> dict[int, list[dict]]:
+        rows = self._query("SELECT category_id, target, target_id, schedule FROM category_rules ORDER BY id")
+        result: dict[int, list[dict]] = {}
+        for row in rows:
+            result.setdefault(row.pop("category_id"), []).append(row)
+        return result
+
+    def set_category_rules(self, category_id: int, rules: list[dict]) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM category_rules WHERE category_id = ?", (category_id,))
+            self._conn.executemany(
+                "INSERT INTO category_rules (category_id, target, target_id, schedule) VALUES (?, ?, ?, ?)",
+                [(category_id, r["target"], r["target_id"], r["schedule"]) for r in rules],
+            )
+            self._conn.commit()
 
     def delete_category(self, category_id: int) -> None:
         self._execute("UPDATE persons SET category_id = 0 WHERE category_id = ?", (category_id,))

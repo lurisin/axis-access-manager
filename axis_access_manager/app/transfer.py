@@ -186,7 +186,12 @@ async def _update(service: AccessService, person: dict, card: dict, changes: dic
     if {"gruppo", "valida_dal", "valida_al", "tipologia"} & changes.keys():
         await service.set_person_access(
             person["id"],
-            changes["gruppo"][0] if "gruppo" in changes else card.get("access_profile") or "",
+            # Una nuova tipologia porta con sé il suo accesso, salvo un gruppo chiesto nella stessa riga
+            changes["gruppo"][0]
+            if "gruppo" in changes
+            else ""
+            if "tipologia" in changes
+            else card.get("access_profile") or "",
             changes["valida_dal"][0] if "valida_dal" in changes else card.get("valid_from") or "",
             changes["valida_al"][0] if "valida_al" in changes else card.get("valid_to") or "",
             user,

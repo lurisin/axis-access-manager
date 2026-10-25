@@ -167,36 +167,138 @@ async def test_default_group_is_chosen_in_the_app(rules, controller, db):
         await rules.set_default_group("manca", "admin")
 
 
-async def test_categories_assign_group_and_validity(rules, controller, db):
-    group = (await rules.create_group("Manutenzione", "", "standard_always", "admin"))["token"]
-    maint = (await rules.save_category(None, {"name": "Manutentore", "group_token": group, "color": "orange"}, "a"))[
-        "id"
+DOOR = {
+    "snapshot_camera": "",
+    "snapshot_on_granted": 0,
+    "ha_buttons": 1,
+    "intercom_name": "",
+    "intercom_open_door": 0,
+    "intercom_relay": 1,
+    "intercom_mqtt_prefix": "hmd",
+}
+
+
+def place(db):
+    """Via Consulta: Varco Scala nell'area Camere (dal controller), Cantina nei Locali Tecnici."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    site = db.save_site(None, "Via Consulta", "")
+    rooms = db.save_area(None, site, "Camere")
+    tech = db.save_area(None, site, "Locali Tecnici")
+    db.set_controller_area(controller_id, rooms)
+    scala = db.save_door(None, controller_id, DOOR | {"door_token": "porta", "name": "Varco Scala"})
+    cantina = db.save_door(None, controller_id, DOOR | {"door_token": "porta2", "name": "Cantina", "area_id": tech})
+    return {"site": site, "rooms": rooms, "tech": tech, "scala": scala, "cantina": cantina}
+
+
+def row(target, target_id, schedule="standard_always"):
+    return {"target": target, "target_id": target_id, "schedule": schedule}
+
+
+async def test_categories_own_a_profile_built_from_doors_areas_and_sites(rules, controller, db):
+    ids = place(db)
+    controller.access_points.append(
+        {"token": "ap-cantina", "Entity": "porta2", "Attribute": [{"Name": "Direction", "Value": "in"}]}
+    )
+    # Il pulsante di uscita apre senza tessera: nessuna regola per lui
+    controller.access_points.append({"token": "ap-rex", "Entity": "porta", "AuthenticationProfile": ["REXOnly"]})
+
+    maint = await rules.save_category(
+        None,
+        {"name": "Manutentore", "color": "orange", "rules": [row("door", ids["scala"]), row("door", ids["cantina"])]},
+        "a",
+    )
+    profile = controller.profiles[maint["token"]]
+    assert profile["Name"] == "Manutentore" and profile["Schedule"] == ["standard_always"]
+    assert sorted(p["AccessPoint"] for p in profile["AccessPolicy"]) == ["ap-cantina", "ap-in"]
+
+    # Area: solo le sue porte, anche quella che eredita l'area dal controller
+    clean = await rules.save_category(
+        None, {"name": "Pulizie", "rules": [row("area", ids["rooms"], "standard_office_hours")]}, "a"
+    )
+    profile = controller.profiles[clean["token"]]
+    assert profile["AccessPolicy"] == [
+        {"AccessPoint": "ap-in", "AuthorizationProfile": [], "Attribute": [], "Schedule": ["standard_office_hours"]}
     ]
-    guest = (await rules.save_category(None, {"name": "Ospite", "valid_days": 7}, "a"))["id"]
+    assert profile["Schedule"] == ["standard_office_hours"]
+
+    # Fasce diverse per porta: quella del profilo lascia passare sempre (l'A1210 le valuta in AND)
+    mixed = await rules.save_category(
+        None,
+        {"name": "Tecnico", "rules": [row("site", ids["site"], "standard_office_hours"), row("door", ids["scala"])]},
+        "a",
+    )
+    profile = controller.profiles[mixed["token"]]
+    assert profile["Schedule"] == ["standard_always"]
+    schedules = {p["AccessPoint"]: p["Schedule"] for p in profile["AccessPolicy"]}
+    assert schedules == {"ap-in": ["standard_office_hours", "standard_always"], "ap-cantina": ["standard_office_hours"]}
+
+    guest = await rules.save_category(
+        None, {"name": "Ospite", "valid_days": 7, "rules": [row("door", ids["scala"])]}, "a"
+    )
     with pytest.raises(ServiceError, match="esiste già"):
-        await rules.save_category(None, {"name": "manutentore"}, "a")
+        await rules.save_category(None, {"name": "manutentore", "rules": [row("door", ids["scala"])]}, "a")
+    with pytest.raises(ServiceError, match="almeno una riga"):
+        await rules.save_category(None, {"name": "Vuota", "rules": []}, "a")
     with pytest.raises(ServiceError, match="non esiste più"):
-        await rules.save_category(None, {"name": "X", "group_token": "manca"}, "a")
+        await rules.save_category(None, {"name": "X", "rules": [row("area", 999)]}, "a")
 
-    anna = await rules.access.create_person("Anna", "04aa", "admin", category_id=maint)
-    assert anna["category_id"] == maint
-    assert anna["cards"][0]["access_profile"] == group
+    # La tessera prende il profilo e la durata della tipologia
+    anna = await rules.access.create_person("Anna", "04aa", "admin", category_id=clean["id"])
+    assert anna["category_id"] == clean["id"] and anna["cards"][0]["access_profile"] == clean["token"]
+    bruno = await rules.access.create_person("Bruno", "04bb", "admin", category_id=guest["id"])
+    assert bruno["cards"][0]["access_profile"] == guest["token"] and bruno["cards"][0]["valid_to"].endswith("Z")
+
+    # La Cantina entra nell'area Camere: Pulizie la comprende da sola, Manutentore non cambia
+    db.set_door_area(ids["cantina"], ids["rooms"])
+    assert await rules.refresh_category_profiles() == 1
+    assert {p["AccessPoint"] for p in controller.profiles[clean["token"]]["AccessPolicy"]} == {"ap-in", "ap-cantina"}
+    assert await rules.refresh_category_profiles() == 0
+
+    # Accesso diverso da quello della tipologia: segnalato e riallineabile
+    await rules.access.set_person_access(anna["id"], "profilo_sempre", "", "", "admin")
+    assert {c["name"]: c["custom"] for c in rules.list_categories()}["Pulizie"] == 1
+    person = await rules.align_person(anna["id"], "admin")
+    assert person["cards"][0]["access_profile"] == clean["token"]
+
+    with pytest.raises(ServiceError, match="usata dalle tipologie"):
+        rules.check_place_unused("area", ids["rooms"])
+    rules.set_default_category(guest["id"], "admin")
+    assert rules.access.default_group == guest["token"]
+    assert (await rules.access.create_person("Carla", "04cc", "admin"))["category_id"] == guest["id"]
+    with pytest.raises(ServiceError, match="predefinita"):
+        await rules.delete_category(guest["id"], "admin")
+    with pytest.raises(ServiceError, match="ci sono persone"):
+        await rules.delete_category(clean["id"], "admin")
+    await rules.delete_category(maint["id"], "admin")
+    assert maint["token"] not in controller.profiles
+
+
+async def test_groups_become_categories_without_changing_access(rules, controller, db):
+    ids = place(db)
+    db.set_setting("default_group", "profilo_sempre")
+    # Prima della 0.10: tipologia senza gruppo (= predefinito), persona senza tipologia
+    guest = db.save_category(
+        None, {"name": "Ospite", "color": "purple", "group_token": "", "valid_days": 1, "description": ""}
+    )
+    anna = await rules.access.create_person("Anna", "04aa", "admin", group="profilo_sempre")
     bruno = await rules.access.create_person("Bruno", "04bb", "admin", category_id=guest)
-    assert bruno["cards"][0]["access_profile"] == "profilo_sempre"
-    assert bruno["cards"][0]["valid_to"].endswith("Z")
-    with pytest.raises(ServiceError, match="usato dalle tipologie Manutentore"):
-        await rules.delete_group(group, "admin")
+    db.set_person_category(anna["id"], 0)
+    calls = len(controller.calls)
 
-    # Cambio di gruppo della tipologia applicato a chi ne fa parte
-    other = (await rules.create_group("Notte", "", "standard_office_hours", "admin"))["token"]
-    result = await rules.save_category(maint, {"name": "Manutentore", "group_token": other}, "a", apply=True)
-    assert result["updated"] == 1
-    assert db.get_person(anna["id"])["cards"][0]["access_profile"] == other
+    assert await rules.adopt_groups() > 0
+    assert len(controller.calls) == calls  # nessuna scrittura sul controller
+    categories = {c["name"]: c for c in rules.list_categories()}
+    assert categories["Ospite"]["group_token"] == "profilo_sempre"
+    assert categories["Ospite"]["rules"] == [row("door", ids["scala"])]
+    assert categories["Sempre"]["group_token"] == "profilo_sempre" and categories["Sempre"]["default"] is True
+    assert db.get_person(anna["id"])["category_id"] == categories["Sempre"]["id"]
+    assert await rules.adopt_groups() == 0
 
-    # Cambio di tipologia di una persona: prende il gruppo della nuova tipologia
-    person = await rules.access.set_person_access(bruno["id"], "", "", "", "admin", category_id=maint)
-    assert person["category_id"] == maint and person["cards"][0]["access_profile"] == other
-
-    rules.delete_category(maint, "admin")
-    assert db.get_person(anna["id"])["category_id"] == 0
-    assert [c["name"] for c in rules.list_categories()] == ["Ospite"]
+    # Profilo in comune: modificando Ospite nasce il suo profilo, Bruno passa al nuovo, Anna resta com'è
+    result = await rules.save_category(
+        guest, {"name": "Ospite", "valid_days": 1, "rules": [row("door", ids["scala"], "standard_office_hours")]}, "a"
+    )
+    assert result["token"] != "profilo_sempre" and result["updated"] == 1
+    assert db.get_person(bruno["id"])["cards"][0]["access_profile"] == result["token"]
+    assert db.get_person(anna["id"])["cards"][0]["access_profile"] == "profilo_sempre"
+    assert controller.profiles["profilo_sempre"]["AccessPolicy"][0]["Schedule"] == ["standard_always"]

@@ -117,13 +117,22 @@ class ImportIn(BaseModel):
     apply: bool = False
 
 
+class CategoryRuleIn(BaseModel):
+    target: str
+    target_id: int
+    schedule: str
+
+
 class CategoryIn(BaseModel):
     name: str
     color: str = ""
-    group_token: str = ""
     valid_days: int = 0
     description: str = ""
-    apply: bool = False
+    rules: list[CategoryRuleIn] = []
+
+
+class DefaultCategoryIn(BaseModel):
+    category_id: int
 
 
 class HiddenIn(BaseModel):
@@ -335,6 +344,7 @@ def create_app(
             "perms": perms,
             "admin": user.can("utenti"),
             "default_group": request.app.state.service.default_group,
+            "default_category": request.app.state.rules.default_category,
             "door": request.app.state.settings.door_token,
             "version": __version__,
         }
@@ -692,14 +702,21 @@ def create_app(
 
     @app.put("/api/categories/{category_id}", dependencies=[need("regole_modifica")])
     async def update_category(category_id: int, body: CategoryIn, request: Request) -> dict:
-        return await request.app.state.rules.save_category(
-            category_id, body.model_dump(), request_user(request), body.apply
-        )
+        return await request.app.state.rules.save_category(category_id, body.model_dump(), request_user(request))
 
     @app.delete("/api/categories/{category_id}", dependencies=[need("regole_modifica")])
     async def delete_category(category_id: int, request: Request) -> dict:
-        request.app.state.rules.delete_category(category_id, request_user(request))
+        await request.app.state.rules.delete_category(category_id, request_user(request))
         return {"ok": True}
+
+    @app.put("/api/default-category", dependencies=[need("regole_modifica")])
+    async def set_default_category(body: DefaultCategoryIn, request: Request) -> dict:
+        request.app.state.rules.set_default_category(body.category_id, request_user(request))
+        return {"ok": True}
+
+    @app.post("/api/persons/{person_id}/align", dependencies=[need("persone_modifica")])
+    async def align_person(person_id: int, request: Request) -> dict:
+        return await request.app.state.rules.align_person(person_id, request_user(request))
 
     # Porte: dove sono, come stanno, cosa è successo
 
@@ -779,13 +796,26 @@ def create_app(
         if user.can("regole") or user.can("persone"):
             try:
                 listed = (await state.rules.list_groups())["groups"]
-                groups = [
-                    {k: g[k] for k in ("token", "name", "schedule_names", "persons", "default", "enabled")}
+                opening = {
+                    g["token"]: g
                     for g in listed
                     if not g["access_points"] or set(g["access_points"]) & set(points) or not points
+                }
+                # Chi entra da questa porta: le tipologie il cui profilo la comprende
+                groups = [
+                    {
+                        "name": c["name"],
+                        "color": c["color"],
+                        "schedule_names": opening[c["group_token"]]["schedule_names"],
+                        "persons": c["persons"],
+                        "default": c["default"],
+                        "enabled": opening[c["group_token"]]["enabled"],
+                    }
+                    for c in state.rules.list_categories()
+                    if c["group_token"] in opening
                 ]
             except VapixError as err:
-                errors.append(f"gruppi: {err}")
+                errors.append(f"tipologie: {err}")
         events = None
         if user.can("registro"):
             # Con una porta sola valgono anche gli eventi registrati prima che avessero la porta
@@ -816,6 +846,7 @@ def create_app(
 
     @app.delete("/api/sites/{site_id}", dependencies=[need("impianti")])
     async def delete_site(site_id: int, request: Request) -> dict:
+        request.app.state.rules.check_place_unused("site", site_id)
         request.app.state.installation.delete_site(site_id, request_user(request))
         return {"ok": True}
 
@@ -829,7 +860,9 @@ def create_app(
 
     @app.delete("/api/areas/{area_id}", dependencies=[need("impianti")])
     async def delete_area(area_id: int, request: Request) -> dict:
+        request.app.state.rules.check_place_unused("area", area_id)
         request.app.state.installation.delete_area(area_id, request_user(request))
+        await _refresh_categories(request.app)
         return {"ok": True}
 
     # Impianti
@@ -915,6 +948,7 @@ def create_app(
 
     @app.delete("/api/doors/{door_id}", dependencies=[need("impianti")])
     async def delete_door(door_id: int, request: Request) -> dict:
+        request.app.state.rules.check_place_unused("door", door_id)
         request.app.state.installation.delete_door(door_id, request_user(request))
         await reload_runtime(request.app)
         return {"ok": True}
@@ -1042,6 +1076,18 @@ async def reload_runtime(app: FastAPI) -> None:
         if app.state.settings.a1210_host:
             result = await app.state.service.sync_from_controller()
             app.state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
+    await _refresh_categories(app)
+
+
+async def _refresh_categories(app: FastAPI) -> None:
+    """Porte spostate tra aree e strutture: le tipologie che le comprendono aggiornano il loro profilo."""
+    if not app.state.settings.a1210_host:
+        return
+    try:
+        if changed := await app.state.rules.refresh_category_profiles():
+            _LOGGER.info("Profili di %s tipologie aggiornati dopo una modifica alle porte", changed)
+    except VapixError as err:
+        _LOGGER.warning("Profili delle tipologie non aggiornati: %s", err)
 
 
 def _wire(app: FastAPI) -> None:
@@ -1264,6 +1310,9 @@ async def _maintenance(app: FastAPI) -> None:
                     # Festività che le versioni precedenti non riuscivano a scrivere (BYMONTHDAY rifiutato)
                     if rewritten := await state.rules.reapply_holidays(only_changed=True):
                         _LOGGER.info("Festività riscritte in %s fasce orarie", rewritten)
+                    # Dalla 0.10 i gruppi sono dentro le tipologie
+                    if adopted := await state.rules.adopt_groups():
+                        _LOGGER.info("Gruppi passati alle tipologie: %s modifiche", adopted)
             except VapixError as err:
                 state.last_sync = {"ok": False, "error": str(err), "result": None, "at": _now()}
                 _LOGGER.warning("Sincronizzazione non riuscita: %s", err)

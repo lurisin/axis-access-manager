@@ -165,11 +165,13 @@ def test_csv_export_and_import(client):
 
 
 def test_categories_hidden_and_default_group_endpoints(client):
-    group = client.post("/api/groups", json={"name": "Pulizie", "schedule": "standard_office_hours"}).json()["token"]
-    category = client.post("/api/categories", json={"name": "Pulizie", "group_token": group, "color": "teal"}).json()
+    door = client.get("/api/installation").json()["controllers"][0]["doors"][0]["id"]
+    rules = [{"target": "door", "target_id": door, "schedule": "standard_office_hours"}]
+    category = client.post("/api/categories", json={"name": "Pulizie", "color": "teal", "rules": rules}).json()
     person = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "category_id": category["id"]}).json()
-    assert person["cards"][0]["access_profile"] == group
-    assert client.get("/api/categories").json()[0]["persons"] == 1
+    assert person["cards"][0]["access_profile"] == category["token"]
+    listed = client.get("/api/categories").json()[0]
+    assert listed["persons"] == 1 and listed["rules"] == rules
     assert "Pulizie" in client.get("/api/export/persons.csv").text.splitlines()[1]
 
     assert (
@@ -178,9 +180,12 @@ def test_categories_hidden_and_default_group_endpoints(client):
     )
     schedules = {s["token"]: s for s in client.get("/api/schedules").json()}
     assert schedules["standard_always"]["hidden"] is True
-    assert client.put("/api/default-group", json={"token": group}).status_code == 200
-    assert client.get("/api/me").json()["default_group"] == group
-    assert client.delete(f"/api/categories/{category['id']}").status_code == 200
+    assert client.put("/api/default-category", json={"category_id": category["id"]}).status_code == 200
+    assert client.get("/api/me").json()["default_group"] == category["token"]
+    # Porta usata da una tipologia: non si elimina
+    assert client.delete(f"/api/doors/{door}").status_code == 400
+    assert client.post(f"/api/persons/{person['id']}/align").status_code == 200
+    assert client.delete(f"/api/categories/{category['id']}").status_code == 400
 
 
 def test_status_lists_controller_door_names(client):
