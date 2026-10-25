@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.15.4
+
+- Pagina Notifiche più compatta: "Ultime 24 ore" va accanto al titolo, ricerca e pulsanti stanno sulla riga di Da Gestire (sul telefono restano solo le icone), la ricerca non si allarga più su tutta la riga.
+- La linea sotto la barra in alto compare solo quando la pagina scorre.
+
 ## 0.15.3
 
 - **Barra in alto più snella**, al posto della riga di riquadri con i numeri di oggi.
