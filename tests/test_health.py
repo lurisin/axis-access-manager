@@ -152,6 +152,23 @@ async def test_clock_read_every_few_checks(monitor, controller, controller_row):
     assert abs(state.clock_offset) < 3
 
 
+async def test_clock_offset_written_after_ntp(monitor, controller, controller_row):
+    # Collaudo 0.19: appena avviato, chi leggeva lo stato durante la lettura dell'NTP vedeva "36 s avanti"
+    controller.clock_skew = 96
+    seen = []
+    original = controller.ntp_info
+
+    async def ntp_info():
+        state = monitor.states[controller_row]
+        seen.append((state.clock_offset, state.ntp))
+        return await original()
+
+    controller.ntp_info = ntp_info
+    await monitor.check_all()
+    assert seen == [(None, {})]
+    assert clock_fault(monitor.states[controller_row]) == "home_assistant"
+
+
 def test_ntp_summary_variants():
     assert ntp_summary({}) == {"enabled": None, "source": "", "servers": [], "active": None, "offset": None}
     dhcp = {

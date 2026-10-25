@@ -880,6 +880,10 @@ class AccessService:
         person = self.db.person_by_user_token(holder) if holder else None
         if person:
             return person["name"]
+        # Il nome com'era, accenti compresi, da un suo accesso già nel registro
+        known = self.db.holder_name(holder) if holder else ""
+        if known:
+            return f"{known} (tolta dall'app)"
         match = USER_TOKEN.fullmatch(holder)
         if match:
             return f"{match[1].replace('_', ' ').title()} (tolta dall'app)"

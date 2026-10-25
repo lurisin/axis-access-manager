@@ -201,15 +201,17 @@ class HealthMonitor:
             state.clock_offset = None
             return
         controller_time = parse_utc(info.get("utcDateTime") or info.get("dateTime") or "")
-        # A metà della richiesta: il ritardo della rete non conta come scarto
-        state.clock_offset = round(controller_time.timestamp() - (asked + answered) / 2, 1) if controller_time else None
-        state.time_zone = str(info.get("timeZone") or info.get("posixTimeZone") or "")
         ntp = getattr(client, "ntp_info", None)
         if ntp:
             try:
                 state.ntp = ntp_summary(await ntp())
             except VapixError as err:
                 _LOGGER.debug("NTP del controller %s non letto: %s", state.name, err)
+        # Scarto scritto dopo l'NTP: chi legge lo stato nel frattempo non vede uno scarto senza sapere
+        # se il controller è sincronizzato ("36 s avanti" invece di "Home Assistant è 36 s indietro").
+        # A metà della richiesta: il ritardo della rete non conta come scarto
+        state.clock_offset = round(controller_time.timestamp() - (asked + answered) / 2, 1) if controller_time else None
+        state.time_zone = str(info.get("timeZone") or info.get("posixTimeZone") or "")
 
     def check_identity(self, row: dict, state: ControllerHealth) -> None:
         """Primo collegamento: si memorizza l'identità. Apparecchio diverso: cambio da confermare."""

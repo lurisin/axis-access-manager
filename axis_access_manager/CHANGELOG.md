@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.19.2
+
+Correzioni dal collaudo al banco della 0.19.
+
+- **Persone nuove con il numero di una persona eliminata**: una persona creata dopo averne eliminata un'altra poteva prenderne il numero interno, e con quello i passaggi nel registro e l'ultimo accesso. Ora i numeri non si riusano mai. All'aggiornamento gli eventi più vecchi della persona a cui erano attaccati vengono staccati: restano nel registro con il loro nome.
+- **Log dell'add-on più pulito**: niente più una riga per ogni richiesta della pagina (decine al minuto con il cruscotto aperto). Con il livello debug tornano.
+- **Orologio appena avviato**: nella scheda Stato non compare più per qualche istante la vecchia frase "36 s avanti" prima di "Home Assistant è 36 s indietro".
+- **Backup**: i lettori si contano senza gli ingressi (pulsante di uscita, relè del citofono), che hanno il loro numero. Il backup fatto prima di un ripristino si chiama "Prima del ripristino del backup del 25/10/2026 19:05", senza catene di nomi, e ogni riga mostra sempre il tipo.
+- **Persona tolta dall'app**: il nome negli accessi recuperati viene dai suoi accessi già nel registro, con gli accenti ("Prova Stabilità (tolta dall'app)").
+
 ## 0.19.1
 
 Correzione dalla prova al banco della 0.18.

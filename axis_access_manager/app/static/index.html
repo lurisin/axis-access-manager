@@ -3336,7 +3336,7 @@ function backupRow(b, data, part) {
   return `<div class="item bk-row" data-id="${esc(b.id)}">
     <div class="ev-icon ${b.errors?.length ? "k-warn" : b.locked ? "k-accent" : "k-muted"}">${icon(b.locked ? "lock" : "history")}</div>
     <div class="grow"><div class="title">${esc(backupTitle(b))}</div>
-      <div class="meta"><span>${esc(fmtDateTime(b.created_at))}</span>${b.name && !b.name.toLowerCase().startsWith(b.kind_label.toLowerCase()) ? `<span>${esc(b.kind_label)}</span>` : ""}<span>${esc(b.user || "sistema")}</span>${part ? "" : `<span>${esc(backupContents(b))}</span>`}${b.locked ? '<span class="pill accent">Bloccato</span>' : ""}${b.errors?.length ? `<span class="pill warn" title="${esc(b.errors.join("; "))}">Incompleto</span>` : ""}</div>
+      <div class="meta"><span>${esc(fmtDateTime(b.created_at))}</span>${b.name ? `<span>${esc(b.kind_label)}</span>` : ""}<span>${esc(b.user || "sistema")}</span>${part ? "" : `<span>${esc(backupContents(b))}</span>`}${b.locked ? '<span class="pill accent">Bloccato</span>' : ""}${b.errors?.length ? `<span class="pill warn" title="${esc(b.errors.join("; "))}">Incompleto</span>` : ""}</div>
       <div class="bk-sum">${esc(summary || "")}${info?.stale ? ' <span class="muted">· il controller non rispondeva: configurazione del backup precedente</span>' : ""}</div></div>
     <div class="row item-actions">
       <button type="button" class="small" data-cmp>Confronta</button>

@@ -522,7 +522,7 @@ async def test_recovery_does_not_duplicate_events_of_a_card_removed_meanwhile(se
         ("lettura", 0),
     ]
     # Nome leggibile al posto del token dell'utente, e la tessera in Da Registrare solo per la lettura persa
-    assert events[0]["person_name"] == "Prova Stabilita (tolta dall'app)"
+    assert events[0]["person_name"] == "Prova Stabilità (tolta dall'app)"
     assert db.list_unknown_cards()[0]["count"] == 1
 
 
@@ -596,4 +596,52 @@ def test_migration_removes_duplicates_left_by_recovery(tmp_path):
         ("concesso", "c0118a01", 0),
         ("sconosciuta", "c0118b02", 1),
     ]
+    db.close()
+
+
+async def test_holder_name_without_earlier_events(service):
+    # Nessun accesso nel registro: il nome si ricava dal token, senza accenti
+    assert service._holder_name({"CredentialHolderName": "utente_mario_rossi_261025120000"}) == (
+        "Mario Rossi (tolta dall'app)"
+    )
+    assert service._holder_name({"CredentialHolderName": "Ospite Esterno"}) == "Ospite Esterno"
+
+
+async def test_new_person_never_reuses_number_of_deleted_one(service, db):
+    # Collaudo 0.19: "Prova Backup" aveva preso il numero di "Prova Stabilità", con passaggi e ultimo accesso
+    first = await service.create_person("Prova Stabilità", "c0118a01", "admin", group="profilo_sempre")
+    db.add_event(ts="2026-10-25T17:28:41+00:00", kind="concesso", person_id=first["id"], person_name="Prova Stabilità")
+    await service.delete_person(first["id"], "admin")
+    second = await service.create_person("Prova Backup", "c0118a02", "admin", group="profilo_sempre")
+    assert second["id"] > first["id"]
+    assert db.list_events(person_id=second["id"]) == []
+    # Anche senza eventi: il numero più alto dato resta memorizzato
+    await service.delete_person(second["id"], "admin")
+    third = await service.create_person("Terza", "c0118a03", "admin", group="profilo_sempre")
+    assert third["id"] > second["id"]
+
+
+def test_migration_detaches_events_older_than_person(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "v3.db"
+    Database(path).close()
+    conn = sqlite3.connect(path)
+    # Come al banco: persona 8 nuova con gli eventi della persona 8 eliminata prima
+    conn.execute(
+        "INSERT INTO persons (id, name, created_at, updated_at) VALUES "
+        "(8, 'Prova Backup', '2026-10-25T18:50:00+00:00', '2026-10-25T18:50:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO events (ts, kind, person_id, person_name) VALUES "
+        "('2026-10-25T17:28:41+00:00', 'concesso', 8, 'Prova Stabilità'), "
+        "('2026-10-25T18:55:00+00:00', 'concesso', 8, 'Prova Backup')"
+    )
+    conn.execute("PRAGMA user_version = 3")
+    conn.commit()
+    conn.close()
+
+    db = Database(path, "0.19.2")
+    rows = db._query("SELECT person_id, person_name FROM events ORDER BY ts")
+    assert [(r["person_id"], r["person_name"]) for r in rows] == [(None, "Prova Stabilità"), (8, "Prova Backup")]
     db.close()
