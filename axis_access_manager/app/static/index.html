@@ -897,11 +897,18 @@ async function viewDoorDetail(el, id, doors) {
   document.title = `${d.name} · Controllo Accessi`;
   const place = placeOf(d);
   const switcher = doors.length > 1 ? `<label class="row small-text muted">Cambia Porta <select id="d-switch">${doors.map((x) => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.name)}${placeOf(x) ? ` · ${esc(placeOf(x))}` : ""}</option>`).join("")}</select></label>` : "";
+  // Etichetta solo quando qualcosa non va: un dispositivo che funziona non ha bisogno di bollino
+  const off = (r) => (r.enabled ? null : ["warn", "Disattivato"]);
+  const readerMeta = (r) => {
+    if (r.role) return `${r.role} · morsetto ${r.terminal} del controller`;
+    const side = r.direction ? `Lettore tessere sul lato ${r.direction.toLowerCase()}` : "Lettore tessere";
+    return [side, r.description.includes("Axis Access Manager") ? "" : r.description].filter(Boolean).join(" · ");
+  };
   const devices = [
-    ...d.readers.map((r) => [icon("card"), r.name, [r.direction, r.description].filter(Boolean).join(" · ") || r.access_point, r.enabled ? ["ok", "Attivo"] : ["", "Disattivato"]]),
-    d.intercom ? [icon("phone"), d.intercom, `Videocitofono Hikvision · relè ${d.intercom_relay}`, d.intercom_open_door ? ["ok", "Apre la Porta"] : ["", "Solo Registro"]] : null,
-    d.camera ? [icon("camera"), d.camera, d.snapshot_on_granted ? "istantanea su ogni passaggio" : "istantanea su rifiuti, citofono e allarmi", ["ok", "Attiva"]] : null,
-    [icon("chip"), d.controller.name || "Controller", d.controller.host, null],
+    ...d.readers.map((r) => [icon(r.role_key === "intercom" ? "bell" : r.role ? "dooropen" : "card"), r.name, readerMeta(r), off(r)]),
+    d.intercom ? [icon("phone"), d.intercom, d.intercom_open_door ? `Videocitofono Hikvision · apre la porta con il relè ${d.intercom_relay}` : "Videocitofono Hikvision · registra le chiamate, non apre la porta", null] : null,
+    d.camera ? [icon("camera"), d.camera, d.snapshot_on_granted ? "Telecamera · istantanea a ogni passaggio" : "Telecamera · istantanea su rifiuti, citofono e allarmi", null] : null,
+    [icon("chip"), d.controller.name || "Controller", ["Controller", d.controller.host].filter(Boolean).join(" · "), null],
   ].filter(Boolean);
   const kpi = (label, value, sub, color = "") => `<div class="card"><div class="label">${label}</div><div class="value" ${color ? `style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
   el.innerHTML = `

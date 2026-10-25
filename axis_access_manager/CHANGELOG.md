@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.2
+
+- Pagina della porta, scheda Dispositivi, con testi più chiari:
+  - i lettori dicono da che lato della porta sono ("Lettore tessere sul lato entrata");
+  - pulsanti e relè collegati agli ingressi del controller mostrano ruolo e morsetto ("Pulsante Uscita · morsetto Aux 1 del controller") invece di "Uscita · Ingresso IO1";
+  - il videocitofono dice se apre la porta e con quale relè;
+  - i bollini "Attivo" e "Apre la Porta" sono stati tolti: compare un bollino solo per un lettore disattivato.
+
 ## 0.11.1
 
 - Scheda della persona: nel riquadro Accesso Personalizzato il nome della tipologia resta nella frase invece di andare a capo.
