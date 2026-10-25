@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.21.2
+
+Rifiniture dopo la seconda prova di reset al banco e richieste dell'utente.
+
+- **Sensore Elettroserratura Porta** in Home Assistant, uno per porta: acceso/spento con classe lock (spento bloccata, acceso sbloccata, anche quando è aperta a tempo da una tessera). Nelle dashboard mostra il lucchetto.
+- **Tessere rilette appena il controller torna raggiungibile** dopo un riavvio o un reset: l'avviso delle tessere non presenti e il Ripristino Completo compaiono subito, senza premere Rileggi né aspettare il giro dei 15 minuti.
+- **Pallino verde** accanto a "Collegato" nella pagina del controller (era grigio).
+- **Dettaglio dell'evento nel Registro** che segue lo scorrimento: aprendo un evento in fondo all'elenco il riquadro resta visibile invece di restare in cima alla pagina.
+- **Fai Gestire al Controller** mostra "Sto Scrivendo…" mentre scrive.
+- La fascia di fabbrica standard_after_hours si chiama **Fuori Orario**, come le altre fasce di fabbrica.
+
 ## 0.21.1
 
 Correzioni dal collaudo del Ripristino Completo al banco: dopo il reset le tessere venivano lette ma la porta non si apriva.

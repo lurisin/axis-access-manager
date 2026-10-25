@@ -26,6 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 STANDARD_NAMES = {
     "standard_always": "Sempre",
     "standard_office_hours": "Orario d'Ufficio",
+    "standard_after_hours": "Fuori Orario",
     "standard_weekends": "Fine Settimana",
 }
 

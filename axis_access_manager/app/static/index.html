@@ -169,7 +169,9 @@
   .list.compact > .day:first-child { border-top: none; }
   .log-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
   @media (min-width: 1100px) { .log-layout.split { grid-template-columns: minmax(0, 1fr) 380px; } }
-  .log-detail { position: sticky; top: 76px; }
+  /* Il riquadro del dettaglio segue lo scorrimento: sticky sull'elemento della griglia, non sulla scheda interna */
+  #l-detail { position: sticky; top: 76px; }
+  .log-detail { max-height: calc(100vh - 92px); overflow-y: auto; }
   .hidden-count { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface-2); font-size: 13px; color: var(--muted); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .ctl-card { position: relative; padding: 0; }
@@ -347,6 +349,8 @@
   .pill.err { background: var(--err-soft); color: var(--err); border-color: transparent; }
   .pill.info { background: var(--info-soft); color: var(--info); border-color: transparent; }
   .pill.accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+  /* Pallino senza colore proprio dentro un'etichetta: prende quello dell'etichetta (verde se collegato) */
+  .pill .dot { background: currentColor; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
   .alert { display: flex; gap: 12px; align-items: flex-start; border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
@@ -2795,10 +2799,12 @@ async function viewController(el, ctrl, tab) {
   if (unmanaged) setTimeout(() => {
     const button = body.querySelector("[data-manage]");
     if (button) button.onclick = async () => {
+      // Più letture e una scrittura sul controller: qualche secondo, e senza segno sembrava non succedere niente
       button.disabled = true;
+      button.textContent = "Sto Scrivendo…";
       const r = await run(() => api("api/programming/manage", {method: "POST"}));
       if (r) { toast(`${plural(r.managed, "punto di accesso gestito", "punti di accesso gestiti")} dal controller`); render(); }
-      else button.disabled = false;
+      else { button.disabled = false; button.textContent = "Fai Gestire al Controller"; }
     };
   });
   const appDoor = (token) => ctrl.doors.find((d) => d.door_token === token);

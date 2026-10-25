@@ -331,3 +331,47 @@ async def test_access_points_the_controller_does_not_manage_are_a_fault(monitor,
     controller.access_controllers["Axis-x AccessController"]["AccessPoint"] = ["ap-in"]
     await monitor.recheck_managed(db.get_controller(controller_row))
     assert state.unmanaged == []
+
+
+async def test_controller_back_online_wakes_the_card_sync(monitor, controller, controller_row, db, monkeypatch):
+    """Dopo un reset o un riavvio le tessere si rileggono appena il controller risponde, non al giro dei 15 minuti."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from app import main
+
+    class Stop(BaseException):
+        pass
+
+    async def one_round(_delay):
+        raise Stop
+
+    state = SimpleNamespace(
+        health=monitor,
+        installation=SimpleNamespace(primary=db.get_controller(controller_row)),
+        controller=SimpleNamespace(paused=""),
+        service=SimpleNamespace(notify_change=lambda: None),
+        health_ready=asyncio.Event(),
+        sync_wake=asyncio.Event(),
+    )
+    monkeypatch.setattr(main, "_apply_pause", lambda state: None)
+
+    async def no_recovery(state):
+        return None
+
+    monkeypatch.setattr(main, "_recover_if_needed", no_recovery)
+    monkeypatch.setattr(main.asyncio, "sleep", one_round)
+    app = SimpleNamespace(state=state)
+
+    async def round_with(offline: bool) -> bool:
+        controller.offline = offline
+        with pytest.raises(Stop):
+            await main._health_loop(app)
+        woke = state.sync_wake.is_set()
+        state.sync_wake.clear()
+        return woke
+
+    assert await round_with(False) is False  # risponde da sempre: niente rilettura in più
+    assert await round_with(True) is False  # non risponde
+    assert await round_with(False) is True  # torna: rilettura subito
+    assert await round_with(False) is False
