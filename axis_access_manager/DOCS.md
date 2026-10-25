@@ -52,7 +52,11 @@ Restano solo quelle tecniche:
 
 ## Sezioni
 
-- **Cruscotto**: accessi e rifiuti di oggi, persone e tessere, le porte raggruppate per struttura e area con stato e ultimo passaggio, grafico degli ultimi 7 giorni, ultimi eventi e avvisi (impianto da configurare, tessere da registrare, tessere in scadenza, allarmi, MQTT scollegato).
+- **Cruscotto**: riquadri che ogni utente sceglie e dispone come vuole.
+  - Quelli disponibili sono: Da Gestire, Accessi, Negati e Allarmi di oggi, Persone, Porte, Ultimi 7 Giorni, Ultimi Eventi, Tessere in Scadenza, Tessere da Registrare e Stato Impianto.
+  - Con **Modifica Cruscotto** li sposti trascinandoli, scegli la larghezza (un quarto, metà, tre quarti o riga intera), li togli o li aggiungi.
+  - **Ripristina Predefinito** torna alla disposizione di partenza.
+  - I riquadri che richiedono un permesso (registro, persone) compaiono solo a chi ce l'ha.
 - **Porte**: elenco essenziale per struttura e area, con nome, accessi di oggi e stato. Il clic apre il dettaglio: stato, numeri di oggi, dispositivi (lettori con direzione, citofono, telecamera, controller), le tipologie che la aprono e i suoi ultimi eventi.
 - **Persone**: elenco essenziale in ordine alfabetico, con il colore della tipologia e un'etichetta solo se c'è qualcosa da sistemare (tessera sospesa, scaduta, in scadenza, accesso personalizzato). Filtri rapidi per tipologia, ricerca per nome, ditta o tessera, filtro per stato. Un clic apre la scheda della persona: tipologia con le sue porte e fasce, validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi. La scheda **Tipologie** gestisce le tipologie (vedi Regole di accesso).
 - **Da Registrare**: tessere lette dal lettore ma non registrate, da assegnare a una persona nuova o esistente senza digitare il numero.

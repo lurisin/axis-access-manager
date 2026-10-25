@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.0
+
+- **Cruscotto personalizzabile**, per ogni utente dell'app.
+  - Con **Modifica Cruscotto** trascini i riquadri per spostarli, scegli la larghezza (un quarto, metà, tre quarti o riga intera) e togli con × quelli che non ti servono.
+  - Con **Aggiungi Riquadro** rimetti quelli tolti o ne aggiungi di nuovi: Tessere in Scadenza, Tessere da Registrare, Stato Impianto (controller, eventi MQTT, coperchio, ultimo evento).
+  - Salva o Annulla; **Ripristina Predefinito** torna ai riquadri di partenza.
+  - Il cruscotto è salvato nell'add-on e lo ritrovi da ogni dispositivo. Ogni utente ha il suo. Sul telefono i riquadri piccoli vanno due per riga e gli altri a riga intera.
+- Il riquadro Da Gestire del cruscotto mostra le prime cinque notifiche aperte con la loro gravità, come la pagina Notifiche.
+
 ## 0.14.0
 
 - **Pagina Notifiche rifatta.**
