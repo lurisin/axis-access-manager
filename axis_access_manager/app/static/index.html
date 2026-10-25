@@ -1736,10 +1736,9 @@ async function viewControllers(body, data) {
   });
   const card = (c) => `<div class="card ctl-card" style="margin:0">
       <a class="ctl-main" href="#impianti/c${c.id}">
-        <span class="ctl-name">${icon("chip")}${esc(c.name)}</span>
+        <span class="ctl-name">${icon("chip")}${esc(c.name)}<span class="dot" data-ctl-state="${c.id}" title="Verifica del collegamento…" role="img" aria-label="Verifica del collegamento"></span></span>
         <span class="muted small-text" data-ctl-model="${c.id}">${esc(c.description || "Axis")}</span>
-        <span class="ctl-stats"><span><b>${c.doors.length}</b> ${c.doors.length === 1 ? "porta" : "porte"}</span><span data-ctl-readers="${c.id}"><b>…</b> lettori</span><span data-ctl-inputs="${c.id}" hidden></span>
-          <span class="pill" data-ctl-state="${c.id}"><span class="spinner" style="width:12px;height:12px"></span></span></span>
+        <span class="ctl-stats"><span><b>${c.doors.length}</b> ${c.doors.length === 1 ? "porta" : "porte"}</span><span data-ctl-readers="${c.id}"><b>…</b> lettori</span><span data-ctl-inputs="${c.id}" hidden></span></span>
       </a>
       <a class="ctl-gear btn small ghost icon-only" href="#impianti/c${c.id}/connessione" title="Impostazioni di Connessione" aria-label="Impostazioni di connessione di ${esc(c.name)}">${icon("cog")}</a>
     </div>`;
@@ -1752,11 +1751,15 @@ async function viewControllers(body, data) {
   if ($("#ctrl-new")) $("#ctrl-new").onclick = () => controllerEditor();
   api("api/status").then((s) => {
     const c = data.controllers[0];
-    const pill = $(`[data-ctl-state="${c.id}"]`);
-    if (!pill) return;
-    pill.className = "pill " + (s.controller.ok ? "ok" : "err");
-    pill.innerHTML = `<span class="dot"></span>${s.controller.ok ? "Collegato" : "Non Raggiungibile"}`;
-    pill.title = s.controller.error || "";
+    const dot = $(`[data-ctl-state="${c.id}"]`);
+    if (!dot) return;
+    // Verde: risponde e manda gli eventi; giallo: risponde ma gli eventi MQTT non arrivano; rosso: non risponde
+    const [cls, text] = !s.controller.ok ? ["err", `Non raggiungibile: ${s.controller.error || "nessuna risposta"}`]
+      : !s.mqtt.connected ? ["warn", "Collegato, ma gli eventi MQTT non arrivano: registro e stato porta non si aggiornano"]
+      : ["ok", "Collegato, eventi in arrivo"];
+    dot.className = `dot ${cls}`;
+    dot.title = text;
+    dot.setAttribute("aria-label", text);
     const count = (n, one, many) => `<b>${n ?? "—"}</b> ${n === 1 ? one : many}`;
     $(`[data-ctl-readers="${c.id}"]`).innerHTML = count(s.controller.readers, "lettore", "lettori");
     // Pulsanti, relè e sensori collegati agli ingressi del controller
