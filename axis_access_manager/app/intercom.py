@@ -36,7 +36,8 @@ IDLE_STATES = {"idle", "dismissed"}
 LOCAL_CREDENTIALS = {"PASSWORD", "HIJACKING", "CARD", "BLUETOOTH", "QR_CODE", "FACE", "FINGERPRINT"}
 UNLOCK_SOURCES = {
     "HOUSEHOLDER": "App O Monitor",
-    "CENTER_PLATFORM": "Piattaforma Remota",
+    # Al banco l'apertura dall'app Hik-Connect arriva così (sorgente "00"); l'account che apre non c'è
+    "CENTER_PLATFORM": "App Hik-Connect",
     "PASSWORD": "PIN",
     "HIJACKING": "PIN Antirapina",
     "CARD": "Tessera",

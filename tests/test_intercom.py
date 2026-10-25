@@ -162,5 +162,5 @@ def test_unlock_source_labels():
     assert unlock_source({"unlock_type": "HOUSEHOLDER", "control_source": "app"}) == "App Hik-Connect"
     assert unlock_source({"unlock_type": "HOUSEHOLDER", "control_source": "indoorMonitor"}) == "Monitor Interno"
     assert unlock_source({"unlock_type": "HOUSEHOLDER"}) == "App O Monitor"
-    assert unlock_source({"unlock_type": "CENTER_PLATFORM"}) == "Piattaforma Remota"
+    assert unlock_source({"unlock_type": "CENTER_PLATFORM"}) == "App Hik-Connect"
     assert unlock_source({}) == "App O Monitor"

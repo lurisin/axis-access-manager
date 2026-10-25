@@ -160,9 +160,9 @@ Non parla direttamente con il citofono.
 - **Apri dal citofono**: quando si preme Apri sull'app Hik-Connect o sul monitor (in futuro anche dal centralino VoIP),
   il citofono attiva il suo relè e lo segnala. L'add-on manda allora all'A1210 **una sola apertura a tempo**,
   sulla porta associata: solo a serratura bloccata e al massimo una ogni 5 secondi.
-  Nel registro compare come apertura remota con il modo e il citofono, ad esempio "App Hik-Connect (Citofono)",
-  "Monitor Interno (Citofono)" o "Piattaforma Remota (Citofono)" (Hik-Connect o un software di gestione Hikvision);
-  se c'era una chiamata, il dettaglio dice dopo quanti secondi si è aperto.
+  Nel registro compare come apertura remota con il modo e il citofono, ad esempio "App Hik-Connect (Citofono)"
+  o "Monitor Interno (Citofono)"; se c'era una chiamata, il dettaglio dice dopo quanti secondi si è aperto.
+  Il citofono non comunica quale account Hik-Connect ha aperto, quindi il nome della persona non c'è.
 - Le aperture fatte con tessere, PIN o volti salvati sul citofono **non** vengono inoltrate: chi può entrare lo decide solo l'A1210.
 - Il relè del citofono non va collegato alla serratura.
 
