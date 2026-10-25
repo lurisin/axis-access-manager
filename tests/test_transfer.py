@@ -23,6 +23,9 @@ def test_parse_date():
     assert parse_date("25/10/2026") == "2026-10-25T00:00:00"
     assert parse_date("2026-10-25 08:30") == "2026-10-25T08:30:00"
     assert parse_date("") == ""
+    # "Valida al 31/12" comprende tutto il 31
+    assert parse_date("31/12/2026", end_of_day=True) == "2026-12-31T23:59:59"
+    assert parse_date("31/12/2026 08:00", end_of_day=True) == "2026-12-31T08:00:00"
     with pytest.raises(ServiceError):
         parse_date("domani")
 

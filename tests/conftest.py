@@ -56,7 +56,8 @@ class FakeController:
                 "Name": "Sempre",
                 "Description": "",
                 "Enabled": True,
-                "Schedule": [],
+                # Come il profilo creato a mano sull'A1210: fascia sia nel profilo sia nella regola
+                "Schedule": ["standard_always"],
                 "AuthenticationProfile": [],
                 "AccessPolicy": [
                     {

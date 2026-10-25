@@ -73,6 +73,16 @@ def test_durations():
     assert format_duration(90) == "PT90S"
 
 
+async def test_door_times_already_over_the_limit_do_not_block_saving(db, controller):
+    """Un valore già sul controller oltre il massimo, se non cambia, non blocca le altre modifiche."""
+    service = ProgrammingService(db, controller, 1, asyncio.Lock())
+    controller.doors["porta"]["ExtendedAccessTime"] = "PT2M"
+    await service.update_door("porta", {"name": "Portone", "access_time": 8, "extended_access_time": 120}, "admin")
+    assert controller.doors["porta"]["AccessTime"] == "PT8S"
+    with pytest.raises(ServiceError, match="Apertura Estesa: tra 1 e 60"):
+        await service.update_door("porta", {"name": "Portone", "extended_access_time": 90}, "admin")
+
+
 async def test_programming_changes_can_be_undone(db, controller):
     service = ProgrammingService(db, controller, 1, asyncio.Lock())
     data = await service.read()
@@ -87,8 +97,10 @@ async def test_programming_changes_can_be_undone(db, controller):
     assert controller.doors["porta"]["AccessTime"] == "PT10S"
     assert controller.doors["porta"]["Name"] == "Portone"
     assert controller.doors["porta"]["OpenTooLongTime"] == "PT15S"
-    with pytest.raises(ServiceError, match="tra 1 e 600"):
+    with pytest.raises(ServiceError, match="Tempo di Apertura: tra 1 e 30"):
         await service.update_door("porta", {"name": "Portone", "access_time": 0}, "admin")
+    with pytest.raises(ServiceError, match="Tempo di Apertura: tra 1 e 30"):
+        await service.update_door("porta", {"name": "Portone", "access_time": 31}, "admin")
 
     await service.update_reader("lettore-2", {"name": "Lettore uscita"}, "admin")
     await service.update_access_point("ap-in", {"readers": ["lettore-2"], "direction": "out", "door": "porta"}, "admin")

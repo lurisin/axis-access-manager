@@ -27,6 +27,10 @@ DENIED_REASONS = {
     "Unauthorized": "non autorizzata su questa porta o in questo orario",
     "InvalidAccessProfile": "profilo di accesso non valido",
     "CredentialNotFound": "tessera non registrata",
+    "NotPermittedAtThisTime": "fuori fascia oraria",
+    "InvalidPIN": "PIN errato",
+    "AntipassbackViolation": "passaggio ripetuto (antipassback)",
+    "Other": "rifiutata dal controller",
 }
 
 DOOR_ALARMS = {
