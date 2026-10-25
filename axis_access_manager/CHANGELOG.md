@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.20.1
+
+Suggerimenti dal collaudo della 0.19.5.
+
+- **Aperture remote e citofono con l'ora del controller**: nascono in Home Assistant e prendevano la sua ora. Sul banco, con Home Assistant 36 secondi indietro, un'apertura remota poteva finire nel registro prima di un passaggio con tessera avvenuto prima. Ora, se il controller è sincronizzato via NTP, si usa l'ora del controller, la stessa dei passaggi con tessera.
+- **CSV del registro con la colonna Recuperato** per gli eventi arrivati dopo dal registro interno del controller.
+
 ## 0.20.0
 
 Backup automatico.

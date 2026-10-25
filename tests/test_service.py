@@ -693,3 +693,34 @@ def test_event_from_log_in_utc():
 
     entry = {"UtcTime": "2026-10-25T19:54:43+02:00", "KeyValues": [{"Key": "topic0", "Value": "AccessControl"}]}
     assert event_from_log(entry).timestamp.isoformat(timespec="seconds") == "2026-10-25T17:54:43+00:00"
+
+
+async def test_app_events_use_controller_clock(service, db):
+    """HA 36 s indietro, controller sincronizzato: apertura remota e citofono con l'ora del controller."""
+    service.monitor.door_mode = "Locked"
+    service.clock_offset = lambda: 36.0
+    await service.open_door(False, "admin")
+    service.record_intercom("binary_sensor.citofono", "Citofono")
+    expected = datetime.now(tz=UTC) + timedelta(seconds=36)
+    for e in db.list_events():
+        assert abs(datetime.fromisoformat(e["ts"]) - expected) < timedelta(seconds=3)
+    # Controller non sincronizzato (o scarto assurdo): ora di Home Assistant
+    service.clock_offset = lambda: None
+    assert abs(datetime.fromisoformat(service.event_now()) - datetime.now(tz=UTC)) < timedelta(seconds=3)
+    service.clock_offset = lambda: 3 * 86400
+    assert abs(datetime.fromisoformat(service.event_now()) - datetime.now(tz=UTC)) < timedelta(seconds=3)
+
+
+def test_clock_offset_only_from_synced_primary_controller():
+    from types import SimpleNamespace
+
+    from app.health import ControllerHealth
+    from app.main import _controller_clock_offset
+
+    health = ControllerHealth(id=1, name="A1210", clock_offset=36.0, ntp={"active": True})
+    state = SimpleNamespace(installation=SimpleNamespace(primary={"id": 1}), health=SimpleNamespace(states={1: health}))
+    assert _controller_clock_offset(state) == 36.0
+    health.ntp = {"active": False}
+    assert _controller_clock_offset(state) is None
+    state.installation.primary = None
+    assert _controller_clock_offset(state) is None
