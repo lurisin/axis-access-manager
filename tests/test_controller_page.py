@@ -249,3 +249,32 @@ def test_dashboard_layout(client):
     assert client.delete("/api/dashboard/layout").json() == {"widgets": None}
     assert client.get("/api/dashboard/layout").json()["widgets"] is None
     assert "system" in client.get("/api/dashboard").json()
+
+
+def test_seen_notifications_go_in_the_audit_log(client):
+    db = client.app.state.db
+    now = datetime.now(tz=UTC)
+    for minutes in (3, 2):
+        db.add_event(ts=(now - timedelta(minutes=minutes)).isoformat(), kind="negato", card="04AA", door="porta")
+    db.add_event(ts=now.isoformat(), kind="allarme", door="porta", detail="porta forzata")
+    items = client.get("/api/notifications").json()["items"]
+    unknown = next(i for i in items if i["type"] == "unknown_card")
+    client.post("/api/notifications/seen", json={"ids": [unknown["id"]]})
+    [last] = db.list_audit(limit=1)
+    assert last["action"] == "presa visione" and last["detail"] == "Tessera Sconosciuta ×2 (Tessera 04AA)"
+    client.post("/api/notifications/seen", json={})
+    [last] = db.list_audit(limit=1)
+    assert last["action"] == "presa visione" and last["detail"] == "Allarme Porta (Porta forzata)"
+    # Già viste: nessuna nuova riga
+    count = len(db.list_audit())
+    client.post("/api/notifications/seen", json={})
+    assert len(db.list_audit()) == count
+
+
+def test_controller_events_follow_the_controller_name(db):
+    db.add_event(ts="2026-10-25T10:00:00Z", kind="manomissione", detail="coperchio", source="Vecchio Nome")
+    db.add_event(ts="2026-10-25T10:01:00Z", kind="manomissione", detail="manomissione porta", source="porta", door="p")
+    assert db.set_controller_event_source("Rack Portineria", old="Altro") == 0
+    assert db.set_controller_event_source("Rack Portineria", old="Vecchio Nome") == 1
+    events = {e["detail"]: e["source"] for e in db.list_events()}
+    assert events == {"coperchio": "Rack Portineria", "manomissione porta": "porta"}

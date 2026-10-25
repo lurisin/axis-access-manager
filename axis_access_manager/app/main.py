@@ -324,6 +324,7 @@ def create_app(
         app.state.installation = InstallationService(app.state.db)
         app.state.installation.migrate_from_options(options)
         app.state.installation.ensure_default_site()
+        app.state.installation.update_controller_event_names()
         app.state.notifications = NotificationService(app.state.db)
         app.state.ha = home_assistant or HomeAssistant()
         app.state.snapshot_errors = {}
@@ -450,6 +451,13 @@ def create_app(
         ids = body.ids if body.ids is not None else [i["id"] for i in listing["items"]]
         state = request.app.state
         state.notifications.mark_seen(ids, _current_notifications(state))
+        # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche
+        marked = [i for i in listing["items"] if i["id"] in ids and not i["seen"]]
+        if marked:
+            titles = ", ".join(f"{i['title']} ({i['text']})" if i["text"] else i["title"] for i in marked[:3])
+            more = f" e altre {len(marked) - 3}" if len(marked) > 3 else ""
+            action = "presa visione" if len(marked) == 1 else f"segnate come viste {len(marked)} notifiche"
+            state.db.add_audit(request_user(request), action, titles + more)
         return {"open": _notification_listing(request)["open"]}
 
     @app.put("/api/notifications/settings", dependencies=[need("utenti")])

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.2
+
+- Modifica del cruscotto:
+  - cambiando la larghezza o togliendo un riquadro la pagina resta dov'era, non torna in cima;
+  - il titolo non compare più due volte e la × resta sulla stessa riga anche nei riquadri da ¼;
+  - i riquadri di una riga non si allungano più fino all'altezza del più alto.
+- Presa Visione e Segna Tutte Come Viste finiscono nel Registro Attività, con l'utente e le notifiche viste.
+- Gli eventi del coperchio del controller mostrano il nome attuale del controller. Quelli già registrati vengono aggiornati all'avvio, e di nuovo quando rinomini il controller.
+
 ## 0.15.1
 
 - Le telecamere si vedono ovunque con il nome di Home Assistant, non con l'entity id: porte, dettaglio della porta, impostazioni della porta, scheda Telecamere e scelta della telecamera. L'entity id compare solo se due telecamere hanno lo stesso nome, o se la telecamera non esiste più in Home Assistant.
