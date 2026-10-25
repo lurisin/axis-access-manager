@@ -2347,6 +2347,10 @@ async function viewSites(body, data) {
 
 // Stati di Home Assistant di una telecamera che non può dare immagini
 const CAMERA_DOWN = ["unavailable", "unknown", "off"];
+// Avviso accanto alla telecamera nel menu di scelta. Frigate mette "idle" alle telecamere spente, ma anche a
+// quelle senza streaming che le foto le danno: "ferma" avvisa senza dire che è guasta.
+const cameraNote = (c) => CAMERA_DOWN.includes(c.state) ? "non disponibile"
+  : c.last_error ? "ultima foto non riuscita" : c.state === "idle" ? "ferma" : "";
 // Scheda Telecamere: quale telecamera fotografa quale porta
 async function controllerCameras(body, ctrl) {
   const cameras = await api("api/cameras").catch(() => []);
@@ -2386,12 +2390,12 @@ async function controllerCameras(body, ctrl) {
 async function cameraEditor(ctrl, cameras, door) {
   const current = door?.snapshot_camera || "";
   const cameraInput = cameras.length
-    ? `<select name="camera">${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === current ? "selected" : ""}>${CAMERA_DOWN.includes(c.state) ? "⚠ " : ""}${esc(c.name)} (${esc(c.entity_id)})${CAMERA_DOWN.includes(c.state) ? " · non disponibile" : ""}</option>`).join("")}${current && !cameras.some((c) => c.entity_id === current) ? `<option value="${esc(current)}" selected>${esc(current)}</option>` : ""}</select>`
+    ? `<select name="camera">${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === current ? "selected" : ""}>${cameraNote(c) ? "⚠ " : ""}${esc(c.name)} (${esc(c.entity_id)})${cameraNote(c) ? ` · ${cameraNote(c)}` : ""}</option>`).join("")}${current && !cameras.some((c) => c.entity_id === current) ? `<option value="${esc(current)}" selected>${esc(current)}</option>` : ""}</select>`
     : `<input name="camera" class="mono" value="${esc(current)}" placeholder="camera.ingresso">`;
   const doorSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${d.id === door?.id ? "selected" : ""}>${esc(d.name)}${d.snapshot_camera && d.id !== door?.id ? ` (ora ${esc(d.snapshot_camera)})` : ""}</option>`).join("")}</select>`;
   const result = await modal({
     title: door ? "Modifica Telecamera" : "Aggiungi Telecamera",
-    body: `${field("Telecamera", cameraInput, cameras.length ? "Le entità camera.* di Home Assistant." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
+    body: `${field("Telecamera", cameraInput, cameras.length ? "Le entità camera.* di Home Assistant. Ferma: non trasmette (con Frigate anche se spenta), la foto potrebbe non riuscire." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
       ${field("Porta", doorSelect, "Se la porta ha già una telecamera, viene sostituita.")}
       <div class="field inline"><input type="checkbox" name="granted" id="f-cg" ${door?.snapshot_on_granted ? "checked" : ""}><label for="f-cg">Istantanea Anche sugli Accessi Concessi</label></div>
       <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su rifiuti, aperture a distanza, citofono e allarmi.</p>`,
