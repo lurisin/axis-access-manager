@@ -52,11 +52,11 @@ Restano solo quelle tecniche:
 
 ## Sezioni
 
-- **Barra in alto**: in ogni pagina compaiono **Guasti** (controller, MQTT, telecamere) e **Allarmi** (porte e manomissioni non ancora viste) solo quando ci sono, altrimenti **Sistema OK**. Un clic apre l'elenco. Nel cruscotto ci sono anche la data e i badge con accessi e negati di oggi.
+- **Barra in alto**: in ogni pagina compaiono **Guasti** (controller, MQTT, telecamere) e **Allarmi** (porte e manomissioni non ancora viste) solo quando ci sono, altrimenti **Sistema OK**. Un clic apre l'elenco. Se l'add-on non risponde compare **Add-on Non Raggiungibile**. Nel cruscotto, accanto al titolo, ci sono la data, l'ora e la matita per modificarlo.
 - **Cruscotto**: riquadri che ogni utente sceglie e dispone come vuole.
   - Quelli disponibili sono: Da Gestire, Accessi, Negati e Allarmi di oggi, Persone, Porte, Ultimi 7 Giorni, Ultimi Eventi, Tessere in Scadenza, Tessere da Registrare e Stato Impianto.
-  - Con **Modifica Cruscotto** li sposti trascinandoli, li togli o li aggiungi. La maniglia nell'angolo in basso a destra cambia larghezza (a quarti di riga) e altezza (a righe da 64 px). I riquadri piccoli riempiono gli spazi vuoti e, se il contenuto non ci sta, scorre dentro il riquadro.
-  - **Ripristina Predefinito** torna alla disposizione di partenza.
+  - Con la matita (**Modifica Cruscotto**) li sposti trascinandoli, li togli o li aggiungi. La maniglia nell'angolo in basso a destra cambia larghezza (a quarti di riga) e altezza (a righe da 64 px). I riquadri piccoli riempiono gli spazi vuoti e, se il contenuto non ci sta, scorre dentro il riquadro.
+  - **Ripristina Predefinito** torna al cruscotto predefinito, che dipende dai permessi: amministratore (tessere da sistemare, numeri del giorno, andamento, registro e cose da gestire), operatore che modifica le tessere (tessere da registrare e da gestire in alto), consultazione con il registro (numeri del giorno e registro in grande), solo stato (porte e stato dell'impianto).
   - I riquadri che richiedono un permesso (registro, persone) compaiono solo a chi ce l'ha.
 - **Porte**: elenco essenziale per struttura e area, con nome, accessi di oggi e stato. Il clic apre il dettaglio: stato, numeri di oggi, dispositivi (lettori con direzione, citofono, telecamera, controller), le tipologie che la aprono e i suoi ultimi eventi.
 - **Persone**: elenco essenziale in ordine alfabetico, con il colore della tipologia e un'etichetta solo se c'è qualcosa da sistemare (tessera sospesa, scaduta, in scadenza, accesso personalizzato). Filtri rapidi per tipologia, ricerca per nome, ditta o tessera, filtro per stato. Un clic apre la scheda della persona: tipologia con le sue porte e fasce, validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi. La scheda **Tipologie** gestisce le tipologie (vedi Regole di accesso).
