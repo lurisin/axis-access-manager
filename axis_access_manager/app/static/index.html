@@ -65,7 +65,7 @@
             backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
             display: flex; align-items: center; gap: 12px; padding: 12px 24px; flex-wrap: wrap; }
   .topbar h1 { font-size: 20px; margin: 0; flex: 1; min-width: 120px; }
-  .content { padding: 20px 24px 48px; max-width: 1180px; width: 100%; }
+  .content { padding: 20px 24px 48px; width: 100%; }
 
   /* Elementi */
   button, .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: var(--surface);
@@ -907,7 +907,7 @@ async function viewDoorDetail(el, id, doors) {
   const devices = [
     ...d.readers.map((r) => [icon(r.role_key === "intercom" ? "bell" : r.role ? "dooropen" : "card"), r.name, readerMeta(r), off(r)]),
     d.intercom ? [icon("phone"), d.intercom, d.intercom_open_door ? `Videocitofono Hikvision · apre la porta con il relè ${d.intercom_relay}` : "Videocitofono Hikvision · registra le chiamate, non apre la porta", null] : null,
-    d.camera ? [icon("camera"), d.camera, d.snapshot_on_granted ? "Telecamera · istantanea a ogni passaggio" : "Telecamera · istantanea su rifiuti, citofono e allarmi", null] : null,
+    d.camera ? [icon("camera"), d.camera, d.snapshot_on_granted ? "Telecamera · istantanea a ogni passaggio" : "Telecamera · istantanea su rifiuti, aperture a distanza, citofono e allarmi", null] : null,
     [icon("chip"), d.controller.name || "Controller", ["Controller", d.controller.host].filter(Boolean).join(" · "), null],
   ].filter(Boolean);
   const kpi = (label, value, sub, color = "") => `<div class="card"><div class="label">${label}</div><div class="value" ${color ? `style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
@@ -2347,8 +2347,9 @@ async function doorEditor(ctrl, door, token = "", controllerName = "") {
       <div class="field inline"><input type="checkbox" name="ha_buttons" id="f-hab" ${d.ha_buttons ? "checked" : ""}><label for="f-hab">Pulsanti Apri e Apri a Lungo in Home Assistant</label></div>
       <p class="hint" style="margin-top:-8px">Da mettere nelle dashboard. L'apertura è sempre a tempo e solo a porta bloccata.</p>
       <h3 class="section-title" style="margin-top:18px">${icon("camera")}Telecamera</h3>
-      ${field("Telecamera per le Istantanee", cameraInput, "Salva una foto nel registro su accessi negati, tessere sconosciute, chiamate al citofono e allarmi.")}
+      ${field("Telecamera per le Istantanee", cameraInput, "Salva una foto nel registro su accessi negati (anche di tessere sconosciute), aperture a distanza, chiamate al citofono e allarmi.")}
       <div class="field inline"><input type="checkbox" name="snapshot_on_granted" id="f-sog" ${d.snapshot_on_granted ? "checked" : ""}><label for="f-sog">Istantanea Anche sugli Accessi Concessi</label></div>
+      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta solo i rifiuti hanno la foto. Le foto sono anche in Home Assistant, in Media → axis_access_manager (e nella cartella /media con File editor o Samba), e si cancellano con il registro.</p>
       <h3 class="section-title" style="margin-top:18px">${icon("bell")}Videocitofono</h3>
       <div class="fields-2">${field("Nome del Citofono", `<input name="intercom_name" value="${esc(d.intercom_name || "")}" placeholder="vuoto = nessun citofono">`, "Lo stesso nome dato al citofono nell'add-on Hikvision Doorbell.")}
       ${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}</div>

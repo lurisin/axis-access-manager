@@ -1,4 +1,5 @@
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.config import parse_options
 from app.db import Database
+from app.ha import HomeAssistant
 from app.main import create_app
 
 
@@ -257,3 +259,57 @@ def test_old_denial_reasons_are_translated_at_startup(settings, controller, tmp_
     with TestClient(create_app(settings, allow_any_client=True, controller=controller, db_path=path)) as client:
         details = {e["kind"]: e["detail"] for e in client.get("/api/events").json()}
     assert details == {"negato": "fuori fascia oraria", "citofono": "Other"}
+
+
+class FakeCamera(HomeAssistant):
+    """Home Assistant finto: ogni istantanea è un file con un nome nuovo."""
+
+    def __init__(self, snapshot_dir):
+        super().__init__(token="x", snapshot_dir=snapshot_dir)
+        self.shots = []
+
+    async def save_snapshot(self, camera, name):
+        self.shots.append((camera, name))
+        return f"{name}.jpg"
+
+
+def test_one_snapshot_per_passage_and_always_on_remote_open(controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    settings = parse_options(
+        {"a1210_host": "a", "door_token": "porta", "access_profile": "profilo_sempre", "snapshot_camera": "camera.x"}
+    )
+    ha = FakeCamera(tmp_path / "shots")
+    app = create_app(
+        settings, allow_any_client=True, controller=controller, db_path=tmp_path / "s.db", home_assistant=ha
+    )
+    with TestClient(app) as client:
+
+        def event(kind, card="", ts="2026-10-25T14:38:28Z"):
+            row = {"ts": ts, "kind": kind, "card": card, "door": "porta"}
+            row["id"] = app.state.db.add_event(**row)
+            client.portal.call(app.state.service.after_event, row)
+            return row["id"]
+
+        # Tessera sconosciuta: foto solo sull'esito negato, non sulla lettura
+        event("sconosciuta", "c0110a99")
+        denied = event("negato", "c0110a99")
+        assert len(ha.shots) == 1 and ha.shots[0][0] == "camera.x"
+        # Il nome del file usa l'ora dell'evento (ora locale), non quella di Home Assistant
+        stamp = datetime(2026, 10, 25, 14, 38, 28, tzinfo=UTC).astimezone().strftime("%Y%m%d_%H%M%S")
+        assert ha.shots[0][1] == f"{denied}_{stamp}"
+
+        # Apertura remota: istantanea anche senza "istantanea sugli accessi concessi"; lettura e concesso no
+        event("apertura_remota")
+        event("lettura", "04a11a34")
+        event("concesso", "04a11a34")
+        assert len(ha.shots) == 2
+
+
+def test_snapshots_move_to_the_media_folder(tmp_path):
+    old, new = tmp_path / "data" / "snapshots", tmp_path / "media" / "axis_access_manager"
+    old.mkdir(parents=True)
+    (old / "1_20261025_143828.jpg").write_bytes(b"jpg")
+    ha = HomeAssistant(token="", snapshot_dir=new)
+    assert ha.move_snapshots(old) == 1
+    assert (new / "1_20261025_143828.jpg").read_bytes() == b"jpg" and not old.exists()
+    assert ha.move_snapshots(old) == 0

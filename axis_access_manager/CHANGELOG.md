@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.0
+
+- **Istantanee nella cartella Media di Home Assistant**: le foto stanno in Media → axis_access_manager (cartella `/media/axis_access_manager`, visibile anche da File editor e Samba). All'aggiornamento quelle già salvate vengono spostate lì. Non entrano più nel backup dell'add-on.
+- Una sola istantanea per passaggio, sull'esito: accesso negato sempre, accesso concesso con "Istantanea Anche sugli Accessi Concessi". La lettura della tessera e la tessera sconosciuta non scattano più una seconda foto uguale.
+- Istantanea anche sulle aperture a distanza (pulsanti di Home Assistant e citofono), anche senza "Istantanea Anche sugli Accessi Concessi".
+- Il nome del file usa l'ora dell'evento data dal controller, non l'orologio di Home Assistant.
+- Su computer le pagine occupano tutta la larghezza dello schermo: prima si fermavano a 1180 pixel e a destra restava spazio vuoto.
+
 ## 0.11.3
 
 - Impianti: nella scheda del controller la scritta "Collegato" lascia il posto a un pallino accanto al nome. Verde: il controller risponde e manda gli eventi. Giallo: risponde, ma gli eventi MQTT non arrivano. Rosso: non risponde. Passando sopra al pallino si legge il dettaglio.

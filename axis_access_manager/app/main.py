@@ -39,8 +39,10 @@ STATIC_DIR = Path(__file__).parent / "static"
 INGRESS_PROXY = "172.30.32.2"
 
 # Eventi per cui salvare un'istantanea della telecamera
-SNAPSHOT_KINDS = {"negato", "sconosciuta", "citofono", "allarme", "manomissione"}
-GRANTED_KINDS = {"concesso", "lettura", "apertura_remota"}
+# Istantanea sempre: rifiuti, citofono, allarmi e aperture a distanza (chi entra senza tessera).
+# Per una tessera una sola foto, sull'esito: la lettura e la tessera sconosciuta arrivano insieme al negato.
+SNAPSHOT_KINDS = {"negato", "citofono", "allarme", "manomissione", "apertura_remota"}
+GRANTED_KINDS = {"concesso"}
 # Passaggi contati come accessi nei numeri del giorno: la lettura della tessera precede il concesso (sarebbe doppia)
 # e le chiamate al citofono non sono accessi; le aperture dal citofono arrivano come apertura remota.
 ACCESS_COUNT_KINDS = ("concesso", "apertura_remota")
@@ -300,6 +302,8 @@ def create_app(
         app.state.mqtt = await resolve_mqtt(options)
         if not app.state.mqtt:
             _LOGGER.warning("Nessun broker MQTT: installa Mosquitto o imposta mqtt_host")
+        if moved := await asyncio.to_thread(app.state.ha.move_snapshots):
+            _LOGGER.info("%s istantanee spostate in %s", moved, app.state.ha.snapshot_dir)
         await _start_runtime(app)
         maintenance = asyncio.create_task(_maintenance(app))
         yield
@@ -1128,8 +1132,7 @@ def _wire(app: FastAPI) -> None:
         camera = door.get("snapshot_camera") or ""
         kinds = SNAPSHOT_KINDS | (GRANTED_KINDS if door.get("snapshot_on_granted") else set())
         if camera and row.get("kind") in kinds:
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = await state.ha.save_snapshot(camera, f"{row['id']}_{stamp}")
+            filename = await state.ha.save_snapshot(camera, f"{row['id']}_{_file_stamp(row.get('ts') or '')}")
             if filename:
                 state.db.set_event_snapshot(row["id"], filename)
         await bridge.publish_event(row)
@@ -1241,6 +1244,15 @@ def _intercom_status(intercom: IntercomBridge) -> dict:
         "call_state": intercom.call_state,
         "last_message_at": intercom.last_message_at,
     }
+
+
+def _file_stamp(ts: str) -> str:
+    """Ora dell'evento nel nome del file: quella del controller, non l'orologio di Home Assistant."""
+    try:
+        moment = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        moment = datetime.now()
+    return moment.strftime("%Y%m%d_%H%M%S")
 
 
 def _now() -> str:
