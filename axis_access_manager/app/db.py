@@ -242,6 +242,10 @@ SETTING_APP_VERSION = "app_version"
 SETTING_LAST_PERSON = "persons_last_id"
 
 
+# Campi degli eventi che servono alle pagine (il messaggio originale resta nel database)
+EVENT_COLUMNS = "id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door, recovered"
+
+
 def now_iso() -> str:
     return datetime.now(tz=UTC).isoformat(timespec="seconds")
 
@@ -1043,22 +1047,32 @@ class Database:
         kind: str = "",
         search: str = "",
         before_id: int | None = None,
+        before_ts: str = "",
         limit: int = 100,
         since: str = "",
         until: str = "",
         person_id: int | None = None,
         door: str = "",
     ) -> list[dict]:
+        """Eventi dal più recente per ora, non per arrivo: quelli recuperati entrano dopo ma al loro posto.
+
+        "Carica altri" riparte dall'ultimo mostrato (ora e numero, che a parità di ora decide l'ordine).
+        """
         clauses, params = self._event_filter(kind, search, since, until, person_id, door)
         if before_id:
-            clauses.append("id < ?")
-            params.append(before_id)
+            if not before_ts:
+                rows = self._query("SELECT ts FROM events WHERE id = ?", (before_id,))
+                before_ts = rows[0]["ts"] if rows else ""
+            if before_ts:
+                clauses.append("(ts < ? OR (ts = ? AND id < ?))")
+                params += [before_ts, before_ts, before_id]
+            else:
+                clauses.append("id < ?")
+                params.append(before_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         return self._query(
-            "SELECT id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door, "
-            f"recovered FROM events {where} "
-            "ORDER BY id DESC LIMIT ?",
+            f"SELECT {EVENT_COLUMNS} FROM events {where} ORDER BY ts DESC, id DESC LIMIT ?",
             tuple(params),
         )
 
@@ -1079,15 +1093,20 @@ class Database:
         """Ultimo evento di ogni porta tra i tipi indicati."""
         marks = ",".join("?" * len(kinds))
         rows = self._query(
-            f"SELECT e.door, e.ts, e.kind, e.person_name, e.card FROM events e JOIN "
-            f"(SELECT door, MAX(id) AS id FROM events WHERE kind IN ({marks}) GROUP BY door) last "
-            "ON e.id = last.id",
+            "SELECT door, ts, kind, person_name, card FROM (SELECT door, ts, kind, person_name, card, "
+            "ROW_NUMBER() OVER (PARTITION BY door ORDER BY ts DESC, id DESC) AS n "
+            f"FROM events WHERE kind IN ({marks})) WHERE n = 1",
             kinds,
         )
         return {row["door"]: row for row in rows}
 
     def get_event(self, event_id: int) -> dict | None:
         rows = self._query("SELECT * FROM events WHERE id = ?", (event_id,))
+        return rows[0] if rows else None
+
+    def event_row(self, event_id: int) -> dict | None:
+        """Un evento con gli stessi campi delle liste del registro."""
+        rows = self._query(f"SELECT {EVENT_COLUMNS} FROM events WHERE id = ?", (event_id,))
         return rows[0] if rows else None
 
     def set_event_snapshot(self, event_id: int, filename: str, error: str = "") -> None:

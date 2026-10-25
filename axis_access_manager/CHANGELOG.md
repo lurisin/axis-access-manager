@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.19.5
+
+- **Registro in ordine di orario**: gli eventi recuperati dal controller dopo un'interruzione (per esempio Mosquitto fermo con l'add-on acceso) finivano in cima al Registro perché arrivati per ultimi. Ora Registro, Notifiche, Ultimi Eventi, la pagina della porta e quella della persona li mostrano al loro orario, con il segno "recuperato". I separatori Oggi/Ieri restano interi, "Carica Altri" prosegue dall'ultimo evento mostrato senza saltarne o ripeterne e l'export CSV segue lo stesso ordine.
+
 ## 0.19.4
 
 - **Pagine che non lampeggiano**: Notifiche, Cruscotto e Da Registrare si aggiornano ogni 15 secondi cambiando solo quello che è cambiato, invece di ridisegnare tutta la pagina. Il testo nella ricerca e il cursore restano, la pagina non torna in cima e le foto non si ricaricano.

@@ -1995,9 +1995,15 @@ async function viewLog(el) {
   bindSnapshots(el);
   await loadLog();
 }
+// "Carica Altri" riparte dall'ultimo evento mostrato: gli eventi sono in ordine di ora, non di arrivo
+function setCursor(params, events) {
+  const last = events[events.length - 1];
+  params.set("before_ts", last.ts);
+  params.set("before_id", last.id);
+}
 async function loadLog(more = false) {
   const params = logParams({limit: "100"});
-  if (more && logEvents.length) params.set("before_id", logEvents[logEvents.length - 1].id);
+  if (more && logEvents.length) setCursor(params, logEvents);
   const data = await run(() => api("api/events?" + params));
   if (!data || !$("#l-list")) return;
   logEvents = more ? logEvents.concat(data) : data;
@@ -2040,7 +2046,8 @@ async function refreshLog() {
   const data = await api("api/events?" + logParams({limit: "100"})).catch(() => null);
   if (!data || !$("#l-list")) return;
   updateHiddenCount();
-  if (data.length && logEvents.length && data[0].id === logEvents[0].id) return;
+  // Anche un evento recuperato che entra più in basso, al suo orario, cambia la lista
+  if (data.map((e) => e.id).join() === logEvents.slice(0, data.length).map((e) => e.id).join()) return;
   logEvents = data;
   renderLog();
 }
@@ -2396,7 +2403,7 @@ async function loadNotifLog(more = false) {
   if (!$("#n-rows")) return;
   const p = notifParams(NOTIF_TABS[notifFilters.tab][1]);
   p.set("limit", NOTIF_PAGE);
-  if (more && notifEvents.length) p.set("before_id", notifEvents[notifEvents.length - 1].id);
+  if (more && notifEvents.length) setCursor(p, notifEvents);
   const [data, ...counts] = await Promise.all([api("api/events?" + p).catch(() => []),
     ...(more ? [] : Object.values(NOTIF_TABS).map(([, kinds]) => api("api/events/count?" + notifParams(kinds)).then((r) => r.count).catch(() => 0)))]);
   if (!$("#n-rows")) return;
@@ -2466,7 +2473,7 @@ async function viewNotifications(el) {
   if ($("#n-door")) $("#n-door").addEventListener("change", (e) => { notifFilters.door = e.target.value; renderNotifCards(); loadNotifLog(); });
   const openEvent = async (id) => {
     let ev = notifEvents.find((x) => x.id === id);
-    if (!ev) [ev] = await api(`api/events?before_id=${id + 1}&limit=1`).catch(() => []);
+    if (!ev) ev = await api(`api/events/${id}`).catch(() => null);
     if (ev && ev.id === id) showEvent(ev);
   };
   el.onclick = (e) => {

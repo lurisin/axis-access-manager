@@ -413,3 +413,29 @@ def test_status_reports_database(client):
     data = client.get("/api/status").json()
     assert data["database"]["schema"] >= 2
     assert data["controllers"][0]["online"] is True
+
+
+def test_registro_follows_event_time_not_arrival(client):
+    """Un evento recuperato in ritardo va al suo orario, e "Carica Altri" non salta né ripete niente."""
+    db = client.app.state.db
+    live = db.add_event(ts="2026-10-25T18:00:00+00:00", kind="concesso", door="d1")
+    tie = db.add_event(ts="2026-10-25T18:00:00+00:00", kind="negato", door="d1")
+    late = db.add_event(ts="2026-10-25T17:30:00+00:00", kind="concesso", door="d1", recovered=True)
+    last = db.add_event(ts="2026-10-25T18:05:00+00:00", kind="negato", door="d2")
+    order = [last, tie, live, late]
+
+    assert [e["id"] for e in client.get("/api/events").json()] == order
+    seen, params = [], {"limit": 1}
+    while page := client.get("/api/events", params=params).json():
+        seen += [e["id"] for e in page]
+        params = {"limit": 1, "before_id": page[-1]["id"], "before_ts": page[-1]["ts"]}
+    assert seen == order
+    # Pagine chieste solo con il numero (pagina aperta prima dell'aggiornamento)
+    assert [e["id"] for e in client.get(f"/api/events?before_id={live}").json()] == [late]
+    # Ultimo evento di ogni porta per ora
+    assert db.last_door_events(("concesso", "negato"))["d1"]["kind"] == "negato"
+
+    event = client.get(f"/api/events/{late}").json()
+    assert event["recovered"] == 1
+    assert "raw" not in event
+    assert client.get("/api/events/9999").status_code == 404

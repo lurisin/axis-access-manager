@@ -62,8 +62,8 @@ def event_from_log(entry: dict) -> Event | None:
         timestamp = datetime.fromisoformat(str(entry.get("UtcTime") or "").replace("Z", "+00:00"))
     except ValueError:
         return None
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.replace(tzinfo=UTC)
+    # In UTC come quelli MQTT: il registro li ordina per ora confrontando il testo
+    timestamp = timestamp.replace(tzinfo=UTC) if timestamp.tzinfo is None else timestamp.astimezone(UTC)
     data = {k: v for k, v in values.items() if not k.startswith("topic")}
     # Barra finale come nei topic MQTT, che proseguono con le sorgenti (…/DoorToken/<porta>)
     return Event(category=levels[0], topic="/".join(levels) + "/", timestamp=timestamp, data=data)
