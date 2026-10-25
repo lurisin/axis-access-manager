@@ -2,6 +2,7 @@
 
 ## 0.7.5
 
+- Registro: lo stesso diniego che il controller manda su più topic compare una volta sola (prima una tessera sconosciuta dava tre righe). **Accessi Negati Oggi** conta i dinieghi del controller e non somma più anche la lettura della tessera sconosciuta.
 - Identificativo del dispositivo (DeviceUUID) di un lettore ricollegato dallo schema: ora si legge prima dalla configurazione del lettore sul controller, poi dallo Storico Modifiche, e infine dal dispositivo della porta. Così funziona anche senza storico.
 
 ## 0.7.4

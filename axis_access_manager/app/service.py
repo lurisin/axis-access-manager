@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import unicodedata
+from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
@@ -99,6 +100,8 @@ class AccessService:
         # Chiamata quando cambia qualcosa che Home Assistant mostra (porta, contatori)
         self.on_change: Callable[[], Awaitable[None]] | None = None
         self._tasks: set[asyncio.Task] = set()
+        # Ultimi esiti del controller: lo stesso diniego arriva su più topic e va registrato una volta
+        self._recent_decisions: deque[tuple] = deque(maxlen=20)
         # Punto di accesso → porta, per sapere a quale porta si riferisce un evento
         self.access_point_doors: dict[str, str] = {}
 
@@ -516,6 +519,11 @@ class AccessService:
             if card is None and number:
                 card = self.db.card_by_number(number)
             reason = str(data.get("Reason") or ("CredentialNotFound" if "CredentialNotFound" in topic else ""))
+            # Stesso esito, stesso punto di accesso, stesso secondo: è lo stesso passaggio
+            key = (granted, data.get("AccessPointToken") or door, ts)
+            if key in self._recent_decisions:
+                return
+            self._recent_decisions.append(key)
             self.log_event(
                 ts=ts,
                 kind="concesso" if granted else "negato",

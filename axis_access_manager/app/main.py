@@ -718,7 +718,7 @@ def create_app(
                     **door,
                     "today": {
                         "granted": sum(today.get(k, 0) for k in GRANTED_KINDS | {"citofono"}),
-                        "denied": today.get("negato", 0) + today.get("sconosciuta", 0),
+                        "denied": today.get("negato", 0),
                         "alarms": today.get("allarme", 0) + today.get("manomissione", 0),
                     },
                     "last": (
