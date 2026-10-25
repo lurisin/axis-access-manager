@@ -1,6 +1,7 @@
 import httpx
+import pytest
 
-from app.config import MqttSettings, parse_options, resolve_mqtt
+from app.config import MqttSettings, normalize_host, parse_options, resolve_mqtt, supervisor_token
 
 BASE = {
     "a1210_host": " 192.168.1.50 ",
@@ -42,3 +43,33 @@ async def test_resolve_mqtt_from_supervisor(monkeypatch):
 async def test_resolve_mqtt_without_supervisor(monkeypatch):
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
     assert await resolve_mqtt(parse_options(BASE)) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "192.168.1.50",
+        " 192.168.1.50 ",
+        "http://192.168.1.50",
+        "https://192.168.1.50/",
+        "HTTPS://192.168.1.50/index.html",
+    ],
+)
+def test_normalize_host(value):
+    assert normalize_host(value) == "192.168.1.50"
+
+
+def test_supervisor_token_from_s6_environment(monkeypatch, tmp_path):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    (tmp_path / "SUPERVISOR_TOKEN").write_text("tok-s6\n")
+    assert supervisor_token(tmp_path) == "tok-s6"
+    assert supervisor_token(tmp_path / "manca") is None
+
+
+async def test_resolve_mqtt_when_supervisor_has_no_broker(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"result": "error", "message": "Service not enabled"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await resolve_mqtt(parse_options(BASE), client, token="tok") is None
+    assert "Mosquitto" in caplog.text
