@@ -94,9 +94,9 @@
   input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); vertical-align: middle; }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
           padding: 18px; margin-bottom: 16px; }
-  .card > h2, .section-title { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .card > h2, .dw-body > h2, .section-title { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .card > h2 .pill { white-space: normal; }
-  .card > h2 .spacer, .row .spacer { flex: 1; }
+  .card > h2 .spacer, .dw-body > h2 .spacer, .row .spacer { flex: 1; }
   .card.flush { padding: 0; }
   .card.flush > h2 { padding: 16px 18px 0; }
   .grid { display: grid; gap: 16px; }
@@ -175,6 +175,50 @@
     .sch-node .ev-icon { display: none; }
     .sch-node b { white-space: normal; overflow-wrap: anywhere; font-size: 13px; line-height: 1.25; }
     .sch-meta { white-space: normal; font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  }
+  /* Cruscotto a riquadri: larghezza in quarti di riga, l'altezza segue il contenuto */
+  .dash-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -6px 0 12px; }
+  .dash-bar svg.icon { width: 18px; height: 18px; vertical-align: -4px; }
+  .dash { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: stretch; }
+  .dash > .card { margin: 0; min-width: 0; }
+  .dw.w-1 { grid-column: span 1; } .dw.w-2 { grid-column: span 2; } .dw.w-3 { grid-column: span 3; } .dw.w-4 { grid-column: span 4; }
+  .dw.dw-porte .door-group .section-title { margin-top: 4px; }
+  .dw-kpi .label { color: var(--muted); font-size: 13px; font-weight: 500; }
+  .dw-kpi .value { font-size: 28px; font-weight: 700; line-height: 1.2; margin-top: 4px; }
+  .dw-kpi .sub { color: var(--muted); font-size: 12px; }
+  .dw-notif { color: inherit; }
+  .dw-notif:hover { text-decoration: none; background: var(--surface-2); }
+  .dw-notif .n-tile { width: 36px; height: 36px; }
+  .dw-notif .n-sev { margin-left: 4px; vertical-align: 1px; }
+  .dw-sys { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .dw-sys:last-child { border-bottom: 0; }
+  .dash.editing .dw { outline: 2px dashed var(--border-strong); outline-offset: -2px; box-shadow: none; }
+  .dash.editing .dw-body { pointer-events: none; opacity: .75; }
+  .dw-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -6px -6px 10px; padding: 4px 4px 8px; border-bottom: 1px solid var(--border); }
+  .dw-edit b { font-size: 14px; flex: 1 1 90px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dw a.item { color: inherit; }
+  .dw a.item:hover { text-decoration: none; background: var(--surface-2); }
+  .dw-handle { cursor: grab; touch-action: none; }
+  .dw.dragging { opacity: .6; outline-color: var(--accent) !important; }
+  .dw.dragging .dw-handle { cursor: grabbing; }
+  .dw-sizes { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 2px; gap: 2px; }
+  .dw-sizes button { border: 0; background: none; padding: 2px 8px; min-width: 30px; font-size: 14px; border-radius: 6px; color: var(--muted); }
+  .dw-sizes button[aria-pressed=true] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .dw-catalog .item { width: 100%; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: none; text-align: left;
+                      white-space: normal; justify-content: flex-start; padding: 12px 4px; font-weight: 400; }
+  .dw-catalog .item:hover { background: var(--surface-2); }
+  .dw-catalog .item svg { color: var(--accent); fill: var(--accent); }
+  @media (max-width: 1000px) {
+    .dw.w-1 { grid-column: span 2; } .dw.w-3 { grid-column: span 4; }
+  }
+  @media (max-width: 640px) {
+    .dash { gap: 12px; }
+    .dw.w-2 { grid-column: span 4; }
+    .dw-kpi .value { font-size: 24px; }
+    .dw-edit b { flex: 1 1 0; }
+    .dw-sizes { order: 3; flex-basis: 100%; }
+    .dw-sizes button { flex: 1; }
+    .dash-bar button { flex: 1 1 auto; }
   }
   /* Notifiche: il colore dice solo la gravità (riquadro dell'icona, etichetta, pallino); righe e sfondi neutri */
   .n-head input[type=search] { flex: 0 1 240px; }
@@ -493,6 +537,7 @@ const ICONS = {
   menu: "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z",
   chip: "M6,4H18V5H21V7H18V9H21V11H18V13H21V15H18V17H21V19H18V20H6V19H3V17H6V15H3V13H6V11H3V9H6V7H3V5H6V4M11,15V18H12V15H11M13,15V18H14V15H13M15,15V18H16V15H15Z",
   arrow: "M4,11V13H16L10.5,18.5L11.92,19.92L19.84,12L11.92,4.08L10.5,5.5L16,11H4Z",
+  drag: "M9,3H11V5H9V3M13,3H15V5H13V3M9,7H11V9H9V7M13,7H15V9H13V7M9,11H11V13H9V11M13,11H15V13H13V11M9,15H11V17H9V15M13,15H15V17H13V15M9,19H11V21H9V19M13,19H15V21H13V19Z",
   user: "M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z",
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ""}"/></svg>`;
@@ -819,6 +864,7 @@ window.addEventListener("beforeunload", (e) => { if (pageGuard?.dirty()) { e.pre
 // Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta
 async function refreshView() {
   if ($("#modal").open || $("#sheet").open) return;
+  if (route.name === "cruscotto" && dash.editing) return;
   if (["cruscotto", "da-registrare", "notifiche"].includes(route.name)) await render();
   if (route.name === "registro") await refreshLog();
 }
@@ -839,52 +885,216 @@ function eventItem(e, {showSnapshot = true} = {}) {
   </div>`;
 }
 
+// Riquadri del cruscotto: titolo, descrizione nel catalogo, larghezza predefinita in quarti di riga, permesso
+const WIDGETS = {
+  da_gestire: {title: "Da Gestire", desc: "Le notifiche aperte, dalla più grave.", size: 4},
+  accessi_oggi: {title: "Accessi Oggi", desc: "Passaggi con tessera e aperture remote di oggi.", size: 1},
+  negati_oggi: {title: "Negati Oggi", desc: "Accessi negati e tessere sconosciute di oggi.", size: 1},
+  allarmi_oggi: {title: "Allarmi Oggi", desc: "Porte forzate, aperte troppo a lungo, manomissioni.", size: 1},
+  persone: {title: "Persone", desc: "Persone e tessere registrate.", size: 1},
+  porte: {title: "Porte", desc: "Stato di ogni porta e passaggi di oggi.", size: 4},
+  settimana: {title: "Ultimi 7 Giorni", desc: "Grafico di accessi e negati per giorno.", size: 2},
+  ultimi_eventi: {title: "Ultimi Eventi", desc: "Gli ultimi passaggi del registro.", size: 2, perm: "registro"},
+  scadenze: {title: "Tessere in Scadenza", desc: "Persone con tessere che scadono nei prossimi 7 giorni.", size: 2, perm: "persone"},
+  da_registrare: {title: "Tessere da Registrare", desc: "Tessere passate sul lettore ma non ancora di nessuno.", size: 2, perm: "persone"},
+  impianto: {title: "Stato Impianto", desc: "Controller, eventi MQTT, coperchio e ultimo evento.", size: 2},
+};
+const DEFAULT_DASH = ["da_gestire", "accessi_oggi", "negati_oggi", "allarmi_oggi", "persone", "porte", "settimana", "ultimi_eventi"]
+  .map((type) => ({type, size: WIDGETS[type].size}));
+const SIZES = [[1, "¼", "Un quarto di riga"], [2, "½", "Mezza riga"], [3, "¾", "Tre quarti di riga"], [4, "▬", "Riga intera"]];
+const dash = {layout: null, draft: null, editing: false};
+const widgetAllowed = (w) => WIDGETS[w.type] && (!WIDGETS[w.type].perm || can(WIDGETS[w.type].perm));
+
+// Contenuto di ogni riquadro, dai dati del cruscotto
+const WIDGET_BODY = {
+  da_gestire(ctx) {
+    const open = (ctx.notif?.items || []).filter((i) => !i.seen);
+    const rows = [];
+    if (store.summary.configured === false) rows.push(`<div class="item"><div class="ev-icon k-info">${icon("cog")}</div><div class="grow"><div class="title">Impianto da Configurare</div><div class="meta">${can("impianti") ? 'Aggiungi il controller e le porte in <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare il controller."}</div></div></div>`);
+    rows.push(...open.slice(0, 5).map((i) => `<a class="item dw-notif sev-${i.severity}" href="#notifiche">
+      <div class="n-tile">${icon(i.type === "door_alarm" && i.title.startsWith("Manomissione") ? "shield" : NOTIF_ICONS[i.type] || "bell")}</div>
+      <div class="grow"><div class="title">${esc(i.title)} <span class="n-sev">${SEVERITY[i.severity]}</span></div>
+        <div class="meta"><span>${esc(i.text)}</span>${i.door ? `<span>${esc(i.door)}</span>` : ""}${i.type !== "expiring" ? `<span>${esc(dayTime(i.ts))}</span>` : ""}</div></div></a>`));
+    if (!rows.length) return `<h2>Da Gestire</h2><div class="all-ok" style="margin:0">${icon("check")}<span><b>Tutto in Ordine</b> · nessun evento da gestire</span></div>`;
+    return `<h2>Da Gestire <span class="muted">· ${open.length}</span><span class="spacer"></span><a class="small-text" href="#notifiche">${open.length > 5 ? `Tutte le Notifiche (${open.length})` : "Notifiche"}</a></h2><div class="list">${rows.join("")}</div>`;
+  },
+  accessi_oggi: ({d: {today: t}}) => kpi("Accessi Oggi", t.granted + t.remote, `${t.remote ? `di cui ${plural(t.remote, "apertura remota", "aperture remote")}` : "con tessera"}${!t.granted && t.reads ? ` · ${plural(t.reads, "lettura", "letture")}` : ""}`),
+  negati_oggi: ({d: {today: t}}) => kpi("Negati Oggi", t.denied, t.unknown ? plural(t.unknown, "tessera sconosciuta", "tessere sconosciute") : "nessuna tessera sconosciuta", t.denied ? "var(--warn)" : ""),
+  allarmi_oggi: ({d: {today: t}}) => kpi("Allarmi Oggi", t.alarms, t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme", t.alarms ? "var(--err)" : ""),
+  persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${d.cards_suspended} sospese` : ""}${can("persone") ? ' · <a href="#persone">anagrafica</a>' : ""}`),
+  porte: ({doors}) => `<h2>${doors.length > 1 ? "Porte" : "Porta"}<span class="spacer"></span>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</h2>
+    ${doors.length ? doorGroups(doors) : `<div class="empty">Nessuna porta configurata.</div>`}`,
+  settimana({d}) {
+    const max = Math.max(1, ...d.week.map((w) => w.granted + w.denied));
+    const chart = d.week.map((w) => {
+      const total = w.granted + w.denied;
+      const h = (n) => `${(n / max) * 100}%`;
+      const label = new Date(w.day + "T12:00:00").toLocaleDateString("it-IT", {weekday: "short"});
+      return `<div class="col" title="${esc(fmtDate(w.day + "T12:00:00"))}: ${w.granted} concessi, ${w.denied} negati${w.unknown ? `, ${plural(w.unknown, "tessera sconosciuta", "tessere sconosciute")}` : ""}">
+        <div class="num">${total || ""}</div>
+        <div class="bars"><div class="bar g" style="height:${h(w.granted)}"></div><div class="bar d" style="height:${h(w.denied)}"></div></div>
+        <div class="lbl">${esc(label)}</div></div>`;
+    }).join("");
+    // Il diniego del controller conta già la tessera sconosciuta: nel grafico solo concessi e negati
+    return `<h2>Ultimi 7 Giorni</h2><div class="chart">${chart}</div>
+      <div class="legend"><span><i style="background:var(--ok)"></i>concessi e aperture remote</span><span><i style="background:var(--warn)"></i>negati</span></div>`;
+  },
+  ultimi_eventi: ({d}) => `<h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro Completo</a></h2>
+    <div class="list compact" data-dash-events>${d.recent.length ? logRows(d.recent) : '<div class="empty">nessun evento registrato</div>'}</div>`,
+  scadenze: ({d}) => `<h2>Tessere in Scadenza<span class="spacer"></span><a class="small-text" href="#persone">Persone</a></h2>
+    ${d.expiring.length ? `<div class="list">${d.expiring.slice(0, 6).map((e) => `<a class="item" href="#persone/${e.id}"><div class="ev-icon k-warn">${icon("clock")}</div><div class="grow"><div class="title">${esc(e.name)}</div><div class="meta">scade ${esc(fmtDateTime(e.valid_to))}</div></div></a>`).join("")}</div>${d.expiring.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">e altre ${d.expiring.length - 6}</p>` : ""}`
+      : '<div class="empty">Nessuna tessera scade nei prossimi 7 giorni.</div>'}`,
+  da_registrare: ({unknown}) => `<h2>Tessere da Registrare<span class="spacer"></span><a class="small-text" href="#da-registrare">Da Registrare</a></h2>
+    ${unknown.length ? `<div class="list">${unknown.slice(0, 6).map((c) => `<a class="item" href="#da-registrare"><div class="ev-icon k-info">${icon("cardplus")}</div><div class="grow"><div class="title"><code>${esc(c.number)}</code></div><div class="meta"><span>letta ${plural(c.count, "volta", "volte")}</span><span>ultima ${esc(relTime(c.last_seen))}</span></div></div></a>`).join("")}</div>`
+      : '<div class="empty">Nessuna tessera da registrare.</div>'}`,
+  impianto({d: {system: s}}) {
+    const row = (cls, label, value) => `<div class="dw-sys"><span class="dot ${cls}"></span><span class="grow">${label}</span><b>${value}</b></div>`;
+    if (!s.configured) return `<h2>Stato Impianto</h2><div class="empty">Nessun controller configurato.</div>`;
+    return `<h2>Stato Impianto${can("impianti") ? '<span class="spacer"></span><a class="small-text" href="#impianti/stato">Dettagli</a>' : ""}</h2>
+      ${row(s.controller_online === false ? "err" : s.controller_online ? "ok" : "", "Controller", s.controller_online === false ? "non raggiungibile" : s.controller_online ? "in linea" : "stato sconosciuto")}
+      ${s.mqtt_connected === null ? "" : row(s.mqtt_connected ? "ok" : "err", "Eventi MQTT", s.mqtt_connected ? "in arrivo" : "non collegati")}
+      ${s.casing_open === null ? "" : row(s.casing_open ? "err" : "ok", "Coperchio del Controller", s.casing_open ? "aperto" : "chiuso")}
+      ${row("", "Ultimo Evento", s.last_event ? esc(relTime(s.last_event)) : "nessuno")}`;
+  },
+};
+function kpi(label, value, sub, color = "") {
+  return `<div class="dw-kpi"><div class="label">${label}</div><div class="value"${color ? ` style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
+}
+
 async function viewDashboard(el) {
-  let d, doors;
-  try { [d, doors] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => [])]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
-  const t = d.today;
-  // Cose da fare, in un solo riquadro: [tipo, icona, titolo, testo, link, etichetta del link]
-  const todo = [];
-  if (store.summary.configured === false) todo.push(["info", "cog", "Impianto da Configurare", can("impianti") ? "Aggiungi il controller e le porte." : "Chiedi a un amministratore di configurare il controller.", can("impianti") ? "#impianti" : "", "Impianti"]);
-  if (store.summary.mqtt_connected === false && store.summary.configured !== false) todo.push(["err", "alert", "Eventi Non in Arrivo", "Il collegamento MQTT non è attivo: registro e stato porta non si aggiornano.", can("impianti") ? "#impianti/stato" : "", "Dettagli"]);
-  if (t.alarms) todo.push(["err", "alert", `${plural(t.alarms, "Allarme", "Allarmi")} Oggi`, "Porta forzata, aperta troppo a lungo o manomissione.", can("registro") ? "#registro" : "", "Vedi"]);
-  if (d.unknown_cards && can("persone")) todo.push(["info", "cardplus", plural(d.unknown_cards, "Tessera da Registrare", "Tessere da Registrare"), "Passate sul lettore ma non ancora di nessuno.", "#da-registrare", "Registra"]);
-  if (d.expiring.length) todo.push(["warn", "clock", d.expiring.length === 1 ? "Tessera in Scadenza" : `${d.expiring.length} Persone con Tessere in Scadenza`,
-    d.expiring.slice(0, 3).map((e) => `${esc(e.name)} (${esc(fmtDateTime(e.valid_to))})`).join(", ") + (d.expiring.length > 3 ? ` e altre ${d.expiring.length - 3}` : ""),
-    d.expiring.length === 1 ? `#persone/${d.expiring[0].id}` : "#persone", "Apri"]);
-  const todoCard = todo.length
-    ? `<div class="card flush todo"><h2>Da Gestire<span class="spacer"></span><a class="small-text" href="#notifiche">Notifiche</a></h2><div class="list">${todo.map(([kind, ic, title, text, link, action]) => `
-        <div class="item"><div class="ev-icon k-${kind}">${icon(ic)}</div><div class="grow"><div class="title">${esc(title)}</div><div class="meta">${kind === "warn" ? text : esc(text)}</div></div>${link ? `<a class="btn small" href="${link}">${esc(action)}</a>` : ""}</div>`).join("")}</div></div>`
-    : `<div class="all-ok">${icon("check")}<span><b>Tutto in Ordine</b> · nessun allarme, tessera da registrare o scadenza vicina</span></div>`;
-  // Il diniego del controller conta già la tessera sconosciuta: nel grafico solo concessi e negati
-  const max = Math.max(1, ...d.week.map((w) => w.granted + w.denied));
-  const chart = d.week.map((w) => {
-    const total = w.granted + w.denied;
-    const h = (n) => `${(n / max) * 100}%`;
-    const label = new Date(w.day + "T12:00:00").toLocaleDateString("it-IT", {weekday: "short"});
-    return `<div class="col" title="${esc(fmtDate(w.day + "T12:00:00"))}: ${w.granted} concessi, ${w.denied} negati${w.unknown ? `, ${plural(w.unknown, "tessera sconosciuta", "tessere sconosciute")}` : ""}">
-      <div class="num">${total || ""}</div>
-      <div class="bars"><div class="bar g" style="height:${h(w.granted)}"></div><div class="bar d" style="height:${h(w.denied)}"></div></div>
-      <div class="lbl">${esc(label)}</div></div>`;
-  }).join("");
-  el.innerHTML = `
-    ${todoCard}
-    <div class="grid kpi" style="margin-bottom:16px">
-      <div class="card"><div class="label">Accessi Oggi</div><div class="value">${t.granted + t.remote}</div><div class="sub">${t.remote ? `di cui ${plural(t.remote, "apertura remota", "aperture remote")}` : "con tessera"}${!t.granted && t.reads ? ` · ${plural(t.reads, "lettura", "letture")}` : ""}</div></div>
-      <div class="card"><div class="label">Negati Oggi</div><div class="value" style="color:${t.denied ? "var(--warn)" : "inherit"}">${t.denied}</div><div class="sub">${t.unknown ? `${plural(t.unknown, "tessera sconosciuta", "tessere sconosciute")}` : "nessuna tessera sconosciuta"}</div></div>
-      <div class="card"><div class="label">Allarmi Oggi</div><div class="value" style="color:${t.alarms ? "var(--err)" : "inherit"}">${t.alarms}</div><div class="sub">${t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme"}</div></div>
-      <div class="card"><div class="label">Persone</div><div class="value">${d.persons}</div><div class="sub">${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${d.cards_suspended} sospese` : ""}${can("persone") ? ' · <a href="#persone">anagrafica</a>' : ""}</div></div>
-    </div>
-    ${doors.length ? `<div class="row" style="margin:4px 0 10px"><h2 class="section-title" style="margin:0;flex:1">${doors.length > 1 ? "Porte" : "Porta"}</h2>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</div>${doorGroups(doors)}` : ""}
-    <div class="grid two">
-      <div class="card"><h2>Ultimi 7 Giorni</h2><div class="chart">${chart}</div>
-        <div class="legend"><span><i style="background:var(--ok)"></i>concessi e aperture remote</span><span><i style="background:var(--warn)"></i>negati</span></div></div>
-      ${can("registro") ? `<div class="card flush"><h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro Completo</a></h2>
-        <div class="list compact" style="margin-top:8px" id="dash-events">${d.recent.length ? logRows(d.recent) : '<div class="empty">nessun evento registrato</div>'}</div></div>` : `<div class="card"><h2>Ultimi Eventi</h2><p class="muted" style="margin:0">Il tuo utente non ha il permesso di vedere il registro accessi.</p></div>`}
-    </div>`;
-  if ($("#dash-events")) $("#dash-events").onclick = (e) => {
-    const row = e.target.closest("[data-event]");
-    if (row) showEvent(d.recent.find((x) => x.id === Number(row.dataset.event)));
+  let d, doors, notif, saved;
+  try {
+    [d, doors, notif, saved] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => []),
+      api("api/notifications").catch(() => null), api("api/dashboard/layout").catch(() => ({widgets: null}))]);
+  } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  // Si arriva qui aprendo la pagina: una modifica lasciata a metà altrove non resta aperta
+  dash.layout = (saved.widgets || DEFAULT_DASH).filter((w) => WIDGETS[w.type]);
+  dash.editing = false;
+  dash.draft = null;
+  const layout = () => dash.draft || dash.layout;
+  const unknown = can("persone") ? await api("api/unknown-cards").catch(() => []) : [];
+  const ctx = {d, doors, notif, unknown};
+  const draw = () => {
+    const widgets = layout().filter(widgetAllowed);
+    const missing = Object.keys(WIDGETS).filter((t) => widgetAllowed({type: t}) && !layout().some((w) => w.type === t));
+    el.innerHTML = `
+      <div class="dash-bar">${dash.editing
+        ? `<p class="muted small-text" style="margin:0;flex:1 1 280px">Trascina ${icon("drag")} per spostare un riquadro, scegli la larghezza, togli con × quelli che non ti servono.</p>
+           <button type="button" id="dash-add" ${missing.length ? "" : "disabled"}>${icon("plus")}Aggiungi Riquadro</button>
+           <button type="button" class="ghost" id="dash-reset">Ripristina Predefinito</button>
+           <button type="button" class="ghost" id="dash-cancel">Annulla</button>
+           <button type="button" class="primary" id="dash-save">${icon("check")}Salva</button>`
+        : `<span class="spacer" style="flex:1"></span><button type="button" class="ghost small" id="dash-edit">${icon("edit")}Modifica Cruscotto</button>`}</div>
+      <div class="dash ${dash.editing ? "editing" : ""}" id="dash">${widgets.map((w) => `
+        <section class="card dw w-${w.size} dw-${w.type}" data-w="${w.type}">
+          ${dash.editing ? `<div class="dw-edit">
+            <button type="button" class="ghost icon-only dw-handle" aria-label="Sposta ${esc(WIDGETS[w.type].title)}" title="Trascina per spostare (o usa le frecce)">${icon("drag")}</button>
+            <b class="grow">${esc(WIDGETS[w.type].title)}</b>
+            <span class="dw-sizes" role="group" aria-label="Larghezza">${SIZES.map(([n, label, title]) => `<button type="button" data-size="${n}" title="${title}" aria-pressed="${w.size === n}">${label}</button>`).join("")}</span>
+            <button type="button" class="ghost icon-only" data-remove aria-label="Togli ${esc(WIDGETS[w.type].title)}" title="Togli">${icon("close")}</button></div>` : ""}
+          <div class="dw-body">${WIDGET_BODY[w.type](ctx)}</div>
+        </section>`).join("") || `<div class="card dw w-4"><div class="empty">Il cruscotto è vuoto. ${dash.editing ? "Usa Aggiungi Riquadro." : "Premi Modifica Cruscotto per aggiungere i riquadri."}</div></div>`}
+      </div>`;
+    paintIcons(el);
+    const events = $("[data-dash-events]", el);
+    if (events) events.onclick = (e) => {
+      const row = e.target.closest("[data-event]");
+      if (row && !dash.editing) showEvent(d.recent.find((x) => x.id === Number(row.dataset.event)));
+    };
+    if (dash.editing) bindDashEdit(el, draw, missing);
+    else $("#dash-edit").onclick = () => {
+      dash.editing = true;
+      dash.draft = dash.layout.map((w) => ({...w}));
+      pageGuard = {dirty: () => JSON.stringify(dash.draft) !== JSON.stringify(dash.layout), save: saveDash};
+      draw();
+    };
+  };
+  const saveDash = async () => {
+    const res = await run(() => api("api/dashboard/layout", {method: "PUT", body: {widgets: dash.draft}}), "Cruscotto salvato");
+    if (!res) return false;
+    dash.layout = res.widgets;
+    dash.editing = false;
+    dash.draft = null;
+    pageGuard = null;
+    return true;
+  };
+  dash.save = async () => { if (await saveDash()) render(); };
+  draw();
+}
+// Modifica del cruscotto: trascinare, larghezza, togliere, aggiungere
+function bindDashEdit(el, draw, missing) {
+  const grid = $("#dash", el);
+  const syncOrder = () => {
+    const order = $$(".dw[data-w]", grid).map((s) => s.dataset.w);
+    // I riquadri nascosti per i permessi restano in fondo, nell'ordine in cui erano
+    dash.draft.sort((a, b) => (order.includes(a.type) ? order.indexOf(a.type) : 99) - (order.includes(b.type) ? order.indexOf(b.type) : 99));
+  };
+  const leave = () => { dash.editing = false; dash.draft = null; pageGuard = null; render(); };
+  $("#dash-save").onclick = () => dash.save();
+  $("#dash-cancel").onclick = leave;
+  $("#dash-reset").onclick = async () => {
+    if (!await confirmBox("Ripristina Predefinito", "Rimettere i riquadri e le larghezze di partenza? Le tue modifiche al cruscotto si perdono.", "Ripristina")) return;
+    if (await run(() => api("api/dashboard/layout", {method: "DELETE"}), "Cruscotto ripristinato")) leave();
+  };
+  $("#dash-add").onclick = async () => {
+    let type = "";
+    await modal({
+      title: "Aggiungi Riquadro",
+      body: `<div class="list dw-catalog">${missing.map((t) => `<button type="button" class="item" data-add="${t}"><div class="grow"><div class="title">${esc(WIDGETS[t].title)}</div><div class="meta">${esc(WIDGETS[t].desc)}</div></div>${icon("plus")}</button>`).join("")}</div>`,
+      actions: [{label: "Chiudi", value: null}],
+      onOpen: (dlg) => {
+        paintIcons(dlg);
+        $(".dw-catalog", dlg).onclick = (e) => { const b = e.target.closest("[data-add]"); if (b) { type = b.dataset.add; $("[data-x]", dlg).click(); } };
+      },
+    });
+    if (WIDGETS[type]) { dash.draft.push({type, size: WIDGETS[type].size}); draw(); }
+  };
+  grid.onclick = (e) => {
+    const section = e.target.closest(".dw[data-w]");
+    if (!section) return;
+    const w = dash.draft.find((x) => x.type === section.dataset.w);
+    const size = e.target.closest("[data-size]");
+    if (size) { w.size = Number(size.dataset.size); draw(); return; }
+    if (e.target.closest("[data-remove]")) { dash.draft.splice(dash.draft.indexOf(w), 1); draw(); }
+  };
+  // Trascinamento con il dito o il mouse: il riquadro si sposta mentre lo porti
+  grid.onpointerdown = (e) => {
+    const handle = e.target.closest(".dw-handle");
+    if (!handle) return;
+    e.preventDefault();
+    const moving = handle.closest(".dw");
+    moving.classList.add("dragging");
+    // Ascolto sulla finestra: spostando il riquadro nella pagina il pulsante perderebbe il puntatore
+    const move = (ev) => {
+      const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".dw[data-w]");
+      if (!over || over === moving || !grid.contains(over)) return;
+      const r = over.getBoundingClientRect();
+      const wide = r.width > grid.clientWidth * 0.8;
+      const after = wide ? ev.clientY > r.top + r.height / 2 : ev.clientX > r.left + r.width / 2;
+      over.parentNode.insertBefore(moving, after ? over.nextSibling : over);
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      moving.classList.remove("dragging");
+      syncOrder();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  };
+  grid.onkeydown = (e) => {
+    const handle = e.target.closest(".dw-handle");
+    if (!handle || !["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(e.key)) return;
+    e.preventDefault();
+    const moving = handle.closest(".dw");
+    const back = e.key === "ArrowLeft" || e.key === "ArrowUp";
+    const sibling = back ? moving.previousElementSibling : moving.nextElementSibling;
+    if (!sibling) return;
+    grid.insertBefore(moving, back ? sibling : sibling.nextSibling);
+    syncOrder();
+    handle.focus();
   };
 }
 

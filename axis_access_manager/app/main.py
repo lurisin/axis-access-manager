@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -225,6 +226,32 @@ class LinksIn(BaseModel):
 
 class SeenIn(BaseModel):
     ids: list[str] | None = None
+
+
+# Riquadri che si possono mettere sul cruscotto; la larghezza è in quarti di riga (1-4)
+DASHBOARD_WIDGETS = (
+    "da_gestire",
+    "accessi_oggi",
+    "negati_oggi",
+    "allarmi_oggi",
+    "persone",
+    "porte",
+    "settimana",
+    "ultimi_eventi",
+    "scadenze",
+    "da_registrare",
+    "impianto",
+)
+SETTING_DASHBOARD = "dashboard_layout:"
+
+
+class DashboardWidgetIn(BaseModel):
+    type: str
+    size: int = Field(ge=1, le=4)
+
+
+class DashboardLayoutIn(BaseModel):
+    widgets: list[DashboardWidgetIn] = Field(max_length=len(DASHBOARD_WIDGETS))
 
 
 class HardwareAccessPointIn(BaseModel):
@@ -455,7 +482,41 @@ def create_app(
             # Nomi e passaggi solo a chi può vedere anagrafica e registro
             "expiring": sorted(expiring, key=lambda e: e["valid_to"]) if user.can("persone") else [],
             "recent": db.list_events(limit=8) if user.can("registro") else [],
+            "system": {
+                "controller_online": request.app.state.monitor.controller_online,
+                "mqtt_connected": request.app.state.monitor.connected if request.app.state.mqtt else None,
+                "casing_open": request.app.state.monitor.casing_open,
+                "last_event": next(iter(db.list_events(limit=1)), {}).get("ts"),
+                "configured": bool(request.app.state.settings.a1210_host),
+            },
         }
+
+    @app.get("/api/dashboard/layout", dependencies=[need("stato")])
+    async def dashboard_layout(request: Request) -> dict:
+        """Cruscotto dell'utente: riquadri in ordine con la larghezza; null se usa quello predefinito."""
+        saved = request.app.state.db.get_setting(_dashboard_key(request))
+        try:
+            widgets = json.loads(saved) if saved else None
+        except ValueError:
+            widgets = None
+        return {"widgets": widgets, "types": list(DASHBOARD_WIDGETS)}
+
+    @app.put("/api/dashboard/layout", dependencies=[need("stato")])
+    async def save_dashboard_layout(body: DashboardLayoutIn, request: Request) -> dict:
+        widgets = []
+        for widget in body.widgets:
+            if widget.type not in DASHBOARD_WIDGETS:
+                raise HTTPException(status_code=400, detail=f"riquadro sconosciuto: {widget.type}")
+            if any(w["type"] == widget.type for w in widgets):
+                raise HTTPException(status_code=400, detail=f"riquadro ripetuto: {widget.type}")
+            widgets.append({"type": widget.type, "size": widget.size})
+        request.app.state.db.set_setting(_dashboard_key(request), json.dumps(widgets))
+        return {"widgets": widgets}
+
+    @app.delete("/api/dashboard/layout", dependencies=[need("stato")])
+    async def reset_dashboard_layout(request: Request) -> dict:
+        request.app.state.db.set_setting(_dashboard_key(request), "")
+        return {"widgets": None}
 
     @app.post("/api/sync", dependencies=[need("persone_modifica")])
     async def sync(request: Request) -> dict:
@@ -1222,6 +1283,11 @@ def _doors_status(state) -> list[dict]:
         }
         for d in state.doors
     ]
+
+
+def _dashboard_key(request: Request) -> str:
+    """Un cruscotto per utente dell'app; l'accesso locale senza utente ha il suo."""
+    return SETTING_DASHBOARD + (current_user(request).username or "-")
 
 
 def _current_notifications(state) -> list[dict]:

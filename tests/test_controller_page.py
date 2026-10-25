@@ -230,3 +230,22 @@ async def test_relinked_reader_device_from_controller(db, controller):
     controller.list_idpoint_configurations = configs
     await service.set_links([{"reader": "lettore-2", "door": "porta", "direction": "in"}], "admin")
     assert controller.access_points[0]["IdPointDevice"] == [{"IdPoint": "lettore-2", "DeviceUUID": "uuid-lettore"}]
+
+
+def test_dashboard_layout(client):
+    assert client.get("/api/dashboard/layout").json()["widgets"] is None
+    layout = [{"type": "porte", "size": 4}, {"type": "negati_oggi", "size": 1}]
+    assert client.put("/api/dashboard/layout", json={"widgets": layout}).json() == {"widgets": layout}
+    assert client.get("/api/dashboard/layout").json()["widgets"] == layout
+    # Riquadri sconosciuti, ripetuti o con una larghezza fuori misura non si salvano
+    assert client.put("/api/dashboard/layout", json={"widgets": [{"type": "meteo", "size": 1}]}).status_code == 400
+    twice = [{"type": "porte", "size": 1}, {"type": "porte", "size": 2}]
+    assert client.put("/api/dashboard/layout", json={"widgets": twice}).status_code == 400
+    assert client.put("/api/dashboard/layout", json={"widgets": [{"type": "porte", "size": 5}]}).status_code == 422
+    assert client.get("/api/dashboard/layout").json()["widgets"] == layout
+    # Ogni utente ha il suo cruscotto
+    other = client.get("/api/dashboard/layout", headers={"X-Remote-User-Name": "mario"}).json()
+    assert other["widgets"] is None
+    assert client.delete("/api/dashboard/layout").json() == {"widgets": None}
+    assert client.get("/api/dashboard/layout").json()["widgets"] is None
+    assert "system" in client.get("/api/dashboard").json()
