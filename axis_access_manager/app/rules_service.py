@@ -185,8 +185,11 @@ class RulesService:
         self.db.add_audit(user, "festività eliminata", day)
         await self.reapply_holidays()
 
-    async def reapply_holidays(self) -> int:
-        """Riscrive le eccezioni delle fasce dell'add-on che escludono le festività."""
+    async def reapply_holidays(self, only_changed: bool = False) -> int:
+        """Riscrive le eccezioni delle fasce dell'add-on che escludono le festività.
+
+        Con only_changed tocca solo le fasce il cui elenco di eccezioni sul controller non è quello atteso
+        (ad esempio perché la scrittura era stata rifiutata da una versione precedente)."""
         managed = {t: r for t, r in self.db.schedule_rules().items() if r["holidays"]}
         if not managed:
             return 0
@@ -197,11 +200,12 @@ class RulesService:
                 schedule = schedules.get(token)
                 if schedule is None:
                     continue
-                await self.controller.set_schedule(
-                    self._schedule_body(
-                        token, schedule.get("Name") or token, schedule.get("Description") or "", rule["rules"], True
-                    )
+                body = self._schedule_body(
+                    token, schedule.get("Name") or token, schedule.get("Description") or "", rule["rules"], True
                 )
+                if only_changed and schedule.get("ExceptionScheduleDefinition") == body["ExceptionScheduleDefinition"]:
+                    continue
+                await self.controller.set_schedule(body)
                 count += 1
             return count
 

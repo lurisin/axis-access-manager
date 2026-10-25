@@ -1234,6 +1234,9 @@ async def _maintenance(app: FastAPI) -> None:
                     groups_checked = True
                     if repaired := await state.rules.repair_group_schedules():
                         _LOGGER.info("Fascia oraria aggiunta al profilo di %s gruppi", repaired)
+                    # Festività che le versioni precedenti non riuscivano a scrivere (BYMONTHDAY rifiutato)
+                    if rewritten := await state.rules.reapply_holidays(only_changed=True):
+                        _LOGGER.info("Festività riscritte in %s fasce orarie", rewritten)
             except VapixError as err:
                 state.last_sync = {"ok": False, "error": str(err), "result": None, "at": _now()}
                 _LOGGER.warning("Sincronizzazione non riuscita: %s", err)

@@ -146,7 +146,8 @@ def holidays_ical(holidays: list[dict]) -> str | None:
             f"DTEND;VALUE=DATE:{day + timedelta(days=1):%Y%m%d}",
         ]
         if holiday.get("yearly"):
-            events.append(f"RRULE:FREQ=YEARLY;BYMONTH={day.month};BYMONTHDAY={day.day}")
+            # Lo stesso giorno ogni anno: il giorno viene da DTSTART, l'A1210 non accetta BYMONTHDAY
+            events.append(f"RRULE:FREQ=YEARLY;BYMONTH={day.month}")
         events.append("END:VEVENT")
     return _calendar(events)
 

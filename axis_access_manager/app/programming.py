@@ -18,13 +18,14 @@ _LOGGER = logging.getLogger(__name__)
 
 DURATION_PATTERN = re.compile(r"^P(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$")
 
-# Tempi della porta: campo Axis → (chiave nell'app, minimo, massimo in secondi)
+# Tempi della porta: campo Axis → (chiave nell'app, nome nell'interfaccia, minimo, massimo in secondi).
+# I tempi di sblocco hanno un massimo prudente: la serratura non deve restare alimentata a lungo.
 DOOR_TIMES = {
-    "AccessTime": ("access_time", 1, 600),
-    "ExtendedAccessTime": ("extended_access_time", 1, 3600),
-    "OpenTooLongTime": ("open_too_long_time", 1, 3600),
-    "ExtendedOpenTooLongTime": ("extended_open_too_long_time", 1, 7200),
-    "PreAlarmTime": ("pre_alarm_time", 0, 3600),
+    "AccessTime": ("access_time", "Tempo di Apertura", 1, 30),
+    "ExtendedAccessTime": ("extended_access_time", "Apertura Estesa", 1, 60),
+    "OpenTooLongTime": ("open_too_long_time", "Allarme Aperta Troppo a Lungo", 1, 3600),
+    "ExtendedOpenTooLongTime": ("extended_open_too_long_time", "Allarme con Apertura Estesa", 1, 7200),
+    "PreAlarmTime": ("pre_alarm_time", "Preallarme", 0, 3600),
 }
 DIRECTIONS = {"in": "Ingresso", "out": "Uscita"}
 
@@ -103,7 +104,7 @@ class ProgrammingService:
                     "name": d.get("Name") or "",
                     "description": d.get("Description") or "",
                     "editable": "AccessTime" in d,
-                    **{key: parse_duration(d.get(field)) for field, (key, _, _) in DOOR_TIMES.items()},
+                    **{key: parse_duration(d.get(field)) for field, (key, *_) in DOOR_TIMES.items()},
                     "configuration": _configuration(door_configs, d.get("token", "")),
                 }
                 for d in doors
@@ -195,15 +196,17 @@ class ProgrammingService:
             after["Description"] = normalize_text(
                 data.get("description", before.get("Description")), 1024, "descrizione"
             )
-            for field, (key, low, high) in DOOR_TIMES.items():
+            for field, (key, label, low, high) in DOOR_TIMES.items():
                 if data.get(key) is None or field not in before:
                     continue
                 try:
                     seconds = float(data[key])
                 except (TypeError, ValueError) as err:
                     raise ServiceError(f"tempo non valido: {data[key]}") from err
+                if seconds == parse_duration(before[field]):
+                    continue  # invariato: un valore già sul controller oltre i limiti non blocca le altre modifiche
                 if not low <= seconds <= high:
-                    raise ServiceError(f"{key.replace('_', ' ')}: tra {low} e {high} secondi")
+                    raise ServiceError(f"{label}: tra {low} e {high} secondi")
                 after[field] = format_duration(seconds)
             await self._save("door", token, before, after, f"porta {after['Name']}", user)
 
@@ -219,8 +222,6 @@ class ProgrammingService:
             after["Description"] = normalize_text(
                 data.get("description", before.get("Description")), 1024, "descrizione"
             )
-            if "location" in data:
-                after["Location"] = normalize_text(data.get("location"), 64, "posizione")
             await self._save("reader", token, before, after, f"lettore {after['Name']}", user)
 
     async def update_access_point(self, token: str, data: dict, user: str) -> None:

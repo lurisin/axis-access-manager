@@ -51,7 +51,7 @@ def test_holidays_ical():
     assert holidays_ical([]) is None
     ical = holidays_ical([{"day": "2026-12-25", "yearly": True}, {"day": "2026-04-06", "yearly": False}])
     assert "DTSTART;VALUE=DATE:20261225\r\nDTEND;VALUE=DATE:20261226\r\n" in ical
-    assert "RRULE:FREQ=YEARLY;BYMONTH=12;BYMONTHDAY=25" in ical
+    assert "RRULE:FREQ=YEARLY;BYMONTH=12\r\n" in ical and "BYMONTHDAY" not in ical
     assert ical.count("RRULE") == 1
 
 

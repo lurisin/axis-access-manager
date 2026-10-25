@@ -36,6 +36,17 @@ async def test_holidays_are_written_as_exceptions(rules, controller):
     assert controller.schedules[token]["ExceptionScheduleDefinition"] is None
 
 
+async def test_startup_rewrites_only_schedules_with_missing_holidays(rules, controller):
+    """Le festività rifiutate dalle versioni precedenti si riscrivono all'avvio, senza toccare le fasce già a posto."""
+    token = (await rules.create_schedule("Ufficio", "", OFFICE, True, "admin"))["token"]
+    await rules.add_holidays([{"day": "2026-12-25", "name": "Natale", "yearly": True}], "admin")
+    assert await rules.reapply_holidays(only_changed=True) == 0
+
+    controller.schedules[token]["ExceptionScheduleDefinition"] = None
+    assert await rules.reapply_holidays(only_changed=True) == 1
+    assert "BYMONTH=12" in controller.schedules[token]["ExceptionScheduleDefinition"]
+
+
 async def test_standard_and_external_schedules_can_be_edited_and_hidden(rules, controller):
     controller.schedules["altra"] = {
         "token": "altra",

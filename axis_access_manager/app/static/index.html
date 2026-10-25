@@ -1981,11 +1981,11 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
 }
 
 const DOOR_TIME_FIELDS = [
-  ["access_time", "Tempo di Apertura", "Quanto resta sbloccata dopo un accesso."],
-  ["extended_access_time", "Apertura Estesa", "Per chi ha bisogno di più tempo (es. Apri a Lungo)."],
-  ["open_too_long_time", "Allarme Aperta Troppo a Lungo", "Dopo quanto la porta aperta va in allarme."],
-  ["extended_open_too_long_time", "Allarme con Apertura Estesa", ""],
-  ["pre_alarm_time", "Preallarme", "Avviso prima dell'allarme."],
+  ["access_time", "Tempo di Apertura", "Quanto resta sbloccata dopo un accesso. Massimo 30 s, per non tenere alimentata a lungo la serratura.", 30],
+  ["extended_access_time", "Apertura Estesa", "Per chi ha bisogno di più tempo (es. Apri a Lungo). Massimo 60 s.", 60],
+  ["open_too_long_time", "Allarme Aperta Troppo a Lungo", "Dopo quanto la porta aperta va in allarme.", 3600],
+  ["extended_open_too_long_time", "Allarme con Apertura Estesa", "", 7200],
+  ["pre_alarm_time", "Preallarme", "Avviso prima dell'allarme.", 3600],
 ];
 const configDetails = (items) => items.length ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici (${items.length})</summary>
   <div class="table-wrap"><table class="table"><tbody>${items.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td><code>${esc(c.value)}</code></td></tr>`).join("")}</tbody></table></div></details>` : "";
@@ -2032,7 +2032,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
       const times = DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
       const ok = await modal({title: "Porta " + (d.name || d.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(d.name)}">`)}
         ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(d.description)}">`)}
-        ${times.length ? `<div class="fields-2">${times.map(([k, label, hint]) => field(label + " (Secondi)", `<input type="number" name="${k}" min="0" step="1" value="${d[k]}">`, hint)).join("")}</div>` : ""}`,
+        ${times.length ? `<div class="fields-2">${times.map(([k, label, hint, max]) => field(label + " (Secondi)", `<input type="number" name="${k}" min="0" max="${Math.max(max, d[k])}" step="1" value="${d[k]}">`, hint)).join("")}</div>` : ""}`,
         actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) => {
           const payload = {name: val(dlg, "name"), description: val(dlg, "description")};
           times.forEach(([k]) => { payload[k] = Number(val(dlg, k)); });

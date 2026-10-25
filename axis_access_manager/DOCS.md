@@ -76,7 +76,7 @@ Sull'Axis un collegamento è un lettore dentro un **punto di accesso** della por
 
 ### Porte, lettori e storico
 
-- **Porte**: per ogni porta del controller le impostazioni dell'app (nome, pulsanti Apri e Apri a Lungo in Home Assistant, **telecamera** per le istantanee, **videocitofono**) e, con **Nome e Tempi**, nome, descrizione e tempi sul controller (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme). Una porta del controller non ancora usata dall'app si aggiunge con **Gestisci nell'App**.
+- **Porte**: per ogni porta del controller le impostazioni dell'app (nome, pulsanti Apri e Apri a Lungo in Home Assistant, **telecamera** per le istantanee, **videocitofono**) e, con **Nome e Tempi**, nome, descrizione e tempi sul controller (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme). L'apertura arriva al massimo a 30 secondi e quella estesa a 60, per non tenere alimentata a lungo la serratura. Una porta del controller non ancora usata dall'app si aggiunge con **Gestisci nell'App**.
 - **Lettori**: nome e descrizione sul controller, e quali porte comandano.
 - **Storico Modifiche**: ogni scrittura legge prima l'oggetto dal controller, cambia solo i campi scelti e salva la versione precedente; con **Annulla** la riporti com'era. Da qui non passano comandi di apertura.
 
