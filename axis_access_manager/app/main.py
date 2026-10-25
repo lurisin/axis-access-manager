@@ -229,7 +229,7 @@ class SeenIn(BaseModel):
     ids: list[str] | None = None
 
 
-# Riquadri che si possono mettere sul cruscotto; la larghezza è in quarti di riga (1-4)
+# Riquadri del cruscotto; larghezza in quarti di riga (1-4), altezza in righe della griglia
 DASHBOARD_WIDGETS = (
     "da_gestire",
     "accessi_oggi",
@@ -250,6 +250,7 @@ CAMERA_NAMES_TTL = 300
 class DashboardWidgetIn(BaseModel):
     type: str
     size: int = Field(ge=1, le=4)
+    height: int | None = Field(default=None, ge=1, le=12)
 
 
 class DashboardLayoutIn(BaseModel):
@@ -515,7 +516,7 @@ def create_app(
 
     @app.get("/api/dashboard/layout", dependencies=[need("stato")])
     async def dashboard_layout(request: Request) -> dict:
-        """Cruscotto dell'utente: riquadri in ordine con la larghezza; null se usa quello predefinito."""
+        """Cruscotto dell'utente: riquadri in ordine con larghezza e altezza; null se usa quello predefinito."""
         saved = request.app.state.db.get_setting(_dashboard_key(request))
         try:
             widgets = json.loads(saved) if saved else None
@@ -532,6 +533,8 @@ def create_app(
             if any(w["type"] == widget.type for w in widgets):
                 raise HTTPException(status_code=400, detail=f"riquadro ripetuto: {widget.type}")
             widgets.append({"type": widget.type, "size": widget.size})
+            if widget.height:
+                widgets[-1]["height"] = widget.height
         request.app.state.db.set_setting(_dashboard_key(request), json.dumps(widgets))
         return {"widgets": widgets}
 

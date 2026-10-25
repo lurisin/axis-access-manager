@@ -205,16 +205,28 @@
     .sch-node b { white-space: normal; overflow-wrap: anywhere; font-size: 13px; line-height: 1.25; }
     .sch-meta { white-space: normal; font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   }
-  /* Cruscotto a riquadri: larghezza in quarti di riga, l'altezza segue il contenuto */
+  /* Cruscotto a griglia: larghezza in quarti di riga, altezza in righe da 64px; i riquadri piccoli riempiono i buchi */
   .dash-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -6px 0 12px; }
   .dash-bar svg.icon { width: 18px; height: 18px; vertical-align: -4px; }
-  .dash { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: start; }
-  .dash > .card { margin: 0; min-width: 0; }
+  .dash { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-rows: 64px; grid-auto-flow: row dense; gap: 16px; }
+  .dash > .card { margin: 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+  .dw-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; scrollbar-width: thin; }
+  .dw-body > h2 { flex: none; }
+  .dw.kpi .dw-kpi { margin-block: auto; }
+  .dw-settimana .chart { flex: 1; height: auto; min-height: 70px; }
+  .dw-settimana .legend { flex: none; }
+  .dw-resize { position: absolute; right: 2px; bottom: 2px; width: 28px; height: 28px; padding: 0; border: 0; background: none; color: var(--muted);
+               cursor: nwse-resize; touch-action: none; display: grid; place-items: center; border-radius: 6px; z-index: 2; }
+  .dw-resize:hover, .dw-resize:focus-visible { color: var(--accent); background: var(--surface-2); }
+  .dw-resize svg.icon { width: 18px; height: 18px; }
+  .dw.resizing { outline-color: var(--accent) !important; }
+  .dw-dim { position: absolute; right: 34px; bottom: 6px; font-size: 12px; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
   .dw.w-1 { grid-column: span 1; } .dw.w-2 { grid-column: span 2; } .dw.w-3 { grid-column: span 3; } .dw.w-4 { grid-column: span 4; }
   .dw.dw-porte .door-group .section-title { margin-top: 4px; }
   /* Riquadri con un numero, compatti: etichetta e dettaglio a sinistra, numero a destra */
-  .dw.kpi { padding: 12px 16px; }
+  .dw.kpi { padding: 10px 16px; }
   .dw-kpi { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; align-items: center; }
+  .dw-kpi .label, .dw-kpi .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .dw-kpi .label { color: var(--muted); font-size: 13px; font-weight: 500; }
   .dw-kpi .value { grid-column: 2; grid-row: 1 / span 2; font-size: 26px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; }
   .dw-kpi .sub { color: var(--muted); font-size: 12px; }
@@ -225,17 +237,17 @@
   .dw-sys { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
   .dw-sys:last-child { border-bottom: 0; }
   .dash.editing .dw { outline: 2px dashed var(--border-strong); outline-offset: -2px; box-shadow: none; }
-  .dash.editing .dw-body { pointer-events: none; opacity: .75; }
-  .dw-edit { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: -6px -6px 10px; padding: 4px 4px 8px; border-bottom: 1px solid var(--border); }
+  .dash.editing .dw-body { pointer-events: none; opacity: .45; }
+  /* In modifica la barra sta sopra il contenuto: anche i riquadri di una riga restano della loro misura */
+  .dw-edit { position: absolute; inset: 0 0 auto 0; z-index: 2; display: flex; align-items: center; gap: 4px; padding: 4px 6px;
+             background: var(--surface); border-bottom: 1px solid var(--border); }
+  .dw-edit .dw-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .dw a.item { color: inherit; }
   .dw a.item:hover { text-decoration: none; background: var(--surface-2); }
   .dw-handle { cursor: grab; touch-action: none; }
   .dw.dragging { opacity: .6; outline-color: var(--accent) !important; }
   .dw.dragging .dw-handle { cursor: grabbing; }
-  .dw-sizes { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 2px; gap: 2px; }
-  .dw-sizes button { border: 0; background: none; padding: 2px 8px; min-width: 30px; font-size: 14px; border-radius: 6px; color: var(--muted); }
-  .dw-sizes button[aria-pressed=true] { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
   .dw-catalog .item { width: 100%; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: none; text-align: left;
                       white-space: normal; justify-content: flex-start; padding: 12px 4px; font-weight: 400; }
   .dw-catalog .item:hover { background: var(--surface-2); }
@@ -247,8 +259,6 @@
     .dash { gap: 12px; }
     .dw.w-2 { grid-column: span 4; }
     .dw-kpi .value { font-size: 22px; }
-    .dw-sizes { order: 3; flex-basis: 100%; }
-    .dw-sizes button { flex: 1; }
     .dash-bar button { flex: 1 1 auto; }
   }
   /* Notifiche: il colore dice solo la gravità (riquadro dell'icona, etichetta, pallino); righe e sfondi neutri */
@@ -582,6 +592,7 @@ const ICONS = {
   chip: "M6,4H18V5H21V7H18V9H21V11H18V13H21V15H18V17H21V19H18V20H6V19H3V17H6V15H3V13H6V11H3V9H6V7H3V5H6V4M11,15V18H12V15H11M13,15V18H14V15H13M15,15V18H16V15H15Z",
   arrow: "M4,11V13H16L10.5,18.5L11.92,19.92L19.84,12L11.92,4.08L10.5,5.5L16,11H4Z",
   drag: "M9,3H11V5H9V3M13,3H15V5H13V3M9,7H11V9H9V7M13,7H15V9H13V7M9,11H11V13H9V11M13,11H15V13H13V11M9,15H11V17H9V15M13,15H15V17H13V15M9,19H11V21H9V19M13,19H15V21H13V19Z",
+  resize: "M22,22H20V20H22V22M22,18H20V16H22V18M18,22H16V20H18V22M18,18H16V16H18V18M14,22H12V20H14V22M22,14H20V12H22V14Z",
   wrench: "M22.7,19L13.6,9.9C14.5,7.6 14,4.9 12.1,3C10.1,1 7.1,0.6 4.7,1.7L9,6L6,9L1.6,4.7C0.4,7.1 0.9,10.1 2.9,12.1C4.8,14 7.5,14.5 9.8,13.6L18.9,22.7C19.3,23.1 19.9,23.1 20.3,22.7L22.6,20.4C23.1,20 23.1,19.3 22.7,19Z",
   user: "M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z",
 };
@@ -977,25 +988,37 @@ function eventItem(e, {showSnapshot = true} = {}) {
   </div>`;
 }
 
-// Riquadri del cruscotto: titolo, descrizione nel catalogo, larghezza predefinita in quarti di riga, permesso
+// Riquadri del cruscotto: titolo, descrizione nel catalogo, larghezza (quarti di riga) e altezza (righe) predefinite,
+// minimi sotto i quali il contenuto non si legge più, massimo per i riquadri con un solo numero, permesso
 const WIDGETS = {
-  da_gestire: {title: "Da Gestire", desc: "Le notifiche aperte, dalla più grave.", size: 4},
-  accessi_oggi: {title: "Accessi Oggi", desc: "Passaggi con tessera e aperture remote di oggi.", size: 1},
-  negati_oggi: {title: "Negati Oggi", desc: "Accessi negati e tessere sconosciute di oggi.", size: 1},
-  allarmi_oggi: {title: "Allarmi Oggi", desc: "Porte forzate, aperte troppo a lungo, manomissioni.", size: 1},
-  persone: {title: "Persone", desc: "Persone e tessere registrate.", size: 1},
-  porte: {title: "Porte", desc: "Stato di ogni porta e passaggi di oggi.", size: 4},
-  settimana: {title: "Ultimi 7 Giorni", desc: "Grafico di accessi e negati per giorno.", size: 2},
-  ultimi_eventi: {title: "Ultimi Eventi", desc: "Gli ultimi passaggi del registro.", size: 2, perm: "registro"},
-  scadenze: {title: "Tessere in Scadenza", desc: "Persone con tessere che scadono nei prossimi 7 giorni.", size: 2, perm: "persone"},
-  da_registrare: {title: "Tessere da Registrare", desc: "Tessere passate sul lettore ma non ancora di nessuno.", size: 2, perm: "persone"},
-  impianto: {title: "Stato Impianto", desc: "Controller, eventi MQTT, coperchio e ultimo evento.", size: 2},
+  da_gestire: {title: "Da Gestire", desc: "Le notifiche aperte, dalla più grave.", size: 2, height: 5, minSize: 2, minHeight: 2},
+  accessi_oggi: {title: "Accessi Oggi", desc: "Passaggi con tessera e aperture remote di oggi.", size: 1, height: 1, maxHeight: 2},
+  negati_oggi: {title: "Negati Oggi", desc: "Accessi negati e tessere sconosciute di oggi.", size: 1, height: 1, maxHeight: 2},
+  allarmi_oggi: {title: "Allarmi Oggi", desc: "Porte forzate, aperte troppo a lungo, manomissioni.", size: 1, height: 1, maxHeight: 2},
+  persone: {title: "Persone", desc: "Persone e tessere registrate.", size: 1, height: 1, maxHeight: 2},
+  porte: {title: "Porte", desc: "Stato di ogni porta e passaggi di oggi.", size: 2, height: 3, minHeight: 3},
+  settimana: {title: "Ultimi 7 Giorni", desc: "Grafico di accessi e negati per giorno.", size: 2, height: 3, minSize: 2, minHeight: 3},
+  ultimi_eventi: {title: "Ultimi Eventi", desc: "Gli ultimi passaggi del registro.", size: 2, height: 5, minSize: 2, minHeight: 2, perm: "registro"},
+  scadenze: {title: "Tessere in Scadenza", desc: "Persone con tessere che scadono nei prossimi 7 giorni.", size: 2, height: 3, minHeight: 2, perm: "persone"},
+  da_registrare: {title: "Tessere da Registrare", desc: "Tessere passate sul lettore ma non ancora di nessuno.", size: 2, height: 3, minHeight: 2, perm: "persone"},
+  impianto: {title: "Stato Impianto", desc: "Controller, eventi MQTT, coperchio e ultimo evento.", size: 2, height: 3, minHeight: 3},
+};
+const MAX_HEIGHT = 12;
+const sizeLimits = (type) => {
+  const t = WIDGETS[type];
+  return {minSize: t.minSize || 1, minHeight: t.minHeight || 1, maxHeight: t.maxHeight || MAX_HEIGHT};
+};
+// Dimensioni entro i limiti del riquadro: i cruscotti salvati prima delle altezze prendono quella predefinita
+const fitWidget = (w) => {
+  const lim = sizeLimits(w.type);
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  return {type: w.type, size: clamp(w.size || WIDGETS[w.type].size, lim.minSize, 4), height: clamp(w.height || WIDGETS[w.type].height, lim.minHeight, lim.maxHeight)};
 };
 // Accessi e negati di oggi sono nella barra in alto: i riquadri con i numeri restano nel catalogo
-const DEFAULT_DASH = ["da_gestire", "porte", "settimana", "ultimi_eventi"]
-  .map((type) => ({type, size: WIDGETS[type].size}));
+const DEFAULT_DASH = ["da_gestire", "ultimi_eventi", "porte", "settimana"].map((type) => fitWidget({type}));
 const KPI_WIDGETS = ["accessi_oggi", "negati_oggi", "allarmi_oggi", "persone"];
-const SIZES = [[1, "¼", "Un quarto di riga"], [2, "½", "Mezza riga"], [3, "¾", "Tre quarti di riga"], [4, "▬", "Riga intera"]];
+// Colonne occupate da ogni larghezza: sugli schermi stretti i quarti si accorpano (vedi il CSS del cruscotto)
+const dashSpan = (size) => window.innerWidth > 1000 ? size : window.innerWidth > 640 ? (size <= 2 ? 2 : 4) : (size === 1 ? 2 : 4);
 const dash = {layout: null, draft: null, editing: false};
 const widgetAllowed = (w) => WIDGETS[w.type] && (!WIDGETS[w.type].perm || can(WIDGETS[w.type].perm));
 
@@ -1062,7 +1085,7 @@ async function viewDashboard(el) {
       api("api/notifications").catch(() => null), api("api/dashboard/layout").catch(() => ({widgets: null}))]);
   } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   // Si arriva qui aprendo la pagina: una modifica lasciata a metà altrove non resta aperta
-  dash.layout = (saved.widgets || DEFAULT_DASH).filter((w) => WIDGETS[w.type]);
+  dash.layout = (saved.widgets || DEFAULT_DASH).filter((w) => WIDGETS[w.type]).map(fitWidget);
   dash.editing = false;
   dash.draft = null;
   const layout = () => dash.draft || dash.layout;
@@ -1084,20 +1107,20 @@ async function viewDashboard(el) {
     const missing = Object.keys(WIDGETS).filter((t) => widgetAllowed({type: t}) && !layout().some((w) => w.type === t));
     el.innerHTML = `
       <div class="dash-bar">${dash.editing
-        ? `<p class="muted small-text" style="margin:0;flex:1 1 280px">Trascina ${icon("drag")} per spostare un riquadro, scegli la larghezza, togli con × quelli che non ti servono.</p>
+        ? `<p class="muted small-text" style="margin:0;flex:1 1 280px">Trascina ${icon("drag")} per spostare un riquadro e ${icon("resize")} nell'angolo per cambiarne larghezza e altezza. Togli con × quelli che non ti servono.</p>
            <button type="button" id="dash-add" ${missing.length ? "" : "disabled"}>${icon("plus")}Aggiungi Riquadro</button>
            <button type="button" class="ghost" id="dash-reset">Ripristina Predefinito</button>
            <button type="button" class="ghost" id="dash-cancel">Annulla</button>
            <button type="button" class="primary" id="dash-save">${icon("check")}Salva</button>`
         : `<span class="spacer" style="flex:1"></span><button type="button" class="ghost small" id="dash-edit">${icon("edit")}Modifica Cruscotto</button>`}</div>
       <div class="dash ${dash.editing ? "editing" : ""}" id="dash">${widgets.map((w) => `
-        <section class="card dw w-${w.size} dw-${w.type}${KPI_WIDGETS.includes(w.type) ? " kpi" : ""}" data-w="${w.type}">
+        <section class="card dw w-${w.size} dw-${w.type}${KPI_WIDGETS.includes(w.type) ? " kpi" : ""}" data-w="${w.type}" style="grid-row:span ${w.height}">
           ${dash.editing ? `<div class="dw-edit">
             <button type="button" class="ghost icon-only dw-handle" aria-label="Sposta ${esc(WIDGETS[w.type].title)}" title="Trascina per spostare (o usa le frecce)">${icon("drag")}</button>
-            <span class="grow"></span>
-            <span class="dw-sizes" role="group" aria-label="Larghezza">${SIZES.map(([n, label, title]) => `<button type="button" data-size="${n}" title="${title}" aria-pressed="${w.size === n}">${label}</button>`).join("")}</span>
+            <span class="dw-name">${esc(WIDGETS[w.type].title)}</span>
             <button type="button" class="ghost icon-only" data-remove aria-label="Togli ${esc(WIDGETS[w.type].title)}" title="Togli">${icon("close")}</button></div>` : ""}
           <div class="dw-body">${WIDGET_BODY[w.type](ctx)}</div>
+          ${dash.editing ? `<button type="button" class="dw-resize" aria-label="Ridimensiona ${esc(WIDGETS[w.type].title)}: ${w.size}/4 di larghezza, ${plural(w.height, "riga", "righe")} di altezza" title="Trascina per cambiare larghezza e altezza (o usa le frecce)">${icon("resize")}</button>` : ""}
         </section>`).join("") || `<div class="card dw w-4"><div class="empty">Il cruscotto è vuoto. ${dash.editing ? "Usa Aggiungi Riquadro." : "Premi Modifica Cruscotto per aggiungere i riquadri."}</div></div>`}
       </div>`;
     paintIcons(el);
@@ -1153,14 +1176,12 @@ function bindDashEdit(el, draw, missing) {
         $(".dw-catalog", dlg).onclick = (e) => { const b = e.target.closest("[data-add]"); if (b) { type = b.dataset.add; $("[data-x]", dlg).click(); } };
       },
     });
-    if (WIDGETS[type]) { dash.draft.push({type, size: WIDGETS[type].size}); draw(); }
+    if (WIDGETS[type]) { dash.draft.push(fitWidget({type})); draw(); }
   };
   grid.onclick = (e) => {
     const section = e.target.closest(".dw[data-w]");
     if (!section) return;
     const w = dash.draft.find((x) => x.type === section.dataset.w);
-    const size = e.target.closest("[data-size]");
-    if (size) { w.size = Number(size.dataset.size); draw(); return; }
     if (e.target.closest("[data-remove]")) { dash.draft.splice(dash.draft.indexOf(w), 1); draw(); }
   };
   // Trascinamento con il dito o il mouse: il riquadro si sposta mentre lo porti
@@ -1190,6 +1211,59 @@ function bindDashEdit(el, draw, missing) {
     window.addEventListener("pointerup", end);
     window.addEventListener("pointercancel", end);
   };
+  // Maniglia nell'angolo: larghezza e altezza a scatti di griglia, entro i limiti del riquadro
+  const resizeTo = (section, w, size, height) => {
+    const lim = sizeLimits(w.type);
+    w.size = Math.min(4, Math.max(lim.minSize, size));
+    w.height = Math.min(lim.maxHeight, Math.max(lim.minHeight, height));
+    section.className = section.className.replace(/\bw-\d\b/, `w-${w.size}`);
+    section.style.gridRow = `span ${w.height}`;
+  };
+  grid.addEventListener("pointerdown", (e) => {
+    const grip = e.target.closest(".dw-resize");
+    if (!grip) return;
+    e.preventDefault();
+    const section = grip.closest(".dw");
+    const w = dash.draft.find((x) => x.type === section.dataset.w);
+    const gap = parseFloat(getComputedStyle(grid).rowGap) || 16;
+    const row = parseFloat(getComputedStyle(grid).gridAutoRows) || 64;
+    const col = (grid.clientWidth - 3 * gap) / 4;
+    const top = section.getBoundingClientRect().top + window.scrollY;
+    const left = section.getBoundingClientRect().left;
+    section.classList.add("resizing");
+    const dim = document.createElement("span");
+    dim.className = "dw-dim";
+    section.append(dim);
+    const show = () => { dim.textContent = `${w.size}/4 · ${plural(w.height, "riga", "righe")}`; };
+    show();
+    const move = (ev) => {
+      // Larghezza più piccola che occupa le colonne raggiunte, anche dove i quarti si accorpano
+      const cols = Math.max(1, Math.round((ev.clientX - left + gap) / (col + gap)));
+      const size = [2, 3, 4].reduce((best, n) => Math.abs(dashSpan(n) - cols) < Math.abs(dashSpan(best) - cols) ? n : best, 1);
+      const height = Math.round((ev.clientY + window.scrollY - top + gap) / (row + gap));
+      resizeTo(section, w, size, height);
+      show();
+    };
+    const end = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      draw();
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  });
+  grid.addEventListener("keydown", (e) => {
+    const grip = e.target.closest(".dw-resize");
+    const step = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[e.key];
+    if (!grip || !step) return;
+    e.preventDefault();
+    const section = grip.closest(".dw");
+    const w = dash.draft.find((x) => x.type === section.dataset.w);
+    resizeTo(section, w, w.size + step[0], w.height + step[1]);
+    grip.setAttribute("aria-label", `Ridimensiona ${WIDGETS[w.type].title}: ${w.size}/4 di larghezza, ${plural(w.height, "riga", "righe")} di altezza`);
+  });
   grid.onkeydown = (e) => {
     const handle = e.target.closest(".dw-handle");
     if (!handle || !["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(e.key)) return;

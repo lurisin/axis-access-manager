@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.16.0
+
+- **Cruscotto a griglia**: ogni riquadro ha larghezza (quarti di riga) e altezza (righe da 64 px), quindi i bordi restano allineati.
+  - I riquadri piccoli riempiono da soli gli spazi vuoti: per esempio quattro riquadri da una riga si impilano accanto a un riquadro alto quattro righe.
+  - In Modifica Cruscotto si trascina la maniglia nell'angolo in basso a destra: il riquadro cambia larghezza e altezza mentre muovi, a scatti di griglia. Con la tastiera, le frecce sulla maniglia.
+  - Se il contenuto è più lungo, nel riquadro compare la barra di scorrimento.
+  - Ogni riquadro ha una misura minima sotto la quale non si legge più (per esempio il grafico dei 7 giorni almeno mezza riga e tre righe); i riquadri con un solo numero arrivano al massimo a due righe.
+  - In modifica la barra con maniglia, nome e × sta sopra il contenuto, così anche i riquadri piccoli mantengono la loro misura.
+- Il cruscotto predefinito ora è: Da Gestire e Ultimi Eventi affiancati, sotto Porte e Ultimi 7 Giorni. I cruscotti già salvati prendono l'altezza predefinita di ogni riquadro.
+
 ## 0.15.4
 
 - Pagina Notifiche più compatta: "Ultime 24 ore" va accanto al titolo, ricerca e pulsanti stanno sulla riga di Da Gestire (sul telefono restano solo le icone), la ricerca non si allarga più su tutta la riga.

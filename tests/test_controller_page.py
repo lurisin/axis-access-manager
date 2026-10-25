@@ -234,14 +234,16 @@ async def test_relinked_reader_device_from_controller(db, controller):
 
 def test_dashboard_layout(client):
     assert client.get("/api/dashboard/layout").json()["widgets"] is None
-    layout = [{"type": "porte", "size": 4}, {"type": "negati_oggi", "size": 1}]
+    layout = [{"type": "porte", "size": 4, "height": 3}, {"type": "negati_oggi", "size": 1}]
     assert client.put("/api/dashboard/layout", json={"widgets": layout}).json() == {"widgets": layout}
     assert client.get("/api/dashboard/layout").json()["widgets"] == layout
-    # Riquadri sconosciuti, ripetuti o con una larghezza fuori misura non si salvano
+    # Riquadri sconosciuti, ripetuti o con larghezza o altezza fuori misura non si salvano
     assert client.put("/api/dashboard/layout", json={"widgets": [{"type": "meteo", "size": 1}]}).status_code == 400
     twice = [{"type": "porte", "size": 1}, {"type": "porte", "size": 2}]
     assert client.put("/api/dashboard/layout", json={"widgets": twice}).status_code == 400
     assert client.put("/api/dashboard/layout", json={"widgets": [{"type": "porte", "size": 5}]}).status_code == 422
+    tall = [{"type": "porte", "size": 2, "height": 13}]
+    assert client.put("/api/dashboard/layout", json={"widgets": tall}).status_code == 422
     assert client.get("/api/dashboard/layout").json()["widgets"] == layout
     # Ogni utente ha il suo cruscotto
     other = client.get("/api/dashboard/layout", headers={"X-Remote-User-Name": "mario"}).json()
