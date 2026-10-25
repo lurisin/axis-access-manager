@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.1
+
+- Istantanea non riuscita: non resta più solo nel log dell'add-on.
+  - Nel dettaglio dell'evento del registro compare la riga Foto con il motivo (per esempio "telecamera non disponibile, risposta 503 di Home Assistant").
+  - Nella scheda Telecamere del controller la telecamera è segnata Da Controllare, con l'ora dell'ultima foto non riuscita, se non è disponibile in Home Assistant o se non esiste più.
+- Nella scelta della telecamera, quelle non disponibili in Home Assistant sono segnate.
+
 ## 0.13.0
 
 - **Telecamere e Videocitofoni** diventano due schede della pagina del controller, accanto a Porte e Lettori: si aggiungono, si spostano su un'altra porta e si tolgono da lì. Prima erano nascoste nelle impostazioni della porta.

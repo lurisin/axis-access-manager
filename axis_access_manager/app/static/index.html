@@ -1275,6 +1275,7 @@ function eventDetail(e) {
     e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
     e.detail ? ["Dettaglio", esc(e.detail)] : null,
+    e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
@@ -2344,11 +2345,21 @@ async function viewSites(body, data) {
   };
 }
 
+// Stati di Home Assistant di una telecamera che non può dare immagini
+const CAMERA_DOWN = ["unavailable", "unknown", "off"];
 // Scheda Telecamere: quale telecamera fotografa quale porta
 async function controllerCameras(body, ctrl) {
   const cameras = await api("api/cameras").catch(() => []);
   if (!body.isConnected) return;
   const label = (entity) => cameras.find((c) => c.entity_id === entity)?.name || entity;
+  // Telecamera spenta in Home Assistant o ultima foto non riuscita: si vede qui, non solo nel log
+  const problem = (entity) => {
+    const cam = cameras.find((c) => c.entity_id === entity);
+    if (cameras.length && !cam) return "non trovata in Home Assistant";
+    if (cam && CAMERA_DOWN.includes(cam.state)) return "non disponibile in Home Assistant";
+    if (cam?.last_error) return `ultima foto non riuscita ${relTime(cam.last_error.ts)}: ${cam.last_error.error}`;
+    return "";
+  };
   const rows = ctrl.doors.filter((d) => d.snapshot_camera);
   body.innerHTML = `
     <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Una telecamera di Home Assistant per porta: l'app salva una foto nel registro su accessi negati, aperture a distanza, chiamate al citofono e allarmi. Le foto sono anche in Media → axis_access_manager.</p>
@@ -2356,8 +2367,9 @@ async function controllerCameras(body, ctrl) {
     ${!ctrl.doors.length ? '<div class="card"><div class="empty">Prima aggiungi una porta all\'app nella scheda Porte.</div></div>'
       : rows.length ? `<div class="card flush"><div class="list">${rows.map((d) => `<div class="item">
         <div class="ev-icon k-accent">${icon("camera")}</div>
-        <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}</div>
-          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto solo sui rifiuti e le aperture a distanza"}</span><code>${esc(d.snapshot_camera)}</code></div></div>
+        <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}${problem(d.snapshot_camera) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
+          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto solo sui rifiuti e le aperture a distanza"}</span><code>${esc(d.snapshot_camera)}</code></div>
+          ${problem(d.snapshot_camera) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(d.snapshot_camera))}</div>` : ""}</div>
         <button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
       : `<div class="card"><div class="empty">${icon("camera")}<br>Nessuna telecamera associata alle porte.</div></div>`}`;
@@ -2374,7 +2386,7 @@ async function controllerCameras(body, ctrl) {
 async function cameraEditor(ctrl, cameras, door) {
   const current = door?.snapshot_camera || "";
   const cameraInput = cameras.length
-    ? `<select name="camera">${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === current ? "selected" : ""}>${esc(c.name)} (${esc(c.entity_id)})</option>`).join("")}${current && !cameras.some((c) => c.entity_id === current) ? `<option value="${esc(current)}" selected>${esc(current)}</option>` : ""}</select>`
+    ? `<select name="camera">${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === current ? "selected" : ""}>${CAMERA_DOWN.includes(c.state) ? "⚠ " : ""}${esc(c.name)} (${esc(c.entity_id)})${CAMERA_DOWN.includes(c.state) ? " · non disponibile" : ""}</option>`).join("")}${current && !cameras.some((c) => c.entity_id === current) ? `<option value="${esc(current)}" selected>${esc(current)}</option>` : ""}</select>`
     : `<input name="camera" class="mono" value="${esc(current)}" placeholder="camera.ingresso">`;
   const doorSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${d.id === door?.id ? "selected" : ""}>${esc(d.name)}${d.snapshot_camera && d.id !== door?.id ? ` (ora ${esc(d.snapshot_camera)})` : ""}</option>`).join("")}</select>`;
   const result = await modal({

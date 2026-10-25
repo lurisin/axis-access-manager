@@ -72,22 +72,22 @@ class HomeAssistant:
                 )
         return sorted(result, key=lambda s: s["entity_id"])
 
-    async def save_snapshot(self, camera: str, name: str) -> str:
-        """Salva un'immagine della telecamera; restituisce il nome del file o '' se non riesce."""
+    async def save_snapshot(self, camera: str, name: str) -> tuple[str, str]:
+        """Salva un'immagine della telecamera; restituisce (nome del file, "") oppure ("", motivo dell'errore)."""
         if not self.available or not camera:
-            return ""
+            return "", ""
         try:
             response = await self._client.get(f"/camera_proxy/{camera}")
         except httpx.HTTPError as err:
             _LOGGER.warning("Istantanea da %s non riuscita: %s", camera, err)
-            return ""
+            return "", f"Home Assistant non risponde ({err})"
         if response.status_code != 200 or not response.content:
             _LOGGER.warning("Istantanea da %s non riuscita: risposta %s", camera, response.status_code)
-            return ""
+            return "", f"telecamera non disponibile (risposta {response.status_code} di Home Assistant)"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{name}.jpg"
         await asyncio.to_thread((self.snapshot_dir / filename).write_bytes, response.content)
-        return filename
+        return filename, ""
 
     async def button_presser(self, now: datetime | None = None) -> str | None:
         """Nome della persona che ha appena premuto un pulsante MQTT, dal contesto dello stato del pulsante.

@@ -163,6 +163,7 @@ MIGRATIONS = [
     ("cards", "valid_to", "TEXT NOT NULL DEFAULT ''"),
     ("persons", "company", "TEXT NOT NULL DEFAULT ''"),
     ("events", "snapshot", "TEXT NOT NULL DEFAULT ''"),
+    ("events", "snapshot_error", "TEXT NOT NULL DEFAULT ''"),
     ("persons", "category_id", "INTEGER NOT NULL DEFAULT 0"),
     ("events", "door", "TEXT NOT NULL DEFAULT ''"),
     ("doors", "area_id", "INTEGER NOT NULL DEFAULT 0"),
@@ -801,7 +802,8 @@ class Database:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         return self._query(
-            f"SELECT id, ts, kind, card, person_id, person_name, detail, source, snapshot, door FROM events {where} "
+            f"SELECT id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door "
+            f"FROM events {where} "
             "ORDER BY id DESC LIMIT ?",
             tuple(params),
         )
@@ -834,8 +836,9 @@ class Database:
         rows = self._query("SELECT * FROM events WHERE id = ?", (event_id,))
         return rows[0] if rows else None
 
-    def set_event_snapshot(self, event_id: int, filename: str) -> None:
-        self._execute("UPDATE events SET snapshot = ? WHERE id = ?", (filename, event_id))
+    def set_event_snapshot(self, event_id: int, filename: str, error: str = "") -> None:
+        """Foto dell'evento, o perché non è stato possibile scattarla."""
+        self._execute("UPDATE events SET snapshot = ?, snapshot_error = ? WHERE id = ?", (filename, error, event_id))
 
     def count_events(self, since: str) -> dict[str, int]:
         rows = self._query("SELECT kind, COUNT(*) AS n FROM events WHERE ts >= ? GROUP BY kind", (since,))

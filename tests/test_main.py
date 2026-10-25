@@ -270,7 +270,9 @@ class FakeCamera(HomeAssistant):
 
     async def save_snapshot(self, camera, name):
         self.shots.append((camera, name))
-        return f"{name}.jpg"
+        if camera == "camera.spenta":
+            return "", "telecamera non disponibile (risposta 503 di Home Assistant)"
+        return f"{name}.jpg", ""
 
 
 def test_one_snapshot_per_passage_and_always_on_remote_open(controller, tmp_path, monkeypatch):
@@ -303,6 +305,14 @@ def test_one_snapshot_per_passage_and_always_on_remote_open(controller, tmp_path
         event("lettura", "04a11a34")
         event("concesso", "04a11a34")
         assert len(ha.shots) == 2
+
+        # Telecamera spenta: l'evento dice perché manca la foto
+        door = app.state.db.list_doors()[0]
+        client.put(f"/api/doors/{door['id']}", json={**door, "snapshot_camera": "camera.spenta"})
+        remote = event("apertura_remota")
+        row = next(e for e in client.get("/api/events?limit=5").json() if e["id"] == remote)
+        assert row["snapshot"] == "" and "503" in row["snapshot_error"]
+        assert app.state.snapshot_errors["camera.spenta"]["error"] == row["snapshot_error"]
 
 
 def test_snapshots_move_to_the_media_folder(tmp_path):
