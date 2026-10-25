@@ -4,7 +4,7 @@
 
 | Opzione | Descrizione |
 | --- | --- |
-| `a1210_host` | IP del controller, ad esempio `172.27.202.22` |
+| `a1210_host` | IP del controller, ad esempio `192.168.1.50` |
 | `a1210_username`, `a1210_password` | Utente del controller con permessi di amministratore. Meglio crearne uno dedicato all'add-on |
 | `a1210_verify_ssl` | Lascia disattivato con il certificato autofirmato di fabbrica |
 | `door_token` | Token Axis della porta, ad esempio `porta_via_consulta_ingresso_scala` |
