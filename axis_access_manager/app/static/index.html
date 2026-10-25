@@ -68,8 +68,9 @@
   a.nav-user:not([href]):hover { background: none; color: var(--muted); }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .topbar { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
-            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid transparent;
             display: flex; align-items: center; gap: 12px; padding: 12px 24px; flex-wrap: wrap; }
+  .topbar.scrolled { border-bottom-color: var(--border); }
   .topbar h1 { font-size: 20px; margin: 0; flex: 0 1 auto; min-width: 0; }
   .page-sub { color: var(--muted); font-size: 14px; white-space: nowrap; }
   .top-space { flex: 1; }
@@ -251,7 +252,9 @@
     .dash-bar button { flex: 1 1 auto; }
   }
   /* Notifiche: il colore dice solo la gravità (riquadro dell'icona, etichetta, pallino); righe e sfondi neutri */
-  .n-head input[type=search] { flex: 0 1 240px; }
+  .n-sec-head.n-head { align-items: center; margin-bottom: 12px; }
+  .n-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; flex: 1 1 320px; }
+  .n-tools input[type=search] { flex: 0 1 280px; min-width: 0; }
   .n-sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 10px; }
   .n-sec-head h2 { font-size: 17px; font-weight: 600; }
   .n-section { margin-bottom: 20px; }
@@ -291,7 +294,11 @@
   .n-go { width: 36px; color: var(--muted); padding-left: 0 !important; padding-right: 4px !important; }
   .n-more { display: flex; justify-content: center; align-items: center; gap: 16px; padding: 8px 0 4px; flex-wrap: wrap; }
   @media (max-width: 860px) {
-    .n-head input[type=search] { flex: 1 1 100%; }
+    .n-tools { flex-wrap: nowrap; min-width: 0; }
+    .n-tools input[type=search] { width: 0; }
+    .n-tools input[type=search] { flex: 1 1 0; }
+    .n-tools select { flex: 0 1 120px; min-width: 0; }
+    .n-tools .lbl { display: none; }
     .n-actions { flex-basis: 100%; }
     .n-actions > * { flex: 1; }
     .n-snap { width: 100%; max-width: 360px; height: auto; aspect-ratio: 16/9; }
@@ -860,6 +867,9 @@ document.addEventListener("click", async (e) => {
   if (!pop.hidden && (!e.target.closest("#top-pop") || e.target.closest("a"))) pop.hidden = true;
 });
 
+// Separatore sotto la barra solo quando la pagina scorre sotto
+window.addEventListener("scroll", () => $(".topbar").classList.toggle("scrolled", window.scrollY > 4), {passive: true});
+
 // ---------- Navigazione ----------
 // Pagina: titolo, vista, permesso necessario per vederla
 const ROUTES = {
@@ -897,8 +907,9 @@ async function render() {
   const [title, view] = ROUTES[route.name];
   $("#page-title").textContent = title;
   document.title = `${title} · Controllo Accessi`;
-  // Data e numeri di oggi accanto al titolo: li mette solo il cruscotto
-  if (route.name !== "cruscotto") { $("#page-sub").hidden = true; $("#top-today").hidden = true; }
+  // Riga accanto al titolo: la scrive la pagina (data nel cruscotto, ultime 24 ore nelle notifiche)
+  if (route.name !== "cruscotto") $("#top-today").hidden = true;
+  if (route.name !== "cruscotto" && route.name !== "notifiche") $("#page-sub").hidden = true;
   $("#top-pop").hidden = true;
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === route.name));
   const el = $("#view");
@@ -2118,7 +2129,8 @@ async function loadNotifLog(more = false) {
     Object.keys(NOTIF_TABS).forEach((k, idx) => { $(`[data-n-tab="${k}"] span`).textContent = counts[idx]; });
     const last = notifFilters.tab === "tutte" ? notifEvents[0] : null;
     if (notifFilters.tab === "tutte" && !notifFilters.q && !notifFilters.door) {
-      $("#n-sub").textContent = counts[0] ? `Ultime 24 ore · ${plural(counts[0], "evento", "eventi")}${last ? ` · ultimo ${dayTime(last.ts)}` : ""}` : "Ultime 24 ore · nessun accesso negato o allarme";
+      $("#page-sub").hidden = false;
+      $("#page-sub").textContent = counts[0] ? `Ultime 24 ore · ${plural(counts[0], "evento", "eventi")}${last ? ` · ultimo ${dayTime(last.ts)}` : ""}` : "Ultime 24 ore · nessun accesso negato o allarme";
     }
   }
   renderNotifRows();
@@ -2129,16 +2141,17 @@ async function viewNotifications(el) {
   const doors = allDoors();
   if (notifFilters.door && !doors.some((d) => d.token === notifFilters.door)) notifFilters.door = "";
   const log = can("registro");
+  if (!$("#page-sub").textContent.startsWith("Ultime 24 ore")) $("#page-sub").textContent = "Ultime 24 ore";
+  $("#page-sub").hidden = false;
   el.innerHTML = `
-    <div class="toolbar n-head">
-      <p class="muted" id="n-sub" style="margin:0;flex:1 1 220px">Ultime 24 ore</p>
+    <section class="n-section">
+      <div class="n-sec-head n-head"><h2 class="section-title" style="margin:0" title="Ordinate per gravità">Da Gestire <span class="muted" id="n-open"></span></h2>
+      <div class="n-tools">
       <input type="search" id="n-q" placeholder="Persona, tessera, porta…" value="${esc(notifFilters.q)}" aria-label="Cerca persona, tessera o porta">
       ${doors.length > 1 ? `<select id="n-door" aria-label="Porta"><option value="">Tutte le Porte</option>${doorOptionGroups(doors, notifFilters.door)}</select>` : ""}
-      <button type="button" id="n-all" hidden>${icon("check")}Segna Tutte Come Viste</button>
-      ${store.me.admin ? `<a class="btn ghost" href="#impostazioni/notifiche" title="Quali notifiche ricevere">${icon("cog")}Scegli Notifiche</a>` : ""}
-    </div>
-    <section class="n-section">
-      <div class="n-sec-head"><h2 class="section-title" style="margin:0">Da Gestire <span class="muted" id="n-open"></span></h2><span class="muted small-text">Ordinate per gravità</span></div>
+      <button type="button" id="n-all" hidden title="Segna Tutte Come Viste" aria-label="Segna Tutte Come Viste">${icon("check")}<span class="lbl">Segna Tutte Come Viste</span></button>
+      ${store.me.admin ? `<a class="btn ghost" href="#impostazioni/notifiche" title="Quali notifiche ricevere" aria-label="Scegli Notifiche">${icon("cog")}<span class="lbl">Scegli Notifiche</span></a>` : ""}
+      </div></div>
       <div id="n-cards" class="n-cards"></div>
     </section>
     ${log ? `<section class="card n-log">
