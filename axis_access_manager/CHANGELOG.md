@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.19.1
+
+Correzione dalla prova al banco della 0.18.
+
+- **Eventi recuperati senza doppioni**: se una tessera veniva tolta dall'app dopo un passaggio, il recupero dal registro del controller registrava di nuovo quel passaggio come "sconosciuta" (finendo in Da Registrare) e come "concesso" con il codice dell'utente al posto del nome. Ora ogni evento del controller ha un'impronta (porta, tipo di evento, tessera letta) che non dipende dall'anagrafica, e lo stesso evento non si registra due volte. I doppioni già creati vengono tolti all'aggiornamento. Un accesso di una persona non più nell'app mostra il nome leggibile con "(tolta dall'app)".
+
 ## 0.19.0
 
 Backup dell'app, con confronto e ripristino selettivo. Il salvataggio automatico con la pulizia dei vecchi backup arriva nella 0.20.
