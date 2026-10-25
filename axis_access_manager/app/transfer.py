@@ -11,17 +11,17 @@ from .service import AccessService, ServiceError, normalize_card, normalize_name
 from .vapix import VapixError
 
 EVENT_LABELS = {
-    "concesso": "Accesso concesso",
-    "negato": "Accesso negato",
-    "lettura": "Tessera letta",
-    "sconosciuta": "Tessera sconosciuta",
-    "apertura_remota": "Apertura da app",
-    "allarme": "Allarme porta",
+    "concesso": "Accesso Concesso",
+    "negato": "Accesso Negato",
+    "lettura": "Tessera Letta",
+    "sconosciuta": "Tessera Sconosciuta",
+    "apertura_remota": "Apertura Remota",
+    "allarme": "Allarme Porta",
     "manomissione": "Manomissione",
     "citofono": "Citofono",
 }
 
-IMPORT_COLUMNS = ["nome", "tessera", "gruppo", "valida_dal", "valida_al", "ditta", "note"]
+IMPORT_COLUMNS = ["nome", "tessera", "gruppo", "valida_dal", "valida_al", "ditta", "note", "tipologia"]
 DATE_FORMATS = ["%d/%m/%Y %H:%M", "%d/%m/%Y", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d"]
 
 
@@ -43,7 +43,7 @@ def _csv(rows: list[list]) -> str:
 
 
 def events_csv(events: list[dict]) -> str:
-    rows = [["Data e ora", "Evento", "Persona", "Tessera", "Dettaglio", "Origine"]]
+    rows = [["Data e Ora", "Evento", "Persona", "Tessera", "Dettaglio", "Origine"]]
     for event in events:
         rows.append(
             [
@@ -58,8 +58,15 @@ def events_csv(events: list[dict]) -> str:
     return _csv(rows)
 
 
-def persons_csv(persons: list[dict], group_names: dict[str, str], last_access: dict[int, str]) -> str:
-    rows = [["nome", "tessera", "gruppo", "valida_dal", "valida_al", "ditta", "note", "stato", "ultimo_accesso"]]
+def persons_csv(
+    persons: list[dict],
+    group_names: dict[str, str],
+    last_access: dict[int, str],
+    categories: dict[int, str] | None = None,
+) -> str:
+    """Stesse colonne dell'importazione, più stato e ultimo accesso: il file si può reimportare."""
+    categories = categories or {}
+    rows = [IMPORT_COLUMNS + ["stato", "ultimo_accesso"]]
     for person in persons:
         for card in person["cards"]:
             rows.append(
@@ -71,6 +78,7 @@ def persons_csv(persons: list[dict], group_names: dict[str, str], last_access: d
                     _local(card.get("valid_to") or ""),
                     person.get("company") or "",
                     person.get("notes") or "",
+                    categories.get(person.get("category_id") or 0, ""),
                     "attiva" if card["enabled"] else "sospesa",
                     _local(last_access.get(person["id"], "")),
                 ]
@@ -119,6 +127,7 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
     """Controlla (apply=False) o esegue l'importazione. Le tessere già registrate vengono saltate."""
     by_name = {g["name"].lower(): g["token"] for g in groups}
     tokens = {g["token"] for g in groups}
+    categories = {c["name"].lower(): c for c in service.db.list_categories()}
     seen_cards: set[str] = set()
     results = []
     for item in read_import(text):
@@ -132,6 +141,10 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
                 group = by_name.get(group_text.lower()) or (group_text if group_text in tokens else "")
                 if not group:
                     raise ServiceError(f"gruppo sconosciuto: {group_text}")
+            category_text = item.get("tipologia", "")
+            category = categories.get(category_text.lower()) if category_text else None
+            if category_text and category is None:
+                raise ServiceError(f"tipologia sconosciuta: {category_text}")
             valid_from, valid_to = parse_date(item.get("valida_dal", "")), parse_date(item.get("valida_al", ""))
             if number.lower() in seen_cards:
                 raise ServiceError("tessera ripetuta nel file")
@@ -150,7 +163,15 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
                     await service.add_card(matches[0]["id"], number, user)
                 else:
                     await service.create_person(
-                        name, number, user, group, valid_from, valid_to, item.get("ditta", ""), item.get("note", "")
+                        name,
+                        number,
+                        user,
+                        group,
+                        valid_from,
+                        valid_to,
+                        item.get("ditta", ""),
+                        item.get("note", ""),
+                        category["id"] if category else 0,
                     )
             outcome.update(esito="ok" if apply else "da importare", dettaglio=action)
         except ServiceError as err:

@@ -166,6 +166,45 @@ class A1210Client:
     async def remove_schedule(self, token: str) -> None:
         await self._post("/vapix/schedule", {"axsch:RemoveSchedule": {"Token": [token]}})
 
+    # Programmazione: porte, lettori (IdPoint) e punti di accesso
+
+    async def list_doors(self) -> list[dict]:
+        return await self._list_all("/vapix/doorcontrol", "axtdc:GetDoorList", "Door", required=True)
+
+    async def get_doors(self, tokens: list[str]) -> list[dict]:
+        data = await self._post("/vapix/doorcontrol", {"axtdc:GetDoor": {"Token": tokens}})
+        return data.get("Door", [])
+
+    async def set_door(self, door: dict) -> None:
+        await self._post("/vapix/doorcontrol", {"axtdc:SetDoor": {"Door": [door]}})
+
+    async def list_door_configurations(self) -> list[dict]:
+        return await self._list_all("/vapix/doorcontrol", "axtdc:GetDoorConfigurationList", "DoorConfiguration")
+
+    async def list_idpoints(self) -> list[dict]:
+        return await self._list_all("/vapix/idpoint", "axtid:GetIdPointList", "IdPoint", required=True)
+
+    async def get_idpoints(self, tokens: list[str]) -> list[dict]:
+        data = await self._post("/vapix/idpoint", {"axtid:GetIdPoint": {"Token": tokens}})
+        return data.get("IdPoint", [])
+
+    async def set_idpoint(self, idpoint: dict) -> None:
+        try:
+            await self._post("/vapix/idpoint", {"axtid:SetIdPoint": {"IdPoint": [idpoint]}})
+        except VapixError:
+            # Nella documentazione Axis il metodo compare anche come SetIdPointList
+            await self._post("/vapix/idpoint", {"axtid:SetIdPointList": {"IdPoint": [idpoint]}})
+
+    async def list_idpoint_configurations(self) -> list[dict]:
+        return await self._list_all("/vapix/idpoint", "axtid:GetIdPointConfigurationList", "IdPointConfiguration")
+
+    async def get_access_points(self, tokens: list[str]) -> list[dict]:
+        data = await self._post("/vapix/pacs", {"pacsaxis:GetAccessPoint": {"Token": tokens}})
+        return data.get("AccessPoint", [])
+
+    async def set_access_point(self, access_point: dict) -> None:
+        await self._post("/vapix/pacs", {"pacsaxis:SetAccessPoint": {"AccessPoint": [access_point]}})
+
     async def door_mode(self, door_token: str) -> str | None:
         """Modalità attuale della porta (Locked, Accessed, Unlocked...)."""
         data = await self._post("/vapix/doorcontrol", {"tdc:GetDoorState": {"Token": door_token}})

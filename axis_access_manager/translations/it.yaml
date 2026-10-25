@@ -1,64 +1,63 @@
 configuration:
-  a1210_host:
-    name: Indirizzo A1210
-    description: Solo IP o nome host del controller, senza http://, ad esempio 192.168.1.50
-  a1210_username:
-    name: Utente A1210
-    description: Utente del controller con permessi di amministratore (meglio uno dedicato all'add-on)
-  a1210_password:
-    name: Password A1210
-  a1210_verify_ssl:
-    name: Verifica certificato HTTPS
-    description: Lascia disattivato se il controller usa il certificato autofirmato di fabbrica
-  door_token:
-    name: Token porta
-    description: Token Axis della porta da gestire
-  access_profile:
-    name: Profilo di accesso
-    description: Profilo Axis assegnato alle nuove tessere (porta e fascia oraria)
   event_retention_days:
-    name: Conservazione log (giorni)
+    name: Conservazione Registro (Giorni)
     description: Gli eventi più vecchi vengono cancellati
-  mqtt_topic_prefix:
-    name: Prefisso topic MQTT
-    description: Prefisso configurato nel client MQTT dell'A1210; gli eventi arrivano sotto <prefisso>/eventi/...
-  mqtt_host:
-    name: Broker MQTT (facoltativo)
-    description: Vuoto = usa il broker Mosquitto di Home Assistant
-  mqtt_port:
-    name: Porta MQTT (facoltativa)
-  mqtt_username:
-    name: Utente MQTT (facoltativo)
-  mqtt_password:
-    name: Password MQTT (facoltativa)
   ha_integration:
     name: Entità in Home Assistant
-    description: Pubblica via MQTT stato porta, ultimo accesso, contatori ed eventi per le automazioni
-  ha_door_buttons:
-    name: Pulsanti di apertura in Home Assistant
-    description: Aggiunge i pulsanti "Apri porta" e "Apri porta a lungo" (stessi controlli di sicurezza dell'app)
+    description: Pubblica via MQTT stato porta, ultimo accesso, contatori, eventi per le automazioni e i pulsanti di apertura delle porte
   ha_topic_prefix:
-    name: Prefisso topic per Home Assistant
+    name: Prefisso Topic per Home Assistant
     description: Topic MQTT usati dall'add-on per le proprie entità
-  snapshot_camera:
-    name: Telecamera per le istantanee (facoltativa)
-    description: Entità camera di Home Assistant, ad esempio camera.citofono; salva una foto su accessi negati, tessere sconosciute, citofono e allarmi
-  snapshot_on_granted:
-    name: Istantanea anche sugli accessi concessi
-  readonly_users:
-    name: Utenti in sola lettura
-    description: Nomi utente di Home Assistant che possono consultare ma non modificare né aprire la porta
-  intercom_name:
-    name: Nome del citofono (facoltativo)
-    description: Lo stesso nome dato al citofono nelle opzioni dell'add-on Hikvision Doorbell, ad esempio "Citofono". Vuoto = citofono non collegato
-  intercom_open_door:
-    name: "Apri" dal citofono apre la porta
-    description: Quando si apre dall'app Hik-Connect o dal monitor, l'add-on manda all'A1210 un'apertura a tempo (mai uno sblocco permanente)
-  intercom_relay:
-    name: Relè del citofono
-    description: Quale relè del citofono corrisponde al tasto Apri (di solito 1)
-  intercom_mqtt_prefix:
-    name: Prefisso MQTT del citofono
-    description: Prefisso dei topic dell'add-on Hikvision Doorbell; lascia hmd se non l'hai cambiato
+  mqtt_host:
+    name: Broker MQTT (Facoltativo)
+    description: Vuoto = usa il broker Mosquitto di Home Assistant
+  mqtt_port:
+    name: Porta MQTT (Facoltativa)
+  mqtt_username:
+    name: Utente MQTT (Facoltativo)
+  mqtt_password:
+    name: Password MQTT (Facoltativa)
   log_level:
-    name: Livello di log
+    name: Livello di Log
+  a1210_host:
+    name: "Indirizzo A1210 (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  a1210_username:
+    name: "Utente A1210 (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  a1210_password:
+    name: "Password A1210 (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  a1210_verify_ssl:
+    name: "Verifica Certificato HTTPS (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  door_token:
+    name: "Token Porta (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  access_profile:
+    name: "Profilo di Accesso (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  mqtt_topic_prefix:
+    name: "Prefisso Topic MQTT del Controller (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  ha_door_buttons:
+    name: "Pulsanti di Apertura (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  snapshot_camera:
+    name: "Telecamera per le Istantanee (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  snapshot_on_granted:
+    name: "Istantanea sugli Accessi Concessi (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  intercom_name:
+    name: "Nome del Citofono (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  intercom_open_door:
+    name: "Apri dal Citofono (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  intercom_relay:
+    name: "Relè del Citofono (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."
+  intercom_mqtt_prefix:
+    name: "Prefisso MQTT del Citofono (Obsoleta)"
+    description: "Obsoleta: ora si configura nell'app, pagina Impianti. Letta solo al primo avvio della 0.5 per importare la configurazione."

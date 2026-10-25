@@ -49,6 +49,12 @@ def parse_event(prefix: str, topic: str, payload: bytes) -> Event | None:
     return Event(category=path.split("/", 1)[0], topic=path, timestamp=timestamp, data=data)
 
 
+def door_of_topic(topic: str) -> str:
+    """Token della porta nei topic come Door/State/DoorMode/.../DoorToken/<token>."""
+    marker = "/DoorToken/"
+    return topic.rsplit(marker, 1)[1].split("/", 1)[0] if marker in topic else ""
+
+
 @dataclass
 class CategoryStats:
     count: int = 0
@@ -67,7 +73,8 @@ class EventMonitor:
     categories: dict[str, CategoryStats] = field(default_factory=dict)
     last_card: dict | None = None
     door_token: str = ""
-    door_mode: str | None = None
+    # Modalità di ogni porta del controller, per token
+    door_modes: dict[str, str] = field(default_factory=dict)
     # Chiamata per ogni evento; retained=True per i messaggi conservati dal broker
     on_event: Callable[[Event, bool], None] | None = None
     # Integrazione con Home Assistant: chiamata a ogni connessione, comandi ricevuti e messaggio di addio
@@ -79,6 +86,18 @@ class EventMonitor:
     # Altri topic da seguire (anche con # e +): filtro → funzione(topic, payload, conservato dal broker)
     extra_subscriptions: dict[str, Callable[[str, bytes, bool], None]] = field(default_factory=dict)
     _tasks: set = field(default_factory=set, repr=False)
+
+    @property
+    def door_mode(self) -> str | None:
+        """Modalità della porta principale."""
+        return self.door_modes.get(self.door_token)
+
+    @door_mode.setter
+    def door_mode(self, value: str | None) -> None:
+        if value is None:
+            self.door_modes.pop(self.door_token, None)
+        else:
+            self.door_modes[self.door_token] = value
 
     async def publish(self, topic: str, payload: str | bytes, retain: bool = False) -> bool:
         """Pubblica se collegato; restituisce False se il broker non è disponibile."""
@@ -125,13 +144,10 @@ class EventMonitor:
         stats.last_seen = event.timestamp
         if event.topic.startswith("IdPoint/Request/IdData") and "Card" in event.data:
             self.last_card = {"card": event.data["Card"], "read_at": event.timestamp}
-        if (
-            event.topic.startswith("Door/State/DoorMode/")
-            and self.door_token
-            and event.topic.endswith(f"/DoorToken/{self.door_token}")
-            and "State" in event.data
-        ):
-            self.door_mode = event.data["State"]
+        if event.topic.startswith("Door/State/DoorMode/") and "State" in event.data:
+            token = door_of_topic(event.topic)
+            if token:
+                self.door_modes[token] = event.data["State"]
         if self.on_event:
             try:
                 self.on_event(event, retained)

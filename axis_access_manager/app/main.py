@@ -9,21 +9,25 @@ import os
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from typing import Annotated, Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .config import Settings, load_settings, resolve_mqtt
+from .config import Settings, load_settings, normalize_host, resolve_mqtt
 from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
 from .ha import HomeAssistant
-from .ha_mqtt import COMMANDS, HaBridge
+from .ha_mqtt import HaBridge, parse_command
+from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
+from .programming import ProgrammingService
 from .rules_service import RulesService
 from .service import AccessService, ServiceError
 from .transfer import events_csv, import_persons, persons_csv
+from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError
 from .vapix import A1210Client, VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,6 +55,7 @@ class PersonIn(BaseModel):
     valid_to: str = ""
     company: str = ""
     notes: str = ""
+    category_id: int = 0
 
 
 class PersonUpdateIn(BaseModel):
@@ -63,6 +68,7 @@ class AccessIn(BaseModel):
     group: str = ""
     valid_from: str = ""
     valid_to: str = ""
+    category_id: int | None = None
 
 
 class CardIn(BaseModel):
@@ -71,10 +77,6 @@ class CardIn(BaseModel):
 
 class CardStateIn(BaseModel):
     enabled: bool
-
-
-class DoorIn(BaseModel):
-    extended: bool = False
 
 
 class ScheduleRuleIn(BaseModel):
@@ -111,16 +113,114 @@ class ImportIn(BaseModel):
     apply: bool = False
 
 
+class CategoryIn(BaseModel):
+    name: str
+    color: str = ""
+    group_token: str = ""
+    valid_days: int = 0
+    description: str = ""
+    apply: bool = False
+
+
+class HiddenIn(BaseModel):
+    kind: str
+    token: str
+    hidden: bool
+
+
+class DefaultGroupIn(BaseModel):
+    token: str
+
+
+class ControllerIn(BaseModel):
+    name: str
+    host: str
+    username: str
+    password: str = ""
+    verify_ssl: bool = False
+    mqtt_topic_prefix: str
+
+
+class ControllerTestIn(BaseModel):
+    host: str
+    username: str
+    password: str = ""
+    verify_ssl: bool = False
+    controller_id: int | None = None
+
+
+class DoorConfigIn(BaseModel):
+    door_token: str
+    name: str
+    snapshot_camera: str = ""
+    snapshot_on_granted: bool = False
+    ha_buttons: bool = True
+    intercom_name: str = ""
+    intercom_open_door: bool = False
+    intercom_relay: int = 1
+    intercom_mqtt_prefix: str = "hmd"
+
+
+class HardwareDoorIn(BaseModel):
+    name: str
+    description: str = ""
+    access_time: float | None = None
+    extended_access_time: float | None = None
+    open_too_long_time: float | None = None
+    extended_open_too_long_time: float | None = None
+    pre_alarm_time: float | None = None
+
+
+class HardwareReaderIn(BaseModel):
+    name: str
+    description: str = ""
+
+
+class HardwareAccessPointIn(BaseModel):
+    name: str | None = None
+    door: str | None = None
+    readers: list[str] | None = None
+    direction: str | None = None
+    enabled: bool | None = None
+
+
+class AppUserIn(BaseModel):
+    username: str = ""
+    name: str = ""
+    perms: list[str] = []
+
+
+def current_user(request: Request) -> AppUser:
+    """Utente dell'app riconosciuto dalle intestazioni che Ingress aggiunge a ogni richiesta."""
+    user = getattr(request.state, "user", None)
+    if user is None:
+        user = request.app.state.users.resolve(
+            request.headers.get("X-Remote-User-Name") or "",
+            request.headers.get("X-Remote-User-Display-Name") or "",
+        )
+        request.state.user = user
+    return user
+
+
 def request_user(request: Request) -> str:
-    """Utente di Home Assistant che sta usando la pagina (intestazioni aggiunte da Ingress)."""
-    return (
-        request.headers.get("X-Remote-User-Display-Name") or request.headers.get("X-Remote-User-Name") or "sconosciuto"
-    )
+    return current_user(request).label
 
 
-def is_readonly(request: Request, settings: Settings) -> bool:
-    username = (request.headers.get("X-Remote-User-Name") or "").lower()
-    return bool(username) and username in settings.readonly_users
+def need(*perms: str, any_of: bool = False) -> Any:
+    """Dipendenza: l'utente deve avere tutti i permessi indicati (o almeno uno con any_of)."""
+
+    def check(request: Request) -> AppUser:
+        user = current_user(request)
+        allowed = any(user.can(p) for p in perms) if any_of else user.can(*perms)
+        if not allowed:
+            missing = ", ".join(PERMISSIONS[p].lower() for p in perms if not user.can(p))
+            raise HTTPException(status_code=403, detail=f"il tuo utente non ha il permesso: {missing}")
+        return user
+
+    return Depends(check)
+
+
+Admin = Annotated[AppUser, need("utenti")]
 
 
 def create_app(
@@ -135,33 +235,26 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        cfg = settings or load_settings()
-        app.state.settings = cfg
-        app.state.controller = controller or A1210Client(
-            cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl
-        )
+        options = settings or load_settings()
+        app.state.options = options
+        app.state.injected_controller = controller
         app.state.db = Database(db_path or os.environ.get("AAM_DB_PATH") or DB_PATH)
+        app.state.users = UserDirectory(app.state.db, options.readonly_users)
+        app.state.installation = InstallationService(app.state.db)
+        app.state.installation.migrate_from_options(options)
         app.state.ha = home_assistant or HomeAssistant()
-        app.state.monitor = EventMonitor(prefix=cfg.mqtt_topic_prefix, door_token=cfg.door_token)
-        app.state.service = AccessService(app.state.db, app.state.controller, cfg, app.state.monitor)
-        app.state.rules = RulesService(app.state.service)
-        app.state.bridge = HaBridge(cfg, app.state.monitor, app.state.db)
-        _wire(app)
-        app.state.mqtt_configured = False
+        app.state.reload_lock = asyncio.Lock()
         app.state.last_sync = {"ok": None, "error": "", "result": None, "at": None}
-        tasks = [asyncio.create_task(_maintenance(app))]
-        mqtt = await resolve_mqtt(cfg)
-        if mqtt:
-            app.state.mqtt_configured = True
-            tasks.append(asyncio.create_task(app.state.monitor.run(mqtt)))
-        else:
+        app.state.mqtt = await resolve_mqtt(options)
+        if not app.state.mqtt:
             _LOGGER.warning("Nessun broker MQTT: installa Mosquitto o imposta mqtt_host")
+        await _start_runtime(app)
+        maintenance = asyncio.create_task(_maintenance(app))
         yield
-        for task in tasks:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        await app.state.controller.aclose()
+        maintenance.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await maintenance
+        await _stop_runtime(app)
         await app.state.ha.aclose()
         app.state.db.close()
 
@@ -172,14 +265,14 @@ def create_app(
         client = request.client.host if request.client else ""
         if not allow_any_client and client not in (INGRESS_PROXY, "127.0.0.1"):
             return JSONResponse({"detail": "accesso consentito solo da Home Assistant"}, status_code=403)
-        if request.method not in ("GET", "HEAD") and request.url.path.startswith("/api/"):
-            cfg = getattr(request.app.state, "settings", None)
-            if cfg and is_readonly(request, cfg):
-                return JSONResponse({"detail": "il tuo utente può solo consultare"}, status_code=403)
         return await call_next(request)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, err: ServiceError) -> JSONResponse:
+        return JSONResponse({"detail": str(err)}, status_code=400)
+
+    @app.exception_handler(UserError)
+    async def user_error(request: Request, err: UserError) -> JSONResponse:
         return JSONResponse({"detail": str(err)}, status_code=400)
 
     @app.exception_handler(VapixError)
@@ -192,12 +285,15 @@ def create_app(
 
     @app.get("/api/me")
     async def me(request: Request) -> dict:
-        cfg = request.app.state.settings
+        user = current_user(request)
+        perms = list(PERMISSIONS) if user.can("utenti") else [p for p in PERMISSIONS if p in user.perms]
         return {
-            "user": request_user(request),
-            "readonly": is_readonly(request, cfg),
-            "default_group": cfg.access_profile,
-            "door": cfg.door_token,
+            "user": user.label,
+            "username": user.username,
+            "perms": perms,
+            "admin": user.can("utenti"),
+            "default_group": request.app.state.service.default_group,
+            "door": request.app.state.settings.door_token,
             "version": __version__,
         }
 
@@ -212,18 +308,18 @@ def create_app(
             "home_assistant": {
                 "api": state.ha.available,
                 "integration": cfg.ha_integration,
-                "door_buttons": cfg.ha_door_buttons,
                 "topic_prefix": cfg.ha_topic_prefix,
-                "snapshot_camera": cfg.snapshot_camera,
-                "snapshot_on_granted": cfg.snapshot_on_granted,
+                "entities": [c["name"] for _, _, c in state.bridge._entities()] if cfg.ha_integration else [],
             },
+            "doors": _doors_status(state),
             "options": {
-                "door_token": cfg.door_token,
-                "access_profile": cfg.access_profile,
+                "default_group": state.service.default_group,
                 "event_retention_days": cfg.event_retention_days,
-                "readonly_users": list(cfg.readonly_users),
+                "ha_integration": cfg.ha_integration,
+                "ha_topic_prefix": cfg.ha_topic_prefix,
+                "mqtt_override": bool(state.options.mqtt),
             },
-            "intercom": _intercom_status(state.intercom),
+            "intercoms": [_intercom_status(i) for i in state.intercoms],
         }
 
     @app.get("/api/summary")
@@ -232,6 +328,8 @@ def create_app(
         state = request.app.state
         return {
             "door_mode": state.monitor.door_mode,
+            "doors": _doors_status(state),
+            "configured": bool(state.settings.a1210_host),
             "mqtt_connected": state.monitor.connected,
             "unknown_cards": len(state.db.list_unknown_cards()),
             "sync": state.last_sync,
@@ -239,6 +337,7 @@ def create_app(
 
     @app.get("/api/dashboard")
     async def dashboard(request: Request) -> dict:
+        user = current_user(request)
         db = request.app.state.db
         today = db.count_events(local_day_start())
         week = _week_series(db.event_kinds_since(local_day_start(6)))
@@ -266,11 +365,12 @@ def create_app(
             "cards": len(cards),
             "cards_suspended": sum(1 for c in cards if not c["enabled"]),
             "unknown_cards": len(db.list_unknown_cards()),
-            "expiring": sorted(expiring, key=lambda e: e["valid_to"]),
-            "recent": db.list_events(limit=8),
+            # Nomi e passaggi solo a chi può vedere anagrafica e registro
+            "expiring": sorted(expiring, key=lambda e: e["valid_to"]) if user.can("persone") else [],
+            "recent": db.list_events(limit=8) if user.can("registro") else [],
         }
 
-    @app.post("/api/sync")
+    @app.post("/api/sync", dependencies=[need("persone_modifica")])
     async def sync(request: Request) -> dict:
         result = await request.app.state.service.sync_from_controller()
         request.app.state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
@@ -279,7 +379,7 @@ def create_app(
 
     # Persone e tessere
 
-    @app.get("/api/persons")
+    @app.get("/api/persons", dependencies=[need("persone")])
     async def persons(request: Request) -> list[dict]:
         db = request.app.state.db
         last = db.last_accesses()
@@ -288,7 +388,7 @@ def create_app(
             person["last_access"] = last.get(person["id"], "")
         return result
 
-    @app.post("/api/persons")
+    @app.post("/api/persons", dependencies=[need("persone_modifica")])
     async def create_person(body: PersonIn, request: Request) -> dict:
         return await request.app.state.service.create_person(
             body.name,
@@ -299,60 +399,62 @@ def create_app(
             body.valid_to,
             body.company,
             body.notes,
+            body.category_id,
         )
 
-    @app.get("/api/persons/{person_id}")
+    @app.get("/api/persons/{person_id}", dependencies=[need("persone")])
     async def person_detail(person_id: int, request: Request) -> dict:
         db = request.app.state.db
         person = db.get_person(person_id)
         if person is None:
             raise ServiceError("persona non trovata")
-        person["events"] = db.list_events(person_id=person_id, limit=50)
+        can_log = current_user(request).can("registro")
+        person["events"] = db.list_events(person_id=person_id, limit=50) if can_log else []
         person["last_access"] = db.last_accesses().get(person_id, "")
         return person
 
-    @app.patch("/api/persons/{person_id}")
+    @app.patch("/api/persons/{person_id}", dependencies=[need("persone_modifica")])
     async def update_person(person_id: int, body: PersonUpdateIn, request: Request) -> dict:
         return await request.app.state.service.update_person(
             person_id, request_user(request), name=body.name, company=body.company, notes=body.notes
         )
 
-    @app.put("/api/persons/{person_id}/access")
+    @app.put("/api/persons/{person_id}/access", dependencies=[need("persone_modifica")])
     async def set_access(person_id: int, body: AccessIn, request: Request) -> dict:
         return await request.app.state.service.set_person_access(
-            person_id, body.group, body.valid_from, body.valid_to, request_user(request)
+            person_id, body.group, body.valid_from, body.valid_to, request_user(request), body.category_id
         )
 
-    @app.delete("/api/persons/{person_id}")
+    @app.delete("/api/persons/{person_id}", dependencies=[need("persone_modifica")])
     async def delete_person(person_id: int, request: Request) -> dict:
         await request.app.state.service.delete_person(person_id, request_user(request))
         return {"ok": True}
 
-    @app.post("/api/persons/{person_id}/cards")
+    @app.post("/api/persons/{person_id}/cards", dependencies=[need("persone_modifica")])
     async def add_card(person_id: int, body: CardIn, request: Request) -> dict:
         return await request.app.state.service.add_card(person_id, body.card, request_user(request))
 
-    @app.patch("/api/cards/{card_id}")
+    @app.patch("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
     async def set_card_state(card_id: int, body: CardStateIn, request: Request) -> dict:
         return await request.app.state.service.set_card_enabled(card_id, body.enabled, request_user(request))
 
-    @app.delete("/api/cards/{card_id}")
+    @app.delete("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
     async def delete_card(card_id: int, request: Request) -> dict:
         person = await request.app.state.service.delete_card(card_id, request_user(request))
         return {"ok": True, "person": person}
 
-    @app.get("/api/unknown-cards")
+    @app.get("/api/unknown-cards", dependencies=[need("persone")])
     async def unknown_cards(request: Request) -> list[dict]:
         return request.app.state.db.list_unknown_cards()
 
-    @app.delete("/api/unknown-cards/{number}")
+    @app.delete("/api/unknown-cards/{number}", dependencies=[need("persone_modifica")])
     async def ignore_unknown_card(number: str, request: Request) -> dict:
         request.app.state.db.forget_unknown_card(number)
         return {"ok": True}
 
     # Registro
 
-    @app.get("/api/events")
+    @app.get("/api/events", dependencies=[need("registro")])
     async def events(
         request: Request,
         kind: str = "",
@@ -373,7 +475,7 @@ def create_app(
             person_id=person_id,
         )
 
-    @app.get("/api/events/{event_id}/snapshot")
+    @app.get("/api/events/{event_id}/snapshot", dependencies=[need("registro")])
     async def snapshot(event_id: int, request: Request) -> Response:
         event = request.app.state.db.get_event(event_id)
         if not event or not event.get("snapshot"):
@@ -383,7 +485,7 @@ def create_app(
             return JSONResponse({"detail": "istantanea cancellata"}, status_code=404)
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
-    @app.get("/api/export/events.csv")
+    @app.get("/api/export/events.csv", dependencies=[need("registro", "import_export")])
     async def export_events(
         request: Request, kind: str = "", q: str = "", since: str = "", until: str = "", person_id: int | None = None
     ) -> Response:
@@ -392,13 +494,15 @@ def create_app(
         )
         return _csv_response(events_csv(rows), "registro_accessi")
 
-    @app.get("/api/export/persons.csv")
+    @app.get("/api/export/persons.csv", dependencies=[need("persone", "import_export")])
     async def export_persons(request: Request) -> Response:
         state = request.app.state
         names = await _group_names(state)
-        return _csv_response(persons_csv(state.db.list_persons(), names, state.db.last_accesses()), "anagrafica")
+        categories = {c["id"]: c["name"] for c in state.db.list_categories()}
+        text = persons_csv(state.db.list_persons(), names, state.db.last_accesses(), categories)
+        return _csv_response(text, "anagrafica")
 
-    @app.post("/api/import/persons")
+    @app.post("/api/import/persons", dependencies=[need("persone_modifica", "import_export")])
     async def import_csv(body: ImportIn, request: Request) -> dict:
         state = request.app.state
         try:
@@ -408,44 +512,44 @@ def create_app(
             groups = []
         return await import_persons(state.service, body.csv, groups, request_user(request), body.apply)
 
-    @app.get("/api/audit")
+    @app.get("/api/audit", dependencies=[need("utenti")])
     async def audit(request: Request, before_id: int | None = None, limit: int = 100) -> list[dict]:
         return request.app.state.db.list_audit(limit=min(limit, 500), before_id=before_id)
 
     # Regole
 
-    @app.get("/api/groups")
+    @app.get("/api/groups", dependencies=[need("persone", "regole", any_of=True)])
     async def groups(request: Request) -> dict:
         return await request.app.state.rules.list_groups()
 
-    @app.post("/api/groups")
+    @app.post("/api/groups", dependencies=[need("regole_modifica")])
     async def create_group(body: GroupIn, request: Request) -> dict:
         return await request.app.state.rules.create_group(
             body.name, body.description, body.schedule, request_user(request)
         )
 
-    @app.put("/api/groups/{token:path}")
+    @app.put("/api/groups/{token:path}", dependencies=[need("regole_modifica")])
     async def update_group(token: str, body: GroupIn, request: Request) -> dict:
         return await request.app.state.rules.update_group(
             token, body.name, body.description, body.schedule, request_user(request)
         )
 
-    @app.delete("/api/groups/{token:path}")
+    @app.delete("/api/groups/{token:path}", dependencies=[need("regole_modifica")])
     async def delete_group(token: str, request: Request) -> dict:
         await request.app.state.rules.delete_group(token, request_user(request))
         return {"ok": True}
 
-    @app.get("/api/schedules")
+    @app.get("/api/schedules", dependencies=[need("persone", "regole", any_of=True)])
     async def schedules(request: Request) -> list[dict]:
         return await request.app.state.rules.list_schedules()
 
-    @app.post("/api/schedules")
+    @app.post("/api/schedules", dependencies=[need("regole_modifica")])
     async def create_schedule(body: ScheduleIn, request: Request) -> dict:
         return await request.app.state.rules.create_schedule(
             body.name, body.description, [r.model_dump() for r in body.rules], body.holidays, request_user(request)
         )
 
-    @app.put("/api/schedules/{token:path}")
+    @app.put("/api/schedules/{token:path}", dependencies=[need("regole_modifica")])
     async def update_schedule(token: str, body: ScheduleIn, request: Request) -> dict:
         return await request.app.state.rules.update_schedule(
             token,
@@ -456,42 +560,241 @@ def create_app(
             request_user(request),
         )
 
-    @app.delete("/api/schedules/{token:path}")
+    @app.delete("/api/schedules/{token:path}", dependencies=[need("regole_modifica")])
     async def delete_schedule(token: str, request: Request) -> dict:
         await request.app.state.rules.delete_schedule(token, request_user(request))
         return {"ok": True}
 
-    @app.get("/api/holidays")
+    @app.get("/api/holidays", dependencies=[need("persone", "regole", any_of=True)])
     async def holidays(request: Request) -> list[dict]:
         return request.app.state.db.list_holidays()
 
-    @app.post("/api/holidays")
+    @app.post("/api/holidays", dependencies=[need("regole_modifica")])
     async def add_holiday(body: HolidayIn, request: Request) -> dict:
         await request.app.state.rules.add_holidays([body.model_dump()], request_user(request))
         return {"ok": True}
 
-    @app.post("/api/holidays/italia")
+    @app.post("/api/holidays/italia", dependencies=[need("regole_modifica")])
     async def add_italian_holidays(body: ItalianHolidaysIn, request: Request) -> dict:
         await request.app.state.rules.add_italian_holidays(body.year, request_user(request))
         return {"ok": True}
 
-    @app.delete("/api/holidays/{day}")
+    @app.delete("/api/holidays/{day}", dependencies=[need("regole_modifica")])
     async def delete_holiday(day: str, request: Request) -> dict:
         await request.app.state.rules.delete_holiday(day, request_user(request))
         return {"ok": True}
 
-    @app.get("/api/cameras")
+    @app.put("/api/hidden", dependencies=[need("regole_modifica")])
+    async def set_hidden(body: HiddenIn, request: Request) -> dict:
+        request.app.state.rules.set_hidden(body.kind, body.token, body.hidden, request_user(request))
+        return {"ok": True}
+
+    @app.put("/api/default-group", dependencies=[need("regole_modifica")])
+    async def set_default_group(body: DefaultGroupIn, request: Request) -> dict:
+        await request.app.state.rules.set_default_group(body.token, request_user(request))
+        return {"ok": True}
+
+    @app.get("/api/categories", dependencies=[need("persone", "regole", any_of=True)])
+    async def categories(request: Request) -> list[dict]:
+        return request.app.state.rules.list_categories()
+
+    @app.post("/api/categories", dependencies=[need("regole_modifica")])
+    async def create_category(body: CategoryIn, request: Request) -> dict:
+        return await request.app.state.rules.save_category(None, body.model_dump(), request_user(request))
+
+    @app.put("/api/categories/{category_id}", dependencies=[need("regole_modifica")])
+    async def update_category(category_id: int, body: CategoryIn, request: Request) -> dict:
+        return await request.app.state.rules.save_category(
+            category_id, body.model_dump(), request_user(request), body.apply
+        )
+
+    @app.delete("/api/categories/{category_id}", dependencies=[need("regole_modifica")])
+    async def delete_category(category_id: int, request: Request) -> dict:
+        request.app.state.rules.delete_category(category_id, request_user(request))
+        return {"ok": True}
+
+    # Impianti
+
+    @app.get("/api/installation", dependencies=[need("impianti")])
+    async def installation(request: Request) -> dict:
+        return {"controllers": request.app.state.installation.controllers(), "max_controllers": MAX_CONTROLLERS}
+
+    @app.post("/api/controllers/test", dependencies=[need("impianti")])
+    async def test_controller(body: ControllerTestIn, request: Request) -> dict:
+        """Prova indirizzo e credenziali senza salvarli; elenca le porte trovate."""
+        password = body.password
+        if not password and body.controller_id:
+            existing = request.app.state.db.get_controller(body.controller_id)
+            password = existing["password"] if existing else ""
+        host = normalize_host(body.host)
+        if not host:
+            raise ServiceError("manca l'indirizzo del controller")
+        client = request.app.state.injected_controller or A1210Client(host, body.username, password, body.verify_ssl)
+        try:
+            info = await client.device_info()
+            doors = await client.door_info_list()
+        finally:
+            if request.app.state.injected_controller is None:
+                await client.aclose()
+        return {
+            "model": info.get("ProdNbr") or info.get("ProdShortName", ""),
+            "firmware": info.get("Version", ""),
+            "serial": info.get("SerialNumber", ""),
+            "doors": [{"token": d.get("token", ""), "name": d.get("Name") or d.get("token", "")} for d in doors],
+        }
+
+    @app.post("/api/controllers", dependencies=[need("impianti")])
+    async def create_controller(body: ControllerIn, request: Request) -> dict:
+        result = request.app.state.installation.save_controller(None, body.model_dump(), request_user(request))
+        await reload_runtime(request.app)
+        return result
+
+    @app.put("/api/controllers/{controller_id}", dependencies=[need("impianti")])
+    async def update_controller(controller_id: int, body: ControllerIn, request: Request) -> dict:
+        result = request.app.state.installation.save_controller(controller_id, body.model_dump(), request_user(request))
+        await reload_runtime(request.app)
+        return result
+
+    @app.delete("/api/controllers/{controller_id}", dependencies=[need("impianti")])
+    async def delete_controller(controller_id: int, request: Request) -> dict:
+        request.app.state.installation.delete_controller(controller_id, request_user(request))
+        await reload_runtime(request.app)
+        return {"ok": True}
+
+    @app.get("/api/controllers/{controller_id}/doors-available", dependencies=[need("impianti")])
+    async def available_doors(controller_id: int, request: Request) -> list[dict]:
+        """Porte presenti sul controller in uso, da associare alle porte dell'app."""
+        state = request.app.state
+        primary = state.installation.primary
+        if not primary or primary["id"] != controller_id:
+            raise ServiceError("controller non in uso")
+        doors = await state.controller.door_info_list()
+        return [{"token": d.get("token", ""), "name": d.get("Name") or d.get("token", "")} for d in doors]
+
+    @app.post("/api/controllers/{controller_id}/doors", dependencies=[need("impianti")])
+    async def create_door(controller_id: int, body: DoorConfigIn, request: Request) -> dict:
+        result = request.app.state.installation.save_door(None, controller_id, body.model_dump(), request_user(request))
+        await reload_runtime(request.app)
+        return result
+
+    @app.put("/api/doors/{door_id}", dependencies=[need("impianti")])
+    async def update_door(door_id: int, body: DoorConfigIn, request: Request) -> dict:
+        door = request.app.state.db.get_door(door_id)
+        if door is None:
+            raise ServiceError("porta non trovata")
+        result = request.app.state.installation.save_door(
+            door_id, door["controller_id"], body.model_dump(), request_user(request)
+        )
+        await reload_runtime(request.app)
+        return result
+
+    @app.delete("/api/doors/{door_id}", dependencies=[need("impianti")])
+    async def delete_door(door_id: int, request: Request) -> dict:
+        request.app.state.installation.delete_door(door_id, request_user(request))
+        await reload_runtime(request.app)
+        return {"ok": True}
+
+    # Programmazione del controller
+
+    @app.get("/api/programming", dependencies=[need("impianti")])
+    async def programming(request: Request) -> dict:
+        return await request.app.state.programming.read()
+
+    @app.put("/api/programming/doors/{token:path}", dependencies=[need("impianti")])
+    async def program_door(token: str, body: HardwareDoorIn, request: Request) -> dict:
+        await request.app.state.programming.update_door(token, body.model_dump(), request_user(request))
+        return {"ok": True}
+
+    @app.put("/api/programming/readers/{token:path}", dependencies=[need("impianti")])
+    async def program_reader(token: str, body: HardwareReaderIn, request: Request) -> dict:
+        await request.app.state.programming.update_reader(token, body.model_dump(), request_user(request))
+        return {"ok": True}
+
+    @app.put("/api/programming/access-points/{token:path}", dependencies=[need("impianti")])
+    async def program_access_point(token: str, body: HardwareAccessPointIn, request: Request) -> dict:
+        data = {k: v for k, v in body.model_dump().items() if v is not None}
+        await request.app.state.programming.update_access_point(token, data, request_user(request))
+        return {"ok": True}
+
+    @app.post("/api/programming/changes/{change_id}/undo", dependencies=[need("impianti")])
+    async def undo_change(change_id: int, request: Request) -> dict:
+        await request.app.state.programming.undo(change_id, request_user(request))
+        return {"ok": True}
+
+    @app.get("/api/cameras", dependencies=[need("impianti")])
     async def cameras(request: Request) -> list[dict]:
         return await request.app.state.ha.states()
 
-    # Porta
+    # Utenti dell'app
 
-    @app.post("/api/door/open")
-    async def open_door(body: DoorIn, request: Request) -> dict:
-        await request.app.state.service.open_door(body.extended, request_user(request))
+    @app.get("/api/users", dependencies=[need("utenti")])
+    async def users(request: Request) -> dict:
+        return {
+            "users": request.app.state.users.list(),
+            "permissions": PERMISSIONS,
+            "roles": {key: {"label": label, "perms": perms} for key, (label, perms) in ROLES.items()},
+        }
+
+    @app.post("/api/users")
+    async def create_user(body: AppUserIn, request: Request, user: Admin) -> dict:
+        return request.app.state.users.save(body.username, body.name, body.perms, user, create=True)
+
+    @app.put("/api/users/{username}")
+    async def update_user(username: str, body: AppUserIn, request: Request, user: Admin) -> dict:
+        return request.app.state.users.save(username, body.name, body.perms, user, create=False)
+
+    @app.delete("/api/users/{username}")
+    async def delete_user(username: str, request: Request, user: Admin) -> dict:
+        request.app.state.users.delete(username, user)
         return {"ok": True}
 
     return app
+
+
+async def _start_runtime(app: FastAPI) -> None:
+    """Crea client del controller, ascolto MQTT e servizi con la configurazione degli impianti."""
+    state = app.state
+    cfg = state.installation.effective_settings(state.options)
+    state.settings = cfg
+    state.controller = state.injected_controller or A1210Client(
+        cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl
+    )
+    state.doors = state.installation.doors()
+    state.monitor = EventMonitor(prefix=cfg.mqtt_topic_prefix, door_token=cfg.door_token)
+    state.service = AccessService(state.db, state.controller, cfg, state.monitor)
+    state.rules = RulesService(state.service)
+    primary = state.installation.primary
+    state.programming = ProgrammingService(
+        state.db, state.controller, primary["id"] if primary else None, state.service.lock
+    )
+    state.bridge = HaBridge(cfg, state.monitor, state.db, state.doors)
+    _wire(app)
+    state.mqtt_configured = bool(state.mqtt)
+    state.monitor_task = (
+        asyncio.create_task(state.monitor.run(state.mqtt)) if state.mqtt and cfg.mqtt_topic_prefix else None
+    )
+
+
+async def _stop_runtime(app: FastAPI) -> None:
+    state = app.state
+    task = getattr(state, "monitor_task", None)
+    if task:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    if state.injected_controller is None:
+        await state.controller.aclose()
+
+
+async def reload_runtime(app: FastAPI) -> None:
+    """Riparte con la nuova configurazione dopo una modifica a controller o porte."""
+    async with app.state.reload_lock:
+        await _stop_runtime(app)
+        await _start_runtime(app)
+    with contextlib.suppress(VapixError):
+        if app.state.settings.a1210_host:
+            result = await app.state.service.sync_from_controller()
+            app.state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
 
 
 def _wire(app: FastAPI) -> None:
@@ -503,11 +806,15 @@ def _wire(app: FastAPI) -> None:
     bridge: HaBridge = state.bridge
     monitor.on_event = service.record_event
 
+    doors = {d["door_token"]: d for d in state.doors}
+
     async def after_event(row: dict) -> None:
-        kinds = SNAPSHOT_KINDS | (GRANTED_KINDS if cfg.snapshot_on_granted else set())
-        if cfg.snapshot_camera and row.get("kind") in kinds:
+        door = doors.get(row.get("door") or cfg.door_token) or {}
+        camera = door.get("snapshot_camera") or ""
+        kinds = SNAPSHOT_KINDS | (GRANTED_KINDS if door.get("snapshot_on_granted") else set())
+        if camera and row.get("kind") in kinds:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = await state.ha.save_snapshot(cfg.snapshot_camera, f"{row['id']}_{stamp}")
+            filename = await state.ha.save_snapshot(camera, f"{row['id']}_{stamp}")
             if filename:
                 state.db.set_event_snapshot(row["id"], filename)
         await bridge.publish_event(row)
@@ -517,27 +824,36 @@ def _wire(app: FastAPI) -> None:
 
     service.after_event = after_event
     service.on_change = on_change
-    state.intercom = None
-    if cfg.intercom_name:
-        state.intercom = IntercomBridge(
-            IntercomSettings(cfg.intercom_name, cfg.intercom_open_door, cfg.intercom_relay, cfg.intercom_mqtt_prefix),
-            log=service.log_event,
-            open_door=lambda source: service.open_door(False, source),
+    state.intercoms = []
+    for door in state.doors:
+        if not door["intercom_name"]:
+            continue
+        intercom = IntercomBridge(
+            IntercomSettings(
+                door["intercom_name"], door["intercom_open_door"], door["intercom_relay"], door["intercom_mqtt_prefix"]
+            ),
+            log=lambda door_token=door["door_token"], **fields: service.log_event(**fields, door=door_token),
+            open_door=lambda source, door_token=door["door_token"]: service.open_door(False, source, door_token),
         )
-        for topic in state.intercom.topics:
-            monitor.extra_subscriptions[topic] = state.intercom.handle
+        intercom.door = door
+        state.intercoms.append(intercom)
+        for topic in intercom.topics:
+            monitor.extra_subscriptions[topic] = intercom.handle
     if cfg.ha_integration:
         monitor.will = bridge.will()
         monitor.on_connect = bridge.on_connect
-        if cfg.ha_door_buttons:
+        if bridge.has_buttons:
             monitor.command_topic = bridge.command_topic
+            allowed = {d["door_token"] for d in state.doors if d["ha_buttons"]}
 
             async def on_command(command: str) -> None:
-                if command not in COMMANDS:
+                parsed = parse_command(command)
+                door = (parsed[1] or cfg.door_token) if parsed else ""
+                if parsed is None or door not in allowed:
                     _LOGGER.warning("Comando sconosciuto da Home Assistant: %s", command)
                     return
                 try:
-                    await service.open_door(COMMANDS[command], "Home Assistant")
+                    await service.open_door(parsed[0], "Home Assistant", door)
                 except (ServiceError, VapixError) as err:
                     _LOGGER.warning("Apertura da Home Assistant non eseguita: %s", err)
 
@@ -547,11 +863,26 @@ def _wire(app: FastAPI) -> None:
         monitor.on_connect = bridge.on_connect
 
 
-def _intercom_status(intercom: IntercomBridge | None) -> dict:
-    if intercom is None:
-        return {"configured": False}
+def _doors_status(state) -> list[dict]:
+    return [
+        {
+            "id": d["id"],
+            "name": d["name"],
+            "token": d["door_token"],
+            "mode": state.monitor.door_modes.get(d["door_token"]),
+            "camera": d["snapshot_camera"],
+            "snapshot_on_granted": d["snapshot_on_granted"],
+            "ha_buttons": d["ha_buttons"],
+            "intercom": d["intercom_name"],
+        }
+        for d in state.doors
+    ]
+
+
+def _intercom_status(intercom: IntercomBridge) -> dict:
     return {
         "configured": True,
+        "door": intercom.door["name"],
         "name": intercom.settings.name,
         "open_door": intercom.settings.open_door,
         "topics": intercom.topics,

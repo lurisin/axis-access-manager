@@ -62,3 +62,25 @@ async def test_publish_event_updates_last_access(bridge, monkeypatch):
         True,
     )
     assert len(sent) == 2
+
+
+def test_second_door_gets_its_own_entities_and_commands(settings, db):
+    from app.events import EventMonitor
+    from app.ha_mqtt import HaBridge, parse_command
+
+    doors = [
+        {"id": 1, "door_token": "porta", "name": "Ingresso", "ha_buttons": True},
+        {"id": 2, "door_token": "porta2", "name": "Cantina", "ha_buttons": True},
+    ]
+    monitor = EventMonitor(prefix="x", door_token="porta")
+    monitor.door_modes = {"porta": "Locked", "porta2": "Accessed"}
+    bridge = HaBridge(settings, monitor, db, doors)
+    entities = {object_id: config for _, object_id, config in bridge._entities()}
+    assert entities["apri_porta"]["payload_press"] == "apri"
+    assert entities["apri_porta_a_lungo_2"]["name"] == "Apri Cantina a Lungo"
+    assert entities["apri_porta_2"]["payload_press"] == "apri:porta2"
+    assert "porte['porta2']" in entities["stato_porta_2"]["value_template"]
+    assert bridge.state()["porte"] == {"porta": "Bloccata", "porta2": "Aperta a Tempo"}
+    assert parse_command("apri_lungo:porta2") == (True, "porta2")
+    assert parse_command("apri") == (False, "")
+    assert parse_command("sblocca") is None
