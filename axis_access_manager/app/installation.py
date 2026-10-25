@@ -11,6 +11,8 @@ from .service import ServiceError, normalize_name
 
 # Per ora l'add-on gestisce un controller; il database è già pronto per averne di più
 MAX_CONTROLLERS = 1
+DEFAULT_SITE = "Struttura Principale"
+DEFAULT_AREA = "Generale"
 TOPIC_PATTERN = re.compile(r"^[A-Za-z0-9_\-/]+$")
 
 
@@ -43,6 +45,55 @@ class InstallationService:
 
     def door_by_token(self, token: str) -> dict | None:
         return next((d for d in self.doors() if d["door_token"] == token), None)
+
+    def locations(self) -> list[dict]:
+        """Strutture con le loro aree e le porte di ogni area; le porte senza area in fondo."""
+        doors = self.db.list_doors()
+        sites = self.db.list_sites()
+        known = set()
+        for site in sites:
+            for area in site["areas"]:
+                area["doors"] = [d["id"] for d in doors if d["area_id"] == area["id"]]
+                known.add(area["id"])
+        loose = [d["id"] for d in doors if d["area_id"] not in known]
+        return sites + (
+            [
+                {
+                    "id": 0,
+                    "name": "Senza Struttura",
+                    "description": "",
+                    "areas": [{"id": 0, "site_id": 0, "name": "Senza Area", "doors": loose}],
+                }
+            ]
+            if loose
+            else []
+        )
+
+    def door_places(self) -> dict[int, dict]:
+        """Per ogni porta: struttura e area, per le etichette dell'interfaccia."""
+        places = {}
+        for site in self.locations():
+            for area in site["areas"]:
+                for door_id in area["doors"]:
+                    places[door_id] = {
+                        "site": site["name"],
+                        "area": area["name"],
+                        "site_id": site["id"],
+                        "area_id": area["id"],
+                    }
+        return places
+
+    def ensure_default_site(self) -> bool:
+        """Alla prima avvio della 0.6: le porte già configurate finiscono in una struttura da rinominare."""
+        doors = [d for d in self.db.list_doors() if not d["area_id"]]
+        if not doors or self.db.list_sites():
+            return False
+        site_id = self.db.save_site(None, DEFAULT_SITE, "")
+        area_id = self.db.save_area(None, site_id, DEFAULT_AREA)
+        for door in doors:
+            self.db.set_door_area(door["id"], area_id)
+        self.db.add_audit("sistema", "struttura predefinita creata", f"{DEFAULT_SITE} › {DEFAULT_AREA}")
+        return True
 
     def effective_settings(self, base: Settings) -> Settings:
         """Opzioni dell'add-on con controller e prima porta presi dall'app."""
@@ -155,6 +206,55 @@ class InstallationService:
         self.db.delete_controller(controller_id)
         self.db.add_audit(user, "controller rimosso dall'app", f"{controller['name']} ({controller['host']})")
 
+    # Strutture e aree
+
+    def save_site(self, site_id: int | None, data: dict, user: str) -> dict:
+        existing = self.db.get_site(site_id) if site_id else None
+        if site_id and existing is None:
+            raise ServiceError("struttura non trovata")
+        name = normalize_name(data.get("name") or "")
+        if not name:
+            raise ServiceError("manca il nome della struttura")
+        clash = self.db.site_by_name(name)
+        if clash and clash["id"] != site_id:
+            raise ServiceError(f"esiste già una struttura chiamata {clash['name']}")
+        description = (data.get("description") or "").strip()[:200]
+        site_id = self.db.save_site(site_id, name[:64], description)
+        self.db.add_audit(user, "struttura modificata" if existing else "struttura aggiunta", name)
+        return {"id": site_id}
+
+    def delete_site(self, site_id: int, user: str) -> None:
+        site = self.db.get_site(site_id)
+        if site is None:
+            raise ServiceError("struttura non trovata")
+        self.db.delete_site(site_id)
+        self.db.add_audit(user, "struttura rimossa", site["name"])
+
+    def save_area(self, area_id: int | None, site_id: int, data: dict, user: str) -> dict:
+        existing = self.db.get_area(area_id) if area_id else None
+        if area_id and existing is None:
+            raise ServiceError("area non trovata")
+        site_id = int(data.get("site_id") or site_id or (existing or {}).get("site_id") or 0)
+        site = self.db.get_site(site_id)
+        if site is None:
+            raise ServiceError("struttura non trovata")
+        name = normalize_name(data.get("name") or "")
+        if not name:
+            raise ServiceError("manca il nome dell'area")
+        clash = self.db.area_by_name(site_id, name)
+        if clash and clash["id"] != area_id:
+            raise ServiceError(f"in {site['name']} esiste già l'area {clash['name']}")
+        area_id = self.db.save_area(area_id, site_id, name[:64])
+        self.db.add_audit(user, "area modificata" if existing else "area aggiunta", f"{site['name']} › {name}")
+        return {"id": area_id}
+
+    def delete_area(self, area_id: int, user: str) -> None:
+        area = self.db.get_area(area_id)
+        if area is None:
+            raise ServiceError("area non trovata")
+        self.db.delete_area(area_id)
+        self.db.add_audit(user, "area rimossa", area["name"])
+
     def door_fields(self, data: dict) -> dict:
         token = (data.get("door_token") or "").strip()
         if not token:
@@ -172,6 +272,12 @@ class InstallationService:
         camera = (data.get("snapshot_camera") or "").strip()
         if camera and not camera.startswith("camera."):
             raise ServiceError("la telecamera deve essere un'entità camera.* di Home Assistant")
+        try:
+            area_id = int(data.get("area_id") or 0)
+        except (TypeError, ValueError) as err:
+            raise ServiceError("area non valida") from err
+        if area_id and self.db.get_area(area_id) is None:
+            raise ServiceError("area non trovata")
         return {
             "door_token": token,
             "name": normalize_name(data.get("name") or ""),
@@ -182,6 +288,7 @@ class InstallationService:
             "intercom_open_door": int(_flag(data.get("intercom_open_door")) and bool(intercom)),
             "intercom_relay": relay,
             "intercom_mqtt_prefix": prefix,
+            "area_id": area_id,
         }
 
     def save_door(self, door_id: int | None, controller_id: int, data: dict, user: str) -> dict:
@@ -191,7 +298,11 @@ class InstallationService:
         existing = self.db.get_door(door_id) if door_id else None
         if door_id and (existing is None or existing["controller_id"] != controller_id):
             raise ServiceError("porta non trovata")
+        if data.get("area_id") is None and existing:
+            data = {**data, "area_id": existing["area_id"]}
         fields = self.door_fields(data)
+        if not fields["area_id"] and not existing:
+            fields["area_id"] = self._default_area()
         clash = next(
             (d for d in controller["doors"] if d["door_token"] == fields["door_token"] and d["id"] != door_id), None
         )
@@ -201,6 +312,17 @@ class InstallationService:
         detail = fields["name"] + (f", citofono {fields['intercom_name']}" if fields["intercom_name"] else "")
         self.db.add_audit(user, "porta modificata" if existing else "porta aggiunta", detail)
         return {"id": door_id}
+
+    def _default_area(self) -> int:
+        """Area per una porta nuova senza area scelta: l'unica che c'è, o una nuova struttura predefinita."""
+        areas = [a for s in self.db.list_sites() for a in s["areas"]]
+        if len(areas) == 1:
+            return areas[0]["id"]
+        if areas:
+            return 0
+        site = self.db.site_by_name(DEFAULT_SITE)
+        site_id = site["id"] if site else self.db.save_site(None, DEFAULT_SITE, "")
+        return self.db.save_area(None, site_id, DEFAULT_AREA)
 
     def delete_door(self, door_id: int, user: str) -> None:
         door = self.db.get_door(door_id)

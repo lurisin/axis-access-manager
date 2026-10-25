@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS doors (
     intercom_mqtt_prefix TEXT NOT NULL DEFAULT 'hmd',
     UNIQUE (controller_id, door_token)
 );
+CREATE TABLE IF NOT EXISTS sites (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    description TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS areas (
+    id INTEGER PRIMARY KEY,
+    site_id INTEGER NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
+    name TEXT NOT NULL COLLATE NOCASE,
+    UNIQUE (site_id, name)
+);
 CREATE TABLE IF NOT EXISTS controller_changes (
     id INTEGER PRIMARY KEY,
     ts TEXT NOT NULL,
@@ -134,6 +145,7 @@ MIGRATIONS = [
     ("events", "snapshot", "TEXT NOT NULL DEFAULT ''"),
     ("persons", "category_id", "INTEGER NOT NULL DEFAULT 0"),
     ("events", "door", "TEXT NOT NULL DEFAULT ''"),
+    ("doors", "area_id", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -423,6 +435,7 @@ class Database:
         "intercom_open_door",
         "intercom_relay",
         "intercom_mqtt_prefix",
+        "area_id",
     )
     _DOOR_FLAGS = ("snapshot_on_granted", "ha_buttons", "intercom_open_door")
 
@@ -464,6 +477,7 @@ class Database:
         return next((d for d in self.list_doors() if d["id"] == door_id), None)
 
     def save_door(self, door_id: int | None, controller_id: int, fields: dict) -> int:
+        fields = {"area_id": 0, **fields}
         values = tuple(fields[f] for f in self.DOOR_FIELDS)
         if door_id:
             sets = ", ".join(f"{f} = ?" for f in self.DOOR_FIELDS)
@@ -477,6 +491,59 @@ class Database:
 
     def delete_door(self, door_id: int) -> None:
         self._execute("DELETE FROM doors WHERE id = ?", (door_id,))
+
+    # Strutture e aree: dove si trovano le porte
+
+    def list_sites(self) -> list[dict]:
+        sites = self._query("SELECT * FROM sites ORDER BY name COLLATE NOCASE")
+        areas = self._query("SELECT * FROM areas ORDER BY name COLLATE NOCASE")
+        for site in sites:
+            site["areas"] = [a for a in areas if a["site_id"] == site["id"]]
+        return sites
+
+    def get_site(self, site_id: int) -> dict | None:
+        return next((s for s in self.list_sites() if s["id"] == site_id), None)
+
+    def site_by_name(self, name: str) -> dict | None:
+        rows = self._query("SELECT * FROM sites WHERE name = ?", (name,))
+        return rows[0] if rows else None
+
+    def save_site(self, site_id: int | None, name: str, description: str) -> int:
+        if site_id:
+            self._execute("UPDATE sites SET name = ?, description = ? WHERE id = ?", (name, description, site_id))
+            return site_id
+        return self._execute("INSERT INTO sites (name, description) VALUES (?, ?)", (name, description))
+
+    def delete_site(self, site_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE doors SET area_id = 0 WHERE area_id IN (SELECT id FROM areas WHERE site_id = ?)", (site_id,)
+            )
+            self._conn.execute("DELETE FROM sites WHERE id = ?", (site_id,))
+            self._conn.commit()
+
+    def get_area(self, area_id: int) -> dict | None:
+        rows = self._query("SELECT * FROM areas WHERE id = ?", (area_id,))
+        return rows[0] if rows else None
+
+    def area_by_name(self, site_id: int, name: str) -> dict | None:
+        rows = self._query("SELECT * FROM areas WHERE site_id = ? AND name = ?", (site_id, name))
+        return rows[0] if rows else None
+
+    def save_area(self, area_id: int | None, site_id: int, name: str) -> int:
+        if area_id:
+            self._execute("UPDATE areas SET name = ?, site_id = ? WHERE id = ?", (name, site_id, area_id))
+            return area_id
+        return self._execute("INSERT INTO areas (site_id, name) VALUES (?, ?)", (site_id, name))
+
+    def delete_area(self, area_id: int) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE doors SET area_id = 0 WHERE area_id = ?", (area_id,))
+            self._conn.execute("DELETE FROM areas WHERE id = ?", (area_id,))
+            self._conn.commit()
+
+    def set_door_area(self, door_id: int, area_id: int) -> None:
+        self._execute("UPDATE doors SET area_id = ? WHERE id = ?", (area_id, door_id))
 
     # Modifiche alla programmazione del controller, per poterle annullare
 
@@ -581,22 +648,24 @@ class Database:
             (ts, kind, card, person_id, person_name, detail, source, json.dumps(raw) if raw else "", door),
         )
 
-    def list_events(
-        self,
-        *,
+    @staticmethod
+    def _event_filter(
         kind: str = "",
         search: str = "",
-        before_id: int | None = None,
-        limit: int = 100,
         since: str = "",
         until: str = "",
         person_id: int | None = None,
-    ) -> list[dict]:
+        door: str = "",
+    ) -> tuple[list[str], list]:
         clauses, params = [], []
         if kind:
             kinds = kind.split(",")
             clauses.append(f"kind IN ({','.join('?' * len(kinds))})")
             params += kinds
+        if door:
+            doors = door.split(",")
+            clauses.append(f"door IN ({','.join('?' * len(doors))})")
+            params += doors
         if since:
             clauses.append("ts >= ?")
             params.append(since)
@@ -610,6 +679,21 @@ class Database:
             clauses.append("(person_name LIKE ? OR card LIKE ? OR detail LIKE ?)")
             like = f"%{search}%"
             params += [like, like, like]
+        return clauses, params
+
+    def list_events(
+        self,
+        *,
+        kind: str = "",
+        search: str = "",
+        before_id: int | None = None,
+        limit: int = 100,
+        since: str = "",
+        until: str = "",
+        person_id: int | None = None,
+        door: str = "",
+    ) -> list[dict]:
+        clauses, params = self._event_filter(kind, search, since, until, person_id, door)
         if before_id:
             clauses.append("id < ?")
             params.append(before_id)
@@ -620,6 +704,30 @@ class Database:
             "ORDER BY id DESC LIMIT ?",
             tuple(params),
         )
+
+    def count_matching_events(self, **filters) -> int:
+        clauses, params = self._event_filter(**filters)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return self._query(f"SELECT COUNT(*) AS n FROM events {where}", tuple(params))[0]["n"]
+
+    def door_event_counts(self, since: str) -> dict[str, dict[str, int]]:
+        """Eventi per porta e per tipo dal momento indicato."""
+        result: dict[str, dict[str, int]] = {}
+        rows = self._query("SELECT door, kind, COUNT(*) AS n FROM events WHERE ts >= ? GROUP BY door, kind", (since,))
+        for row in rows:
+            result.setdefault(row["door"], {})[row["kind"]] = row["n"]
+        return result
+
+    def last_door_events(self, kinds: tuple[str, ...]) -> dict[str, dict]:
+        """Ultimo evento di ogni porta tra i tipi indicati."""
+        marks = ",".join("?" * len(kinds))
+        rows = self._query(
+            f"SELECT e.door, e.ts, e.kind, e.person_name, e.card FROM events e JOIN "
+            f"(SELECT door, MAX(id) AS id FROM events WHERE kind IN ({marks}) GROUP BY door) last "
+            "ON e.id = last.id",
+            kinds,
+        )
+        return {row["door"]: row for row in rows}
 
     def get_event(self, event_id: int) -> dict | None:
         rows = self._query("SELECT * FROM events WHERE id = ?", (event_id,))

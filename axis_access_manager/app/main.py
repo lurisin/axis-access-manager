@@ -159,6 +159,17 @@ class DoorConfigIn(BaseModel):
     intercom_open_door: bool = False
     intercom_relay: int = 1
     intercom_mqtt_prefix: str = "hmd"
+    area_id: int | None = None
+
+
+class SiteIn(BaseModel):
+    name: str
+    description: str = ""
+
+
+class AreaIn(BaseModel):
+    name: str
+    site_id: int | None = None
 
 
 class HardwareDoorIn(BaseModel):
@@ -242,6 +253,7 @@ def create_app(
         app.state.users = UserDirectory(app.state.db, options.readonly_users)
         app.state.installation = InstallationService(app.state.db)
         app.state.installation.migrate_from_options(options)
+        app.state.installation.ensure_default_site()
         app.state.ha = home_assistant or HomeAssistant()
         app.state.reload_lock = asyncio.Lock()
         app.state.last_sync = {"ok": None, "error": "", "result": None, "at": None}
@@ -464,6 +476,7 @@ def create_app(
         since: str = "",
         until: str = "",
         person_id: int | None = None,
+        door: str = "",
     ) -> list[dict]:
         return request.app.state.db.list_events(
             kind=kind,
@@ -473,7 +486,18 @@ def create_app(
             since=_utc(since),
             until=_utc(until),
             person_id=person_id,
+            door=door,
         )
+
+    @app.get("/api/events/count", dependencies=[need("registro")])
+    async def count_events(
+        request: Request, kind: str = "", q: str = "", since: str = "", until: str = "", door: str = ""
+    ) -> dict:
+        """Quanti eventi corrispondono ai filtri: serve per gli accessi nascosti dalle viste del registro."""
+        count = request.app.state.db.count_matching_events(
+            kind=kind, search=q, since=_utc(since), until=_utc(until), door=door
+        )
+        return {"count": count}
 
     @app.get("/api/events/{event_id}/snapshot", dependencies=[need("registro")])
     async def snapshot(event_id: int, request: Request) -> Response:
@@ -487,12 +511,26 @@ def create_app(
 
     @app.get("/api/export/events.csv", dependencies=[need("registro", "import_export")])
     async def export_events(
-        request: Request, kind: str = "", q: str = "", since: str = "", until: str = "", person_id: int | None = None
+        request: Request,
+        kind: str = "",
+        q: str = "",
+        since: str = "",
+        until: str = "",
+        person_id: int | None = None,
+        door: str = "",
     ) -> Response:
-        rows = request.app.state.db.list_events(
-            kind=kind, search=q, since=_utc(since), until=_utc(until), person_id=person_id, limit=EXPORT_LIMIT
+        state = request.app.state
+        rows = state.db.list_events(
+            kind=kind,
+            search=q,
+            since=_utc(since),
+            until=_utc(until),
+            person_id=person_id,
+            door=door,
+            limit=EXPORT_LIMIT,
         )
-        return _csv_response(events_csv(rows), "registro_accessi")
+        names = {d["door_token"]: d["name"] for d in state.doors}
+        return _csv_response(events_csv(rows, names), "registro_accessi")
 
     @app.get("/api/export/persons.csv", dependencies=[need("persone", "import_export")])
     async def export_persons(request: Request) -> Response:
@@ -611,6 +649,137 @@ def create_app(
     @app.delete("/api/categories/{category_id}", dependencies=[need("regole_modifica")])
     async def delete_category(category_id: int, request: Request) -> dict:
         request.app.state.rules.delete_category(category_id, request_user(request))
+        return {"ok": True}
+
+    # Porte: dove sono, come stanno, cosa è successo
+
+    @app.get("/api/locations")
+    async def locations(request: Request) -> list[dict]:
+        return request.app.state.installation.locations()
+
+    @app.get("/api/door-overview")
+    async def door_overview(request: Request) -> list[dict]:
+        """Porte con struttura, stato e numeri di oggi; l'ultimo passaggio solo a chi vede il registro."""
+        state = request.app.state
+        user = current_user(request)
+        counts = state.db.door_event_counts(local_day_start())
+        last = state.db.last_door_events(("concesso", "negato", "sconosciuta", "apertura_remota", "citofono"))
+        result = []
+        for door in _doors_status(state):
+            today = counts.get(door["token"], {})
+            if len(state.doors) == 1:
+                # Eventi registrati prima della 0.5 senza porta: con una porta sola sono suoi
+                for kind, n in counts.get("", {}).items():
+                    today[kind] = today.get(kind, 0) + n
+            event = last.get(door["token"])
+            if len(state.doors) == 1 and last.get("") and (not event or last[""]["ts"] > event["ts"]):
+                event = last[""]
+            result.append(
+                {
+                    **door,
+                    "today": {
+                        "granted": sum(today.get(k, 0) for k in GRANTED_KINDS | {"citofono"}),
+                        "denied": today.get("negato", 0) + today.get("sconosciuta", 0),
+                        "alarms": today.get("allarme", 0) + today.get("manomissione", 0),
+                    },
+                    "last": (
+                        {"ts": event["ts"], "kind": event["kind"], "person": event["person_name"] or event["card"]}
+                        if event and user.can("registro")
+                        else None
+                    ),
+                }
+            )
+        return result
+
+    @app.get("/api/door-detail/{door_id}")
+    async def door_detail(door_id: int, request: Request) -> dict:
+        """Tutto su una porta: dispositivi, chi può entrare e ultimi eventi, secondo i permessi."""
+        state = request.app.state
+        user = current_user(request)
+        door = next((d for d in await door_overview(request) if d["id"] == door_id), None)
+        config = state.db.get_door(door_id)
+        if door is None or config is None:
+            raise HTTPException(status_code=404, detail="porta non trovata")
+        controller = state.db.get_controller(config["controller_id"]) or {}
+        readers, points, errors = [], [], []
+        try:
+            all_points = await state.controller.list_access_points()
+            idpoints = {r.get("token"): r for r in await state.controller.list_idpoints()}
+            for point in all_points:
+                if point.get("Entity") != config["door_token"]:
+                    continue
+                points.append(point.get("token"))
+                direction = next(
+                    (a.get("Value") for a in point.get("Attribute") or [] if a.get("Name") == "Direction"), ""
+                )
+                for device in point.get("IdPointDevice") or []:
+                    reader = idpoints.get(device.get("IdPoint"), {})
+                    readers.append(
+                        {
+                            "name": reader.get("Name") or device.get("IdPoint") or "",
+                            "description": reader.get("Description") or "",
+                            "direction": {"in": "Ingresso", "out": "Uscita"}.get(direction, ""),
+                            "access_point": point.get("Name") or point.get("token") or "",
+                            "enabled": point.get("Enabled", True) is not False,
+                        }
+                    )
+        except VapixError as err:
+            errors.append(f"lettori: {err}")
+        groups = None
+        if user.can("regole") or user.can("persone"):
+            try:
+                listed = (await state.rules.list_groups())["groups"]
+                groups = [
+                    {k: g[k] for k in ("token", "name", "schedule_names", "persons", "default", "enabled")}
+                    for g in listed
+                    if not g["access_points"] or set(g["access_points"]) & set(points) or not points
+                ]
+            except VapixError as err:
+                errors.append(f"gruppi: {err}")
+        events = None
+        if user.can("registro"):
+            # Con una porta sola valgono anche gli eventi registrati prima che avessero la porta
+            door_filter = config["door_token"] + ("," if len(state.doors) == 1 else "")
+            events = state.db.list_events(door=door_filter, limit=15)
+        return {
+            **door,
+            "controller": {
+                "id": controller.get("id"),
+                "name": controller.get("name", ""),
+                "host": controller.get("host", ""),
+            },
+            "intercom_relay": config["intercom_relay"],
+            "intercom_open_door": config["intercom_open_door"],
+            "readers": readers,
+            "groups": groups,
+            "events": events,
+            "errors": errors,
+        }
+
+    @app.post("/api/sites", dependencies=[need("impianti")])
+    async def create_site(body: SiteIn, request: Request) -> dict:
+        return request.app.state.installation.save_site(None, body.model_dump(), request_user(request))
+
+    @app.put("/api/sites/{site_id}", dependencies=[need("impianti")])
+    async def update_site(site_id: int, body: SiteIn, request: Request) -> dict:
+        return request.app.state.installation.save_site(site_id, body.model_dump(), request_user(request))
+
+    @app.delete("/api/sites/{site_id}", dependencies=[need("impianti")])
+    async def delete_site(site_id: int, request: Request) -> dict:
+        request.app.state.installation.delete_site(site_id, request_user(request))
+        return {"ok": True}
+
+    @app.post("/api/sites/{site_id}/areas", dependencies=[need("impianti")])
+    async def create_area(site_id: int, body: AreaIn, request: Request) -> dict:
+        return request.app.state.installation.save_area(None, site_id, body.model_dump(), request_user(request))
+
+    @app.put("/api/areas/{area_id}", dependencies=[need("impianti")])
+    async def update_area(area_id: int, body: AreaIn, request: Request) -> dict:
+        return request.app.state.installation.save_area(area_id, 0, body.model_dump(), request_user(request))
+
+    @app.delete("/api/areas/{area_id}", dependencies=[need("impianti")])
+    async def delete_area(area_id: int, request: Request) -> dict:
+        request.app.state.installation.delete_area(area_id, request_user(request))
         return {"ok": True}
 
     # Impianti
@@ -864,11 +1033,16 @@ def _wire(app: FastAPI) -> None:
 
 
 def _doors_status(state) -> list[dict]:
+    places = state.installation.door_places()
     return [
         {
             "id": d["id"],
             "name": d["name"],
             "token": d["door_token"],
+            "site": places.get(d["id"], {}).get("site", ""),
+            "area": places.get(d["id"], {}).get("area", ""),
+            "site_id": places.get(d["id"], {}).get("site_id", 0),
+            "area_id": places.get(d["id"], {}).get("area_id", 0),
             "mode": state.monitor.door_modes.get(d["door_token"]),
             "camera": d["snapshot_camera"],
             "snapshot_on_granted": d["snapshot_on_granted"],

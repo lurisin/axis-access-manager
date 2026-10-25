@@ -42,13 +42,20 @@ def _csv(rows: list[list]) -> str:
     return "﻿" + buffer.getvalue()
 
 
-def events_csv(events: list[dict]) -> str:
-    rows = [["Data e Ora", "Evento", "Persona", "Tessera", "Dettaglio", "Origine"]]
+def events_csv(events: list[dict], doors: dict[str, str] | None = None) -> str:
+    """Registro in CSV; con più porte aggiunge la colonna Porta (nomi dati da doors: token → nome)."""
+    doors = doors or {}
+    with_door = len(doors) > 1
+    rows = [
+        ["Data e Ora", "Evento"] + (["Porta"] if with_door else []) + ["Persona", "Tessera", "Dettaglio", "Origine"]
+    ]
     for event in events:
+        door = [doors.get(event.get("door") or "", event.get("door") or "")] if with_door else []
         rows.append(
             [
                 _local(event["ts"]),
                 EVENT_LABELS.get(event["kind"], event["kind"]),
+                *door,
                 event.get("person_name") or "",
                 event.get("card") or "",
                 event.get("detail") or "",

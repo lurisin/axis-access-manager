@@ -11,6 +11,12 @@ Le vecchie opzioni restano visibili come "Obsoleta" e non servono più.
 Il primo utente di Home Assistant che apre l'app diventa **amministratore**. Gli altri entrano con il ruolo "Solo Stato" finché un amministratore non dà loro altri permessi (Impostazioni → Utenti).
 Il pannello ora è visibile anche agli utenti di Home Assistant che non sono amministratori di Home Assistant: cosa possono fare lo decidono i permessi dell'app.
 
+### Novità della 0.6
+
+- Il menu è una **barra laterale** sempre presente con le sole icone; il pulsante ☰ la allarga con i nomi delle pagine. Sul telefono si apre sopra la pagina e si richiude da sola dopo la scelta; sul computer resta come l'hai lasciata.
+- Le porte stanno in **strutture e aree** (ad esempio Teatro › Accesso Scala, Hotel › Ingresso, Villa 3 › Cancello). Al primo avvio la porta già configurata finisce in "Struttura Principale › Generale": rinominale in Impianti → Strutture e Aree.
+- Con una sola porta l'app resta semplice: colonne e filtri per porta compaiono solo quando le porte sono più di una.
+
 ## Opzioni dell'add-on
 
 Restano solo quelle tecniche:
@@ -25,12 +31,13 @@ Restano solo quelle tecniche:
 
 ## Sezioni
 
-- **Cruscotto**: accessi e rifiuti di oggi, persone e tessere, grafico degli ultimi 7 giorni, ultimi eventi e avvisi (impianto da configurare, tessere da registrare, tessere in scadenza, allarmi, MQTT scollegato).
-- **Persone**: elenco con ricerca per nome, ditta o tessera e filtri per tipologia, gruppo e stato. Un clic apre la scheda della persona: tipologia, gruppo e validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi.
+- **Cruscotto**: accessi e rifiuti di oggi, persone e tessere, le porte raggruppate per struttura e area con stato e ultimo passaggio, grafico degli ultimi 7 giorni, ultimi eventi e avvisi (impianto da configurare, tessere da registrare, tessere in scadenza, allarmi, MQTT scollegato).
+- **Porte**: tutte le porte per struttura e area. Il dettaglio di una porta mostra stato, numeri di oggi, dispositivi (lettori con direzione, citofono, telecamera, controller), i gruppi che la aprono e i suoi ultimi eventi. Con una porta sola si apre direttamente il suo dettaglio.
+- **Persone**: elenco essenziale in ordine alfabetico, con il colore della tipologia e un'etichetta solo se c'è qualcosa da sistemare (tessera sospesa, scaduta, in scadenza). Filtri rapidi per tipologia, ricerca per nome, ditta o tessera, filtri per gruppo e stato. Un clic apre la scheda della persona: tipologia, gruppo e validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi.
 - **Da Registrare**: tessere lette dal lettore ma non registrate, da assegnare a una persona nuova o esistente senza digitare il numero.
-- **Registro**: tutti gli eventi con ricerca, tipo, intervallo di date, istantanee ed esportazione CSV.
+- **Registro**: una riga per evento (ora, esito, chi, porta) e i dettagli al clic, a lato sul computer e in una finestra sul telefono. Le viste **Da Controllare** (rifiuti, tessere sconosciute, allarmi), Solo Negati, Solo Accessi, Allarmi e Tutto servono quando il passaggio è tanto: nelle viste filtrate un contatore dice quanti accessi riusciti non sono mostrati. Poi ricerca, porta, intervallo di date, istantanee ed esportazione CSV. La vista scelta viene ricordata.
 - **Regole**: tipologie, gruppi, fasce orarie e festività (vedi sotto).
-- **Impianti**: controller, porte con citofono e telecamera, programmazione del controller (vedi sotto).
+- **Impianti**: controller, porte con citofono e telecamera, strutture e aree, programmazione del controller (vedi sotto).
 - **Impostazioni**: stato di controller, porte, MQTT, citofoni e Home Assistant, esportazione e importazione CSV; per gli amministratori anche **Utenti** e **Attività**.
 
 In alto c'è lo stato della porta (o delle porte). **L'app non apre la porta**: l'apertura è nei pulsanti di Home Assistant, da mettere nelle dashboard, e passa comunque dall'add-on con i suoi controlli di sicurezza.
@@ -41,6 +48,7 @@ Il controller resta la fonte di verità: all'avvio e ogni 15 minuti l'add-on ril
 
 - **Controller**: nome, indirizzo, utente, password (non viene mai mostrata, lasciala vuota per non cambiarla), prefisso MQTT e verifica del certificato. Con **Prova Collegamento** controlli i dati prima di salvarli. Salvando, l'add-on si ricollega subito senza riavvio.
 - **Porte**: per ogni porta del controller scegli il nome, se avere i pulsanti Apri e Apri a Lungo in Home Assistant, la **telecamera** per le istantanee e il **videocitofono** associato.
+- **Strutture e Aree**: dove si trovano le porte. Crei strutture (Hotel, Teatro, Villa 1…) e al loro interno aree (Piano Terra, Ingresso…); poi nella porta scegli la sua area. Il controller che comanda la porta resta un dettaglio tecnico: l'app ragiona per luoghi.
 - Per ora l'add-on gestisce un controller. Porte, citofoni, telecamere e pulsanti sono già organizzati per porta, così si potrà passare a più controller e più porte senza rifare la configurazione.
 
 ### Programmazione del controller
