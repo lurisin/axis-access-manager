@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.19.3
+
+Ultime correzioni dal collaudo al banco della 0.19.
+
+- **Eventi delle persone eliminate**: quando si elimina una persona i suoi eventi restano nel registro con il nome, ma staccati dalla persona. Così nessuno li può ereditare, nemmeno una persona ripristinata da un backup con lo stesso numero. All'aggiornamento si staccano anche gli eventi delle persone già eliminate, compresi quelli rimasti dai numeri riusati prima della 0.19.2.
+- **Pagina aggiornata da sola**: dopo un aggiornamento dell'add-on la pagina aperta in Home Assistant si ricarica appena non c'è una finestra aperta o una modifica da salvare, invece di restare alla versione vecchia fino a un ricaricamento a mano. La pagina non viene più presa dalla cache del browser.
+
 ## 0.19.2
 
 Correzioni dal collaudo al banco della 0.19.

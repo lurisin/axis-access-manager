@@ -897,6 +897,7 @@ async function loadSummary() {
     const s = await api("api/summary");
     store.summary = s;
     $("#offline-pill").hidden = true;
+    reloadIfUpdated(s.version);
     const badges = [["#nav-unknown", s.unknown_cards], ["#nav-notif", s.notifications]];
     badges.forEach(([sel, n]) => { const b = $(sel); b.hidden = !n; b.textContent = n > 99 ? "99+" : n; });
     $("#nav [data-route=notifiche]").title = s.notifications ? `Notifiche: ${s.notifications} da gestire` : "Notifiche";
@@ -904,6 +905,14 @@ async function loadSummary() {
   } catch (err) {
     $("#offline-pill").hidden = false;
   }
+}
+
+// Add-on aggiornato mentre la pagina era aperta (Home Assistant tiene viva la scheda): si ricarica appena
+// non c'è niente in sospeso, cioè nessuna finestra aperta e nessuna modifica da salvare
+function reloadIfUpdated(version) {
+  if (!version || !store.me?.version || version === store.me.version) return;
+  if ($("#modal").open || $("#sheet").open || $("#retry").open || pageGuard?.dirty()) return;
+  location.reload();
 }
 
 // Barra in alto: guasti e allarmi solo quando ci sono, altrimenti "Sistema OK"

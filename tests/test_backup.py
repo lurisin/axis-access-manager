@@ -309,6 +309,9 @@ def test_backup_api_permissions_and_restore(client, controller):
     person = client.post("/api/persons", json={"name": "Anna", "card": "04aa"}, headers=admin).json()
 
     created = client.post("/api/backups", json={"name": "Prima dei lavori"}, headers=mario).json()
+    # Pagina mai dalla cache e versione nel riepilogo: dopo un aggiornamento la pagina si ricarica
+    assert client.get("/", headers=mario).headers["cache-control"] == "no-store"
+    assert client.get("/api/summary", headers=mario).json()["version"]
     listing = client.get("/api/backups", headers=mario).json()
     assert listing["backups"][0]["name"] == "Prima dei lavori" and listing["can_restore"] is False
     assert client.put(f"/api/backups/{created['id']}/lock", json={"locked": True}, headers=mario).json()["locked"]
