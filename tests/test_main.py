@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import parse_options
+from app.db import Database
 from app.main import create_app
 
 
@@ -84,9 +85,10 @@ def test_first_user_is_admin_and_others_get_status_only(client, controller):
     assert me["admin"] is True and me["username"] == "rising"
 
     me = client.get("/api/me", headers=guest).json()
-    assert me["admin"] is False and me["perms"] == []
-    assert client.get("/api/status", headers=guest).status_code == 200
+    assert me["admin"] is False and me["perms"] == ["stato"] and me["role"] == "Solo Stato"
+    assert client.get("/api/status", headers=guest).status_code == 403
     assert client.get("/api/summary", headers=guest).status_code == 200
+    assert client.get("/api/door-overview", headers=guest).status_code == 200
     assert client.get("/api/persons", headers=guest).status_code == 403
     assert client.post("/api/persons", json={"name": "A", "card": "04aa"}, headers=guest).status_code == 403
     assert client.get("/api/events", headers=guest).status_code == 403
@@ -117,6 +119,54 @@ def test_first_user_is_admin_and_others_get_status_only(client, controller):
     assert response.status_code == 400 and "amministratore" in response.json()["detail"]
     assert client.delete("/api/users/rising", headers=admin).status_code == 400
     assert client.delete("/api/users/mario", headers=admin).status_code == 200
+
+
+def test_sections_follow_permissions(client):
+    admin = {"X-Remote-User-Name": "rising"}
+    client.get("/api/me", headers=admin)
+    roles = client.get("/api/users", headers=admin).json()["roles"]
+    client.post("/api/users", json={"username": "log", "perms": roles["solo_registro"]["perms"]}, headers=admin)
+    client.post("/api/users", json={"username": "tessere", "perms": roles["tessere"]["perms"]}, headers=admin)
+
+    # Solo registro: niente cruscotto, porte e notifiche; i nomi delle porte restano per leggere il registro
+    log = {"X-Remote-User-Name": "log"}
+    assert client.get("/api/me", headers=log).json()["role"] == "Solo Registro"
+    assert client.get("/api/events", headers=log).status_code == 200
+    for path in ("/api/dashboard", "/api/door-overview", "/api/notifications", "/api/status", "/api/persons"):
+        assert client.get(path, headers=log).status_code == 403, path
+    summary = client.get("/api/summary", headers=log).json()
+    assert summary["notifications"] == 0 and summary["door_mode"] is None and summary["unknown_cards"] == 0
+    assert summary["doors"] and all(d["mode"] is None for d in summary["doors"])
+
+    # Tessere: anagrafica, tipologie e fasce orarie, senza registro né stato
+    cards = {"X-Remote-User-Name": "tessere"}
+    for path in ("/api/persons", "/api/categories", "/api/schedules", "/api/locations"):
+        assert client.get(path, headers=cards).status_code == 200, path
+    for path in ("/api/events", "/api/dashboard", "/api/door-overview"):
+        assert client.get(path, headers=cards).status_code == 403, path
+
+
+def test_existing_users_keep_status_after_update(controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    settings = parse_options({"a1210_host": "a", "door_token": "porta", "access_profile": "profilo_sempre"})
+    db = Database(tmp_path / "u.db")
+    db.save_app_user("admin", "", ["utenti"])
+    db.save_app_user("vecchio", "", ["registro"])
+    db.save_app_user("stato", "", [])
+    db.close()
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=tmp_path / "u.db")
+    with TestClient(app) as client:
+        perms = {
+            u["username"]: u["perms"]
+            for u in client.get("/api/users", headers={"X-Remote-User-Name": "admin"}).json()["users"]
+        }
+        assert perms["vecchio"] == ["stato", "registro"] and perms["stato"] == ["stato"]
+        # Una volta sola: se l'amministratore toglie "stato", al riavvio non torna
+        client.put("/api/users/vecchio", json={"perms": ["registro"]}, headers={"X-Remote-User-Name": "admin"})
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=tmp_path / "u.db")
+    with TestClient(app) as client:
+        users = client.get("/api/users", headers={"X-Remote-User-Name": "admin"}).json()["users"]
+        assert next(u for u in users if u["username"] == "vecchio")["perms"] == ["registro"]
 
 
 def test_readonly_users_option_starts_as_consultation(controller, tmp_path, monkeypatch):

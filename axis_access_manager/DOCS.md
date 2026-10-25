@@ -146,11 +146,16 @@ Gli utenti sono quelli di Home Assistant, riconosciuti dall'app. In Impostazioni
 | Ruolo | Cosa può fare |
 | --- | --- |
 | Amministratore | Tutto, compresi impianti, utenti e registro delle attività |
-| Operatore | Persone e tessere (anche modificarle), registro, vedere le regole, esportare e importare |
-| Consultazione | Vedere persone, registro e regole senza modificare |
-| Solo Stato | Cruscotto e stato del controller |
+| Operatore | Stato, persone e tessere (anche modificarle), registro, vedere le fasce orarie, esportare e importare |
+| Tessere | Solo anagrafica, tipologie e fasce orarie: registrare e modificare persone e tessere, senza registro né stato |
+| Consultazione | Vedere stato, persone, registro e fasce orarie senza modificare |
+| Solo Registro | Solo il registro accessi |
+| Solo Stato | Cruscotto, porte e notifiche |
+| Nessun Accesso | Nessuna sezione: l'utente vede solo un avviso |
 
-Permessi singoli: vedere persone, modificare persone e tessere, registro, vedere regole, modificare regole, esportare e importare, impianti, utenti. Deve restare sempre almeno un amministratore.
+Permessi singoli: stato (cruscotto, porte e notifiche), vedere persone e tipologie, modificare persone e tessere, registro, vedere fasce orarie e festività, modificare tipologie, fasce e festività, esportare e importare, impianti, utenti.
+
+Ogni permesso mostra le sue sezioni: togliendo la spunta la sezione sparisce dal menu e il server rifiuta i suoi dati. Impostazioni compare a chi può esportare e importare, configurare gli impianti o gestire gli utenti. Dopo l'accesso l'utente arriva sulla prima sezione che gli è permessa: con il solo registro entra direttamente nel Registro. Deve restare sempre almeno un amministratore.
 
 ## Home Assistant
 

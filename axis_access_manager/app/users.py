@@ -10,11 +10,12 @@ from .db import Database
 
 # Permesso → descrizione mostrata nella pagina Utenti
 PERMISSIONS = {
-    "persone": "Vedere persone e tessere",
+    "stato": "Vedere cruscotto, porte e notifiche",
+    "persone": "Vedere persone, tessere e tipologie",
     "persone_modifica": "Registrare, modificare, sospendere ed eliminare persone e tessere",
     "registro": "Vedere il registro accessi e le istantanee",
-    "regole": "Vedere tipologie, gruppi, fasce orarie e festività",
-    "regole_modifica": "Modificare tipologie, gruppi, fasce orarie e festività",
+    "regole": "Vedere fasce orarie e festività",
+    "regole_modifica": "Modificare tipologie, fasce orarie e festività",
     "import_export": "Esportare e importare file CSV",
     "impianti": "Configurare controller, porte, citofoni e telecamere e programmare il controller",
     "utenti": "Gestire gli utenti dell'app e vedere le attività (amministratore)",
@@ -26,15 +27,20 @@ IMPLIED = {
     "regole_modifica": ["regole"],
 }
 
+# Ogni permesso mostra le sue pagine nel menu: senza "stato" spariscono cruscotto, porte e notifiche
 ROLES = {
     "amministratore": ("Amministratore", list(PERMISSIONS)),
-    "operatore": ("Operatore", ["persone", "persone_modifica", "registro", "regole", "import_export"]),
-    "consultazione": ("Consultazione", ["persone", "registro", "regole"]),
-    "solo_stato": ("Solo Stato", []),
+    "operatore": ("Operatore", ["stato", "persone", "persone_modifica", "registro", "regole", "import_export"]),
+    "tessere": ("Tessere", ["persone", "persone_modifica", "regole"]),
+    "consultazione": ("Consultazione", ["stato", "persone", "registro", "regole"]),
+    "solo_registro": ("Solo Registro", ["registro"]),
+    "solo_stato": ("Solo Stato", ["stato"]),
+    "nessun_accesso": ("Nessun Accesso", []),
 }
 
 ADMIN = "utenti"
 LOCAL_USER = "locale"
+SETTING_STATUS_ADDED = "perm_stato_added"
 
 
 class UserError(Exception):
@@ -105,6 +111,21 @@ class UserDirectory:
                 row = self.db.get_app_user(username)
             self._touch(username, display_name, row)
         return AppUser(row["username"], row["name"] or display_name, set(row["perms"]))
+
+    def add_status_permission(self) -> int:
+        """Una volta sola: "stato" agli utenti creati prima della 0.11, che vedevano sempre cruscotto e porte."""
+        if self.db.get_setting(SETTING_STATUS_ADDED):
+            return 0
+        changed = 0
+        with self._lock:
+            for row in self.db.list_app_users():
+                if "stato" not in row["perms"]:
+                    self.db.save_app_user(row["username"], row["name"], normalize_perms(row["perms"] + ["stato"]))
+                    changed += 1
+            self.db.set_setting(SETTING_STATUS_ADDED, "1")
+        if changed:
+            self.db.add_audit("sistema", "permesso Stato aggiunto agli utenti esistenti", f"{changed} utenti")
+        return changed
 
     def _touch(self, username: str, display_name: str, row: dict) -> None:
         # Al massimo una scrittura al minuto per utente
