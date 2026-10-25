@@ -67,7 +67,7 @@ A sinistra i lettori, a destra le porte del controller, uniti da un filo per ogn
 
 Le modifiche restano in sospeso, con il filo arancione tratteggiato, finché non premi **Salva**; Scarta le annulla. Se lasci la pagina con modifiche non salvate l'app chiede se salvarle o scartarle.
 
-Sull'Axis un collegamento è un lettore dentro un **punto di accesso** della porta, che ha la sua direzione: lo schema sposta i lettori tra i punti di accesso già presenti sul controller, senza crearne di nuovi. Se una porta non ha un punto di accesso nella direzione scelta, va creato dalla pagina web del controller. Spegnere un collegamento spegne il suo punto di accesso, quindi vale per tutti i lettori che lo usano (l'app lo dice).
+Sull'Axis un collegamento è un lettore dentro un **punto di accesso** della porta, che ha la sua direzione: lo schema sposta i lettori tra i punti di accesso già presenti sul controller, senza crearne di nuovi. Nel menu Direzione compaiono solo le direzioni che la porta ha già sul controller (sull'A1210 di prova c'è solo l'ingresso). La creazione di nuovi punti di accesso dall'app arriverà in una versione successiva: la pagina web dell'A1210 non la permette. Spegnere un collegamento spegne il suo punto di accesso, quindi vale per tutti i lettori che lo usano (l'app lo dice).
 
 ### Porte, lettori e storico
 

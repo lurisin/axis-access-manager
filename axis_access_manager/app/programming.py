@@ -265,7 +265,7 @@ class ProgrammingService:
                     where = DIRECTIONS.get(direction, "senza direzione").lower()
                     raise ServiceError(
                         f"sul controller la porta {doors[door]} non ha un punto di accesso in {where}: "
-                        "crealo dalla pagina web del controller"
+                        "scegli una direzione che la porta ha già"
                     )
                 point = next((p for p in choices if reader in wanted[p["token"]]), None) or next(
                     (p for p in choices if any(i.get("IdPoint") == reader for i in p.get("IdPointDevice") or [])),

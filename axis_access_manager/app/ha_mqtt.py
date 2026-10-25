@@ -39,6 +39,20 @@ EVENT_TYPES = {
 }
 
 COMMANDS = {"apri": False, "apri_lungo": True}
+# Eventi che aggiornano il sensore Ultimo Accesso
+ACCESS_KINDS = ("concesso", "negato", "sconosciuta", "lettura", "apertura_remota")
+
+
+def access_payload(row: dict) -> dict:
+    """Stato del sensore Ultimo Accesso per un evento del registro."""
+    remote = row.get("kind") == "apertura_remota"
+    return {
+        "persona": row.get("person_name") or ((row.get("source") or "Apertura Remota") if remote else ""),
+        "tessera": row.get("card") or "",
+        "esito": EVENT_TYPES.get(row.get("kind", ""), ""),
+        "dettaglio": row.get("detail") or "",
+        "ora": row.get("ts") or "",
+    }
 
 
 def parse_command(command: str) -> tuple[bool, str] | None:
@@ -72,7 +86,9 @@ class HaBridge:
         self.last_topic = f"{base}/ultimo"
         self.event_topic = f"{base}/evento"
         self.command_topic = f"{base}/comando"
-        self.last_access: dict = {}
+        # Dal registro, così dopo un riavvio il sensore non torna a "nessuno"
+        last = db.list_events(kind=",".join(ACCESS_KINDS), limit=1)
+        self.last_access: dict = access_payload(last[0]) if last else {}
 
     @property
     def enabled(self) -> bool:
@@ -284,12 +300,6 @@ class HaBridge:
             "ora": row.get("ts") or "",
         }
         await self.monitor.publish(self.event_topic, json.dumps(payload))
-        if row.get("kind") in ("concesso", "negato", "sconosciuta", "lettura", "apertura_remota"):
-            self.last_access = {
-                "persona": payload["persona"] or (payload["origine"] if row.get("kind") == "apertura_remota" else ""),
-                "tessera": payload["tessera"],
-                "esito": event_type,
-                "dettaglio": payload["dettaglio"],
-                "ora": payload["ora"],
-            }
+        if row.get("kind") in ACCESS_KINDS:
+            self.last_access = access_payload(row)
             await self.monitor.publish(self.last_topic, json.dumps(self.last_access), retain=True)

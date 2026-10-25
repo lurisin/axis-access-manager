@@ -1942,7 +1942,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     const token = door.dataset.door;
     const dirs = directionsOf(token);
     if (pending.some((l) => l.reader === selected && l.door === token)) toast("Lettore e porta sono già collegati: usa l'ingranaggio sul filo");
-    else if (!dirs.length) toast("Sul controller questa porta non ha punti di accesso: vanno creati dalla pagina web del controller", true);
+    else if (!dirs.length) toast("Sul controller questa porta non ha punti di accesso: per ora l'app collega solo a punti di accesso già programmati", true);
     else {
       const direction = dirs.includes("in") ? "in" : dirs[0];
       const same = pending.find((l) => l.door === token && l.direction === direction);
