@@ -1,5 +1,5 @@
 name: Axis Access Manager
-version: "0.3.0"
+version: "0.3.1"
 slug: axis_access_manager
 description: Gestione tessere e controllo accessi per il controller Axis A1210
 url: https://github.com/lurisin/axis-access-manager
@@ -28,6 +28,10 @@ options:
   snapshot_camera: ""
   snapshot_on_granted: false
   readonly_users: []
+  intercom_name: ""
+  intercom_open_door: false
+  intercom_relay: 1
+  intercom_mqtt_prefix: hmd
   log_level: info
 schema:
   a1210_host: str
@@ -49,4 +53,8 @@ schema:
   snapshot_on_granted: bool
   readonly_users:
     - str
+  intercom_name: str?
+  intercom_open_door: bool
+  intercom_relay: int(1,2)
+  intercom_mqtt_prefix: str
   log_level: list(debug|info|warning|error)

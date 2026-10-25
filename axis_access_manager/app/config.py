@@ -47,6 +47,10 @@ class Settings:
     snapshot_camera: str = ""
     snapshot_on_granted: bool = False
     readonly_users: tuple[str, ...] = ()
+    intercom_name: str = ""
+    intercom_open_door: bool = False
+    intercom_relay: int = 1
+    intercom_mqtt_prefix: str = "hmd"
 
 
 def normalize_host(value: str) -> str:
@@ -110,6 +114,10 @@ def parse_options(options: dict) -> Settings:
         snapshot_camera=(options.get("snapshot_camera") or "").strip(),
         snapshot_on_granted=bool(options.get("snapshot_on_granted", False)),
         readonly_users=tuple(u.lower() for u in _string_list(options.get("readonly_users"))),
+        intercom_name=(options.get("intercom_name") or "").strip(),
+        intercom_open_door=bool(options.get("intercom_open_door", False)),
+        intercom_relay=int(options.get("intercom_relay") or 1),
+        intercom_mqtt_prefix=(options.get("intercom_mqtt_prefix") or "hmd").strip().strip("/"),
     )
 
 

@@ -20,6 +20,10 @@ Gestione delle tessere e degli accessi per il controller Axis A1210, dentro Home
 | `snapshot_camera` | Facoltativa: entità `camera.` da cui salvare le istantanee |
 | `snapshot_on_granted` | Salva l'istantanea anche sugli accessi concessi |
 | `readonly_users` | Nomi utente di Home Assistant che possono solo consultare |
+| `intercom_name` | Nome del citofono Hikvision come scritto nelle opzioni dell'add-on Hikvision Doorbell. Vuoto = citofono non collegato |
+| `intercom_open_door` | Se attivo, "Apri" dall'app Hik-Connect o dal monitor apre la porta Axis (predefinito: disattivato) |
+| `intercom_relay` | Relè del citofono che corrisponde al tasto Apri (1 o 2, di solito 1) |
+| `intercom_mqtt_prefix` | Prefisso dei topic dell'add-on Hikvision Doorbell (predefinito `hmd`) |
 
 ## Sezioni
 
@@ -80,6 +84,25 @@ File con separatore `;` o `,` e intestazione facoltativa: `nome; tessera; gruppo
 ## Eventi MQTT dell'A1210
 
 Per il registro servono gli eventi **AccessControl** (accesso concesso, negato, tessera sconosciuta). Se in Impostazioni la voce "Eventi AccessControl" resta gialla dopo il passaggio di una tessera, aggiungili al filtro eventi del client MQTT dell'A1210.
+
+## Citofono Hikvision
+
+L'add-on legge gli eventi del citofono dall'add-on **Hikvision Doorbell**, che li pubblica sullo stesso broker MQTT.
+Non parla direttamente con il citofono.
+
+- **Chiamate nel log**: "ha suonato", "risposta dopo N s", "nessuna risposta", "chiamata chiusa"
+  (con l'istantanea, se `snapshot_camera` è impostata).
+- **Apri dal citofono**: quando si preme Apri sull'app Hik-Connect o sul monitor (in futuro anche dal centralino VoIP),
+  il citofono attiva il suo relè e lo segnala. L'add-on manda allora all'A1210 **una sola apertura a tempo**,
+  come il pulsante Apri: solo a serratura bloccata e al massimo una ogni 5 secondi.
+  Nel log compare come apertura remota con fonte "citofono".
+- Le aperture fatte con tessere, PIN o volti salvati sul citofono **non** vengono inoltrate: chi può entrare lo decide solo l'A1210.
+- Il relè del citofono non va collegato alla serratura.
+
+Topic letti (con `intercom_name` = `Citofono` e relè 1):
+`hmd/sensor/Citofono/Call-state/state`, `hmd/switch/Citofono/Door-1-relay/state` e `.../attributes`.
+La pagina Impostazioni mostra se il citofono è collegato e l'ora dell'ultimo messaggio ricevuto.
+Se il citofono usa un firmware recente senza evento di chiamata, attiva `call_state_poll` nell'add-on Hikvision Doorbell.
 
 ## Sicurezza
 

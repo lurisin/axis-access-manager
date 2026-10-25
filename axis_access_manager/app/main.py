@@ -20,6 +20,7 @@ from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
 from .ha import HomeAssistant
 from .ha_mqtt import COMMANDS, HaBridge
+from .intercom import IntercomBridge, IntercomSettings
 from .rules_service import RulesService
 from .service import AccessService, ServiceError
 from .transfer import events_csv, import_persons, persons_csv
@@ -222,6 +223,7 @@ def create_app(
                 "event_retention_days": cfg.event_retention_days,
                 "readonly_users": list(cfg.readonly_users),
             },
+            "intercom": _intercom_status(state.intercom),
         }
 
     @app.get("/api/summary")
@@ -515,6 +517,15 @@ def _wire(app: FastAPI) -> None:
 
     service.after_event = after_event
     service.on_change = on_change
+    state.intercom = None
+    if cfg.intercom_name:
+        state.intercom = IntercomBridge(
+            IntercomSettings(cfg.intercom_name, cfg.intercom_open_door, cfg.intercom_relay, cfg.intercom_mqtt_prefix),
+            log=service.log_event,
+            open_door=lambda source: service.open_door(False, source),
+        )
+        for topic in state.intercom.topics:
+            monitor.extra_subscriptions[topic] = state.intercom.handle
     if cfg.ha_integration:
         monitor.will = bridge.will()
         monitor.on_connect = bridge.on_connect
@@ -534,6 +545,19 @@ def _wire(app: FastAPI) -> None:
     else:
         # Rimuove le entità pubblicate in precedenza
         monitor.on_connect = bridge.on_connect
+
+
+def _intercom_status(intercom: IntercomBridge | None) -> dict:
+    if intercom is None:
+        return {"configured": False}
+    return {
+        "configured": True,
+        "name": intercom.settings.name,
+        "open_door": intercom.settings.open_door,
+        "topics": intercom.topics,
+        "call_state": intercom.call_state,
+        "last_message_at": intercom.last_message_at,
+    }
 
 
 def _now() -> str:

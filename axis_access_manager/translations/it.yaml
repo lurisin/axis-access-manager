@@ -48,5 +48,17 @@ configuration:
   readonly_users:
     name: Utenti in sola lettura
     description: Nomi utente di Home Assistant che possono consultare ma non modificare né aprire la porta
+  intercom_name:
+    name: Nome del citofono (facoltativo)
+    description: Lo stesso nome dato al citofono nelle opzioni dell'add-on Hikvision Doorbell, ad esempio "Citofono". Vuoto = citofono non collegato
+  intercom_open_door:
+    name: "Apri" dal citofono apre la porta
+    description: Quando si apre dall'app Hik-Connect o dal monitor, l'add-on manda all'A1210 un'apertura a tempo (mai uno sblocco permanente)
+  intercom_relay:
+    name: Relè del citofono
+    description: Quale relè del citofono corrisponde al tasto Apri (di solito 1)
+  intercom_mqtt_prefix:
+    name: Prefisso MQTT del citofono
+    description: Prefisso dei topic dell'add-on Hikvision Doorbell; lascia hmd se non l'hai cambiato
   log_level:
     name: Livello di log

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1
+
+- Citofono Hikvision (tramite l'add-on Hikvision Doorbell): le chiamate entrano nel log (ha suonato, risposta, nessuna risposta).
+- Facoltativo: "Apri" dall'app Hik-Connect o dal monitor apre la porta Axis con una sola apertura a tempo; mai uno sblocco permanente.
+- Nuove opzioni: nome del citofono, inoltro dell'apertura, relè, prefisso MQTT.
+
 ## 0.3.0
 
 - Nuova interfaccia: cruscotto con accessi del giorno, grafico della settimana e avvisi; navigazione laterale (in basso sul telefono); tema chiaro e scuro.
