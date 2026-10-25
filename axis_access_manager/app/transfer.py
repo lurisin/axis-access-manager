@@ -163,8 +163,9 @@ def _changes(item: dict, person: dict, card: dict, group: str, category: dict | 
     if category and category["id"] != person.get("category_id"):
         changes["tipologia"] = category
     labels = {
-        "gruppo": lambda v: f"gruppo {names.get(card.get('access_profile'), card.get('access_profile') or '—')} → "
-        f"{names.get(v, v)}",
+        "gruppo": lambda v: (
+            f"gruppo {names.get(card.get('access_profile'), card.get('access_profile') or '—')} → {names.get(v, v)}"
+        ),
         "valida_dal": lambda v: f"valida dal {_local(card.get('valid_from') or '') or '—'} → {_local(v) or '—'}",
         "valida_al": lambda v: f"valida al {_local(card.get('valid_to') or '') or '—'} → {_local(v) or '—'}",
         "ditta": lambda v: f"ditta {person.get('company') or '—'} → {v or '—'}",

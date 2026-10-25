@@ -72,7 +72,7 @@ Restano solo quelle tecniche:
   - Allarmi ed eventi restano per 24 ore. I problemi di collegamento restano finché non si risolvono, e se tornano si ripresentano.
   - Quali tipi sono attivi lo sceglie l'amministratore in Impostazioni → Notifiche.
 - **Regole**: fasce orarie e festività (vedi sotto).
-- **Impianti**: controller, schema lettori ↔ porte, porte con citofono e telecamera, strutture e aree, programmazione del controller (vedi sotto).
+- **Impianti**: controller, schema lettori ↔ porte, porte con citofono e telecamera, strutture e aree, programmazione del controller e backup (vedi sotto).
 - **Impostazioni**: solo l'applicazione, in fondo al menu insieme a Notifiche e all'utente collegato (che per l'amministratore apre la gestione degli utenti). Generale (Home Assistant, opzioni dell'add-on, esportazione e importazione CSV) e, per gli amministratori, **Notifiche**, **Utenti** e **Attività**. Lo stato di controller, porte, eventi MQTT e citofoni è nella scheda Stato del controller.
 
 **L'app non apre la porta**: l'apertura è nei pulsanti di Home Assistant, da mettere nelle dashboard, e passa comunque dall'add-on con i suoi controlli di sicurezza.
@@ -84,8 +84,9 @@ Il controller resta la fonte di verità: all'avvio e ogni 15 minuti l'add-on ril
 La pagina mostra i **controller** come schede, raggruppati per struttura e area, con modello, numero di porte e lettori e stato del collegamento.
 
 - **Ingranaggio → Connessione**: nome, struttura e area, descrizione della posizione (es. "quadro sotto la scala"), indirizzo, utente, password (non viene mai mostrata, lasciala vuota per non cambiarla), prefisso MQTT e verifica del certificato. Con **Prova Collegamento** controlli i dati prima di salvarli. Salvando, l'add-on si ricollega subito senza riavvio.
-- **Scheda del controller**: la configurazione di lettori e porte, in cinque schede: Schema, Porte, Lettori, Stato e Storico Modifiche (vedi sotto). **Stato** mostra se il controller risponde (modello, firmware, tessere, ultima sincronizzazione), lo stato delle sue porte, gli eventi MQTT ricevuti e i citofoni; funziona anche quando il controller non risponde.
+- **Scheda del controller**: la configurazione di lettori e porte, nelle schede Schema, Porte, Lettori, Telecamere, Videocitofoni, Stato, Storico Modifiche e Backup (vedi sotto). **Stato** mostra se il controller risponde (modello, firmware, tessere, ultima sincronizzazione), lo stato delle sue porte, gli eventi MQTT ricevuti e i citofoni; funziona anche quando il controller non risponde.
 - **Strutture e Aree**: dove si trovano i controller. Crei strutture (Teatro Eliseo, Hotel Giulia, Villa 1…) e al loro interno aree (Via Consulta, Primo Piano…); poi nella Connessione del controller scegli la sua area. Porte e lettori del controller la ereditano.
+- **Backup**: salvataggio, confronto e ripristino dei dati dell'app e della configurazione dei controller (vedi Backup dell'app). Ogni controller ha anche la sua scheda Backup con lo storico della sola configurazione.
 - Per ora l'add-on gestisce un controller. Pagine e dati sono già organizzati per averne di più.
 
 ### Schema lettori ↔ porte
@@ -168,7 +169,7 @@ Gli utenti sono quelli di Home Assistant, riconosciuti dall'app. In Impostazioni
 | Solo Stato | Cruscotto, porte e notifiche |
 | Nessun Accesso | Nessuna sezione: l'utente vede solo un avviso |
 
-Permessi singoli: stato (cruscotto, porte e notifiche), vedere persone e tipologie, modificare persone e tessere, registro, vedere fasce orarie e festività, modificare tipologie, fasce e festività, esportare e importare, impianti, utenti.
+Permessi singoli: stato (cruscotto, porte e notifiche), vedere persone e tipologie, modificare persone e tessere, registro, vedere fasce orarie e festività, modificare tipologie, fasce e festività, esportare e importare, impianti, backup (vedere, creare e confrontare; ripristinare ed eliminare restano agli amministratori), utenti.
 
 Ogni permesso mostra le sue sezioni: togliendo la spunta la sezione sparisce dal menu e il server rifiuta i suoi dati. Impostazioni compare a chi può esportare e importare, configurare gli impianti o gestire gli utenti. Dopo l'accesso l'utente arriva sulla prima sezione che gli è permessa: con il solo registro entra direttamente nel Registro. Deve restare sempre almeno un amministratore.
 
@@ -247,8 +248,27 @@ Se il citofono usa un firmware recente senza evento di chiamata, attiva `call_st
 - **Controller resettato o sostituito.** L'app memorizza numero di serie, modello, firmware e impronta del certificato del controller. Se all'indirizzo risponde un apparecchio diverso, smette di scrivere e di rileggere le tessere finché un amministratore non conferma il cambio nella pagina del controller.
 - **Tessere non presenti sul controller.** Le tessere che spariscono dal controller non vengono cancellate dall'app: restano in Persone con l'etichetta "Non Sul Controller", da riscrivere o togliere.
 - **Eventi persi.** Se Mosquitto, Home Assistant o l'add-on sono fermi, gli accessi di quel periodo vengono recuperati dal registro interno dell'A1210 (fino a 30.000 eventi, al massimo gli ultimi 7 giorni) appena il collegamento torna.
-- **Orologio.** Ogni 30 secondi l'app confronta l'ora del controller con quella di Home Assistant e segnala uno scarto oltre un minuto. Imposta un server NTP nel controller.
+- **Orologio.** Ogni 5 minuti l'app confronta l'ora del controller con quella di Home Assistant. Se il controller è sincronizzato via NTP l'ora giusta è la sua e uno scarto oltre un minuto segnala l'orologio di Home Assistant; altrimenti il guasto è "Orologio del Controller". Imposta un server NTP nel controller.
 - **Database.** Prima di ogni aggiornamento dell'add-on si fa una copia del database in `copie_database` (le ultime 3). Prima di ogni backup di Home Assistant si prepara una copia coerente in `copia_backup`; se all'avvio il database risultasse danneggiato, l'add-on riparte da quella.
+
+## Backup dell'app
+
+In **Impianti → Backup** (con il permesso Backup o da amministratore).
+
+- **Cosa contiene.** I **Dati Comuni**: persone, tessere, tipologie con le regole, fasce orarie, festività, strutture e aree, utenti dell'app e impostazioni. Poi la **configurazione di ogni controller**: porte con nomi e tempi, lettori, punti di accesso e schema, profili di accesso, ingressi, collegamento MQTT e dati dell'apparecchio. Le password dei controller non si salvano: dopo un ripristino completo vanno reinserite.
+- **Dove.** Nella cartella dell'add-on (`backup`), quindi entrano nei backup di Home Assistant se includono l'add-on. Tienine una copia fuori sede (NAS o cloud). Ogni parte è un file compresso e, se non è cambiata dal backup precedente, non si scrive di nuovo: cento backup senza modifiche occupano quanto uno.
+- **Crea Backup Ora**, con un nome facoltativo ("Prima dei lavori al piano 2"). Ogni riga dell'elenco riassume cosa è cambiato dal backup precedente.
+- **Confronta** mostra le differenze con il backup precedente, con lo stato attuale o con un altro backup, sezione per sezione.
+- **Ripristina** (solo amministratori) riporta com'erano, a scelta, **Tipologie**, **Persone e Tessere**, **Porte e Lettori**. Prima di cambiare qualcosa la finestra **Cosa Cambierà** elenca ogni modifica con una spunta:
+  - persone eliminate: si ricreano con le loro tessere, tipologia e accesso;
+  - persone cambiate: tornano com'erano (dati, tipologia, tessere con accesso, validità e stato);
+  - persone, tessere e tipologie aggiunte dopo il backup: si tolgono solo se le spunti, perché di solito sono lavoro buono fatto nel frattempo;
+  - una tessera che oggi appartiene a un'altra persona non si sposta;
+  - tempi della porta oltre i limiti della serratura (apertura 30 s, apertura estesa 60 s) non si riscrivono;
+  - una porta che non c'è più sul controller non si ricrea: servirà il ripristino completo (0.20).
+- **Prima del Ripristino.** Prima di ogni ripristino l'app crea un backup dello stato attuale: per annullare, ripristina quello.
+- **Blocca** tiene il backup finché non lo sblocchi; un backup bloccato non si elimina. **Elimina** è solo per gli amministratori.
+- **Controller che non risponde.** Il backup prende la configurazione di quel controller dal backup precedente, si segna **Incompleto** e compare la notifica "Backup Incompleto" tra i guasti, finché un backup successivo non riesce.
 
 ## Sicurezza
 

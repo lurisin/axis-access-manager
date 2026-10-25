@@ -544,9 +544,10 @@ class RulesService:
         if names:
             raise ServiceError(f"è usata dalle tipologie {', '.join(names)}: toglila prima dalle loro righe di accesso")
 
-    async def save_category(self, category_id: int | None, fields: dict, user: str) -> dict:
+    async def save_category(self, category_id: int | None, fields: dict, user: str, new_id: int | None = None) -> dict:
         """Crea o modifica una tipologia e il suo profilo sul controller. Se il profilo era in comune con altri,
-        la tipologia ne riceve uno suo e le sue persone passano al nuovo: gli altri non cambiano."""
+        la tipologia ne riceve uno suo e le sue persone passano al nuovo: gli altri non cambiano.
+        new_id: per una tipologia rimessa da un backup, il numero che aveva (se è libero)."""
         values = self._category_fields(fields)
         rules = self._check_access_rules(fields.get("rules"))
         other = self.db.category_by_name(values["name"])
@@ -567,11 +568,12 @@ class RulesService:
                 base = {**copy.deepcopy(base), "token": ""}
             profile = await self._build_profile(values, rules, base)
             token = await self._write_profile(profile)
-            category_id = self.db.save_category(category_id, {**values, "group_token": token})
+            category_id = self.db.save_category(category_id, {**values, "group_token": token}, new_id)
             self.db.set_category_rules(category_id, rules)
             if self.default_category == category_id:
                 self.db.set_setting("default_group", token)
-            self.db.add_audit(user, "tipologia modificata" if old else "tipologia creata", values["name"])
+            action = "tipologia modificata" if old else "tipologia ricreata da backup" if new_id else "tipologia creata"
+            self.db.add_audit(user, action, values["name"])
         moved = 0
         if old_token and old_token != token:
             for person in self.db.persons_of_category(category_id):

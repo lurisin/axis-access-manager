@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
@@ -18,6 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .backup import BACKUP_DIR, BackupError, BackupService
 from .backup_copy import ha_copy_path, update_copies
 from .config import Settings, load_settings, normalize_host, resolve_mqtt
 from .db import DB_PATH, Database, local_day_start
@@ -29,6 +31,7 @@ from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
 from .notifications import FAULT_TYPES, NotificationService
 from .programming import INPUT_ROLES, ProgrammingService
+from .restore import RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import RulesService
 from .service import (
     CASING_OPEN,
@@ -289,6 +292,24 @@ class HardwareAccessPointIn(BaseModel):
     enabled: bool | None = None
 
 
+class BackupIn(BaseModel):
+    name: str = Field("", max_length=200)
+
+
+class BackupLockIn(BaseModel):
+    locked: bool
+
+
+class RestorePreviewIn(BaseModel):
+    sections: list[str] = Field(default_factory=lambda: list(RESTORE_SECTIONS))
+    # Solo una parte (per esempio "controller:1" dalla scheda Backup del controller)
+    part: str = ""
+
+
+class RestoreIn(RestorePreviewIn):
+    keys: list[str] = Field(default_factory=list, max_length=5000)
+
+
 class AppUserIn(BaseModel):
     username: str = ""
     name: str = ""
@@ -355,6 +376,8 @@ def create_app(
         app.state.installation.ensure_default_site()
         app.state.installation.update_controller_event_names()
         app.state.notifications = NotificationService(app.state.db)
+        db_folder = app.state.db.path.parent if app.state.db.path else Path(tempfile.mkdtemp())
+        app.state.backups = BackupService(app.state.db, db_folder / BACKUP_DIR, __version__)
         app.state.ha = home_assistant or HomeAssistant()
         app.state.snapshot_errors = {}
         # Nomi delle telecamere di Home Assistant (entity_id → friendly name), riletti ogni CAMERA_NAMES_TTL
@@ -1209,6 +1232,75 @@ def create_app(
 
     # Utenti dell'app
 
+    # Backup: Dati Comuni e configurazione di ogni controller
+
+    @app.get("/api/backups", dependencies=[need("backup")])
+    async def list_backups(request: Request) -> dict:
+        state = request.app.state
+        listing = await asyncio.to_thread(state.backups.listing)
+        return {**listing, "can_restore": current_user(request).can("utenti"), "sections": RESTORE_SECTIONS}
+
+    @app.post("/api/backups", dependencies=[need("backup")])
+    async def create_backup(body: BackupIn, request: Request) -> dict:
+        state = request.app.state
+        return await state.backups.create("manuale", body.name, request_user(request), _backup_clients(state))
+
+    @app.get("/api/backups/{backup_id}/compare", dependencies=[need("backup")])
+    async def compare_backup(request: Request, backup_id: str, other: str = "precedente", part: str = "") -> dict:
+        """Differenze con il backup precedente, con lo stato attuale ("attuale") o con un altro backup."""
+        state = request.app.state
+        return await state.backups.compare(backup_id, other, _backup_clients(state), part or None)
+
+    @app.put("/api/backups/{backup_id}/lock", dependencies=[need("backup")])
+    async def lock_backup(backup_id: str, body: BackupLockIn, request: Request) -> dict:
+        return await request.app.state.backups.set_locked(backup_id, body.locked, request_user(request))
+
+    @app.delete("/api/backups/{backup_id}")
+    async def delete_backup(backup_id: str, request: Request, user: Admin) -> dict:
+        await request.app.state.backups.delete(backup_id, user.label)
+        return {"ok": True}
+
+    @app.post("/api/backups/{backup_id}/preview")
+    async def preview_restore(backup_id: str, body: RestorePreviewIn, request: Request, user: Admin) -> dict:
+        """Cosa cambierebbe ripristinando le sezioni scelte: una riga da spuntare per ogni oggetto diverso."""
+        state = request.app.state
+        _, saved = await asyncio.to_thread(state.backups.load, backup_id)
+        # Un controller che non risponde non ha la sua parte nello stato attuale: porte e lettori restano bloccati
+        current, _ = await state.backups.snapshot(_backup_clients(state))
+        items = _restore_plan(state, saved, current, body)
+        return {"items": public(items), "sections": RESTORE_SECTIONS, "paused": state.controller.paused}
+
+    @app.post("/api/backups/{backup_id}/restore")
+    async def restore_backup(backup_id: str, body: RestoreIn, request: Request, user: Admin) -> dict:
+        """Ripristina le righe scelte. Prima si fa un backup dello stato attuale: anche il ripristino si annulla."""
+        state = request.app.state
+        if state.controller.paused:
+            raise ServiceError(f"scritture sospese: {state.controller.paused}")
+        manifest, saved = await asyncio.to_thread(state.backups.load, backup_id)
+        if not body.keys:
+            raise ServiceError("scegli almeno una riga da ripristinare")
+        label = manifest.get("name") or _local_text(manifest["created_at"])
+        before = await state.backups.create(
+            "prima_ripristino", f"Prima del ripristino di {label}"[:80], user.label, _backup_clients(state)
+        )
+        _, current = await asyncio.to_thread(state.backups.load, before["id"])
+        stale = {k for k, info in before["parts"].items() if info.get("stale")}
+        current = {k: v for k, v in current.items() if k not in stale}
+        items = _restore_plan(state, saved, current, body)
+        runtime = Runtime(
+            state.db, state.service, state.rules, state.programming, (state.installation.primary or {}).get("id")
+        )
+        result = await apply(items, body.keys, runtime, user.label)
+        state.db.add_audit(
+            user.label,
+            "ripristino da backup",
+            f"{label}: {plural(len(result['applied']), 'modifica', 'modifiche')}"
+            + (f", {plural(len(result['failed']), 'non riuscita', 'non riuscite')}" if result["failed"] else ""),
+        )
+        if result.pop("reload"):
+            await reload_runtime(request.app)
+        return {**result, "backup_before": before["id"]}
+
     @app.get("/api/users", dependencies=[need("utenti")])
     async def users(request: Request) -> dict:
         return {
@@ -1463,6 +1555,7 @@ def _current_notifications(state) -> list[dict]:
         ],
         controllers=_controllers_health(state),
         missing=_missing_summary(state.db),
+        backup=state.backups.last_error(),
     )
 
 
@@ -1626,6 +1719,36 @@ def _controllers_health(state) -> list[dict]:
             }
         )
     return result
+
+
+def _backup_clients(state) -> dict[int, object]:
+    """Client con cui leggere ogni controller per il backup: quello in uso, e per gli altri quello del controllo."""
+    primary = state.installation.primary
+    clients: dict[int, object] = {}
+    for row in state.db.list_controllers():
+        if not row["host"]:
+            continue
+        clients[row["id"]] = (
+            state.controller if primary and row["id"] == primary["id"] else state.health.client_for(row)
+        )
+    return clients
+
+
+def _restore_plan(state, saved: dict, current: dict, body: RestorePreviewIn) -> list[dict]:
+    sections = [s for s in body.sections if s in RESTORE_SECTIONS]
+    if not sections:
+        raise BackupError("scegli cosa ripristinare")
+    primary = (state.installation.primary or {}).get("id")
+    if body.part and body.part != f"controller:{primary}":
+        raise BackupError("per ora si ripristinano porte e lettori solo del controller in uso")
+    return plan(saved, current, sections, primary)
+
+
+def _local_text(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value).astimezone().strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        return value
 
 
 def _missing_summary(db: Database) -> dict:

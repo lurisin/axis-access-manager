@@ -308,11 +308,14 @@ class Database:
         rows = self._query("SELECT * FROM persons WHERE axis_user_token = ?", (token,))
         return rows[0] if rows else None
 
-    def add_person(self, name: str, axis_user_token: str | None) -> int:
+    def add_person(
+        self, name: str, axis_user_token: str | None, person_id: int | None = None, created_at: str | None = None
+    ) -> int:
+        """person_id e created_at solo per rimettere una persona da un backup (stesso numero, se è libero)."""
         ts = now_iso()
         return self._execute(
-            "INSERT INTO persons (name, axis_user_token, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (name, axis_user_token, ts, ts),
+            "INSERT INTO persons (id, name, axis_user_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            (person_id, name, axis_user_token, created_at or ts, ts),
         )
 
     def rename_person(self, person_id: int, name: str) -> None:
@@ -503,7 +506,8 @@ class Database:
         rows = self._query("SELECT * FROM categories WHERE name = ?", (name,))
         return rows[0] if rows else None
 
-    def save_category(self, category_id: int | None, fields: dict) -> int:
+    def save_category(self, category_id: int | None, fields: dict, new_id: int | None = None) -> int:
+        """new_id: numero da usare per una tipologia nuova (rimessa da un backup), se è libero."""
         values = (fields["name"], fields["color"], fields["group_token"], fields["valid_days"], fields["description"])
         if category_id:
             self._execute(
@@ -512,8 +516,11 @@ class Database:
                 (*values, category_id),
             )
             return category_id
+        if new_id and self.get_category(new_id) is not None:
+            new_id = None
         return self._execute(
-            "INSERT INTO categories (name, color, group_token, valid_days, description) VALUES (?, ?, ?, ?, ?)", values
+            "INSERT INTO categories (id, name, color, group_token, valid_days, description) VALUES (?, ?, ?, ?, ?, ?)",
+            (new_id, *values),
         )
 
     def category_rules(self, category_id: int) -> list[dict]:
@@ -547,6 +554,9 @@ class Database:
 
     # Elementi nascosti e impostazioni dell'app
 
+    def all_hidden(self) -> list[dict]:
+        return self._query("SELECT kind, token FROM hidden_items")
+
     def hidden(self, kind: str) -> set[str]:
         return {row["token"] for row in self._query("SELECT token FROM hidden_items WHERE kind = ?", (kind,))}
 
@@ -555,6 +565,9 @@ class Database:
             self._execute("INSERT OR IGNORE INTO hidden_items (kind, token) VALUES (?, ?)", (kind, token))
         else:
             self._execute("DELETE FROM hidden_items WHERE kind = ? AND token = ?", (kind, token))
+
+    def all_settings(self) -> list[dict]:
+        return self._query("SELECT key, value FROM app_settings ORDER BY key")
 
     def get_setting(self, key: str, default: str = "") -> str:
         rows = self._query("SELECT value FROM app_settings WHERE key = ?", (key,))
