@@ -194,6 +194,11 @@
   .alert.info { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
   .alert b { display: block; }
   .alert .grow { flex: 1; }
+  .todo { margin-bottom: 16px; }
+  .todo .list .item .meta a { color: inherit; }
+  .all-ok { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding: 10px 16px; border-radius: var(--radius);
+            background: var(--ok-soft); color: var(--text); font-size: 14px; }
+  .all-ok svg.icon { width: 18px; height: 18px; fill: var(--ok); flex: none; }
   dl.props { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0; }
   dl.props dt { color: var(--muted); }
   dl.props dd { margin: 0; overflow-wrap: anywhere; }
@@ -737,37 +742,42 @@ async function viewDashboard(el) {
   let d, doors;
   try { [d, doors] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => [])]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   const t = d.today;
-  const alerts = [];
-  if (store.summary.configured === false) alerts.push(`<div class="alert info">${icon("cog")}<div class="grow"><b>Impianto da Configurare</b>${can("impianti") ? "Aggiungi il controller e le porte nella pagina Impianti." : "Chiedi a un amministratore di configurare il controller."}</div>${can("impianti") ? '<a class="btn small primary" href="#impianti">Impianti</a>' : ""}</div>`);
-  if (d.unknown_cards && can("persone")) alerts.push(`<div class="alert info">${icon("cardplus")}<div class="grow"><b>${plural(d.unknown_cards, "tessera da registrare", "tessere da registrare")}</b>
-    Sono state passate sul lettore ma non appartengono a nessuno.</div><a class="btn small" href="#da-registrare">Registra</a></div>`);
-  if (d.expiring.length) alerts.push(`<div class="alert">${icon("clock")}<div class="grow"><b>Tessere in Scadenza nei Prossimi 7 Giorni</b>
-    ${d.expiring.map((e) => `<a href="#persone/${e.id}">${esc(e.name)}</a> (${esc(fmtDateTime(e.valid_to))})`).join(", ")}</div></div>`);
-  if (store.summary.mqtt_connected === false && store.summary.configured !== false) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>Eventi Non in Arrivo</b>
-    Il collegamento MQTT non è attivo: registro e stato porta non si aggiornano.</div>${can("impianti") ? '<a class="btn small" href="#impianti/stato">Dettagli</a>' : ""}</div>`);
-  if (t.alarms) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>${plural(t.alarms, "allarme", "allarmi")} oggi</b>Porta forzata, aperta troppo a lungo o manomissione.</div>${can("registro") ? '<a class="btn small" href="#registro">Vedi</a>' : ""}</div>`);
-  const max = Math.max(1, ...d.week.map((w) => w.granted + w.denied + w.unknown));
+  // Cose da fare, in un solo riquadro: [tipo, icona, titolo, testo, link, etichetta del link]
+  const todo = [];
+  if (store.summary.configured === false) todo.push(["info", "cog", "Impianto da Configurare", can("impianti") ? "Aggiungi il controller e le porte." : "Chiedi a un amministratore di configurare il controller.", can("impianti") ? "#impianti" : "", "Impianti"]);
+  if (store.summary.mqtt_connected === false && store.summary.configured !== false) todo.push(["err", "alert", "Eventi Non in Arrivo", "Il collegamento MQTT non è attivo: registro e stato porta non si aggiornano.", can("impianti") ? "#impianti/stato" : "", "Dettagli"]);
+  if (t.alarms) todo.push(["err", "alert", `${plural(t.alarms, "Allarme", "Allarmi")} Oggi`, "Porta forzata, aperta troppo a lungo o manomissione.", can("registro") ? "#registro" : "", "Vedi"]);
+  if (d.unknown_cards && can("persone")) todo.push(["info", "cardplus", plural(d.unknown_cards, "Tessera da Registrare", "Tessere da Registrare"), "Passate sul lettore ma non ancora di nessuno.", "#da-registrare", "Registra"]);
+  if (d.expiring.length) todo.push(["warn", "clock", d.expiring.length === 1 ? "Tessera in Scadenza" : `${d.expiring.length} Persone con Tessere in Scadenza`,
+    d.expiring.slice(0, 3).map((e) => `${esc(e.name)} (${esc(fmtDateTime(e.valid_to))})`).join(", ") + (d.expiring.length > 3 ? ` e altre ${d.expiring.length - 3}` : ""),
+    d.expiring.length === 1 ? `#persone/${d.expiring[0].id}` : "#persone", "Apri"]);
+  const todoCard = todo.length
+    ? `<div class="card flush todo"><h2>Da Gestire<span class="spacer"></span><a class="small-text" href="#notifiche">Notifiche</a></h2><div class="list">${todo.map(([kind, ic, title, text, link, action]) => `
+        <div class="item"><div class="ev-icon k-${kind}">${icon(ic)}</div><div class="grow"><div class="title">${esc(title)}</div><div class="meta">${kind === "warn" ? text : esc(text)}</div></div>${link ? `<a class="btn small" href="${link}">${esc(action)}</a>` : ""}</div>`).join("")}</div></div>`
+    : `<div class="all-ok">${icon("check")}<span><b>Tutto in Ordine</b> · nessun allarme, tessera da registrare o scadenza vicina</span></div>`;
+  // Il diniego del controller conta già la tessera sconosciuta: nel grafico solo concessi e negati
+  const max = Math.max(1, ...d.week.map((w) => w.granted + w.denied));
   const chart = d.week.map((w) => {
-    const total = w.granted + w.denied + w.unknown;
+    const total = w.granted + w.denied;
     const h = (n) => `${(n / max) * 100}%`;
     const label = new Date(w.day + "T12:00:00").toLocaleDateString("it-IT", {weekday: "short"});
-    return `<div class="col" title="${esc(fmtDate(w.day + "T12:00:00"))}: ${w.granted} concessi, ${w.denied} negati, ${w.unknown} sconosciute">
+    return `<div class="col" title="${esc(fmtDate(w.day + "T12:00:00"))}: ${w.granted} concessi, ${w.denied} negati${w.unknown ? `, ${plural(w.unknown, "tessera sconosciuta", "tessere sconosciute")}` : ""}">
       <div class="num">${total || ""}</div>
-      <div class="bars"><div class="bar g" style="height:${h(w.granted)}"></div><div class="bar d" style="height:${h(w.denied)}"></div><div class="bar u" style="height:${h(w.unknown)}"></div></div>
+      <div class="bars"><div class="bar g" style="height:${h(w.granted)}"></div><div class="bar d" style="height:${h(w.denied)}"></div></div>
       <div class="lbl">${esc(label)}</div></div>`;
   }).join("");
   el.innerHTML = `
-    ${alerts.join("")}
+    ${todoCard}
     <div class="grid kpi" style="margin-bottom:16px">
-      <div class="card"><div class="label">Accessi Oggi</div><div class="value">${t.granted + t.remote}</div><div class="sub">${t.remote ? `di cui ${t.remote} aperture remote` : "con tessera"}${!t.granted && t.reads ? ` · ${t.reads} letture` : ""}</div></div>
-      <div class="card"><div class="label">Negati Oggi</div><div class="value" style="color:${t.denied + t.unknown ? "var(--warn)" : "inherit"}">${t.denied + t.unknown}</div><div class="sub">${t.unknown} tessere sconosciute</div></div>
-      <div class="card"><div class="label">Persone</div><div class="value">${d.persons}</div><div class="sub">${can("persone") ? '<a href="#persone">anagrafica</a>' : "registrate"}</div></div>
-      <div class="card"><div class="label">Tessere</div><div class="value">${d.cards}</div><div class="sub">${d.cards_suspended ? `${d.cards_suspended} sospese` : "tutte attive"}</div></div>
+      <div class="card"><div class="label">Accessi Oggi</div><div class="value">${t.granted + t.remote}</div><div class="sub">${t.remote ? `di cui ${plural(t.remote, "apertura remota", "aperture remote")}` : "con tessera"}${!t.granted && t.reads ? ` · ${plural(t.reads, "lettura", "letture")}` : ""}</div></div>
+      <div class="card"><div class="label">Negati Oggi</div><div class="value" style="color:${t.denied ? "var(--warn)" : "inherit"}">${t.denied}</div><div class="sub">${t.unknown ? `${plural(t.unknown, "tessera sconosciuta", "tessere sconosciute")}` : "nessuna tessera sconosciuta"}</div></div>
+      <div class="card"><div class="label">Allarmi Oggi</div><div class="value" style="color:${t.alarms ? "var(--err)" : "inherit"}">${t.alarms}</div><div class="sub">${t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme"}</div></div>
+      <div class="card"><div class="label">Persone</div><div class="value">${d.persons}</div><div class="sub">${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${d.cards_suspended} sospese` : ""}${can("persone") ? ' · <a href="#persone">anagrafica</a>' : ""}</div></div>
     </div>
     ${doors.length ? `<div class="row" style="margin:4px 0 10px"><h2 class="section-title" style="margin:0;flex:1">${doors.length > 1 ? "Porte" : "Porta"}</h2>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</div>${doorGroups(doors)}` : ""}
     <div class="grid two">
       <div class="card"><h2>Ultimi 7 Giorni</h2><div class="chart">${chart}</div>
-        <div class="legend"><span><i style="background:var(--ok)"></i>concessi</span><span><i style="background:var(--warn)"></i>negati</span><span><i style="background:var(--err)"></i>tessere sconosciute</span></div></div>
+        <div class="legend"><span><i style="background:var(--ok)"></i>concessi e aperture remote</span><span><i style="background:var(--warn)"></i>negati</span></div></div>
       ${can("registro") ? `<div class="card flush"><h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro Completo</a></h2>
         <div class="list compact" style="margin-top:8px" id="dash-events">${d.recent.length ? logRows(d.recent) : '<div class="empty">nessun evento registrato</div>'}</div></div>` : `<div class="card"><h2>Ultimi Eventi</h2><p class="muted" style="margin:0">Il tuo utente non ha il permesso di vedere il registro accessi.</p></div>`}
     </div>`;
