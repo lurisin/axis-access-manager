@@ -1,3 +1,4 @@
+import copy
 import itertools
 
 import pytest
@@ -17,6 +18,29 @@ class FakeController:
         self.door = "Locked"
         self.fail_set_credential = False
         self._ids = itertools.count(1)
+        self.access_points = [{"token": "ap-in", "Entity": "porta", "Name": "Ingresso"}]
+        self.schedules: dict[str, dict] = {
+            "standard_always": {"token": "standard_always", "Name": "", "Description": "", "ScheduleDefinition": ""},
+            "standard_office_hours": {"token": "standard_office_hours", "Name": "Office hours", "Description": ""},
+        }
+        self.profiles: dict[str, dict] = {
+            "profilo_sempre": {
+                "token": "profilo_sempre",
+                "Name": "Sempre",
+                "Description": "",
+                "Enabled": True,
+                "Schedule": [],
+                "AuthenticationProfile": [],
+                "AccessPolicy": [
+                    {
+                        "AccessPoint": "ap-in",
+                        "AuthorizationProfile": [],
+                        "Attribute": [],
+                        "Schedule": ["standard_always"],
+                    }
+                ],
+            }
+        }
 
     async def aclose(self):
         pass
@@ -73,6 +97,38 @@ class FakeController:
     async def access_door(self, door_token, extended=False):
         self.calls.append(("access_door", door_token, extended))
 
+    async def list_access_points(self):
+        return [dict(p) for p in self.access_points]
+
+    async def list_access_profiles(self):
+        return [copy.deepcopy(p) for p in self.profiles.values()]
+
+    async def get_access_profiles(self, tokens):
+        return [copy.deepcopy(self.profiles[t]) for t in tokens if t in self.profiles]
+
+    async def set_access_profile(self, profile):
+        token = profile.get("token") or f"profile-{next(self._ids)}"
+        self.calls.append(("set_access_profile", token))
+        self.profiles[token] = {**copy.deepcopy(profile), "token": token}
+        return token
+
+    async def remove_access_profile(self, token):
+        self.calls.append(("remove_access_profile", token))
+        self.profiles.pop(token, None)
+
+    async def list_schedules(self):
+        return [dict(s) for s in self.schedules.values()]
+
+    async def set_schedule(self, schedule):
+        token = schedule.get("token") or f"schedule-{next(self._ids)}"
+        self.calls.append(("set_schedule", token))
+        self.schedules[token] = {**schedule, "token": token}
+        return token
+
+    async def remove_schedule(self, token):
+        self.calls.append(("remove_schedule", token))
+        self.schedules.pop(token, None)
+
     def add_existing(self, user_token, name, card, enabled=True):
         """Utente e tessera creati fuori dall'add-on (ad esempio dagli script di HA)."""
         self.users[user_token] = {"token": user_token, "Name": name, "Description": "", "Attribute": []}
@@ -83,6 +139,7 @@ class FakeController:
             "Description": name,
             "Enabled": enabled,
             "IdData": [{"Name": "Card", "Value": card}],
+            "CredentialAccessProfile": [{"AccessProfile": "profilo_sempre", "ValidFrom": "", "ValidTo": ""}],
         }
         return token
 

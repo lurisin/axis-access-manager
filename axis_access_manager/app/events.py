@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -70,6 +70,47 @@ class EventMonitor:
     door_mode: str | None = None
     # Chiamata per ogni evento; retained=True per i messaggi conservati dal broker
     on_event: Callable[[Event, bool], None] | None = None
+    # Integrazione con Home Assistant: chiamata a ogni connessione, comandi ricevuti e messaggio di addio
+    on_connect: Callable[[aiomqtt.Client], Awaitable[None]] | None = None
+    command_topic: str = ""
+    on_command: Callable[[str], Awaitable[None]] | None = None
+    will: aiomqtt.Will | None = None
+    client: aiomqtt.Client | None = field(default=None, repr=False)
+    # Altri topic da seguire (anche con # e +): filtro → funzione(topic, payload, conservato dal broker)
+    extra_subscriptions: dict[str, Callable[[str, bytes, bool], None]] = field(default_factory=dict)
+    _tasks: set = field(default_factory=set, repr=False)
+
+    async def publish(self, topic: str, payload: str | bytes, retain: bool = False) -> bool:
+        """Pubblica se collegato; restituisce False se il broker non è disponibile."""
+        client = self.client
+        if client is None or not self.connected:
+            return False
+        try:
+            await client.publish(topic, payload, qos=1, retain=retain)
+        except aiomqtt.MqttError as err:
+            _LOGGER.warning("Pubblicazione su %s non riuscita: %s", topic, err)
+            return False
+        return True
+
+    def _dispatch_extra(self, topic: aiomqtt.Topic, payload: bytes, retained: bool = False) -> bool:
+        handled = False
+        for topic_filter, handler in self.extra_subscriptions.items():
+            if topic.matches(topic_filter):
+                handled = True
+                try:
+                    handler(topic.value, payload, retained)
+                except Exception:
+                    _LOGGER.exception("Errore nella gestione del messaggio %s", topic.value)
+        return handled
+
+    def _command(self, payload: bytes) -> None:
+        if self.on_command is None:
+            return
+        command = payload.decode(errors="replace").strip()
+        task = asyncio.get_running_loop().create_task(self.on_command(command))
+        # Tiene un riferimento finché il comando non è finito
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     def handle(self, topic: str, payload: bytes, retained: bool = False) -> None:
         if topic == f"{self.prefix}/stato":
@@ -106,18 +147,39 @@ class EventMonitor:
                     port=settings.port,
                     username=settings.username,
                     password=settings.password,
+                    will=self.will,
                 ) as client:
                     await client.subscribe(f"{self.prefix}/stato", qos=1)
                     await client.subscribe(f"{self.prefix}/eventi/#", qos=1)
+                    if self.command_topic:
+                        await client.subscribe(self.command_topic, qos=1)
+                    for topic_filter in self.extra_subscriptions:
+                        await client.subscribe(topic_filter, qos=1)
+                    self.client = client
                     self.connected = True
                     self.last_error = ""
                     _LOGGER.info("Collegato al broker MQTT %s:%s", settings.host, settings.port)
+                    if self.on_connect:
+                        try:
+                            await self.on_connect(client)
+                        except aiomqtt.MqttError:
+                            raise
+                        except Exception:
+                            _LOGGER.exception("Errore nella pubblicazione delle entità per Home Assistant")
                     async for message in client.messages:
                         payload = message.payload
                         if not isinstance(payload, bytes):
                             payload = str(payload).encode()
-                        self.handle(message.topic.value, payload, bool(message.retain))
+                        topic = message.topic.value
+                        if self.command_topic and topic == self.command_topic:
+                            if not message.retain:
+                                self._command(payload)
+                            continue
+                        if self._dispatch_extra(message.topic, payload, bool(message.retain)):
+                            continue
+                        self.handle(topic, payload, bool(message.retain))
             except aiomqtt.MqttError as err:
+                self.client = None
                 self.connected = False
                 self.last_error = str(err)
                 _LOGGER.warning("MQTT non disponibile: %s; riprovo tra %s s", err, RECONNECT_DELAY)

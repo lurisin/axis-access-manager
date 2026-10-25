@@ -1,4 +1,4 @@
-"""Database SQLite dell'add-on: anagrafica, tessere, eventi, tessere sconosciute, audit."""
+"""Database SQLite dell'add-on: anagrafica, tessere, regole, eventi, tessere sconosciute, audit."""
 
 from __future__ import annotations
 
@@ -45,6 +45,16 @@ CREATE TABLE IF NOT EXISTS unknown_cards (
     last_seen TEXT NOT NULL,
     count INTEGER NOT NULL DEFAULT 1
 );
+CREATE TABLE IF NOT EXISTS schedule_rules (
+    schedule_token TEXT PRIMARY KEY,
+    rules TEXT NOT NULL,
+    holidays INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS holidays (
+    day TEXT PRIMARY KEY,
+    name TEXT NOT NULL DEFAULT '',
+    yearly INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY,
     ts TEXT NOT NULL,
@@ -54,9 +64,25 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 """
 
+# Colonne aggiunte dopo la prima versione: (tabella, colonna, definizione)
+MIGRATIONS = [
+    ("cards", "access_profile", "TEXT NOT NULL DEFAULT ''"),
+    ("cards", "valid_from", "TEXT NOT NULL DEFAULT ''"),
+    ("cards", "valid_to", "TEXT NOT NULL DEFAULT ''"),
+    ("persons", "company", "TEXT NOT NULL DEFAULT ''"),
+    ("events", "snapshot", "TEXT NOT NULL DEFAULT ''"),
+]
+
 
 def now_iso() -> str:
     return datetime.now(tz=UTC).isoformat(timespec="seconds")
+
+
+def local_day_start(days_ago: int = 0, now: datetime | None = None) -> str:
+    """Mezzanotte locale di oggi (o di days_ago giorni fa), in UTC come i timestamp del log."""
+    local = (now or datetime.now(tz=UTC)).astimezone()
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_ago)
+    return midnight.astimezone(UTC).isoformat(timespec="seconds")
 
 
 class Database:
@@ -69,6 +95,10 @@ class Database:
         with self._lock:
             self._conn.execute("PRAGMA foreign_keys = ON")
             self._conn.executescript(SCHEMA)
+            for table, column, definition in MIGRATIONS:
+                columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+                if column not in columns:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
             self._conn.commit()
 
     def close(self) -> None:
@@ -119,6 +149,12 @@ class Database:
     def rename_person(self, person_id: int, name: str) -> None:
         self._execute("UPDATE persons SET name = ?, updated_at = ? WHERE id = ?", (name, now_iso(), person_id))
 
+    def update_person_details(self, person_id: int, company: str, notes: str) -> None:
+        self._execute(
+            "UPDATE persons SET company = ?, notes = ?, updated_at = ? WHERE id = ?",
+            (company, notes, now_iso(), person_id),
+        )
+
     def delete_person(self, person_id: int) -> None:
         self._execute("DELETE FROM persons WHERE id = ?", (person_id,))
 
@@ -151,18 +187,47 @@ class Database:
         )
         return rows[0] if rows else None
 
-    def add_card(self, person_id: int, number: str, axis_credential_token: str, enabled: bool = True) -> int:
+    def add_card(
+        self,
+        person_id: int,
+        number: str,
+        axis_credential_token: str,
+        enabled: bool = True,
+        access: dict | None = None,
+    ) -> int:
+        access = access or {}
         card_id = self._execute(
-            "INSERT INTO cards (person_id, number, enabled, axis_credential_token, created_at) VALUES (?, ?, ?, ?, ?)",
-            (person_id, number, int(enabled), axis_credential_token, now_iso()),
+            "INSERT INTO cards (person_id, number, enabled, axis_credential_token, created_at, "
+            "access_profile, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                person_id,
+                number,
+                int(enabled),
+                axis_credential_token,
+                now_iso(),
+                access.get("access_profile", ""),
+                access.get("valid_from", ""),
+                access.get("valid_to", ""),
+            ),
         )
         self.forget_unknown_card(number)
         return card_id
 
-    def update_card(self, card_id: int, *, person_id: int, number: str, enabled: bool) -> None:
+    def update_card(
+        self, card_id: int, *, person_id: int, number: str, enabled: bool, access: dict | None = None
+    ) -> None:
         self._execute(
             "UPDATE cards SET person_id = ?, number = ?, enabled = ? WHERE id = ?",
             (person_id, number, int(enabled), card_id),
+        )
+        if access is not None:
+            self.set_card_access(card_id, access)
+
+    def set_card_access(self, card_id: int, access: dict) -> None:
+        """Gruppo e validità della tessera: {access_profile, valid_from, valid_to}."""
+        self._execute(
+            "UPDATE cards SET access_profile = ?, valid_from = ?, valid_to = ? WHERE id = ?",
+            (access.get("access_profile", ""), access.get("valid_from", ""), access.get("valid_to", ""), card_id),
         )
 
     def set_card_enabled(self, card_id: int, enabled: bool) -> None:
@@ -176,6 +241,48 @@ class Database:
 
     def all_persons(self) -> list[dict]:
         return self._query("SELECT * FROM persons")
+
+    def profile_usage(self) -> dict[str, int]:
+        """Numero di persone per gruppo."""
+        rows = self._query(
+            "SELECT access_profile, COUNT(DISTINCT person_id) AS persons FROM cards GROUP BY access_profile"
+        )
+        return {row["access_profile"]: row["persons"] for row in rows}
+
+    # Fasce orarie create dall'add-on e festività
+
+    def schedule_rules(self) -> dict[str, dict]:
+        rows = self._query("SELECT * FROM schedule_rules")
+        return {
+            row["schedule_token"]: {"rules": json.loads(row["rules"]), "holidays": bool(row["holidays"])}
+            for row in rows
+        }
+
+    def save_schedule_rules(self, token: str, rules: list[dict], holidays: bool) -> None:
+        self._execute(
+            "INSERT INTO schedule_rules (schedule_token, rules, holidays) VALUES (?, ?, ?) "
+            "ON CONFLICT(schedule_token) DO UPDATE SET rules = excluded.rules, holidays = excluded.holidays",
+            (token, json.dumps(rules), int(holidays)),
+        )
+
+    def delete_schedule_rules(self, token: str) -> None:
+        self._execute("DELETE FROM schedule_rules WHERE schedule_token = ?", (token,))
+
+    def list_holidays(self) -> list[dict]:
+        rows = self._query("SELECT * FROM holidays ORDER BY yearly DESC, substr(day, 6), day")
+        for row in rows:
+            row["yearly"] = bool(row["yearly"])
+        return rows
+
+    def add_holiday(self, day: str, name: str, yearly: bool) -> None:
+        self._execute(
+            "INSERT INTO holidays (day, name, yearly) VALUES (?, ?, ?) "
+            "ON CONFLICT(day) DO UPDATE SET name = excluded.name, yearly = excluded.yearly",
+            (day, name, int(yearly)),
+        )
+
+    def delete_holiday(self, day: str) -> None:
+        self._execute("DELETE FROM holidays WHERE day = ?", (day,))
 
     # Tessere sconosciute
 
@@ -213,12 +320,30 @@ class Database:
         )
 
     def list_events(
-        self, *, kind: str = "", search: str = "", before_id: int | None = None, limit: int = 100
+        self,
+        *,
+        kind: str = "",
+        search: str = "",
+        before_id: int | None = None,
+        limit: int = 100,
+        since: str = "",
+        until: str = "",
+        person_id: int | None = None,
     ) -> list[dict]:
         clauses, params = [], []
         if kind:
-            clauses.append("kind = ?")
-            params.append(kind)
+            kinds = kind.split(",")
+            clauses.append(f"kind IN ({','.join('?' * len(kinds))})")
+            params += kinds
+        if since:
+            clauses.append("ts >= ?")
+            params.append(since)
+        if until:
+            clauses.append("ts < ?")
+            params.append(until)
+        if person_id:
+            clauses.append("person_id = ?")
+            params.append(person_id)
         if search:
             clauses.append("(person_name LIKE ? OR card LIKE ? OR detail LIKE ?)")
             like = f"%{search}%"
@@ -229,14 +354,42 @@ class Database:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         return self._query(
-            f"SELECT id, ts, kind, card, person_id, person_name, detail, source FROM events {where} "
+            f"SELECT id, ts, kind, card, person_id, person_name, detail, source, snapshot FROM events {where} "
             "ORDER BY id DESC LIMIT ?",
             tuple(params),
         )
 
-    def prune_events(self, days: int) -> None:
+    def get_event(self, event_id: int) -> dict | None:
+        rows = self._query("SELECT * FROM events WHERE id = ?", (event_id,))
+        return rows[0] if rows else None
+
+    def set_event_snapshot(self, event_id: int, filename: str) -> None:
+        self._execute("UPDATE events SET snapshot = ? WHERE id = ?", (filename, event_id))
+
+    def count_events(self, since: str) -> dict[str, int]:
+        rows = self._query("SELECT kind, COUNT(*) AS n FROM events WHERE ts >= ? GROUP BY kind", (since,))
+        return {row["kind"]: row["n"] for row in rows}
+
+    def event_kinds_since(self, since: str) -> list[dict]:
+        """Ora e tipo degli eventi dal momento indicato, per le statistiche."""
+        return self._query("SELECT ts, kind FROM events WHERE ts >= ?", (since,))
+
+    def last_accesses(self) -> dict[int, str]:
+        rows = self._query(
+            "SELECT person_id, MAX(ts) AS ts FROM events WHERE person_id IS NOT NULL "
+            "AND kind IN ('concesso', 'lettura') GROUP BY person_id"
+        )
+        return {row["person_id"]: row["ts"] for row in rows}
+
+    def prune_events(self, days: int) -> list[str]:
+        """Cancella gli eventi vecchi; restituisce i file delle istantanee da eliminare."""
         limit = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat(timespec="seconds")
+        snapshots = [
+            row["snapshot"]
+            for row in self._query("SELECT snapshot FROM events WHERE ts < ? AND snapshot != ''", (limit,))
+        ]
         self._execute("DELETE FROM events WHERE ts < ?", (limit,))
+        return snapshots
 
     # Audit
 
@@ -245,5 +398,7 @@ class Database:
             "INSERT INTO audit (ts, user, action, detail) VALUES (?, ?, ?, ?)", (now_iso(), user, action, detail)
         )
 
-    def list_audit(self, limit: int = 100) -> list[dict]:
+    def list_audit(self, limit: int = 100, before_id: int | None = None) -> list[dict]:
+        if before_id:
+            return self._query("SELECT * FROM audit WHERE id < ? ORDER BY id DESC LIMIT ?", (before_id, limit))
         return self._query("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,))

@@ -31,5 +31,22 @@ configuration:
     name: Utente MQTT (facoltativo)
   mqtt_password:
     name: Password MQTT (facoltativa)
+  ha_integration:
+    name: Entità in Home Assistant
+    description: Pubblica via MQTT stato porta, ultimo accesso, contatori ed eventi per le automazioni
+  ha_door_buttons:
+    name: Pulsanti di apertura in Home Assistant
+    description: Aggiunge i pulsanti "Apri porta" e "Apri porta a lungo" (stessi controlli di sicurezza dell'app)
+  ha_topic_prefix:
+    name: Prefisso topic per Home Assistant
+    description: Topic MQTT usati dall'add-on per le proprie entità
+  snapshot_camera:
+    name: Telecamera per le istantanee (facoltativa)
+    description: Entità camera di Home Assistant, ad esempio camera.citofono; salva una foto su accessi negati, tessere sconosciute, citofono e allarmi
+  snapshot_on_granted:
+    name: Istantanea anche sugli accessi concessi
+  readonly_users:
+    name: Utenti in sola lettura
+    description: Nomi utente di Home Assistant che possono consultare ma non modificare né aprire la porta
   log_level:
     name: Livello di log

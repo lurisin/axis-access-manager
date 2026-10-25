@@ -1,5 +1,5 @@
 name: Axis Access Manager
-version: "0.2.0"
+version: "0.3.0"
 slug: axis_access_manager
 description: Gestione tessere e controllo accessi per il controller Axis A1210
 url: https://github.com/lurisin/axis-access-manager
@@ -10,6 +10,7 @@ init: false
 ingress: true
 panel_icon: mdi:card-account-details
 panel_title: Controllo accessi
+homeassistant_api: true
 services:
   - mqtt:want
 options:
@@ -21,6 +22,12 @@ options:
   access_profile: profilo_via_consulta_ingresso_scala_sempre
   event_retention_days: 365
   mqtt_topic_prefix: accessi/via_consulta_controller
+  ha_integration: true
+  ha_door_buttons: true
+  ha_topic_prefix: axis_access_manager
+  snapshot_camera: ""
+  snapshot_on_granted: false
+  readonly_users: []
   log_level: info
 schema:
   a1210_host: str
@@ -35,4 +42,11 @@ schema:
   mqtt_port: port?
   mqtt_username: str?
   mqtt_password: password?
+  ha_integration: bool
+  ha_door_buttons: bool
+  ha_topic_prefix: str
+  snapshot_camera: str?
+  snapshot_on_granted: bool
+  readonly_users:
+    - str
   log_level: list(debug|info|warning|error)

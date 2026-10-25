@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+- Nuova interfaccia: cruscotto con accessi del giorno, grafico della settimana e avvisi; navigazione laterale (in basso sul telefono); tema chiaro e scuro.
+- Scheda persona: gruppo, validità, tessere, dati, note e ultimi passaggi in un unico pannello.
+- Gruppi (profili di accesso Axis): creazione, modifica ed eliminazione dall'add-on, con la fascia oraria di ciascuno.
+- Fasce orarie settimanali con anteprima, modelli pronti ed esclusione dei giorni festivi; festività (anche le nazionali italiane con un clic).
+- Validità temporanea delle tessere (ospiti, imprese): dal/al con scorciatoie, avviso per le tessere in scadenza.
+- Ditta o reparto e note per ogni persona.
+- Registro con filtri per data, separatori per giorno, istantanee della telecamera ed esportazione CSV.
+- Home Assistant: entità via MQTT Discovery (stato porta, ultimo accesso, contatori del giorno, tessere da registrare), pulsanti di apertura ed entità evento per le automazioni.
+- Istantanee da una telecamera di Home Assistant su accessi negati, tessere sconosciute, citofono e allarmi.
+- Esportazione dell'anagrafica in CSV e importazione da CSV con anteprima.
+- Registro delle attività (chi ha fatto cosa) e utenti di Home Assistant in sola lettura.
+- Giornate, statistiche e CSV usano il fuso orario di Home Assistant.
+
 ## 0.2.0
 
 - Anagrafica: persone e tessere con creazione, rinomina, sospensione ed eliminazione, scritte direttamente sull'A1210.
