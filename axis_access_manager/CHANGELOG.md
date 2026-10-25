@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.3
+
+- Impianti: nella scheda del controller la scritta "Collegato" lascia il posto a un pallino accanto al nome. Verde: il controller risponde e manda gli eventi. Giallo: risponde, ma gli eventi MQTT non arrivano. Rosso: non risponde. Passando sopra al pallino si legge il dettaglio.
+
 ## 0.11.2
 
 - Pagina della porta, scheda Dispositivi, con testi più chiari:
