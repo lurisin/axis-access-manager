@@ -834,6 +834,16 @@ class Database:
             self._conn.commit()
         return changed
 
+    def rename_controller_events(self, detail: str, new_detail: str, source: str) -> int:
+        """Eventi del controller delle versioni precedenti: nuovo dettaglio e nome del controller come origine."""
+        with self._lock:
+            changed = self._conn.execute(
+                "UPDATE events SET detail = ?, source = ?, door = '' WHERE kind = 'manomissione' AND detail = ?",
+                (new_detail, source, detail),
+            ).rowcount
+            self._conn.commit()
+        return changed
+
     def prune_events(self, days: int) -> list[str]:
         """Cancella gli eventi vecchi; restituisce i file delle istantanee da eliminare."""
         limit = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat(timespec="seconds")

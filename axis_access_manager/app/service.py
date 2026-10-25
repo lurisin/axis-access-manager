@@ -22,6 +22,7 @@ CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
 
 # Ruoli degli ingressi del controller che aprono la porta: tipo di apertura per il registro
 INPUT_SOURCES = {"rex": "Pulsante Uscita", "intercom": "Relè Citofono"}
+CASING_OPEN = "coperchio del controller aperto"
 INPUT_TERMINALS = {"REX": "REX", "IO1": "Aux 1", "IO2": "Aux 2"}
 DENIED_REASONS = {
     "CredentialNotEnabled": "tessera sospesa",
@@ -573,7 +574,12 @@ class AccessService:
         elif topic.startswith("Door/State/DoorTamper/") and data.get("State") == "TamperDetected":
             self.log_event(ts=ts, kind="manomissione", detail="manomissione porta", source="porta", raw=data, door=door)
         elif topic.startswith("Device/Casing/Open") and str(data.get("Open")) == "1":
-            self.log_event(ts=ts, kind="manomissione", detail="alloggiamento controller aperto", source="controller")
+            # Coperchio del controller: non riguarda una porta
+            self.log_event(ts=ts, kind="manomissione", detail=CASING_OPEN, source=self.controller_name())
+
+    def controller_name(self) -> str:
+        controllers = self.db.list_controllers()
+        return (controllers[0]["name"] if controllers else "") or "Controller"
 
     def _input_source(self, access_point: str) -> tuple[str, str] | None:
         """Sorgente e dettaglio per il registro dell'ingresso del controller che usa questo punto di accesso:

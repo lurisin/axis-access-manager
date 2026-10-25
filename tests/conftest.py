@@ -127,6 +127,9 @@ class FakeController:
         if self.fail_io_assignment:
             raise VapixError(f"assegnazione di {io} rifiutata: ModeNotAllowedForIoUser")
         self.calls.append(("set_io_assignment", io, mode))
+        # Come il firmware: senza utenti il cambio di modo da supervisionato è accettato ma ignorato
+        if not users and self.io_assignments.get(io, {}).get("IoMode") == "supervised":
+            mode = "supervised"
         self.io_assignments[io] = {"IoMode": mode, "IoUser": copy.deepcopy(users)}
 
     async def create_access_point(self, access_point):

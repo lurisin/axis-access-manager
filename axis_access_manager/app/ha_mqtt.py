@@ -355,6 +355,15 @@ class HaBridge:
         await client.publish(self.last_topic, json.dumps(self._last_payload()), qos=1, retain=True)
         _LOGGER.info("Entità pubblicate in Home Assistant (MQTT Discovery)")
 
+    async def publish_input_names(self) -> None:
+        """Ripubblica solo le entità degli ingressi, con il nome scelto nell'app: le altre restano com'erano."""
+        if not self.enabled:
+            return
+        ids = {object_id for object_id, _, _ in IO_INPUTS.values()}
+        for component, object_id, config in self._entities():
+            if object_id in ids:
+                await self.monitor.publish(self._config_topic(component, object_id), json.dumps(config), retain=True)
+
     @staticmethod
     def _config_topic(component: str, object_id: str) -> str:
         return f"{DISCOVERY_PREFIX}/{component}/{NODE_ID}/{object_id}/config"

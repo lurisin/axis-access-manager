@@ -318,3 +318,16 @@ async def test_exit_button_and_intercom_relay_are_logged_as_openings(service, db
     assert button["detail"] == "Pulsante Uscita · REX"
     assert relay["kind"] == "apertura_remota" and relay["source"] == "Relè Citofono"
     assert relay["detail"] == "Relè Citofono · Aux 1"
+
+
+async def test_controller_casing_tamper_names_the_controller_not_a_door(service, db):
+    db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210 Banco", "verify_ssl": 0})
+    service.record_event(event("Device/Casing/Open/$source/Name/Casing", {"Open": "1"}))
+    tamper = db.list_events()[0]
+    assert tamper["kind"] == "manomissione" and tamper["detail"] == "coperchio del controller aperto"
+    assert tamper["source"] == "A1210 Banco" and tamper["door"] == ""
+
+    # Eventi delle versioni precedenti: stesso dettaglio e nome del controller
+    db.add_event(ts="2026-10-25T09:00:00+00:00", kind="manomissione", detail="alloggiamento controller aperto")
+    assert db.rename_controller_events("alloggiamento controller aperto", "coperchio del controller aperto", "A1") == 1
+    assert {e["source"] for e in db.list_events()} == {"A1210 Banco", "A1"}

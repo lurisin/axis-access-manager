@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.1
+
+- Registro: l'apertura del coperchio del controller non mostra più una porta. Compare come "coperchio del controller aperto" con il nome del controller; anche gli eventi già salvati vengono corretti all'avvio.
+- Ingressi:
+  - togliendo un ruolo si rimuove anche la configurazione del punto di identificazione, che prima restava orfana sul controller;
+  - un ingresso supervisionato torna davvero al modo semplice: il firmware ignora il cambio di modo se l'ingresso non è assegnato, quindi l'app lo assegna prima come pulsante normale e poi lo libera;
+  - salvare un ingresso aggiorna in Home Assistant solo le entità degli ingressi, senza riconnettersi: le altre entità non passano più da "sconosciuto".
+- Scheda dell'ingresso:
+  - il titolo non ripete più "Ingresso";
+  - la nota sul nome dell'entità di Home Assistant compare solo per gli ingressi che hanno un'entità;
+  - REX e Contatto Porta mostrano un trattino, perché il controller non ne invia lo stato.
+- Fasce orarie: tolta l'icona dell'orologio che copriva l'ora negli intervalli.
+- Cambiando scheda mentre la pagina del controller si carica, la risposta arrivata tardi non sovrascrive più la nuova scheda.
+
 ## 0.9.0
 
 - **Ingressi del controller** nello schema, sotto i lettori: contatto porta e REX del connettore Door, i due AUX, Manomissione e Allarme, con lo stato in tempo reale dove il controller lo manda. Tocca un ingresso e poi una porta per collegarlo, oppure tocca due volte l'ingresso per aprirne la scheda: nome, ruolo, porta, contatto (Normalmente Aperto o Chiuso) e **Linea Supervisionata** sì o no.
