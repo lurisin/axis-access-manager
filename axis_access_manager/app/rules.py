@@ -9,7 +9,7 @@ DAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 DAY_NAMES = {"MO": "lun", "TU": "mar", "WE": "mer", "TH": "gio", "FR": "ven", "SA": "sab", "SU": "dom"}
 TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$|^24:00$")
 
-# Fasce predefinite del controller: non vanno modificate
+# Fasce predefinite del controller (Sempre, Orario d'ufficio, Fine settimana)
 STANDARD_PREFIX = "standard_"
 
 ITALIAN_HOLIDAYS = [
@@ -92,6 +92,45 @@ def schedule_ical(rules: list[dict]) -> str:
             "END:VEVENT",
         ]
     return _calendar(events)
+
+
+def parse_schedule_ical(text: str | None) -> list[dict] | None:
+    """Intervalli settimanali di un calendario Axis; None se usa regole che l'editor non sa mostrare."""
+    if not text:
+        return None
+    rules = []
+    for block in re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", text.replace("\r\n ", ""), re.S):
+        props: dict[str, str] = {}
+        for line in block.strip().splitlines():
+            key, _, value = line.strip().partition(":")
+            props[key.split(";")[0].upper()] = value.strip()
+        try:
+            start = datetime.strptime(props["DTSTART"][:15], "%Y%m%dT%H%M%S")
+            end = datetime.strptime(props["DTEND"][:15], "%Y%m%dT%H%M%S")
+        except (KeyError, ValueError):
+            return None
+        if end <= start or end - start > timedelta(days=1):
+            return None
+        if end.date() != start.date() and end.time() != datetime.min.time():
+            return None
+        rrule = dict(part.split("=", 1) for part in props.get("RRULE", "").split(";") if "=" in part)
+        freq = rrule.get("FREQ", "")
+        if freq == "DAILY" and not rrule.get("BYDAY"):
+            days = list(DAYS)
+        elif freq in ("WEEKLY", "DAILY"):
+            days = [d for d in DAYS if d in rrule.get("BYDAY", DAYS[start.weekday()]).split(",")]
+        else:
+            return None
+        if set(rrule) - {"FREQ", "BYDAY", "INTERVAL", "WKST"} or rrule.get("INTERVAL", "1") != "1" or not days:
+            return None
+        rules.append(
+            {
+                "days": days,
+                "start": start.strftime("%H:%M"),
+                "end": "24:00" if end.date() != start.date() else end.strftime("%H:%M"),
+            }
+        )
+    return rules or None
 
 
 def holidays_ical(holidays: list[dict]) -> str | None:

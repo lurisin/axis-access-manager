@@ -28,7 +28,7 @@ def test_status_without_controller_configured(monkeypatch, tmp_path):
 def test_index_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
-    assert "Controllo accessi" in response.text
+    assert "Controllo Accessi" in response.text
 
 
 def test_requests_outside_ingress_are_refused(settings, controller, tmp_path, monkeypatch):
@@ -65,11 +65,10 @@ def test_errors_are_reported_in_italian(client):
     assert "numero tessera non valido" in response.json()["detail"]
 
 
-def test_door_open(client, controller):
-    assert client.post("/api/door/open", json={"extended": False}).json() == {"ok": True}
-    assert ("access_door", "porta", False) in controller.calls
-    events = client.get("/api/events").json()
-    assert events[0]["kind"] == "apertura_remota"
+def test_door_cannot_be_opened_from_the_app(client, controller):
+    # L'apertura resta in Home Assistant (pulsanti MQTT), non nell'interfaccia dell'add-on
+    assert client.post("/api/door/open", json={"extended": False}).status_code in (404, 405)
+    assert controller.calls == []
 
 
 def test_version_matches_config_yaml(client):
@@ -78,20 +77,60 @@ def test_version_matches_config_yaml(client):
     assert client.get("/api/me").json()["version"] == version
 
 
-def test_readonly_users_cannot_change_anything(controller, tmp_path, monkeypatch):
+def test_first_user_is_admin_and_others_get_status_only(client, controller):
+    admin = {"X-Remote-User-Name": "Rising", "X-Remote-User-Display-Name": "Rising Coder"}
+    guest = {"X-Remote-User-Name": "ospite", "X-Remote-User-Display-Name": "Ospite"}
+    me = client.get("/api/me", headers=admin).json()
+    assert me["admin"] is True and me["username"] == "rising"
+
+    me = client.get("/api/me", headers=guest).json()
+    assert me["admin"] is False and me["perms"] == []
+    assert client.get("/api/status", headers=guest).status_code == 200
+    assert client.get("/api/summary", headers=guest).status_code == 200
+    assert client.get("/api/persons", headers=guest).status_code == 403
+    assert client.post("/api/persons", json={"name": "A", "card": "04aa"}, headers=guest).status_code == 403
+    assert client.get("/api/events", headers=guest).status_code == 403
+    assert client.get("/api/users", headers=guest).status_code == 403
+    dashboard = client.get("/api/dashboard", headers=guest).json()
+    assert dashboard["recent"] == [] and dashboard["expiring"] == []
+
+    # L'amministratore dà all'ospite il ruolo di consultazione
+    users = client.get("/api/users", headers=admin).json()
+    assert {u["username"]: u["role"] for u in users["users"]} == {"rising": "amministratore", "ospite": "solo_stato"}
+    consult = users["roles"]["consultazione"]["perms"]
+    assert client.put("/api/users/ospite", json={"perms": consult}, headers=admin).status_code == 200
+    assert client.get("/api/persons", headers=guest).status_code == 200
+    assert client.post("/api/persons", json={"name": "A", "card": "04aa"}, headers=guest).status_code == 403
+    assert controller.calls == []
+
+    # Permesso di modifica: implica la consultazione
+    response = client.post("/api/users", json={"username": "mario", "perms": ["persone_modifica"]}, headers=admin)
+    assert response.json()["perms"] == ["persone", "persone_modifica"]
+    mario = {"X-Remote-User-Name": "Mario"}
+    assert client.post("/api/persons", json={"name": "A", "card": "04aa"}, headers=mario).status_code == 200
+    assert (
+        client.post("/api/groups", json={"name": "G", "schedule": "standard_always"}, headers=mario).status_code == 403
+    )
+
+    # Sempre almeno un amministratore
+    response = client.put("/api/users/rising", json={"perms": []}, headers=admin)
+    assert response.status_code == 400 and "amministratore" in response.json()["detail"]
+    assert client.delete("/api/users/rising", headers=admin).status_code == 400
+    assert client.delete("/api/users/mario", headers=admin).status_code == 200
+
+
+def test_readonly_users_option_starts_as_consultation(controller, tmp_path, monkeypatch):
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
     settings = parse_options(
         {"a1210_host": "a", "door_token": "porta", "access_profile": "profilo_sempre", "readonly_users": ["Ospite"]}
     )
     app = create_app(settings, allow_any_client=True, controller=controller, db_path=tmp_path / "r.db")
     with TestClient(app) as client:
+        client.get("/api/me", headers={"X-Remote-User-Name": "admin"})
         headers = {"X-Remote-User-Name": "ospite"}
-        assert client.get("/api/me", headers=headers).json()["readonly"] is True
         assert client.get("/api/persons", headers=headers).status_code == 200
-        response = client.post("/api/door/open", json={}, headers=headers)
-        assert response.status_code == 403
+        assert client.post("/api/persons", json={"name": "A", "card": "04aa"}, headers=headers).status_code == 403
         assert controller.calls == []
-        assert client.post("/api/persons", json={"name": "A", "card": "04aa"}).status_code == 200
 
 
 def test_rules_and_dashboard_endpoints(client):
@@ -123,3 +162,22 @@ def test_csv_export_and_import(client):
     preview = client.post("/api/import/persons", json={"csv": "Mario;04bb;Sempre", "apply": False}).json()
     assert preview["riepilogo"]["ok"] == 1
     assert client.get("/api/export/events.csv").status_code == 200
+
+
+def test_categories_hidden_and_default_group_endpoints(client):
+    group = client.post("/api/groups", json={"name": "Pulizie", "schedule": "standard_office_hours"}).json()["token"]
+    category = client.post("/api/categories", json={"name": "Pulizie", "group_token": group, "color": "teal"}).json()
+    person = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "category_id": category["id"]}).json()
+    assert person["cards"][0]["access_profile"] == group
+    assert client.get("/api/categories").json()[0]["persons"] == 1
+    assert "Pulizie" in client.get("/api/export/persons.csv").text.splitlines()[1]
+
+    assert (
+        client.put("/api/hidden", json={"kind": "schedule", "token": "standard_always", "hidden": True}).status_code
+        == 200
+    )
+    schedules = {s["token"]: s for s in client.get("/api/schedules").json()}
+    assert schedules["standard_always"]["hidden"] is True
+    assert client.put("/api/default-group", json={"token": group}).status_code == 200
+    assert client.get("/api/me").json()["default_group"] == group
+    assert client.delete(f"/api/categories/{category['id']}").status_code == 200

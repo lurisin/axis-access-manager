@@ -22,7 +22,11 @@ axis_access_manager/         l'add-on
     db.py                    database SQLite in /data (persone, tessere, regole, eventi, audit)
     service.py               logica: sincronizzazione, anagrafica, gruppo e validità, eventi, apertura porta
     rules.py                 fasce orarie e festività in iCalendar, validità delle tessere
-    rules_service.py         gruppi (profili Axis), fasce orarie e festività sul controller
+    rules_service.py         tipologie, gruppi (profili Axis), fasce orarie e festività sul controller
+    installation.py          impianti: controller e porte con citofono e telecamera, configurati nell'app
+    programming.py           programmazione del controller (porte, lettori, collegamenti) con annullamento
+    users.py                 utenti dell'app e permessi
+    intercom.py              citofono Hikvision tramite l'add-on Hikvision Doorbell
     ha.py                    API di Home Assistant: istantanee dalle telecamere
     ha_mqtt.py               entità ed eventi per Home Assistant via MQTT Discovery
     transfer.py              esportazione e importazione CSV
@@ -35,7 +39,7 @@ tests/                       test (pytest)
 
 1. *Impostazioni → Componenti aggiuntivi → Raccolta componenti aggiuntivi*, menu in alto a destra, *Repository*.
 2. Aggiungi `https://github.com/lurisin/axis-access-manager`.
-3. Installa **Axis Access Manager**, compila le opzioni (indirizzo, utente e password dell'A1210) e avvia.
+3. Installa **Axis Access Manager**, avvialo e apri il pannello **Controllo Accessi**: nella pagina **Impianti** inserisci indirizzo, utente e password dell'A1210 e scegli la porta.
 4. Attiva *Mostra nella barra laterale*.
 
 Gli aggiornamenti compaiono nella stessa pagina dopo *Controlla aggiornamenti*.

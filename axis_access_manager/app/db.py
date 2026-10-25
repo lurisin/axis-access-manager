@@ -1,4 +1,4 @@
-"""Database SQLite dell'add-on: anagrafica, tessere, regole, eventi, tessere sconosciute, audit."""
+"""Database SQLite dell'add-on: anagrafica, tessere, tipologie, regole, eventi, utenti, audit."""
 
 from __future__ import annotations
 
@@ -55,6 +55,67 @@ CREATE TABLE IF NOT EXISTS holidays (
     name TEXT NOT NULL DEFAULT '',
     yearly INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    color TEXT NOT NULL DEFAULT '',
+    group_token TEXT NOT NULL DEFAULT '',
+    valid_days INTEGER NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS hidden_items (
+    kind TEXT NOT NULL,
+    token TEXT NOT NULL,
+    PRIMARY KEY (kind, token)
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS app_users (
+    username TEXT PRIMARY KEY COLLATE NOCASE,
+    name TEXT NOT NULL DEFAULT '',
+    perms TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS controllers (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    host TEXT NOT NULL DEFAULT '',
+    username TEXT NOT NULL DEFAULT '',
+    password TEXT NOT NULL DEFAULT '',
+    verify_ssl INTEGER NOT NULL DEFAULT 0,
+    mqtt_topic_prefix TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS doors (
+    id INTEGER PRIMARY KEY,
+    controller_id INTEGER NOT NULL REFERENCES controllers(id) ON DELETE CASCADE,
+    door_token TEXT NOT NULL,
+    name TEXT NOT NULL,
+    snapshot_camera TEXT NOT NULL DEFAULT '',
+    snapshot_on_granted INTEGER NOT NULL DEFAULT 0,
+    ha_buttons INTEGER NOT NULL DEFAULT 1,
+    intercom_name TEXT NOT NULL DEFAULT '',
+    intercom_open_door INTEGER NOT NULL DEFAULT 0,
+    intercom_relay INTEGER NOT NULL DEFAULT 1,
+    intercom_mqtt_prefix TEXT NOT NULL DEFAULT 'hmd',
+    UNIQUE (controller_id, door_token)
+);
+CREATE TABLE IF NOT EXISTS controller_changes (
+    id INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,
+    user TEXT NOT NULL,
+    controller_id INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    token TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    before TEXT NOT NULL,
+    after TEXT NOT NULL,
+    undone INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS audit (
     id INTEGER PRIMARY KEY,
     ts TEXT NOT NULL,
@@ -71,6 +132,8 @@ MIGRATIONS = [
     ("cards", "valid_to", "TEXT NOT NULL DEFAULT ''"),
     ("persons", "company", "TEXT NOT NULL DEFAULT ''"),
     ("events", "snapshot", "TEXT NOT NULL DEFAULT ''"),
+    ("persons", "category_id", "INTEGER NOT NULL DEFAULT 0"),
+    ("events", "door", "TEXT NOT NULL DEFAULT ''"),
 ]
 
 
@@ -153,6 +216,11 @@ class Database:
         self._execute(
             "UPDATE persons SET company = ?, notes = ?, updated_at = ? WHERE id = ?",
             (company, notes, now_iso(), person_id),
+        )
+
+    def set_person_category(self, person_id: int, category_id: int) -> None:
+        self._execute(
+            "UPDATE persons SET category_id = ?, updated_at = ? WHERE id = ?", (category_id, now_iso(), person_id)
         )
 
     def delete_person(self, person_id: int) -> None:
@@ -284,6 +352,199 @@ class Database:
     def delete_holiday(self, day: str) -> None:
         self._execute("DELETE FROM holidays WHERE day = ?", (day,))
 
+    # Tipologie di tessera
+
+    def list_categories(self) -> list[dict]:
+        rows = self._query(
+            "SELECT categories.*, (SELECT COUNT(*) FROM persons WHERE persons.category_id = categories.id) AS persons "
+            "FROM categories ORDER BY name COLLATE NOCASE"
+        )
+        return rows
+
+    def get_category(self, category_id: int) -> dict | None:
+        rows = self._query("SELECT * FROM categories WHERE id = ?", (category_id,))
+        return rows[0] if rows else None
+
+    def category_by_name(self, name: str) -> dict | None:
+        rows = self._query("SELECT * FROM categories WHERE name = ?", (name,))
+        return rows[0] if rows else None
+
+    def save_category(self, category_id: int | None, fields: dict) -> int:
+        values = (fields["name"], fields["color"], fields["group_token"], fields["valid_days"], fields["description"])
+        if category_id:
+            self._execute(
+                "UPDATE categories SET name = ?, color = ?, group_token = ?, valid_days = ?, description = ? "
+                "WHERE id = ?",
+                (*values, category_id),
+            )
+            return category_id
+        return self._execute(
+            "INSERT INTO categories (name, color, group_token, valid_days, description) VALUES (?, ?, ?, ?, ?)", values
+        )
+
+    def delete_category(self, category_id: int) -> None:
+        self._execute("UPDATE persons SET category_id = 0 WHERE category_id = ?", (category_id,))
+        self._execute("DELETE FROM categories WHERE id = ?", (category_id,))
+
+    def persons_of_category(self, category_id: int) -> list[dict]:
+        return [p for p in self.list_persons() if p["category_id"] == category_id]
+
+    # Elementi nascosti e impostazioni dell'app
+
+    def hidden(self, kind: str) -> set[str]:
+        return {row["token"] for row in self._query("SELECT token FROM hidden_items WHERE kind = ?", (kind,))}
+
+    def set_hidden(self, kind: str, token: str, hidden: bool) -> None:
+        if hidden:
+            self._execute("INSERT OR IGNORE INTO hidden_items (kind, token) VALUES (?, ?)", (kind, token))
+        else:
+            self._execute("DELETE FROM hidden_items WHERE kind = ? AND token = ?", (kind, token))
+
+    def get_setting(self, key: str, default: str = "") -> str:
+        rows = self._query("SELECT value FROM app_settings WHERE key = ?", (key,))
+        return rows[0]["value"] if rows else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self._execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+
+    # Impianti: controller e porte
+
+    CONTROLLER_FIELDS = ("name", "host", "username", "password", "verify_ssl", "mqtt_topic_prefix")
+    DOOR_FIELDS = (
+        "door_token",
+        "name",
+        "snapshot_camera",
+        "snapshot_on_granted",
+        "ha_buttons",
+        "intercom_name",
+        "intercom_open_door",
+        "intercom_relay",
+        "intercom_mqtt_prefix",
+    )
+    _DOOR_FLAGS = ("snapshot_on_granted", "ha_buttons", "intercom_open_door")
+
+    def list_controllers(self) -> list[dict]:
+        controllers = self._query("SELECT * FROM controllers ORDER BY id")
+        doors = self.list_doors()
+        for controller in controllers:
+            controller["verify_ssl"] = bool(controller["verify_ssl"])
+            controller["doors"] = [d for d in doors if d["controller_id"] == controller["id"]]
+        return controllers
+
+    def get_controller(self, controller_id: int) -> dict | None:
+        return next((c for c in self.list_controllers() if c["id"] == controller_id), None)
+
+    def save_controller(self, controller_id: int | None, fields: dict) -> int:
+        values = tuple(fields[f] for f in self.CONTROLLER_FIELDS)
+        ts = now_iso()
+        if controller_id:
+            sets = ", ".join(f"{f} = ?" for f in self.CONTROLLER_FIELDS)
+            self._execute(f"UPDATE controllers SET {sets}, updated_at = ? WHERE id = ?", (*values, ts, controller_id))
+            return controller_id
+        columns = ", ".join(self.CONTROLLER_FIELDS)
+        marks = ", ".join("?" * len(self.CONTROLLER_FIELDS))
+        return self._execute(
+            f"INSERT INTO controllers ({columns}, created_at, updated_at) VALUES ({marks}, ?, ?)", (*values, ts, ts)
+        )
+
+    def delete_controller(self, controller_id: int) -> None:
+        self._execute("DELETE FROM controllers WHERE id = ?", (controller_id,))
+
+    def list_doors(self) -> list[dict]:
+        doors = self._query("SELECT * FROM doors ORDER BY controller_id, id")
+        for door in doors:
+            for flag in self._DOOR_FLAGS:
+                door[flag] = bool(door[flag])
+        return doors
+
+    def get_door(self, door_id: int) -> dict | None:
+        return next((d for d in self.list_doors() if d["id"] == door_id), None)
+
+    def save_door(self, door_id: int | None, controller_id: int, fields: dict) -> int:
+        values = tuple(fields[f] for f in self.DOOR_FIELDS)
+        if door_id:
+            sets = ", ".join(f"{f} = ?" for f in self.DOOR_FIELDS)
+            self._execute(f"UPDATE doors SET {sets} WHERE id = ?", (*values, door_id))
+            return door_id
+        columns = ", ".join(self.DOOR_FIELDS)
+        marks = ", ".join("?" * len(self.DOOR_FIELDS))
+        return self._execute(
+            f"INSERT INTO doors (controller_id, {columns}) VALUES (?, {marks})", (controller_id, *values)
+        )
+
+    def delete_door(self, door_id: int) -> None:
+        self._execute("DELETE FROM doors WHERE id = ?", (door_id,))
+
+    # Modifiche alla programmazione del controller, per poterle annullare
+
+    def add_controller_change(
+        self, user: str, controller_id: int, kind: str, token: str, summary: str, before: dict, after: dict
+    ) -> int:
+        return self._execute(
+            "INSERT INTO controller_changes (ts, user, controller_id, kind, token, summary, before, after) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (now_iso(), user, controller_id, kind, token, summary, json.dumps(before), json.dumps(after)),
+        )
+
+    def list_controller_changes(self, controller_id: int, limit: int = 30) -> list[dict]:
+        rows = self._query(
+            "SELECT id, ts, user, kind, token, summary, undone FROM controller_changes WHERE controller_id = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (controller_id, limit),
+        )
+        for row in rows:
+            row["undone"] = bool(row["undone"])
+        return rows
+
+    def get_controller_change(self, change_id: int) -> dict | None:
+        rows = self._query("SELECT * FROM controller_changes WHERE id = ?", (change_id,))
+        if not rows:
+            return None
+        row = rows[0]
+        row["before"], row["after"], row["undone"] = (
+            json.loads(row["before"]),
+            json.loads(row["after"]),
+            bool(row["undone"]),
+        )
+        return row
+
+    def mark_change_undone(self, change_id: int) -> None:
+        self._execute("UPDATE controller_changes SET undone = 1 WHERE id = ?", (change_id,))
+
+    # Utenti dell'app
+
+    def list_app_users(self) -> list[dict]:
+        rows = self._query("SELECT * FROM app_users ORDER BY name COLLATE NOCASE, username")
+        for row in rows:
+            row["perms"] = json.loads(row["perms"])
+        return rows
+
+    def get_app_user(self, username: str) -> dict | None:
+        rows = self._query("SELECT * FROM app_users WHERE username = ?", (username,))
+        if not rows:
+            return None
+        rows[0]["perms"] = json.loads(rows[0]["perms"])
+        return rows[0]
+
+    def save_app_user(self, username: str, name: str, perms: list[str]) -> None:
+        self._execute(
+            "INSERT INTO app_users (username, name, perms, created_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(username) DO UPDATE SET name = excluded.name, perms = excluded.perms",
+            (username, name, json.dumps(perms), now_iso()),
+        )
+
+    def touch_app_user(self, username: str, name: str) -> None:
+        self._execute(
+            "UPDATE app_users SET last_seen = ?, name = CASE WHEN ? != '' THEN ? ELSE name END WHERE username = ?",
+            (now_iso(), name, name, username),
+        )
+
+    def delete_app_user(self, username: str) -> None:
+        self._execute("DELETE FROM app_users WHERE username = ?", (username,))
+
     # Tessere sconosciute
 
     def note_unknown_card(self, number: str, ts: str) -> None:
@@ -312,11 +573,12 @@ class Database:
         detail: str = "",
         source: str = "",
         raw: dict | None = None,
+        door: str = "",
     ) -> int:
         return self._execute(
-            "INSERT INTO events (ts, kind, card, person_id, person_name, detail, source, raw) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (ts, kind, card, person_id, person_name, detail, source, json.dumps(raw) if raw else ""),
+            "INSERT INTO events (ts, kind, card, person_id, person_name, detail, source, raw, door) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ts, kind, card, person_id, person_name, detail, source, json.dumps(raw) if raw else "", door),
         )
 
     def list_events(
@@ -354,7 +616,7 @@ class Database:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         return self._query(
-            f"SELECT id, ts, kind, card, person_id, person_name, detail, source, snapshot FROM events {where} "
+            f"SELECT id, ts, kind, card, person_id, person_name, detail, source, snapshot, door FROM events {where} "
             "ORDER BY id DESC LIMIT ?",
             tuple(params),
         )

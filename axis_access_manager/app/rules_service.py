@@ -1,4 +1,4 @@
-"""Gruppi (profili di accesso Axis), fasce orarie e festività scritti sul controller."""
+"""Tipologie di tessera, gruppi (profili di accesso Axis), fasce orarie e festività."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from .rules import (
     italian_holidays,
     normalize_holiday,
     normalize_rules,
+    parse_schedule_ical,
     schedule_ical,
 )
 from .service import AccessService, ServiceError, normalize_name, normalize_text
@@ -23,9 +24,11 @@ _LOGGER = logging.getLogger(__name__)
 
 STANDARD_NAMES = {
     "standard_always": "Sempre",
-    "standard_office_hours": "Orario d'ufficio",
-    "standard_weekends": "Fine settimana",
+    "standard_office_hours": "Orario d'Ufficio",
+    "standard_weekends": "Fine Settimana",
 }
+
+COLORS = ["blue", "green", "orange", "red", "purple", "teal", "pink", "gray"]
 
 
 def profile_schedules(profile: dict) -> list[str]:
@@ -59,6 +62,7 @@ class RulesService:
         if profiles is None:
             profiles = await self._profiles_or_empty()
         rules = self.db.schedule_rules()
+        hidden = self.db.hidden("schedule")
         tokens = {s.get("token") for s in schedules}
         for token in set(rules) - tokens:
             # Fascia eliminata dal controller con un altro strumento
@@ -67,20 +71,23 @@ class RulesService:
         for schedule in schedules:
             token = schedule.get("token", "")
             managed = rules.get(token)
+            parsed = managed["rules"] if managed else parse_schedule_ical(schedule.get("ScheduleDefinition"))
             result.append(
                 {
                     "token": token,
-                    "name": STANDARD_NAMES.get(token) or schedule.get("Name") or token,
+                    "name": (None if managed else STANDARD_NAMES.get(token)) or schedule.get("Name") or token,
                     "description": schedule.get("Description") or "",
                     "standard": token.startswith(STANDARD_PREFIX),
                     "managed": managed is not None,
-                    "rules": managed["rules"] if managed else [],
+                    "hidden": token in hidden,
+                    "rules": parsed or [],
+                    "readable": parsed is not None,
                     "holidays": managed["holidays"] if managed else bool(schedule.get("ExceptionScheduleDefinition")),
-                    "summary": describe_rules(managed["rules"]) if managed else "",
+                    "summary": describe_rules(parsed) if parsed else "",
                     "groups": [p.get("Name") or p.get("token") for p in profiles if token in profile_schedules(p)],
                 }
             )
-        result.sort(key=lambda s: (not s["standard"], s["name"].lower()))
+        result.sort(key=lambda s: (s["hidden"], s["name"].lower()))
         return result
 
     async def _profiles_or_empty(self) -> list[dict]:
@@ -125,19 +132,16 @@ class RulesService:
         name = normalize_name(name)
         description = normalize_text(description, 200, "descrizione")
         rules = self._check_rules(rules)
-        if token.startswith(STANDARD_PREFIX):
-            raise ServiceError("le fasce predefinite del controller non si modificano: creane una nuova")
-        if token not in self.db.schedule_rules():
-            raise ServiceError("fascia creata fuori dall'add-on: per cambiarla creane una nuova e assegnala ai gruppi")
         async with self.lock:
+            # Anche le fasce predefinite o create con altri strumenti: da qui in poi le gestisce l'add-on
+            if token not in {s.get("token") for s in await self.controller.list_schedules()}:
+                raise ServiceError("fascia oraria non trovata sul controller")
             await self.controller.set_schedule(self._schedule_body(token, name, description, rules, holidays))
             self.db.save_schedule_rules(token, rules, holidays)
             self.db.add_audit(user, "fascia oraria modificata", f"{name}: {describe_rules(rules)}")
         return {"token": token}
 
     async def delete_schedule(self, token: str, user: str) -> None:
-        if token.startswith(STANDARD_PREFIX):
-            raise ServiceError("le fasce predefinite del controller non si eliminano")
         async with self.lock:
             profiles = await self.controller.list_access_profiles()
             users = [p.get("Name") or p.get("token") for p in profiles if token in profile_schedules(p)]
@@ -145,7 +149,18 @@ class RulesService:
                 raise ServiceError(f"fascia usata dai gruppi {', '.join(users)}: cambia prima la loro fascia")
             await self.controller.remove_schedule(token)
             self.db.delete_schedule_rules(token)
+            self.db.set_hidden("schedule", token, False)
             self.db.add_audit(user, "fascia oraria eliminata", token)
+
+    def set_hidden(self, kind: str, token: str, hidden: bool, user: str) -> None:
+        """Nasconde dalle liste un gruppo o una fascia che non serve, senza toccare il controller."""
+        if kind not in ("group", "schedule"):
+            raise ServiceError("elemento sconosciuto")
+        if hidden and kind == "group" and token == self.access.default_group:
+            raise ServiceError("il gruppo predefinito non si può nascondere: scegline prima un altro")
+        self.db.set_hidden(kind, token, hidden)
+        what = "gruppo" if kind == "group" else "fascia oraria"
+        self.db.add_audit(user, f"{what} {'nascosto' if hidden else 'mostrato'}", token)
 
     # Festività
 
@@ -197,6 +212,8 @@ class RulesService:
         schedules = await self.list_schedules(profiles)
         names = {s["token"]: s["name"] for s in schedules}
         usage = self.db.profile_usage()
+        hidden = self.db.hidden("group")
+        default = self.access.default_group
         groups = []
         for profile in profiles:
             token = profile.get("token", "")
@@ -210,18 +227,19 @@ class RulesService:
                     "schedules": schedule_tokens,
                     "schedule_names": [names.get(t, t) for t in schedule_tokens],
                     "persons": usage.get(token, 0),
-                    "default": token == self.settings.access_profile,
+                    "default": token == default,
+                    "hidden": token in hidden and token != default,
                     "valid_from": profile.get("ValidFrom") or "",
                     "valid_to": profile.get("ValidTo") or "",
                 }
             )
-        groups.sort(key=lambda g: (not g["default"], g["name"].lower()))
-        return {"groups": groups, "schedules": schedules}
+        groups.sort(key=lambda g: (not g["default"], g["hidden"], g["name"].lower()))
+        return {"groups": groups, "schedules": schedules, "categories": self.list_categories()}
 
     async def _template_profile(self, schedule: str) -> dict:
         """Nuovo profilo copiato da quello predefinito (stessa porta), o costruito dai punti di accesso."""
-        if self.settings.access_profile:
-            found = await self.controller.get_access_profiles([self.settings.access_profile])
+        if self.access.default_group:
+            found = await self.controller.get_access_profiles([self.access.default_group])
             if found and found[0].get("AccessPolicy"):
                 profile = copy.deepcopy(found[0])
                 profile["token"] = ""
@@ -277,8 +295,6 @@ class RulesService:
     async def update_group(self, token: str, name: str, description: str, schedule: str, user: str) -> dict:
         name = normalize_name(name)
         description = normalize_text(description, 200, "descrizione")
-        if token == self.settings.access_profile:
-            raise ServiceError("il gruppo predefinito delle opzioni non si modifica da qui: creane un altro")
         async with self.lock:
             await self._check_schedule(schedule)
             found = await self.controller.get_access_profiles([token])
@@ -292,11 +308,85 @@ class RulesService:
         return {"token": token}
 
     async def delete_group(self, token: str, user: str) -> None:
-        if token == self.settings.access_profile:
-            raise ServiceError("il gruppo predefinito delle opzioni non si elimina")
+        if token == self.access.default_group:
+            raise ServiceError("è il gruppo predefinito: scegline prima un altro come predefinito")
+        used_by = [c["name"] for c in self.db.list_categories() if c["group_token"] == token]
+        if used_by:
+            raise ServiceError(f"gruppo usato dalle tipologie {', '.join(used_by)}: cambia prima il loro gruppo")
         persons = self.db.profile_usage().get(token, 0)
         if persons:
             raise ServiceError(f"gruppo assegnato a {persons} persone: spostale prima in un altro gruppo")
         async with self.lock:
             await self.controller.remove_access_profile(token)
+            self.db.set_hidden("group", token, False)
             self.db.add_audit(user, "gruppo eliminato", token)
+
+    async def set_default_group(self, token: str, user: str) -> None:
+        tokens = {p.get("token") for p in await self.controller.list_access_profiles()}
+        if token not in tokens:
+            raise ServiceError("gruppo non trovato sul controller")
+        self.db.set_setting("default_group", token)
+        self.db.set_hidden("group", token, False)
+        self.db.add_audit(user, "gruppo predefinito cambiato", token)
+
+    # Tipologie di tessera
+
+    def list_categories(self) -> list[dict]:
+        return self.db.list_categories()
+
+    def _category_fields(self, fields: dict) -> dict:
+        name = normalize_name(fields.get("name", ""))
+        if len(name) > 40:
+            raise ServiceError("nome della tipologia troppo lungo (massimo 40 caratteri)")
+        color = fields.get("color") or COLORS[0]
+        if color not in COLORS:
+            raise ServiceError("colore non valido")
+        try:
+            valid_days = int(fields.get("valid_days") or 0)
+        except (TypeError, ValueError) as err:
+            raise ServiceError("durata non valida") from err
+        if not 0 <= valid_days <= 3650:
+            raise ServiceError("durata tra 0 (illimitata) e 3650 giorni")
+        return {
+            "name": name,
+            "color": color,
+            "group_token": (fields.get("group_token") or "").strip(),
+            "valid_days": valid_days,
+            "description": normalize_text(fields.get("description"), 200, "descrizione"),
+        }
+
+    async def _check_group(self, token: str) -> None:
+        if token and token not in {p.get("token") for p in await self.controller.list_access_profiles()}:
+            raise ServiceError("il gruppo scelto non esiste più sul controller")
+
+    async def save_category(self, category_id: int | None, fields: dict, user: str, apply: bool = False) -> dict:
+        """Crea o modifica una tipologia; con apply il nuovo gruppo vale subito per tutte le sue persone."""
+        values = self._category_fields(fields)
+        other = self.db.category_by_name(values["name"])
+        if other and other["id"] != category_id:
+            raise ServiceError(f"esiste già la tipologia {other['name']}")
+        old = self.db.get_category(category_id) if category_id else None
+        if category_id and old is None:
+            raise ServiceError("tipologia non trovata")
+        if not old or old["group_token"] != values["group_token"]:
+            await self._check_group(values["group_token"])
+        category_id = self.db.save_category(category_id, values)
+        self.db.add_audit(user, "tipologia modificata" if old else "tipologia creata", values["name"])
+        updated = 0
+        if apply and values["group_token"]:
+            for person in self.db.persons_of_category(category_id):
+                cards = person["cards"]
+                if cards and cards[0]["access_profile"] != values["group_token"]:
+                    first = cards[0]
+                    await self.access.set_person_access(
+                        person["id"], values["group_token"], first["valid_from"], first["valid_to"], user
+                    )
+                    updated += 1
+        return {"id": category_id, "updated": updated}
+
+    def delete_category(self, category_id: int, user: str) -> None:
+        category = self.db.get_category(category_id)
+        if category is None:
+            raise ServiceError("tipologia non trovata")
+        self.db.delete_category(category_id)
+        self.db.add_audit(user, "tipologia eliminata", category["name"])

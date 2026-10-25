@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
-<title>Controllo accessi</title>
+<title>Controllo Accessi</title>
 <style>
   :root {
     --bg: #f3f5f8; --surface: #ffffff; --surface-2: #f7f8fa; --text: #1b1f24; --muted: #5f6b7a;
@@ -78,7 +78,9 @@
   input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); vertical-align: middle; }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
           padding: 18px; margin-bottom: 16px; }
-  .card > h2, .section-title { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
+  .card > h2, .section-title { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .card > h2 .pill { white-space: normal; }
+  .nav .lbl-short { display: none; }
   .card > h2 .spacer, .row .spacer { flex: 1; }
   .card.flush { padding: 0; }
   .card.flush > h2 { padding: 16px 18px 0; }
@@ -106,7 +108,7 @@
   .pill.accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
-  .door-pill { font-size: 14px; padding: 5px 12px; }
+  .door-pill { font-size: 14px; padding: 5px 12px; white-space: normal; max-width: 100%; }
   .alert { display: flex; gap: 12px; align-items: flex-start; border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
            background: var(--warn-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
   .alert.err { background: var(--err-soft); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
@@ -143,8 +145,9 @@
   .k-muted { background: var(--surface-2); color: var(--muted); }
   .thumb { width: 64px; height: 48px; border-radius: 8px; object-fit: cover; cursor: zoom-in; border: 1px solid var(--border);
            flex: none; background: var(--surface-2); }
-  .segmented { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 3px; gap: 2px; margin-bottom: 16px; }
-  .segmented a { padding: 6px 14px; border-radius: 8px; color: var(--muted); font-weight: 500; }
+  .segmented { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 3px; gap: 2px; margin-bottom: 16px;
+               max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .segmented a { padding: 6px 14px; border-radius: 8px; color: var(--muted); font-weight: 500; white-space: nowrap; }
   .segmented a:hover { text-decoration: none; color: var(--text); }
   .segmented a.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
   table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -207,7 +210,24 @@
              animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .loading { padding: 40px; text-align: center; color: var(--muted); }
-  body.readonly .write { display: none !important; }
+  /* Pulsanti e sezioni visibili solo con il permesso giusto */
+  body.no-persone_modifica .w-persone, body.no-regole_modifica .w-regole, body.no-import_export .w-io,
+  body.no-utenti .w-admin { display: none !important; }
+  .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex: none; background: var(--muted); }
+  .c-blue { --c: #2f7de1; } .c-green { --c: #2ea44f; } .c-orange { --c: #e8871e; } .c-red { --c: #d93f3f; }
+  .c-purple { --c: #8a5cd6; } .c-teal { --c: #1f9e9e; } .c-pink { --c: #d6519b; } .c-gray { --c: #7d8894; }
+  .swatch[class*="c-"] { background: var(--c); }
+  .pill.cat { background: color-mix(in srgb, var(--c) 14%, transparent); color: var(--c); border-color: transparent; }
+  .colors { display: flex; gap: 8px; flex-wrap: wrap; }
+  .colors label { cursor: pointer; }
+  .colors input { position: absolute; opacity: 0; pointer-events: none; }
+  .colors .swatch { width: 28px; height: 28px; border: 3px solid transparent; }
+  .colors input:checked + .swatch { border-color: var(--text); }
+  .colors input:focus-visible + .swatch { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .card.is-hidden { opacity: .6; border-style: dashed; }
+  .perm-list { display: grid; gap: 8px; margin-top: 4px; }
+  .perm-list label { display: flex; gap: 10px; align-items: flex-start; color: var(--text); font-size: 14px; }
+  .perm-list input { margin-top: 2px; }
 
   @media (max-width: 1000px) {
     .grid.kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -219,7 +239,7 @@
            border-top: 1px solid var(--border); justify-content: space-around; }
     .brand, .nav .foot { display: none; }
     .nav a { flex-direction: column; gap: 2px; padding: 6px 2px; font-size: 10.5px; flex: 1; min-width: 0; text-align: center; border-radius: 8px; }
-    .nav a span.lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+    .nav a span.lbl, .nav a span.lbl-short { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
     .nav .count { position: absolute; top: 2px; left: 55%; margin: 0; font-size: 10px; min-width: 16px; line-height: 16px; padding: 0 4px; }
     .topbar { padding: 10px 14px; }
     .topbar h1 { font-size: 18px; }
@@ -235,9 +255,11 @@
     dialog { width: calc(100vw - 16px); }
   }
   @media (max-width: 480px) {
+    .nav a span.lbl { display: none; }
+    .nav a span.lbl-short { display: block; }
     .topbar h1 { display: none; }
-    .door { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
-    .door .door-pill { grid-column: 1 / -1; justify-content: center; }
+    .door { width: 100%; }
+    .door .door-pill { flex: 1; justify-content: center; }
     .kpi .value { font-size: 24px; }
   }
 </style>
@@ -245,22 +267,21 @@
 <body>
 <div class="app">
   <nav class="nav" id="nav">
-    <div class="brand"><span class="logo" data-icon="door"></span>Controllo accessi</div>
-    <a href="#cruscotto" data-route="cruscotto"><span data-icon="dashboard"></span><span class="lbl">Cruscotto</span></a>
-    <a href="#persone" data-route="persone"><span data-icon="people"></span><span class="lbl">Persone</span></a>
-    <a href="#da-registrare" data-route="da-registrare"><span data-icon="cardplus"></span><span class="lbl">Da registrare</span><span class="count" id="nav-unknown" hidden></span></a>
-    <a href="#registro" data-route="registro"><span data-icon="list"></span><span class="lbl">Registro</span></a>
-    <a href="#regole" data-route="regole"><span data-icon="clock"></span><span class="lbl">Regole</span></a>
-    <a href="#impostazioni" data-route="impostazioni"><span data-icon="cog"></span><span class="lbl">Impostazioni</span></a>
+    <div class="brand"><span class="logo" data-icon="door"></span>Controllo Accessi</div>
+    <a href="#cruscotto" data-route="cruscotto"><span data-icon="dashboard"></span><span class="lbl">Cruscotto</span><span class="lbl-short">Home</span></a>
+    <a href="#persone" data-route="persone"><span data-icon="people"></span><span class="lbl">Persone</span><span class="lbl-short">Persone</span></a>
+    <a href="#da-registrare" data-route="da-registrare"><span data-icon="cardplus"></span><span class="lbl">Da Registrare</span><span class="lbl-short">Nuove</span><span class="count" id="nav-unknown" hidden></span></a>
+    <a href="#registro" data-route="registro"><span data-icon="list"></span><span class="lbl">Registro</span><span class="lbl-short">Registro</span></a>
+    <a href="#regole" data-route="regole"><span data-icon="clock"></span><span class="lbl">Regole</span><span class="lbl-short">Regole</span></a>
+    <a href="#impianti" data-route="impianti"><span data-icon="building"></span><span class="lbl">Impianti</span><span class="lbl-short">Impianti</span></a>
+    <a href="#impostazioni" data-route="impostazioni"><span data-icon="cog"></span><span class="lbl">Impostazioni</span><span class="lbl-short">Opzioni</span></a>
     <div class="foot" id="nav-foot"></div>
   </nav>
   <div class="main">
     <header class="topbar">
       <h1 id="page-title">Cruscotto</h1>
       <div class="door">
-        <span class="pill door-pill" id="door-pill"><span class="dot" id="door-dot"></span><span id="door-text">porta: …</span></span>
-        <button type="button" class="primary write" data-open="0"><span data-icon="dooropen"></span>Apri</button>
-        <button type="button" class="write" data-open="1">Apri a lungo</button>
+        <span class="pill door-pill" id="door-pill"><span class="dot" id="door-dot"></span><span id="door-text">Porta …</span></span>
       </div>
     </header>
     <div class="content" id="view"><div class="loading"><span class="spinner"></span></div></div>
@@ -305,6 +326,9 @@ const ICONS = {
   shield: "M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1Z",
   edit: "M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z",
   trash: "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z",
+  camera: "M4,4H7L9,2H15L17,4H20A2,2 0 0,1 22,6V18A2,2 0 0,1 20,20H4A2,2 0 0,1 2,18V6A2,2 0 0,1 4,4M12,7A5,5 0 0,0 7,12A5,5 0 0,0 12,17A5,5 0 0,0 17,12A5,5 0 0,0 12,7M12,9A3,3 0 0,1 15,12A3,3 0 0,1 12,15A3,3 0 0,1 9,12A3,3 0 0,1 12,9Z",
+  building: "M5,3V21H11V17.5H13V21H19V3H5M7,5H9V7H7V5M11,5H13V7H11V5M15,5H17V7H15V5M7,9H9V11H7V9M11,9H13V11H11V9M15,9H17V11H15V9M7,13H9V15H7V13M11,13H13V15H11V13M15,13H17V15H15V13M7,17H9V19H7V17M15,17H17V19H15V17Z",
+  user: "M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z",
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ""}"/></svg>`;
 function paintIcons(root = document) {
@@ -312,17 +336,17 @@ function paintIcons(root = document) {
 }
 
 const DOOR_MODES = {
-  Locked: "bloccata", Accessed: "aperta a tempo", Unlocked: "sbloccata", LockedOpen: "aperta",
-  Blocked: "bloccata da regola", LockedDown: "in blocco", DoubleLocked: "doppia chiusura",
+  Locked: "Bloccata", Accessed: "Aperta a Tempo", Unlocked: "Sbloccata", LockedOpen: "Aperta",
+  Blocked: "Bloccata da Regola", LockedDown: "In Blocco", DoubleLocked: "Doppia Chiusura",
 };
 // Tipi di evento del registro: etichetta, colore, icona
 const KINDS = {
-  concesso: ["Accesso concesso", "k-ok", "check"],
-  negato: ["Accesso negato", "k-warn", "block"],
-  lettura: ["Tessera letta", "k-accent", "card"],
-  sconosciuta: ["Tessera sconosciuta", "k-warn", "question"],
-  apertura_remota: ["Apertura da app", "k-ok", "dooropen"],
-  allarme: ["Allarme porta", "k-err", "alert"],
+  concesso: ["Accesso Concesso", "k-ok", "check"],
+  negato: ["Accesso Negato", "k-warn", "block"],
+  lettura: ["Tessera Letta", "k-accent", "card"],
+  sconosciuta: ["Tessera Sconosciuta", "k-warn", "question"],
+  apertura_remota: ["Apertura Remota", "k-ok", "dooropen"],
+  allarme: ["Allarme Porta", "k-err", "alert"],
   manomissione: ["Manomissione", "k-err", "shield"],
   citofono: ["Citofono", "k-info", "phone"],
 };
@@ -436,13 +460,16 @@ function showImage(src, title) {
 }
 
 // ---------- Stato condiviso ----------
-const store = {me: {readonly: false}, persons: [], groups: null, schedules: null, summary: {}};
+const store = {me: {perms: [], admin: false}, persons: [], groups: null, schedules: null, categories: [], summary: {}};
+const can = (perm) => Boolean(store.me.admin || store.me.perms.includes(perm));
+const ALL_PERMS = ["persone", "persone_modifica", "registro", "regole", "regole_modifica", "import_export", "impianti", "utenti"];
 async function loadGroups(force = false) {
   if (store.groups && !force) return store.groups;
   try {
     const data = await api("api/groups");
     store.groups = data.groups;
     store.schedules = data.schedules;
+    store.categories = data.categories || [];
   } catch (err) {
     store.groups = store.groups || [];
     store.schedules = store.schedules || [];
@@ -451,6 +478,34 @@ async function loadGroups(force = false) {
   return store.groups;
 }
 const groupName = (token) => (store.groups || []).find((g) => g.token === token)?.name || token || "—";
+const categoryOf = (id) => store.categories.find((c) => c.id === id);
+const categoryPill = (c) => c ? `<span class="pill cat c-${esc(c.color)}"><span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}</span>` : "";
+const COLORS = {blue: "Blu", green: "Verde", orange: "Arancione", red: "Rosso", purple: "Viola", teal: "Turchese", pink: "Rosa", gray: "Grigio"};
+function categorySelect(selected = 0) {
+  return `<select name="category"><option value="0">Nessuna</option>${store.categories.map((c) => `<option value="${c.id}" ${c.id === selected ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>`;
+}
+// La tipologia scelta nel modulo propone il suo gruppo e la sua durata
+function bindCategory(dlg) {
+  const select = $("[name=category]", dlg);
+  if (!select) return;
+  select.addEventListener("change", () => {
+    const c = categoryOf(Number(select.value));
+    if (!c) return;
+    if (c.group_token && $("[name=group]", dlg)) {
+      const group = $("[name=group]", dlg);
+      if (![...group.options].some((o) => o.value === c.group_token)) group.insertAdjacentHTML("beforeend", `<option value="${esc(c.group_token)}">${esc(groupName(c.group_token))}</option>`);
+      group.value = c.group_token;
+    }
+    if (c.valid_days && $("#f-limited", dlg)) {
+      $("#f-limited", dlg).checked = true;
+      $("#f-validity", dlg).hidden = false;
+      const now = new Date();
+      now.setSeconds(0, 0);
+      $("[name=valid_from]", dlg).value = toLocalInput(now.toISOString());
+      $("[name=valid_to]", dlg).value = toLocalInput(new Date(now.getTime() + c.valid_days * 86400000).toISOString());
+    }
+  });
+}
 function personAccess(p) {
   const c = p.cards[0] || {};
   return {group: c.access_profile || "", from: c.valid_from || "", to: c.valid_to || ""};
@@ -472,9 +527,9 @@ function validityText(from, to) {
   return from ? `dal ${fmtDateTime(from)}` : `fino al ${fmtDateTime(to)}`;
 }
 const VALIDITY_PILL = {
-  futura: '<span class="pill info">non ancora valida</span>',
-  scaduta: '<span class="pill err">scaduta</span>',
-  in_scadenza: '<span class="pill warn">in scadenza</span>',
+  futura: '<span class="pill info">Non Ancora Valida</span>',
+  scaduta: '<span class="pill err">Scaduta</span>',
+  in_scadenza: '<span class="pill warn">In Scadenza</span>',
 };
 
 // ---------- Intestazione ----------
@@ -485,43 +540,40 @@ async function loadSummary() {
     const mode = s.door_mode;
     $("#door-dot").className = "dot " + (mode === "Locked" ? "ok" : mode ? "warn" : "");
     $("#door-pill").className = "pill door-pill " + (mode === "Locked" ? "ok" : mode ? "warn" : "");
-    $("#door-text").textContent = mode ? "Porta " + (DOOR_MODES[mode] || mode) : "Stato porta sconosciuto";
+    const doors = s.doors || [];
+    const label = doors.length > 1 ? doors.map((d) => `${d.name}: ${d.mode ? DOOR_MODES[d.mode] || d.mode : "Sconosciuto"}`).join(" · ") : null;
+    $("#door-text").textContent = !s.configured ? "Impianto Non Configurato" : label || (mode ? "Porta " + (DOOR_MODES[mode] || mode) : "Stato Porta Sconosciuto");
     const badge = $("#nav-unknown");
     badge.hidden = !s.unknown_cards;
     badge.textContent = s.unknown_cards;
   } catch (err) {
-    $("#door-text").textContent = "add-on non raggiungibile";
+    $("#door-text").textContent = "Add-on Non Raggiungibile";
     $("#door-pill").className = "pill door-pill err";
   }
 }
-$$("[data-open]").forEach((btn) => btn.addEventListener("click", async () => {
-  const extended = btn.dataset.open === "1";
-  btn.disabled = true;
-  await run(() => api("api/door/open", {method: "POST", body: {extended}}), extended ? "Porta aperta con tempo esteso" : "Porta aperta");
-  btn.disabled = false;
-  loadSummary();
-}));
 
 // ---------- Navigazione ----------
+// Pagina: titolo, vista, permesso necessario per vederla
 const ROUTES = {
-  cruscotto: ["Cruscotto", viewDashboard],
-  persone: ["Persone", viewPersons],
-  "da-registrare": ["Da registrare", viewUnknown],
-  registro: ["Registro accessi", viewLog],
-  regole: ["Regole di accesso", viewRules],
-  impostazioni: ["Impostazioni", viewSettings],
+  cruscotto: ["Cruscotto", viewDashboard, ""],
+  persone: ["Persone", viewPersons, "persone"],
+  "da-registrare": ["Da Registrare", viewUnknown, "persone"],
+  registro: ["Registro Accessi", viewLog, "registro"],
+  regole: ["Regole di Accesso", viewRules, "regole"],
+  impianti: ["Impianti", viewInstallation, "impianti"],
+  impostazioni: ["Impostazioni", viewSettings, ""],
 };
 let route = {name: "cruscotto", sub: ""};
 function parseHash() {
   const [name, sub = ""] = location.hash.replace(/^#/, "").split("/");
-  return ROUTES[name] ? {name, sub} : {name: "cruscotto", sub: ""};
+  return ROUTES[name] && (!ROUTES[name][2] || can(ROUTES[name][2])) ? {name, sub} : {name: "cruscotto", sub: ""};
 }
 async function render() {
   route = parseHash();
   if ($("#sheet").open && !(route.name === "persone" && route.sub)) $("#sheet").close();
   const [title, view] = ROUTES[route.name];
   $("#page-title").textContent = title;
-  document.title = `${title} · Controllo accessi`;
+  document.title = `${title} · Controllo Accessi`;
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === route.name));
   const el = $("#view");
   el.dataset.route = route.name;
@@ -539,7 +591,7 @@ async function refreshView() {
 // ---------- Cruscotto ----------
 function eventItem(e, {showSnapshot = true} = {}) {
   const [label, cls, ic] = KINDS[e.kind] || [e.kind, "k-muted", "list"];
-  const source = e.kind === "apertura_remota" && e.source ? `da ${esc(e.source)}` : "";
+  const source = ["apertura_remota", "citofono"].includes(e.kind) && e.source ? `da ${esc(e.source)}` : "";
   return `<div class="item">
     <div class="ev-icon ${cls}">${icon(ic)}</div>
     <div class="grow">
@@ -557,13 +609,14 @@ async function viewDashboard(el) {
   try { d = await api("api/dashboard"); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   const t = d.today;
   const alerts = [];
-  if (d.unknown_cards) alerts.push(`<div class="alert info">${icon("cardplus")}<div class="grow"><b>${plural(d.unknown_cards, "tessera da registrare", "tessere da registrare")}</b>
+  if (store.summary.configured === false) alerts.push(`<div class="alert info">${icon("cog")}<div class="grow"><b>Impianto da Configurare</b>${can("impianti") ? "Aggiungi il controller e le porte nella pagina Impianti." : "Chiedi a un amministratore di configurare il controller."}</div>${can("impianti") ? '<a class="btn small primary" href="#impianti">Impianti</a>' : ""}</div>`);
+  if (d.unknown_cards && can("persone")) alerts.push(`<div class="alert info">${icon("cardplus")}<div class="grow"><b>${plural(d.unknown_cards, "tessera da registrare", "tessere da registrare")}</b>
     Sono state passate sul lettore ma non appartengono a nessuno.</div><a class="btn small" href="#da-registrare">Registra</a></div>`);
-  if (d.expiring.length) alerts.push(`<div class="alert">${icon("clock")}<div class="grow"><b>Tessere in scadenza nei prossimi 7 giorni</b>
+  if (d.expiring.length) alerts.push(`<div class="alert">${icon("clock")}<div class="grow"><b>Tessere in Scadenza nei Prossimi 7 Giorni</b>
     ${d.expiring.map((e) => `<a href="#persone/${e.id}">${esc(e.name)}</a> (${esc(fmtDateTime(e.valid_to))})`).join(", ")}</div></div>`);
-  if (store.summary.mqtt_connected === false) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>Eventi non in arrivo</b>
+  if (store.summary.mqtt_connected === false && store.summary.configured !== false) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>Eventi Non in Arrivo</b>
     Il collegamento MQTT non è attivo: registro e stato porta non si aggiornano.</div><a class="btn small" href="#impostazioni">Dettagli</a></div>`);
-  if (t.alarms) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>${plural(t.alarms, "allarme", "allarmi")} oggi</b>Porta forzata, aperta troppo a lungo o manomissione.</div><a class="btn small" href="#registro">Vedi</a></div>`);
+  if (t.alarms) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>${plural(t.alarms, "allarme", "allarmi")} oggi</b>Porta forzata, aperta troppo a lungo o manomissione.</div>${can("registro") ? '<a class="btn small" href="#registro">Vedi</a>' : ""}</div>`);
   const max = Math.max(1, ...d.week.map((w) => w.granted + w.denied + w.unknown));
   const chart = d.week.map((w) => {
     const total = w.granted + w.denied + w.unknown;
@@ -577,42 +630,48 @@ async function viewDashboard(el) {
   el.innerHTML = `
     ${alerts.join("")}
     <div class="grid kpi" style="margin-bottom:16px">
-      <div class="card"><div class="label">Accessi oggi</div><div class="value">${t.granted + t.remote}</div><div class="sub">${t.remote ? `di cui ${t.remote} da app` : "con tessera"}${!t.granted && t.reads ? ` · ${t.reads} letture` : ""}</div></div>
-      <div class="card"><div class="label">Negati oggi</div><div class="value" style="color:${t.denied + t.unknown ? "var(--warn)" : "inherit"}">${t.denied + t.unknown}</div><div class="sub">${t.unknown} tessere sconosciute</div></div>
-      <div class="card"><div class="label">Persone</div><div class="value">${d.persons}</div><div class="sub"><a href="#persone">anagrafica</a></div></div>
+      <div class="card"><div class="label">Accessi Oggi</div><div class="value">${t.granted + t.remote}</div><div class="sub">${t.remote ? `di cui ${t.remote} aperture remote` : "con tessera"}${!t.granted && t.reads ? ` · ${t.reads} letture` : ""}</div></div>
+      <div class="card"><div class="label">Negati Oggi</div><div class="value" style="color:${t.denied + t.unknown ? "var(--warn)" : "inherit"}">${t.denied + t.unknown}</div><div class="sub">${t.unknown} tessere sconosciute</div></div>
+      <div class="card"><div class="label">Persone</div><div class="value">${d.persons}</div><div class="sub">${can("persone") ? '<a href="#persone">anagrafica</a>' : "registrate"}</div></div>
       <div class="card"><div class="label">Tessere</div><div class="value">${d.cards}</div><div class="sub">${d.cards_suspended ? `${d.cards_suspended} sospese` : "tutte attive"}</div></div>
     </div>
     <div class="grid two">
-      <div class="card"><h2>Ultimi 7 giorni</h2><div class="chart">${chart}</div>
+      <div class="card"><h2>Ultimi 7 Giorni</h2><div class="chart">${chart}</div>
         <div class="legend"><span><i style="background:var(--ok)"></i>concessi</span><span><i style="background:var(--warn)"></i>negati</span><span><i style="background:var(--err)"></i>tessere sconosciute</span></div></div>
-      <div class="card flush"><h2>Ultimi eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro completo</a></h2>
-        <div class="list" style="margin-top:8px">${d.recent.length ? d.recent.map((e) => eventItem(e, {showSnapshot: false})).join("") : '<div class="empty">nessun evento registrato</div>'}</div></div>
+      ${can("registro") ? `<div class="card flush"><h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro Completo</a></h2>
+        <div class="list" style="margin-top:8px">${d.recent.length ? d.recent.map((e) => eventItem(e, {showSnapshot: false})).join("") : '<div class="empty">nessun evento registrato</div>'}</div></div>` : `<div class="card"><h2>Ultimi Eventi</h2><p class="muted" style="margin:0">Il tuo utente non ha il permesso di vedere il registro accessi.</p></div>`}
     </div>`;
 }
 
 // ---------- Persone ----------
-const personFilters = {q: "", group: "", state: ""};
+const personFilters = {q: "", group: "", state: "", category: ""};
 async function loadPersons() {
   store.persons = await api("api/persons");
   return store.persons;
 }
 async function viewPersons(el, sub) {
   try { await Promise.all([loadPersons(), loadGroups()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
-  const groupOptions = (store.groups || []).map((g) => `<option value="${esc(g.token)}">${esc(g.name)}</option>`).join("");
+  const groupOptions = (store.groups || []).filter((g) => !g.hidden || store.persons.some((p) => personAccess(p).group === g.token)).map((g) => `<option value="${esc(g.token)}">${esc(g.name)}</option>`).join("");
+  const categoryOptions = store.categories.map((c) => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
   el.innerHTML = `
     <div class="toolbar">
       <input type="search" id="p-q" placeholder="Cerca nome, ditta o numero tessera" value="${esc(personFilters.q)}">
-      <select id="p-group"><option value="">Tutti i gruppi</option>${groupOptions}</select>
+      ${store.categories.length ? `<select id="p-cat"><option value="">Tutte le Tipologie</option>${categoryOptions}<option value="0">Senza Tipologia</option></select>` : ""}
+      <select id="p-group"><option value="">Tutti i Gruppi</option>${groupOptions}</select>
       <select id="p-state">
-        <option value="">Tutte le persone</option><option value="attive">Con tessere attive</option><option value="sospese">Con tessere sospese</option>
-        <option value="in_scadenza">In scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non ancora valide</option>
+        <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
+        <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
       </select>
-      <button type="button" class="primary write" id="p-new">${icon("plus")}Nuova persona</button>
+      <button type="button" class="primary w-persone" id="p-new">${icon("plus")}Nuova Persona</button>
     </div>
     <div class="card flush"><h2 style="padding-bottom:12px"><span id="p-count" class="muted small-text"></span><span class="spacer"></span>
-      <button type="button" class="small ghost write" id="p-sync" title="Rilegge tessere e utenti dal controller">${icon("refresh")}Rileggi dal controller</button></h2>
+      <button type="button" class="small ghost w-persone" id="p-sync" title="Rilegge tessere e utenti dal controller">${icon("refresh")}Rileggi dal Controller</button></h2>
       <div class="list" id="p-list"></div></div>`;
   $("#p-group").value = personFilters.group;
+  if ($("#p-cat")) {
+    $("#p-cat").value = personFilters.category;
+    $("#p-cat").addEventListener("change", (e) => { personFilters.category = e.target.value; renderPersonList(); });
+  }
   $("#p-state").value = personFilters.state;
   $("#p-q").addEventListener("input", (e) => { personFilters.q = e.target.value; renderPersonList(); });
   $("#p-group").addEventListener("change", (e) => { personFilters.group = e.target.value; renderPersonList(); });
@@ -641,6 +700,7 @@ function renderPersonList() {
     const a = personAccess(p);
     if (q && !(p.name.toLowerCase().includes(q) || (p.company || "").toLowerCase().includes(q) || p.cards.some((c) => c.number.toLowerCase().includes(q)))) return false;
     if (personFilters.group && a.group !== personFilters.group) return false;
+    if (personFilters.category !== "" && (p.category_id || 0) !== Number(personFilters.category)) return false;
     const st = personFilters.state;
     if (st === "attive" && !p.cards.some((c) => c.enabled)) return false;
     if (st === "sospese" && !p.cards.some((c) => !c.enabled)) return false;
@@ -658,6 +718,7 @@ function renderPersonList() {
       <div class="grow">
         <div class="title">${esc(p.name)}${p.company ? ` <span class="muted" style="font-weight:400">· ${esc(p.company)}</span>` : ""}</div>
         <div class="meta">
+          ${categoryPill(categoryOf(p.category_id))}
           <span class="pill accent">${esc(groupName(a.group))}</span>
           ${VALIDITY_PILL[vs] || ""}
           ${p.cards.map((c) => `<span class="chip ${c.enabled ? "" : "off"}" title="${c.enabled ? "attiva" : "sospesa"}">${icon("card", "icon")} <code>${esc(c.number)}</code></span>`).join("")}
@@ -670,19 +731,20 @@ function renderPersonList() {
 
 function groupSelect(selected, name = "group") {
   const groups = store.groups || [];
-  const options = groups.map((g) => `<option value="${esc(g.token)}" ${g.token === selected ? "selected" : ""}>${esc(g.name)}${g.schedule_names.length && g.schedule_names.join(", ") !== g.name ? " · " + esc(g.schedule_names.join(", ")) : ""}${g.default ? " (predefinito)" : ""}</option>`).join("");
+  // I gruppi nascosti compaiono solo se sono già quelli della persona
+  const options = groups.filter((g) => !g.hidden || g.token === selected).map((g) => `<option value="${esc(g.token)}" ${g.token === selected ? "selected" : ""}>${esc(g.name)}${g.schedule_names.length && g.schedule_names.join(", ") !== g.name ? " · " + esc(g.schedule_names.join(", ")) : ""}${g.default ? " (Predefinito)" : ""}</option>`).join("");
   const missing = selected && !groups.some((g) => g.token === selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : "";
-  return `<select name="${name}">${groups.length ? "" : `<option value="">Predefinito delle opzioni</option>`}${missing}${options}</select>`;
+  return `<select name="${name}">${groups.length ? "" : `<option value="">Gruppo Predefinito</option>`}${missing}${options}</select>`;
 }
 function validityFields(from = "", to = "") {
   const limited = Boolean(from || to);
-  return `<div class="field inline"><input type="checkbox" name="limited" id="f-limited" ${limited ? "checked" : ""}><label for="f-limited">Validità limitata (ospiti, imprese, temporanei)</label></div>
+  return `<div class="field inline"><input type="checkbox" name="limited" id="f-limited" ${limited ? "checked" : ""}><label for="f-limited">Validità Limitata (ospiti, imprese, temporanei)</label></div>
     <div id="f-validity" ${limited ? "" : "hidden"}>
       <div class="fields-2">${field("Valida dal", `<input type="datetime-local" name="valid_from" value="${esc(toLocalInput(from))}">`)}
       ${field("Valida fino al", `<input type="datetime-local" name="valid_to" value="${esc(toLocalInput(to))}">`)}</div>
       <div class="presets"><span class="muted small-text">Da adesso:</span>
-        <button type="button" class="small" data-preset="1">1 giorno</button><button type="button" class="small" data-preset="7">1 settimana</button>
-        <button type="button" class="small" data-preset="30">1 mese</button><button type="button" class="small" data-preset="365">1 anno</button></div>
+        <button type="button" class="small" data-preset="1">1 Giorno</button><button type="button" class="small" data-preset="7">1 Settimana</button>
+        <button type="button" class="small" data-preset="30">1 Mese</button><button type="button" class="small" data-preset="365">1 Anno</button></div>
     </div>`;
 }
 function bindValidity(dlg) {
@@ -705,20 +767,21 @@ function readValidity(dlg) {
 async function newPerson(card = "") {
   await loadGroups();
   const created = await modal({
-    title: "Nuova persona",
-    body: `${field("Nome e cognome", `<input name="name" autocomplete="off" maxlength="100" required>`)}
-      ${field("Ditta o reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
-      ${field("Numero tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="es. 04A1B2C3D4E5F6">`, card ? "" : "Più comodo: passa la tessera sul lettore e registrala da \"Da registrare\".")}
+    title: "Nuova Persona",
+    body: `${field("Nome e Cognome", `<input name="name" autocomplete="off" maxlength="100" required>`)}
+      ${field("Ditta o Reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
+      ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="es. 04A1B2C3D4E5F6">`, card ? "" : "Più comodo: passa la tessera sul lettore e registrala da \"Da Registrare\".")}
+      ${store.categories.length ? field("Tipologia", categorySelect(), "La tipologia imposta da sola gruppo e durata: puoi comunque cambiarli qui sotto.") : ""}
       ${field("Gruppo", groupSelect(store.me.default_group), "Il gruppo decide in quali orari la tessera apre la porta.")}
       ${validityFields()}
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}`,
     actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
-      const body = {name: val(dlg, "name"), card: val(dlg, "card"), company: val(dlg, "company"), notes: val(dlg, "notes"), group: val(dlg, "group"), ...readValidity(dlg)};
+      const body = {name: val(dlg, "name"), card: val(dlg, "card"), company: val(dlg, "company"), notes: val(dlg, "notes"), group: val(dlg, "group"), category_id: Number(val(dlg, "category") || 0), ...readValidity(dlg)};
       if (!body.name || !body.card) { toast("Servono nome e numero tessera", true); return false; }
       const person = await run(() => api("api/persons", {method: "POST", body}), "Persona registrata: la tessera è attiva sul controller");
       return person || false;
     }}],
-    onOpen: bindValidity,
+    onOpen: (dlg) => { bindValidity(dlg); bindCategory(dlg); },
   });
   if (created) {
     loadSummary();
@@ -741,45 +804,49 @@ async function openPerson(id) {
       <div style="flex:1;min-width:0"><h2 style="margin:0">${esc(p.name)}</h2><div class="muted small-text">${esc(p.company || "")}${p.company ? " · " : ""}${p.last_access ? "ultimo accesso " + esc(relTime(p.last_access)) : "nessun accesso registrato"}</div></div>
       <button type="button" class="ghost icon-only" data-close aria-label="Chiudi">${icon("close")}</button></div>
     <div class="dlg-body" tabindex="-1" autofocus>
-      <div class="card"><h2>Accesso<span class="spacer"></span><button type="button" class="small write" data-edit-access>${icon("edit")}Modifica</button></h2>
+      <div class="card"><h2>Accesso<span class="spacer"></span><button type="button" class="small w-persone" data-edit-access>${icon("edit")}Modifica</button></h2>
         <dl class="props">
+          <dt>Tipologia</dt><dd>${categoryPill(categoryOf(p.category_id)) || '<span class="muted">Nessuna</span>'}</dd>
           <dt>Gruppo</dt><dd><span class="pill accent">${esc(groupName(a.group))}</span>${group && group.schedule_names.length && group.schedule_names.join(", ") !== group.name ? `<div class="muted small-text" style="margin-top:4px">${esc(group.schedule_names.join(", "))}</div>` : ""}</dd>
           <dt>Validità</dt><dd>${esc(validityText(a.from, a.to))} ${VALIDITY_PILL[vs] || ""}</dd>
         </dl></div>
-      <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small write" data-add-card>${icon("plus")}Aggiungi</button></h2>
+      <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
           <div class="ev-icon ${c.enabled ? "k-accent" : "k-muted"}">${icon("card")}</div>
-          <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${c.enabled ? '<span class="pill ok">attiva</span>' : '<span class="pill">sospesa</span>'}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
-          <div class="row write item-actions"><button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>
+          <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${c.enabled ? '<span class="pill ok">Attiva</span>' : '<span class="pill">Sospesa</span>'}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
+          <div class="row w-persone item-actions"><button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>
           <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("")}</div></div>
-      <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small write" data-edit-data>${icon("edit")}Modifica</button></h2>
-        <dl class="props"><dt>Nome</dt><dd>${esc(p.name)}</dd><dt>Ditta o reparto</dt><dd>${esc(p.company || "—")}</dd>
+      <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
+        <dl class="props"><dt>Nome</dt><dd>${esc(p.name)}</dd><dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
           <dt>Note</dt><dd style="white-space:pre-wrap">${esc(p.notes || "—")}</dd><dt>Utente Axis</dt><dd><code>${esc(p.axis_user_token || "")}</code></dd></dl></div>
-      <div class="card flush"><h2>Ultimi passaggi<span class="spacer"></span><a class="small-text" href="#registro" data-person-log>Tutto il registro</a></h2>
-        <div class="list" style="margin-top:6px">${p.events.length ? p.events.map((e) => eventItem(e)).join("") : '<div class="empty">nessun passaggio registrato</div>'}</div></div>
-      <div class="write" style="text-align:center;margin:8px 0 20px"><button type="button" class="danger" data-del-person>${icon("trash")}Elimina persona e tessere</button></div>
+      ${can("registro") ? `<div class="card flush"><h2>Ultimi Passaggi<span class="spacer"></span><a class="small-text" href="#registro" data-person-log>Tutto il Registro</a></h2>
+        <div class="list" style="margin-top:6px">${p.events.length ? p.events.map((e) => eventItem(e)).join("") : '<div class="empty">nessun passaggio registrato</div>'}</div></div>` : ""}
+      <div class="w-persone" style="text-align:center;margin:8px 0 20px"><button type="button" class="danger" data-del-person>${icon("trash")}Elimina Persona e Tessere</button></div>
     </div></div>`;
   const close = () => { sheet.close(); };
   sheet.onclose = () => { if (location.hash.startsWith("#persone/")) history.replaceState(null, "", "#persone"); };
   sheet.oncancel = (e) => { e.preventDefault(); close(); };
   $("[data-close]", sheet).onclick = close;
   const reload = async () => { await loadPersons(); renderPersonList(); await openPerson(id); };
-  $("[data-person-log]", sheet).onclick = (e) => { e.preventDefault(); close(); logFilters.q = p.name; location.hash = "#registro"; };
+  if ($("[data-person-log]", sheet)) $("[data-person-log]", sheet).onclick = (e) => { e.preventDefault(); close(); logFilters.q = p.name; location.hash = "#registro"; };
   $("[data-edit-access]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Accesso di " + p.name,
-      body: `${field("Gruppo", groupSelect(a.group))}${validityFields(a.from, a.to)}<p class="hint">Vale per tutte le tessere della persona.</p>`,
-      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await run(() => api(`api/persons/${id}/access`, {method: "PUT", body: {group: val(dlg, "group"), ...readValidity(dlg)}}), "Accesso aggiornato sul controller")) || false}],
-      onOpen: bindValidity,
+      body: `${store.categories.length ? field("Tipologia", categorySelect(p.category_id || 0)) : ""}${field("Gruppo", groupSelect(a.group))}${validityFields(a.from, a.to)}<p class="hint">Vale per tutte le tessere della persona.</p>`,
+      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+        const body = {group: val(dlg, "group"), ...readValidity(dlg)};
+        if ($("[name=category]", dlg)) body.category_id = Number(val(dlg, "category"));
+        return (await run(() => api(`api/persons/${id}/access`, {method: "PUT", body}), "Accesso aggiornato sul controller")) || false;
+      }}],
+      onOpen: (dlg) => { bindValidity(dlg); bindCategory(dlg); },
     });
     if (ok) reload();
   };
   $("[data-edit-data]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Dati di " + p.name,
-      body: `${field("Nome e cognome", `<input name="name" value="${esc(p.name)}" maxlength="100">`)}
-        ${field("Ditta o reparto", `<input name="company" value="${esc(p.company || "")}" maxlength="100">`)}
+      body: `${field("Nome e Cognome", `<input name="name" value="${esc(p.name)}" maxlength="100">`)}
+        ${field("Ditta o Reparto", `<input name="company" value="${esc(p.company || "")}" maxlength="100">`)}
         ${field("Note", `<textarea name="notes" maxlength="1000">${esc(p.notes || "")}</textarea>`)}`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) =>
         (await run(() => api(`api/persons/${id}`, {method: "PATCH", body: {name: val(dlg, "name"), company: val(dlg, "company"), notes: val(dlg, "notes")}}), "Dati aggiornati")) || false}],
@@ -788,8 +855,8 @@ async function openPerson(id) {
   };
   $("[data-add-card]", sheet).onclick = async () => {
     const ok = await modal({
-      title: "Aggiungi tessera a " + p.name,
-      body: `${field("Numero tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, "La nuova tessera avrà lo stesso gruppo e la stessa validità. Puoi anche passarla sul lettore e assegnarla da \"Da registrare\".")}`,
+      title: "Aggiungi Tessera a " + p.name,
+      body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, "La nuova tessera avrà lo stesso gruppo e la stessa validità. Puoi anche passarla sul lettore e assegnarla da \"Da Registrare\".")}`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
         (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card")}}), "Tessera aggiunta")) || false}],
     });
@@ -802,13 +869,13 @@ async function openPerson(id) {
   $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
     const last = p.cards.length === 1;
-    if (!await confirmBox("Elimina tessera", `Eliminare la tessera <code>${esc(card.number)}</code> dal controller?` + (last ? " È l'unica tessera: verrà eliminata anche la persona." : ""), "Elimina", true)) return;
+    if (!await confirmBox("Elimina Tessera", `Eliminare la tessera <code>${esc(card.number)}</code> dal controller?` + (last ? " È l'unica tessera: verrà eliminata anche la persona." : ""), "Elimina", true)) return;
     const r = await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), "Tessera eliminata");
     if (!r) return;
     if (last) { close(); await loadPersons(); renderPersonList(); } else reload();
   });
   $("[data-del-person]", sheet).onclick = async () => {
-    if (!await confirmBox("Elimina persona", `Eliminare <b>${esc(p.name)}</b> e ${plural(p.cards.length, "tessera", "tessere")} dal controller? Non apriranno più la porta. Il registro dei passaggi resta.`, "Elimina", true)) return;
+    if (!await confirmBox("Elimina Persona", `Eliminare <b>${esc(p.name)}</b> e ${plural(p.cards.length, "tessera", "tessere")} dal controller? Non apriranno più la porta. Il registro dei passaggi resta.`, "Elimina", true)) return;
     if (await run(() => api(`api/persons/${id}`, {method: "DELETE"}), "Persona eliminata")) { close(); await loadPersons(); renderPersonList(); }
   };
   bindSnapshots(sheet);
@@ -825,9 +892,9 @@ async function viewUnknown(el) {
       <div class="ev-icon k-warn">${icon("question")}</div>
       <div class="grow"><div class="title mono">${esc(u.number)}</div>
         <div class="meta"><span>ultima lettura ${esc(relTime(u.last_seen))}</span><span>${plural(u.count, "lettura", "letture")}</span>${u.first_seen !== u.last_seen ? `<span>prima ${esc(fmtDateTime(u.first_seen))}</span>` : ""}</div></div>
-      <div class="row write item-actions">
-        <button type="button" class="small primary" data-new="${esc(u.number)}">Nuova persona</button>
-        <button type="button" class="small" data-assign="${esc(u.number)}">A persona esistente</button>
+      <div class="row w-persone item-actions">
+        <button type="button" class="small primary" data-new="${esc(u.number)}">Nuova Persona</button>
+        <button type="button" class="small" data-assign="${esc(u.number)}">A Persona Esistente</button>
         <button type="button" class="small ghost" data-ignore="${esc(u.number)}">Ignora</button></div></div>`).join("")
     : `<div class="empty">${icon("check")}<br>Nessuna tessera da registrare.<br>Passa una tessera nuova sul lettore: comparirà qui in pochi secondi.</div>`}</div></div>`;
   el.onclick = async (e) => {
@@ -839,7 +906,7 @@ async function viewUnknown(el) {
       const number = b.dataset.assign;
       const options = store.persons.map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
       const ok = await modal({
-        title: "Assegna tessera " + number,
+        title: "Assegna Tessera " + number,
         body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso gruppo e la stessa validità delle altre tessere della persona.") : '<p class="muted">Nessuna persona registrata.</p>',
         actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
           (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number}}), "Tessera assegnata")) || false}] : [])],
@@ -868,13 +935,13 @@ async function viewLog(el) {
   el.innerHTML = `
     <div class="toolbar">
       <input type="search" id="l-q" placeholder="Cerca persona, tessera o dettaglio" value="${esc(logFilters.q)}">
-      <select id="l-kind"><option value="">Tutti gli eventi</option><option value="concesso,apertura_remota">Tutti gli accessi</option><option value="negato,sconosciuta">Tutti i rifiuti</option>${kindOptions}</select>
+      <select id="l-kind"><option value="">Tutti gli Eventi</option><option value="concesso,apertura_remota">Tutti gli Accessi</option><option value="negato,sconosciuta">Tutti i Rifiuti</option>${kindOptions}</select>
       <input type="date" id="l-from" value="${esc(logFilters.from)}" title="Dal giorno" aria-label="Dal giorno">
       <input type="date" id="l-to" value="${esc(logFilters.to)}" title="Al giorno" aria-label="Al giorno">
-      <a class="btn" id="l-export" href="#" download>${icon("download")}CSV</a>
+      <a class="btn w-io" id="l-export" href="#" download>${icon("download")}CSV</a>
     </div>
     <div class="card flush"><div class="list" id="l-list"><div class="loading"><span class="spinner"></span></div></div>
-      <div style="text-align:center;padding:12px" id="l-more-box" hidden><button type="button" id="l-more">Carica altri</button></div></div>`;
+      <div style="text-align:center;padding:12px" id="l-more-box" hidden><button type="button" id="l-more">Carica Altri</button></div></div>`;
   $("#l-kind").value = logFilters.kind;
   let timer;
   $("#l-q").addEventListener("input", (e) => { logFilters.q = e.target.value.trim(); clearTimeout(timer); timer = setTimeout(() => loadLog(), 300); });
@@ -932,79 +999,157 @@ function weekPreview(rules) {
   }).join("");
   return `<div class="week">${rows}<span></span><div class="axis"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div></div>`;
 }
+const showHidden = {group: false, schedule: false};
 async function viewRules(el, sub) {
-  const tab = ["gruppi", "fasce", "festivita"].includes(sub) ? sub : "gruppi";
-  el.innerHTML = `<div class="segmented"><a href="#regole/gruppi" class="${tab === "gruppi" ? "active" : ""}">Gruppi</a><a href="#regole/fasce" class="${tab === "fasce" ? "active" : ""}">Fasce orarie</a><a href="#regole/festivita" class="${tab === "festivita" ? "active" : ""}">Festività</a></div><div id="r-body"><div class="loading"><span class="spinner"></span></div></div>`;
+  const tabs = [["tipologie", "Tipologie"], ["gruppi", "Gruppi"], ["fasce", "Fasce Orarie"], ["festivita", "Festività"]];
+  const tab = tabs.some(([k]) => k === sub) ? sub : "tipologie";
+  el.innerHTML = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#regole/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div><div id="r-body"><div class="loading"><span class="spinner"></span></div></div>`;
   const body = $("#r-body");
   if (tab === "festivita") return viewHolidays(body);
   await loadGroups(true);
   if (store.groupsError && !store.groups.length) {
-    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Regole non leggibili dal controller</b>${esc(store.groupsError)}</div></div>`;
+    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Regole Non Leggibili dal Controller</b>${esc(store.groupsError)}</div></div>`;
     store.groupsError = "";
     return;
   }
   store.groupsError = "";
-  if (tab === "gruppi") viewGroups(body); else viewSchedules(body);
+  if (tab === "tipologie") viewCategories(body);
+  else if (tab === "gruppi") viewGroups(body);
+  else viewSchedules(body);
   paintIcons(body);
 }
+// Interruttore "Mostra Nascosti" in cima a gruppi e fasce
+function hiddenToggle(kind, count) {
+  return count ? `<label class="row small-text muted" style="cursor:pointer"><input type="checkbox" id="show-hidden" ${showHidden[kind] ? "checked" : ""}>Mostra Nascosti (${count})</label>` : "";
+}
+function bindHiddenToggle(kind) {
+  const box = $("#show-hidden");
+  if (box) box.onchange = () => { showHidden[kind] = box.checked; render(); };
+}
+async function setHidden(kind, token, hidden) {
+  return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosto: lo ritrovi con \"Mostra Nascosti\"" : "Di nuovo visibile");
+}
+
+function viewCategories(body) {
+  const cats = store.categories;
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">La tipologia dice che tipo di tessera ha una persona (manutentore, pulizie, dipendente, ospite…). Quando la scegli, la persona riceve in automatico il gruppo e la durata della tipologia.</p>
+    <button type="button" class="primary w-regole" id="c-new">${icon("plus")}Nuova Tipologia</button></div>
+    ${cats.length ? `<div class="grid cards">${cats.map((c) => `<div class="card" style="margin:0">
+      <h2><span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}</h2>
+      ${c.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(c.description)}</p>` : ""}
+      <dl class="props"><dt>Gruppo</dt><dd>${c.group_token ? `<span class="pill accent">${esc(groupName(c.group_token))}</span>` : '<span class="muted">Predefinito</span>'}</dd>
+        <dt>Durata</dt><dd>${c.valid_days ? plural(c.valid_days, "giorno", "giorni") + " dalla registrazione" : "Illimitata"}</dd><dt>Persone</dt><dd>${c.persons}</dd></dl>
+      <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-c-edit="${c.id}">${icon("edit")}Modifica</button><button type="button" class="small danger" data-c-del="${c.id}">Elimina</button></div>
+    </div>`).join("")}</div>`
+    : `<div class="card"><div class="empty">${icon("card")}<br>Nessuna tipologia.<br>Esempi: <b>Manutentore</b> con un gruppo sempre attivo, <b>Pulizie</b> con un gruppo serale, <b>Ospite</b> con durata di 1 giorno.</div></div>`}`;
+  const form = (c = {}) => `${field("Nome", `<input name="name" maxlength="40" value="${esc(c.name || "")}" placeholder="es. Manutentore, Pulizie, Ospite">`)}
+    <div class="field"><label>Colore</label><div class="colors">${Object.entries(COLORS).map(([k, label], i) => `<label title="${label}"><input type="radio" name="color" value="${k}" ${(c.color || "blue") === k ? "checked" : ""}><span class="swatch c-${k}"></span></label>`).join("")}</div></div>
+    ${field("Gruppo", groupSelect(c.group_token || store.me.default_group, "group_token"), "Gruppo assegnato a chi ha questa tipologia: decide in quali orari la tessera apre. I gruppi si creano nella scheda Gruppi.")}
+    ${field("Durata della Tessera", `<input type="number" name="valid_days" min="0" max="3650" value="${c.valid_days || 0}">`, "In giorni dalla registrazione. 0 = illimitata.")}
+    ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(c.description || "")}" placeholder="facoltativa">`)}
+    ${c.id && c.persons ? `<div class="field inline"><input type="checkbox" name="apply" id="f-apply" checked><label for="f-apply">Se cambi gruppo, applicalo subito alle ${plural(c.persons, "persona", "persone")} con questa tipologia</label></div>` : ""}`;
+  const save = (c) => async (dlg) => {
+    const payload = {name: val(dlg, "name"), color: $("[name=color]:checked", dlg)?.value || "blue", group_token: val(dlg, "group_token"),
+      valid_days: Number(val(dlg, "valid_days") || 0), description: val(dlg, "description"), apply: Boolean(val(dlg, "apply"))};
+    const r = await run(() => api(c ? `api/categories/${c.id}` : "api/categories", {method: c ? "PUT" : "POST", body: payload}));
+    if (!r) return false;
+    toast(r.updated ? `Tipologia salvata: gruppo aggiornato per ${plural(r.updated, "persona", "persone")}` : "Tipologia salvata");
+    return true;
+  };
+  $("#c-new").onclick = async () => {
+    if (await modal({title: "Nuova Tipologia", body: form(), actions: [{label: "Annulla", value: null}, {label: "Crea", kind: "primary", submit: true, onClick: save(null)}]})) render();
+  };
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.cEdit) {
+      const c = cats.find((x) => x.id === Number(b.dataset.cEdit));
+      if (await modal({title: "Modifica Tipologia", body: form(c), actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: save(c)}]})) render();
+    } else if (b.dataset.cDel) {
+      const c = cats.find((x) => x.id === Number(b.dataset.cDel));
+      if (await confirmBox("Elimina Tipologia", `Eliminare la tipologia <b>${esc(c.name)}</b>?` + (c.persons ? ` Le ${plural(c.persons, "persona", "persone")} restano registrate con il loro gruppo attuale, senza tipologia.` : ""), "Elimina", true) &&
+          await run(() => api(`api/categories/${c.id}`, {method: "DELETE"}), "Tipologia eliminata")) render();
+    }
+  };
+}
+
 function viewGroups(body) {
-  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Un gruppo stabilisce in quali fasce orarie le tessere dei suoi membri aprono la porta. Ogni persona appartiene a un gruppo.</p>
-    <button type="button" class="primary write" id="g-new">${icon("plus")}Nuovo gruppo</button></div>
-    <div class="grid cards">${store.groups.map((g) => `<div class="card" style="margin:0">
-      <h2>${esc(g.name)}<span class="spacer"></span>${g.default ? '<span class="pill accent">predefinito</span>' : ""}${g.enabled ? "" : '<span class="pill err">disattivato</span>'}</h2>
+  const hiddenCount = store.groups.filter((g) => g.hidden).length;
+  const groups = store.groups.filter((g) => showHidden.group || !g.hidden);
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Un gruppo stabilisce in quali fasce orarie le tessere dei suoi membri aprono la porta. Quelli che non ti servono puoi nasconderli.</p>
+    ${hiddenToggle("group", hiddenCount)}<button type="button" class="primary w-regole" id="g-new">${icon("plus")}Nuovo Gruppo</button></div>
+    <div class="grid cards">${groups.map((g) => `<div class="card ${g.hidden ? "is-hidden" : ""}" style="margin:0">
+      <h2>${esc(g.name)}<span class="spacer"></span>${g.default ? '<span class="pill accent">Predefinito</span>' : ""}${g.hidden ? '<span class="pill">Nascosto</span>' : ""}${g.enabled ? "" : '<span class="pill err">Disattivato</span>'}</h2>
       ${g.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(g.description)}</p>` : ""}
-      <dl class="props"><dt>Fascia oraria</dt><dd>${esc(g.schedule_names.join(", ") || "nessuna")}</dd><dt>Persone</dt><dd>${g.persons}</dd></dl>
-      ${g.default ? '<p class="hint">Assegnato alle nuove tessere se non scegli altro. Si cambia nelle opzioni dell\'add-on.</p>' : `<div class="row write" style="margin-top:12px"><button type="button" class="small" data-g-edit="${esc(g.token)}">${icon("edit")}Modifica</button><button type="button" class="small danger" data-g-del="${esc(g.token)}">Elimina</button></div>`}
-    </div>`).join("") || '<div class="empty">nessun gruppo sul controller</div>'}</div>`;
-  const scheduleSelect = (selected) => `<select name="schedule">${store.schedules.map((s) => `<option value="${esc(s.token)}" ${s.token === selected ? "selected" : ""}>${esc(s.name)}${s.summary ? " · " + esc(s.summary) : ""}</option>`).join("")}</select>`;
+      <dl class="props"><dt>Fascia Oraria</dt><dd>${esc(g.schedule_names.join(", ") || "nessuna")}</dd><dt>Persone</dt><dd>${g.persons}</dd></dl>
+      ${g.default ? '<p class="hint">Assegnato alle nuove tessere quando non scegli altro.</p>' : ""}
+      <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-g-edit="${esc(g.token)}">${icon("edit")}Modifica</button>
+        ${g.default ? "" : `<button type="button" class="small" data-g-default="${esc(g.token)}">Rendi Predefinito</button>
+        <button type="button" class="small ghost" data-g-hide="${esc(g.token)}" data-hidden="${g.hidden ? 1 : 0}">${g.hidden ? "Mostra" : "Nascondi"}</button>
+        <button type="button" class="small danger" data-g-del="${esc(g.token)}">Elimina</button>`}</div>
+    </div>`).join("") || '<div class="empty">nessun gruppo da mostrare</div>'}</div>`;
+  bindHiddenToggle("group");
+  const scheduleSelect = (selected) => `<select name="schedule">${store.schedules.filter((s) => !s.hidden || s.token === selected).map((s) => `<option value="${esc(s.token)}" ${s.token === selected ? "selected" : ""}>${esc(s.name)}${s.summary ? " · " + esc(s.summary) : ""}</option>`).join("")}</select>`;
   const groupForm = (g = {}) => `${field("Nome", `<input name="name" maxlength="100" value="${esc(g.name || "")}" placeholder="es. Pulizie, Dipendenti, Fornitori">`)}
     ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(g.description || "")}" placeholder="facoltativa">`)}
-    ${field("Fascia oraria", scheduleSelect((g.schedules || [])[0] || "standard_always"), 'Le fasce si creano nella scheda <a href="#regole/fasce">Fasce orarie</a>.')}`;
+    ${field("Fascia Oraria", scheduleSelect((g.schedules || [])[0] || "standard_always"), 'Le fasce si creano nella scheda <a href="#regole/fasce">Fasce Orarie</a>.')}`;
   const save = (token) => async (dlg) => {
     const payload = {name: val(dlg, "name"), description: val(dlg, "description"), schedule: val(dlg, "schedule")};
     const path = token ? `api/groups/${encodeURIComponent(token)}` : "api/groups";
     return (await run(() => api(path, {method: token ? "PUT" : "POST", body: payload}), token ? "Gruppo aggiornato sul controller" : "Gruppo creato sul controller")) || false;
   };
   $("#g-new").onclick = async () => {
-    if (await modal({title: "Nuovo gruppo", body: groupForm(), actions: [{label: "Annulla", value: null}, {label: "Crea", kind: "primary", submit: true, onClick: save("")}]})) render();
+    if (await modal({title: "Nuovo Gruppo", body: groupForm(), actions: [{label: "Annulla", value: null}, {label: "Crea", kind: "primary", submit: true, onClick: save("")}]})) render();
   };
   body.onclick = async (e) => {
     const b = e.target.closest("button");
     if (!b) return;
+    const g = store.groups.find((x) => x.token === (b.dataset.gEdit || b.dataset.gDel || b.dataset.gDefault || b.dataset.gHide));
+    if (!g) return;
     if (b.dataset.gEdit) {
-      const g = store.groups.find((x) => x.token === b.dataset.gEdit);
-      if (await modal({title: "Modifica gruppo", body: groupForm(g) + `<p class="hint">Il cambio vale subito per tutte le ${plural(g.persons, "persona", "persone")} del gruppo.</p>`, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: save(g.token)}]})) render();
+      if (await modal({title: "Modifica Gruppo", body: groupForm(g) + `<p class="hint">Il cambio vale subito per ${plural(g.persons, "la persona", "tutte le persone")} del gruppo.</p>`, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: save(g.token)}]})) render();
+    } else if (b.dataset.gDefault) {
+      if (await run(() => api("api/default-group", {method: "PUT", body: {token: g.token}}), `${g.name} è il nuovo gruppo predefinito`)) { store.me.default_group = g.token; render(); }
+    } else if (b.dataset.gHide) {
+      if (await setHidden("group", g.token, b.dataset.hidden !== "1")) render();
     } else if (b.dataset.gDel) {
-      const g = store.groups.find((x) => x.token === b.dataset.gDel);
-      if (await confirmBox("Elimina gruppo", `Eliminare il gruppo <b>${esc(g.name)}</b> dal controller?`, "Elimina", true) &&
+      if (await confirmBox("Elimina Gruppo", `Eliminare il gruppo <b>${esc(g.name)}</b> dal controller?`, "Elimina", true) &&
           await run(() => api(`api/groups/${encodeURIComponent(g.token)}`, {method: "DELETE"}), "Gruppo eliminato")) render();
     }
   };
 }
 function viewSchedules(body) {
-  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Le fasce orarie dicono quando un gruppo può entrare. Quelle predefinite del controller non si modificano.</p>
-    <button type="button" class="primary write" id="s-new">${icon("plus")}Nuova fascia</button></div>
-    <div class="grid cards">${store.schedules.map((s) => `<div class="card" style="margin:0">
-      <h2>${esc(s.name)}<span class="spacer"></span>${s.standard ? '<span class="pill">predefinita</span>' : s.managed ? '<span class="pill accent">creata qui</span>' : '<span class="pill">esterna</span>'}</h2>
+  const hiddenCount = store.schedules.filter((s) => s.hidden).length;
+  const list = store.schedules.filter((s) => showHidden.schedule || !s.hidden);
+  const badge = (s) => s.managed ? '<span class="pill accent">Creata Qui</span>' : s.standard ? '<span class="pill">Predefinita del Controller</span>' : '<span class="pill">Esterna</span>';
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Le fasce orarie dicono quando un gruppo può entrare. Tutte si possono modificare; quelle che non ti servono puoi nasconderle.</p>
+    ${hiddenToggle("schedule", hiddenCount)}<button type="button" class="primary w-regole" id="s-new">${icon("plus")}Nuova Fascia</button></div>
+    <div class="grid cards">${list.map((s) => `<div class="card ${s.hidden ? "is-hidden" : ""}" style="margin:0">
+      <h2>${esc(s.name)}<span class="spacer"></span>${badge(s)}${s.hidden ? '<span class="pill">Nascosta</span>' : ""}</h2>
       ${s.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(s.description)}</p>` : ""}
-      ${s.managed ? weekPreview(s.rules) + `<p class="small-text" style="margin:8px 0 0">${esc(s.summary)}</p>` : `<p class="muted small-text">${s.token === "standard_always" ? "Tutti i giorni, 24 ore su 24." : "Definita fuori dall'add-on."}</p>`}
+      ${s.readable ? weekPreview(s.rules) + `<p class="small-text" style="margin:8px 0 0">${esc(s.summary)}</p>` : `<p class="muted small-text">Definita con regole che l'editor non sa mostrare: se la modifichi la riscrivi da capo.</p>`}
       <p class="hint">${s.holidays ? "Non vale nei giorni festivi." : "Vale anche nei festivi."}${s.groups.length ? ` Usata da: ${esc(s.groups.join(", "))}.` : ""}</p>
-      ${s.managed ? `<div class="row write" style="margin-top:12px"><button type="button" class="small" data-s-edit="${esc(s.token)}">${icon("edit")}Modifica</button><button type="button" class="small danger" data-s-del="${esc(s.token)}">Elimina</button></div>` : ""}
-    </div>`).join("")}</div>`;
+      <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-s-edit="${esc(s.token)}">${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost" data-s-hide="${esc(s.token)}" data-hidden="${s.hidden ? 1 : 0}">${s.hidden ? "Mostra" : "Nascondi"}</button>
+        ${s.groups.length ? "" : `<button type="button" class="small danger" data-s-del="${esc(s.token)}">Elimina</button>`}</div>
+    </div>`).join("") || '<div class="empty">nessuna fascia da mostrare</div>'}</div>`;
+  bindHiddenToggle("schedule");
   $("#s-new").onclick = () => scheduleEditor();
   body.onclick = async (e) => {
     const b = e.target.closest("button");
     if (!b) return;
-    if (b.dataset.sEdit) scheduleEditor(store.schedules.find((s) => s.token === b.dataset.sEdit));
+    const s = store.schedules.find((x) => x.token === (b.dataset.sEdit || b.dataset.sDel || b.dataset.sHide));
+    if (!s) return;
+    if (b.dataset.sEdit) scheduleEditor(s);
+    else if (b.dataset.sHide) { if (await setHidden("schedule", s.token, b.dataset.hidden !== "1")) render(); }
     else if (b.dataset.sDel) {
-      const s = store.schedules.find((x) => x.token === b.dataset.sDel);
-      if (await confirmBox("Elimina fascia oraria", `Eliminare <b>${esc(s.name)}</b> dal controller?`, "Elimina", true) &&
+      if (await confirmBox("Elimina Fascia Oraria", `Eliminare <b>${esc(s.name)}</b> dal controller?${s.standard ? " È una fascia predefinita del controller: se ti serve di nuovo dovrai ricrearla." : ""}`, "Elimina", true) &&
           await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "DELETE"}), "Fascia eliminata")) render();
     }
   };
 }
 async function scheduleEditor(s) {
-  let rules = s ? s.rules.map((r) => ({...r, days: [...r.days]})) : [{days: ["MO", "TU", "WE", "TH", "FR"], start: "08:00", end: "18:00"}];
+  let rules = s && s.rules.length ? s.rules.map((r) => ({...r, days: [...r.days]})) : [{days: ["MO", "TU", "WE", "TH", "FR"], start: "08:00", end: "18:00"}];
   const renderRules = (dlg) => {
     $("#rules", dlg).innerHTML = rules.map((r, i) => `<div class="rule-row" data-i="${i}">
       <span class="days">${DAYS.map(([code, letter, name]) => `<button type="button" class="${r.days.includes(code) ? "on" : ""}" data-day="${code}" title="${name}">${letter}</button>`).join("")}</span>
@@ -1013,15 +1158,15 @@ async function scheduleEditor(s) {
     $("#preview", dlg).innerHTML = weekPreview(rules.filter((r) => r.start && r.end && r.end > r.start));
   };
   const ok = await modal({
-    title: s ? "Modifica fascia oraria" : "Nuova fascia oraria",
+    title: s ? "Modifica Fascia Oraria" : "Nuova Fascia Oraria",
     wide: true,
-    body: `<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(s?.name || "")}" placeholder="es. Orario negozio">`)}
+    body: `${s && !s.managed ? `<div class="alert info">${icon("alert")}<div class="grow">${s.standard ? "È una fascia predefinita del controller." : "Questa fascia è stata creata fuori dall'add-on."} Salvando la riscrivi con gli intervalli qui sotto e da quel momento la gestisce l'add-on.${s.groups.length ? ` Vale subito per: ${esc(s.groups.join(", "))}.` : ""}</div></div>` : ""}<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(s?.name || "")}" placeholder="es. Orario negozio">`)}
       ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(s?.description || "")}" placeholder="facoltativa">`)}</div>
-      <div class="field"><label>Intervalli settimanali</label><div id="rules"></div>
-        <div class="row"><button type="button" class="small" id="add-rule">${icon("plus")}Aggiungi intervallo</button>
-        <span class="muted small-text">Modelli:</span><button type="button" class="small ghost" data-tpl="office">Lun-ven 8-18</button>
-        <button type="button" class="small ghost" data-tpl="shop">Lun-sab 7-20</button><button type="button" class="small ghost" data-tpl="day">Tutti i giorni 6-22</button></div></div>
-      <div class="field inline"><input type="checkbox" name="holidays" id="f-hol" ${s ? (s.holidays ? "checked" : "") : "checked"}><label for="f-hol">Non valida nei giorni festivi</label></div>
+      <div class="field"><label>Intervalli Settimanali</label><div id="rules"></div>
+        <div class="row"><button type="button" class="small" id="add-rule">${icon("plus")}Aggiungi Intervallo</button>
+        <span class="muted small-text">Modelli:</span><button type="button" class="small ghost" data-tpl="office">Lun-Ven 8-18</button>
+        <button type="button" class="small ghost" data-tpl="shop">Lun-Sab 7-20</button><button type="button" class="small ghost" data-tpl="day">Tutti i Giorni 6-22</button><button type="button" class="small ghost" data-tpl="always">Sempre</button></div></div>
+      <div class="field inline"><input type="checkbox" name="holidays" id="f-hol" ${s ? (s.holidays ? "checked" : "") : "checked"}><label for="f-hol">Non Valida nei Giorni Festivi</label></div>
       <p class="hint" style="margin:-8px 0 12px">I festivi si gestiscono nella scheda <a href="#regole/festivita">Festività</a>.</p>
       <div class="field"><label>Anteprima</label><div id="preview"></div></div>`,
     actions: [{label: "Annulla", value: null}, {label: s ? "Salva" : "Crea", kind: "primary", submit: true, onClick: async (dlg) => {
@@ -1036,7 +1181,8 @@ async function scheduleEditor(s) {
       $$("[data-tpl]", dlg).forEach((b) => b.onclick = () => {
         rules = {office: [{days: ["MO", "TU", "WE", "TH", "FR"], start: "08:00", end: "18:00"}],
           shop: [{days: ["MO", "TU", "WE", "TH", "FR", "SA"], start: "07:00", end: "20:00"}],
-          day: [{days: DAYS.map((d) => d[0]), start: "06:00", end: "22:00"}]}[b.dataset.tpl];
+          day: [{days: DAYS.map((d) => d[0]), start: "06:00", end: "22:00"}],
+          always: [{days: DAYS.map((d) => d[0]), start: "00:00", end: "23:59"}]}[b.dataset.tpl];
         renderRules(dlg);
       });
       $("#rules", dlg).addEventListener("click", (e) => {
@@ -1059,15 +1205,15 @@ async function viewHolidays(body) {
   let list;
   try { list = await api("api/holidays"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   const year = new Date().getFullYear();
-  body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie create qui con l'opzione "Non valida nei giorni festivi". Le fasce predefinite (come "Sempre") non cambiano.</p>
-    <div class="card write"><h2>Aggiungi festività</h2>
+  body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie gestite dall'add-on con l'opzione "Non Valida nei Giorni Festivi". Le fasce mai modificate qui non cambiano.</p>
+    <div class="card w-regole"><h2>Aggiungi Festività</h2>
       <form class="row" id="h-form"><input type="date" name="day" required><input name="name" placeholder="Nome (es. Patrono)" maxlength="60" style="flex:1;min-width:160px">
-      <label class="row small-text"><input type="checkbox" name="yearly" checked> ogni anno</label><button type="submit" class="primary">Aggiungi</button></form>
-      <p class="hint">Oppure <button type="button" class="small" id="h-it">Aggiungi le festività nazionali italiane</button> (fisse ogni anno, Pasquetta ${year} e ${year + 1}).</p></div>
+      <label class="row small-text"><input type="checkbox" name="yearly" checked> Ogni Anno</label><button type="submit" class="primary">Aggiungi</button></form>
+      <p class="hint">Oppure <button type="button" class="small" id="h-it">Aggiungi le Festività Nazionali Italiane</button> (fisse ogni anno, Pasquetta ${year} e ${year + 1}).</p></div>
     <div class="card flush"><div class="list">${list.length ? list.map((h) => `<div class="item">
       <div class="ev-icon k-accent">${icon("clock")}</div>
       <div class="grow"><div class="title">${esc(h.name || "Festività")}</div><div class="meta">${h.yearly ? esc(new Date(h.day + "T12:00:00").toLocaleDateString("it-IT", {day: "numeric", month: "long"})) + " · ogni anno" : esc(fmtDate(h.day + "T12:00:00"))}</div></div>
-      <button type="button" class="small danger write" data-h-del="${esc(h.day)}">Elimina</button></div>`).join("") : '<div class="empty">nessuna festività</div>'}</div></div>`;
+      <button type="button" class="small danger w-regole" data-h-del="${esc(h.day)}">Elimina</button></div>`).join("") : '<div class="empty">nessuna festività</div>'}</div></div>`;
   paintIcons(body);
   $("#h-form").onsubmit = async (e) => {
     e.preventDefault();
@@ -1083,69 +1229,351 @@ async function viewHolidays(body) {
   };
 }
 
+// ---------- Impianti ----------
+const secs = (v) => v === null || v === undefined ? "—" : `${v} s`;
+async function viewInstallation(el, sub) {
+  const tabs = [["porte", "Controller e Porte"], ["programmazione", "Programmazione"]];
+  const tab = tabs.some(([k]) => k === sub) ? sub : "porte";
+  el.innerHTML = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impianti/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div><div id="i-body"><div class="loading"><span class="spinner"></span></div></div>`;
+  const body = $("#i-body");
+  let data;
+  try { data = await api("api/installation"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  if (tab === "programmazione") return viewProgramming(body, data.controllers[0]);
+  viewDoors(body, data);
+  paintIcons(body);
+}
+
+function viewDoors(body, data) {
+  const ctrl = data.controllers[0];
+  if (!ctrl) {
+    body.innerHTML = `<div class="card"><div class="empty">${icon("door")}<br><b>Nessun controller configurato</b><br>Aggiungi il controller Axis con indirizzo, utente e password: poi scegli le porte da gestire.<br><br>
+      <button type="button" class="primary" id="ctrl-new">${icon("plus")}Aggiungi Controller</button></div></div>`;
+    $("#ctrl-new").onclick = () => controllerEditor();
+    return;
+  }
+  const doorCard = (d) => `<div class="card" style="margin:0">
+    <h2>${icon("door")}${esc(d.name)}<span class="spacer"></span>${d.ha_buttons ? '<span class="pill accent">Pulsanti HA</span>' : ""}</h2>
+    ${props([
+      ["Porta del Controller", `<code>${esc(d.door_token)}</code>`],
+      ["Telecamera", d.snapshot_camera ? `<code>${esc(d.snapshot_camera)}</code>${d.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'],
+      ["Citofono", d.intercom_name ? `${esc(d.intercom_name)} · relè ${d.intercom_relay}${d.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'],
+    ])}
+    <div class="row" style="margin-top:12px"><button type="button" class="small" data-door-edit="${d.id}">${icon("edit")}Modifica</button><button type="button" class="small danger" data-door-del="${d.id}">Rimuovi</button></div>
+  </div>`;
+  body.innerHTML = `
+    <div class="card"><h2>${icon("cog")}${esc(ctrl.name)}<span class="spacer"></span><span class="pill" id="ctrl-state"><span class="spinner" style="width:12px;height:12px"></span></span></h2>
+      ${props([["Indirizzo", `<code>${esc(ctrl.host)}</code>${ctrl.verify_ssl ? "" : ' <span class="muted small-text">(certificato non verificato)</span>'}`], ["Utente", esc(ctrl.username)],
+        ["Password", ctrl.has_password ? "salvata" : '<span class="pill err">Mancante</span>'], ["Prefisso MQTT", `<code>${esc(ctrl.mqtt_topic_prefix)}/…</code>`]])}
+      <div class="row" style="margin-top:12px"><button type="button" class="small" id="ctrl-edit">${icon("edit")}Modifica</button><button type="button" class="small danger" id="ctrl-del">Rimuovi</button></div>
+      <p class="hint">Per ora l'add-on gestisce un controller; le porte e le impostazioni sono già organizzate per averne di più.</p></div>
+    <div class="toolbar"><h2 class="section-title" style="margin:0;flex:1">Porte</h2><button type="button" class="primary" id="door-new">${icon("plus")}Aggiungi Porta</button></div>
+    ${ctrl.doors.length ? `<div class="grid cards">${ctrl.doors.map(doorCard).join("")}</div>` : `<div class="card"><div class="empty">Nessuna porta: aggiungi quella del controller da gestire.</div></div>`}`;
+  api("api/status").then((s) => {
+    const pill = $("#ctrl-state");
+    if (!pill) return;
+    pill.className = "pill " + (s.controller.ok ? "ok" : "err");
+    pill.textContent = s.controller.ok ? `Raggiungibile · ${s.controller.model} ${s.controller.firmware}` : "Non Raggiungibile";
+    pill.title = s.controller.error || "";
+  }).catch(() => {});
+  $("#ctrl-edit").onclick = () => controllerEditor(ctrl);
+  $("#ctrl-del").onclick = async () => {
+    if (await confirmBox("Rimuovi Controller", `Rimuovere <b>${esc(ctrl.name)}</b> e le sue porte dall'app? Sul controller non cambia niente: tessere, gruppi e programmazione restano dove sono.`, "Rimuovi", true) &&
+        await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller rimosso dall'app")) render();
+  };
+  $("#door-new").onclick = () => doorEditor(ctrl);
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const door = ctrl.doors.find((d) => d.id === Number(b.dataset.doorEdit || b.dataset.doorDel));
+    if (!door) return;
+    if (b.dataset.doorEdit) doorEditor(ctrl, door);
+    else if (await confirmBox("Rimuovi Porta", `Rimuovere <b>${esc(door.name)}</b> dall'app? Spariscono anche i suoi pulsanti in Home Assistant e il collegamento al citofono. Sul controller non cambia niente.`, "Rimuovi", true) &&
+        await run(() => api(`api/doors/${door.id}`, {method: "DELETE"}), "Porta rimossa")) render();
+  };
+}
+
+async function controllerEditor(ctrl) {
+  const result = await modal({
+    title: ctrl ? "Modifica Controller" : "Nuovo Controller",
+    body: `${field("Nome", `<input name="name" maxlength="100" value="${esc(ctrl?.name || "Controller A1210")}">`)}
+      ${field("Indirizzo", `<input name="host" class="mono" value="${esc(ctrl?.host || "")}" placeholder="es. 192.168.1.50">`, "IP o nome del controller, senza https://.")}
+      <div class="fields-2">${field("Utente", `<input name="username" autocomplete="off" value="${esc(ctrl?.username || "")}">`)}
+      ${field("Password", `<input name="password" type="password" autocomplete="new-password" placeholder="${ctrl?.has_password ? "lascia vuoto per non cambiarla" : ""}">`)}</div>
+      ${field("Prefisso MQTT", `<input name="mqtt_topic_prefix" class="mono" value="${esc(ctrl?.mqtt_topic_prefix || "")}" placeholder="es. accessi/controller_ingresso">`, "Lo stesso impostato nel client MQTT del controller: gli eventi arrivano sotto &lt;prefisso&gt;/eventi/…")}
+      <div class="field inline"><input type="checkbox" name="verify_ssl" id="f-ssl" ${ctrl?.verify_ssl ? "checked" : ""}><label for="f-ssl">Verifica Certificato HTTPS</label></div>
+      <p class="hint" style="margin-top:-8px">Lascialo spento se il controller usa il certificato di fabbrica.</p>
+      <div class="row"><button type="button" class="small" id="ctrl-test">${icon("refresh")}Prova Collegamento</button><span id="ctrl-test-result" class="small-text"></span></div>`,
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+      const body = {name: val(dlg, "name"), host: val(dlg, "host"), username: val(dlg, "username"), password: $("[name=password]", dlg).value,
+        mqtt_topic_prefix: val(dlg, "mqtt_topic_prefix"), verify_ssl: val(dlg, "verify_ssl")};
+      return (await run(() => api(ctrl ? `api/controllers/${ctrl.id}` : "api/controllers", {method: ctrl ? "PUT" : "POST", body}), "Controller salvato: collegamento riavviato")) || false;
+    }}],
+    onOpen: (dlg) => {
+      $("#ctrl-test", dlg).onclick = async () => {
+        const out = $("#ctrl-test-result", dlg);
+        out.innerHTML = '<span class="spinner"></span>';
+        try {
+          const r = await api("api/controllers/test", {method: "POST", body: {host: val(dlg, "host"), username: val(dlg, "username"), password: $("[name=password]", dlg).value, verify_ssl: val(dlg, "verify_ssl"), controller_id: ctrl?.id || null}});
+          out.innerHTML = `<span class="pill ok">${esc(r.model)} · firmware ${esc(r.firmware)}</span> ${plural(r.doors.length, "porta", "porte")}: ${r.doors.map((d) => esc(d.name)).join(", ")}`;
+        } catch (err) { out.innerHTML = `<span class="pill err">${esc(err.message)}</span>`; }
+      };
+    },
+  });
+  if (result) { loadSummary(); render(); }
+}
+
+async function doorEditor(ctrl, door) {
+  const [available, cameras] = await Promise.all([
+    api(`api/controllers/${ctrl.id}/doors-available`).catch(() => []),
+    api("api/cameras").catch(() => []),
+  ]);
+  const used = ctrl.doors.filter((d) => d.id !== door?.id).map((d) => d.door_token);
+  const doorOptions = available.filter((d) => !used.includes(d.token)).map((d) => `<option value="${esc(d.token)}" ${d.token === door?.door_token ? "selected" : ""}>${esc(d.name)} (${esc(d.token)})</option>`).join("");
+  const missing = door && !available.some((d) => d.token === door.door_token) ? `<option value="${esc(door.door_token)}" selected>${esc(door.door_token)}</option>` : "";
+  if (!door && available.length && !doorOptions) { toast("Tutte le porte del controller sono già configurate", true); return; }
+  const doorInput = doorOptions || missing ? `<select name="door_token">${missing}${doorOptions}</select>` : `<input name="door_token" class="mono" value="${esc(door?.door_token || "")}" placeholder="token della porta">`;
+  const cameraInput = cameras.length
+    ? `<select name="snapshot_camera"><option value="">Nessuna</option>${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === door?.snapshot_camera ? "selected" : ""}>${esc(c.name)} (${esc(c.entity_id)})</option>`).join("")}${door?.snapshot_camera && !cameras.some((c) => c.entity_id === door.snapshot_camera) ? `<option value="${esc(door.snapshot_camera)}" selected>${esc(door.snapshot_camera)}</option>` : ""}</select>`
+    : `<input name="snapshot_camera" class="mono" value="${esc(door?.snapshot_camera || "")}" placeholder="camera.ingresso">`;
+  const d = door || {ha_buttons: true, intercom_relay: 1, intercom_mqtt_prefix: "hmd"};
+  const result = await modal({
+    title: door ? "Modifica Porta" : "Nuova Porta",
+    wide: true,
+    body: `<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(d.name || "")}" placeholder="es. Ingresso Scala A">`)}
+      ${field("Porta del Controller", doorInput, available.length ? "" : "Elenco non disponibile: controller non raggiungibile.")}</div>
+      <div class="field inline"><input type="checkbox" name="ha_buttons" id="f-hab" ${d.ha_buttons ? "checked" : ""}><label for="f-hab">Pulsanti Apri e Apri a Lungo in Home Assistant</label></div>
+      <p class="hint" style="margin-top:-8px">Da mettere nelle dashboard. L'apertura è sempre a tempo e solo a porta bloccata.</p>
+      <h3 class="section-title" style="margin-top:18px">${icon("camera")}Telecamera</h3>
+      ${field("Telecamera per le Istantanee", cameraInput, "Salva una foto nel registro su accessi negati, tessere sconosciute, chiamate al citofono e allarmi.")}
+      <div class="field inline"><input type="checkbox" name="snapshot_on_granted" id="f-sog" ${d.snapshot_on_granted ? "checked" : ""}><label for="f-sog">Istantanea Anche sugli Accessi Concessi</label></div>
+      <h3 class="section-title" style="margin-top:18px">${icon("bell")}Videocitofono</h3>
+      <div class="fields-2">${field("Nome del Citofono", `<input name="intercom_name" value="${esc(d.intercom_name || "")}" placeholder="vuoto = nessun citofono">`, "Lo stesso nome dato al citofono nell'add-on Hikvision Doorbell.")}
+      ${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}</div>
+      <div class="field inline"><input type="checkbox" name="intercom_open_door" id="f-iod" ${d.intercom_open_door ? "checked" : ""}><label for="f-iod">"Apri" dal Citofono Apre Questa Porta</label></div>
+      <p class="hint" style="margin-top:-8px">Dall'app Hik-Connect o dal monitor: l'add-on manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Spento = le chiamate finiscono solo nel registro.</p>
+      ${field("Prefisso MQTT del Citofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}`,
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+      const body = {name: val(dlg, "name"), door_token: val(dlg, "door_token"), ha_buttons: val(dlg, "ha_buttons"), snapshot_camera: val(dlg, "snapshot_camera"),
+        snapshot_on_granted: val(dlg, "snapshot_on_granted"), intercom_name: val(dlg, "intercom_name"), intercom_relay: Number(val(dlg, "intercom_relay")),
+        intercom_open_door: val(dlg, "intercom_open_door"), intercom_mqtt_prefix: val(dlg, "intercom_mqtt_prefix")};
+      return (await run(() => api(door ? `api/doors/${door.id}` : `api/controllers/${ctrl.id}/doors`, {method: door ? "PUT" : "POST", body}), "Porta salvata")) || false;
+    }}],
+  });
+  if (result) { loadSummary(); render(); }
+}
+
+const DOOR_TIME_FIELDS = [
+  ["access_time", "Tempo di Apertura", "Quanto resta sbloccata dopo un accesso."],
+  ["extended_access_time", "Apertura Estesa", "Per chi ha bisogno di più tempo (es. Apri a Lungo)."],
+  ["open_too_long_time", "Allarme Aperta Troppo a Lungo", "Dopo quanto la porta aperta va in allarme."],
+  ["extended_open_too_long_time", "Allarme con Apertura Estesa", ""],
+  ["pre_alarm_time", "Preallarme", "Avviso prima dell'allarme."],
+];
+async function viewProgramming(body, ctrl) {
+  if (!ctrl) { body.innerHTML = '<div class="card"><div class="empty">Configura prima il controller nella scheda Controller e Porte.</div></div>'; return; }
+  let p;
+  try { p = await api("api/programming"); } catch (err) { body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Programmazione Non Leggibile</b>${esc(err.message)}</div></div>`; return; }
+  const configDetails = (items) => items.length ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici (${items.length})</summary>
+    <div class="table-wrap"><table class="table"><tbody>${items.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td><code>${esc(c.value)}</code></td></tr>`).join("")}</tbody></table></div></details>` : "";
+  body.innerHTML = `
+    <div class="alert info">${icon("shield")}<div class="grow"><b>Programmazione del Controller</b>Qui vedi e cambi nomi e tempi delle porte, i lettori e quale lettore comanda quale porta. Ogni modifica viene scritta sul controller e salvata nello storico: se qualcosa non va la annulli da qui sotto.</div></div>
+    ${p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : ""}
+    <h2 class="section-title">Porte</h2>
+    <div class="grid cards" style="margin-bottom:20px">${p.doors.map((d) => `<div class="card" style="margin:0">
+      <h2>${icon("door")}${esc(d.name || d.token)}</h2>
+      ${props([["Token", `<code>${esc(d.token)}</code>`], ...DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined).map(([k, label]) => [label, secs(d[k])])])}
+      ${d.description ? `<p class="hint">${esc(d.description)}</p>` : ""}${configDetails(d.configuration)}
+      ${d.editable || d.name ? `<div class="row" style="margin-top:12px"><button type="button" class="small" data-pd="${esc(d.token)}">${icon("edit")}Modifica</button></div>` : ""}
+    </div>`).join("") || '<div class="empty">nessuna porta letta</div>'}</div>
+    <h2 class="section-title">Lettori</h2>
+    <div class="grid cards" style="margin-bottom:20px">${p.readers.map((r) => `<div class="card" style="margin:0">
+      <h2>${icon("card")}${esc(r.name || r.token)}</h2>
+      ${props([["Token", `<code>${esc(r.token)}</code>`], ["Posizione", esc(r.location || "—")], ["Attesa PIN", secs(r.timeout)]])}
+      ${r.description ? `<p class="hint">${esc(r.description)}</p>` : ""}${configDetails(r.configuration)}
+      <div class="row" style="margin-top:12px"><button type="button" class="small" data-pr="${esc(r.token)}">${icon("edit")}Modifica</button></div>
+    </div>`).join("") || '<div class="empty">nessun lettore letto</div>'}</div>
+    <h2 class="section-title">Collegamenti Lettore-Porta</h2>
+    <p class="muted small-text" style="margin-top:-6px">Ogni punto di accesso dice quali lettori comandano quale porta e in che direzione. I gruppi di accesso fanno riferimento a questi punti.</p>
+    <div class="card flush" style="margin-bottom:20px"><div class="list">${p.access_points.map((a) => `<div class="item">
+      <div class="ev-icon ${a.enabled ? "k-accent" : "k-muted"}">${icon("shield")}</div>
+      <div class="grow"><div class="title">${esc(a.name || a.token)}</div>
+        <div class="meta"><span>${esc(a.reader_names.join(", ") || "nessun lettore")} → ${esc(a.door_name || "nessuna porta")}</span>${a.direction ? `<span class="pill">${esc(p.directions[a.direction] || a.direction)}</span>` : ""}${a.enabled ? "" : '<span class="pill err">Disattivato</span>'}</div></div>
+      <button type="button" class="small" data-pa="${esc(a.token)}">${icon("edit")}Modifica</button></div>`).join("") || '<div class="empty">nessun punto di accesso</div>'}</div></div>
+    <div class="card flush"><h2>Storico Modifiche<span class="spacer"></span><span class="muted small-text">annulla per riportare com'era</span></h2>
+      <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Modifica</th><th></th></tr></thead><tbody>
+      ${p.changes.length ? p.changes.map((c) => `<tr><td>${esc(fmtDateTime(c.ts))}</td><td>${esc(c.user)}</td><td>${esc(c.summary)}</td><td style="text-align:right">${c.undone ? '<span class="pill">Annullata</span>' : `<button type="button" class="small" data-undo="${c.id}">Annulla</button>`}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">nessuna modifica fatta dall\'app</td></tr>'}</tbody></table></div></div>`;
+  paintIcons(body);
+  const save = (path, payload, message) => run(() => api(path, {method: "PUT", body: payload}), message);
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.pd) {
+      const d = p.doors.find((x) => x.token === b.dataset.pd);
+      const times = DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
+      const ok = await modal({title: "Porta " + (d.name || d.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(d.name)}">`)}
+        ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(d.description)}">`)}
+        ${times.length ? `<div class="fields-2">${times.map(([k, label, hint]) => field(label + " (Secondi)", `<input type="number" name="${k}" min="0" step="1" value="${d[k]}">`, hint)).join("")}</div>` : ""}`,
+        actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) => {
+          const payload = {name: val(dlg, "name"), description: val(dlg, "description")};
+          times.forEach(([k]) => { payload[k] = Number(val(dlg, k)); });
+          return (await save(`api/programming/doors/${encodeURIComponent(d.token)}`, payload, "Porta aggiornata sul controller")) || false;
+        }}]});
+      if (ok) render();
+    } else if (b.dataset.pr) {
+      const r = p.readers.find((x) => x.token === b.dataset.pr);
+      const ok = await modal({title: "Lettore " + (r.name || r.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(r.name)}">`)}
+        ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(r.description)}">`)}`,
+        actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
+          (await save(`api/programming/readers/${encodeURIComponent(r.token)}`, {name: val(dlg, "name"), description: val(dlg, "description")}, "Lettore aggiornato sul controller")) || false}]});
+      if (ok) render();
+    } else if (b.dataset.pa) {
+      const a = p.access_points.find((x) => x.token === b.dataset.pa);
+      const ok = await modal({title: "Collegamento " + (a.name || a.token), wide: true,
+        body: `<div class="alert">${icon("alert")}<div class="grow">Cambiare porta o lettori cambia quale porta si apre con quale lettore. Se dopo il salvataggio le tessere non aprono più, annulla dallo storico.</div></div>
+          <div class="fields-2">${field("Nome", `<input name="name" maxlength="64" value="${esc(a.name)}">`)}
+          ${field("Porta Comandata", `<select name="door">${p.doors.map((d) => `<option value="${esc(d.token)}" ${d.token === a.door ? "selected" : ""}>${esc(d.name || d.token)}</option>`).join("")}</select>`)}</div>
+          <div class="field"><label>Lettori</label><div class="perm-list">${p.readers.map((r) => `<label><input type="checkbox" name="reader" value="${esc(r.token)}" ${a.readers.includes(r.token) ? "checked" : ""}>${esc(r.name || r.token)}</label>`).join("")}</div></div>
+          <div class="fields-2">${field("Direzione", `<select name="direction"><option value="">Non indicata</option>${Object.entries(p.directions).map(([k, label]) => `<option value="${k}" ${k === a.direction ? "selected" : ""}>${label}</option>`).join("")}</select>`)}
+          <div class="field inline" style="margin-top:26px"><input type="checkbox" name="enabled" id="f-ape" ${a.enabled ? "checked" : ""}><label for="f-ape">Attivo</label></div></div>`,
+        actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) => {
+          const readers = $$("[name=reader]:checked", dlg).map((x) => x.value);
+          if (!readers.length) { toast("Scegli almeno un lettore", true); return false; }
+          return (await save(`api/programming/access-points/${encodeURIComponent(a.token)}`, {name: val(dlg, "name"), door: val(dlg, "door"), readers, direction: val(dlg, "direction"), enabled: val(dlg, "enabled")}, "Collegamento aggiornato sul controller")) || false;
+        }}]});
+      if (ok) render();
+    } else if (b.dataset.undo) {
+      const c = p.changes.find((x) => x.id === Number(b.dataset.undo));
+      if (await confirmBox("Annulla Modifica", `Riportare <b>${esc(c.summary)}</b> com'era prima della modifica del ${esc(fmtDateTime(c.ts))}?`, "Annulla Modifica") &&
+          await run(() => api(`api/programming/changes/${c.id}/undo`, {method: "POST"}), "Modifica annullata sul controller")) render();
+    }
+  };
+}
+
 // ---------- Impostazioni ----------
 const props = (pairs) => `<dl class="props">${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
 const statusDot = (cls) => `<span class="dot ${cls}"></span>`;
 let auditRows = [];
-async function viewSettings(el) {
-  el.innerHTML = '<div class="loading"><span class="spinner"></span> verifica del controller…</div>';
+async function viewSettings(el, sub) {
+  const tabs = [["stato", "Stato"], ...(store.me.admin ? [["utenti", "Utenti"], ["attivita", "Attività"]] : [])];
+  const tab = tabs.some(([k]) => k === sub) ? sub : "stato";
+  el.innerHTML = `${tabs.length > 1 ? `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impostazioni/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>` : ""}<div id="st-body"><div class="loading"><span class="spinner"></span> verifica del controller…</div></div>`;
+  const body = $("#st-body");
+  if (tab === "utenti") return viewUsers(body);
+  if (tab === "attivita") return viewAudit(body);
   let s;
-  try { s = await api("api/status"); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  try { s = await api("api/status"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   const c = s.controller, m = s.mqtt, ha = s.home_assistant, o = s.options;
+  const configLink = can("impianti") ? ' <a href="#impianti">Configura in Impianti</a>' : "";
   const ctrl = c.ok ? props([
-    ["Stato", `${statusDot("ok")} raggiungibile`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di serie", `<code>${esc(c.serial)}</code>`],
-    ["Porte", c.doors.map((d) => `<code>${esc(d)}</code>`).join(", ") + (c.door_found ? "" : ' <span class="pill warn">token configurato assente</span>')],
-    ["Tessere sul controller", esc(c.credentials)],
-  ]) : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller non raggiungibile</b>${esc(c.error)}</div></div>`;
+    ["Stato", `${statusDot("ok")} Raggiungibile`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
+    ["Porte", c.doors.map((d) => `<code>${esc(d)}</code>`).join(", ")],
+    ["Tessere sul Controller", esc(c.credentials)],
+  ]) : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${configLink}</div></div>`;
   const cats = Object.entries(m.categories || {});
-  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun broker</b>Installa l'add-on Mosquitto o imposta mqtt_host nelle opzioni.</div></div>` : props([
-    ["Broker", m.connected ? `${statusDot("ok")} collegato` : `${statusDot("err")} non collegato ${esc(m.error)}`],
+  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta mqtt_host nelle opzioni dell'add-on.</div></div>` : props([
+    ["Broker", m.connected ? `${statusDot("ok")} Collegato` : `${statusDot("err")} Non Collegato ${esc(m.error)}`],
     ["Prefisso", `<code>${esc(m.prefix)}</code>`],
-    ["Controller", m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? `${statusDot("ok")} online` : `${statusDot("err")} offline`],
-    ["Ultima tessera letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
-    ["Eventi AccessControl", m.access_events_seen ? `${statusDot("ok")} ricevuti` : `${statusDot("warn")} non ancora ricevuti`],
+    ["Controller", m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? `${statusDot("ok")} Online` : `${statusDot("err")} Offline`],
+    ["Ultima Tessera Letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
+    ["Eventi AccessControl", m.access_events_seen ? `${statusDot("ok")} Ricevuti` : `${statusDot("warn")} Non Ancora Ricevuti`],
   ]) + (m.connected && !m.access_events_seen ? '<p class="hint">Se dopo il passaggio di una tessera compare solo IdPoint, aggiungi gli eventi AccessControl (accesso concesso e negato) al filtro eventi MQTT dell\'A1210: servono per sapere se la porta si è aperta e perché un accesso è stato negato.</p>' : "")
-    + (cats.length ? `<div class="table-wrap" style="margin-top:12px"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div>` : "");
-  const entities = ["Stato porta", "Ultimo accesso", "Accessi oggi", "Accessi negati oggi", "Tessere da registrare", "Persone registrate", "Eventi accessi (per le automazioni)"].concat(ha.door_buttons ? ["Apri porta", "Apri porta a lungo"] : []);
+    + (cats.length ? `<div class="table-wrap" style="margin-top:12px"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo Topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div>` : "");
+  const doors = s.doors.length ? `<div class="list">${s.doors.map((d) => `<div class="item" style="padding-left:0;padding-right:0">
+      <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
+      <div class="grow"><div class="title">${esc(d.name)} <span class="muted" style="font-weight:400">· ${esc(d.mode ? DOOR_MODES[d.mode] || d.mode : "Stato Sconosciuto")}</span></div>
+        <div class="meta">${d.camera ? `<span>telecamera ${esc(d.camera)}</span>` : ""}${d.intercom ? `<span>citofono ${esc(d.intercom)}</span>` : ""}${d.ha_buttons ? "<span>pulsanti in Home Assistant</span>" : ""}</div></div></div>`).join("")}</div>`
+    : `<p class="muted" style="margin:0">Nessuna porta configurata.${configLink}</p>`;
+  const intercoms = s.intercoms.length ? `<div class="card"><h2>${icon("phone")}Citofoni</h2>${s.intercoms.map((ic) => props([
+    ["Porta", esc(ic.door)], ["Nome", esc(ic.name)], ["Apertura dal Citofono", ic.open_door ? "Attiva" : "Disattivata"],
+    ["Stato Chiamata", esc(({idle: "Libero", ringing: "Sta Suonando", ring: "Sta Suonando", oncall: "In Conversazione", dismissed: "Chiusa"})[String(ic.call_state).toLowerCase()] || ic.call_state || "—")], ["Ultimo Messaggio", ic.last_message_at ? esc(relTime(ic.last_message_at)) : "—"],
+  ])).join('<hr style="border:none;border-top:1px solid var(--border);margin:12px 0">')}</div>` : "";
   const haCard = props([
-    ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} attive, dispositivo "Controllo accessi"` : `${statusDot("")} disattivate nelle opzioni`],
-    ...(ha.integration ? [["Entità", esc(entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
-    ["API di Home Assistant", ha.api ? `${statusDot("ok")} disponibile` : `${statusDot("warn")} non disponibile`],
-    ["Istantanee", ha.snapshot_camera ? `<code>${esc(ha.snapshot_camera)}</code> su accessi negati, tessere sconosciute, citofono e allarmi${ha.snapshot_on_granted ? " e anche sugli accessi concessi" : ""}` : "nessuna telecamera impostata"],
-  ]) + `<p class="hint">L'evento "Eventi accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni.</p>`;
-  const ic = s.intercom;
-  const intercom = ic ? `<div class="card"><h2>${icon("phone")}Citofono</h2>${props(Object.entries({
-    "Configurato": ic.configured ? `${statusDot("ok")} sì` : `${statusDot("")} no`, "Nome": esc(ic.name ?? "—"),
-    "Apertura dalla app del citofono": ic.open_door ? "attiva" : "disattivata", "Stato chiamata": esc(ic.call_state ?? "—"),
-    "Ultimo messaggio": ic.last_message_at ? esc(relTime(ic.last_message_at)) : "—",
-  }))}</div>` : "";
-  el.innerHTML = `
+    ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} Attive, dispositivo "Controllo Accessi"` : `${statusDot("")} Disattivate nelle opzioni`],
+    ...(ha.integration ? [["Entità", esc(ha.entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
+    ["API di Home Assistant", ha.api ? `${statusDot("ok")} Disponibile` : `${statusDot("warn")} Non Disponibile`],
+  ]) + `<p class="hint">L'evento "Eventi Accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni. I pulsanti di apertura si attivano per ogni porta in Impianti.</p>`;
+  body.innerHTML = `
+    ${!c.ok && !s.doors.length && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b>Indirizzo, utente e password del controller, porte, citofono e telecamera si impostano nella pagina Impianti.</div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
     <div class="grid two">
       <div>
-        <div class="card"><h2>${statusDot(c.ok ? (c.door_found ? "ok" : "warn") : "err")}Controller A1210</h2>${ctrl}
+        <div class="card"><h2>${statusDot(c.ok ? "ok" : "err")}Controller</h2>${ctrl}
           <p class="hint">Ultima sincronizzazione: ${s.sync.at ? esc(relTime(s.sync.at)) : "non ancora eseguita"}${s.sync.ok === false ? ` · <span style="color:var(--err)">${esc(s.sync.error)}</span>` : ""}</p></div>
+        <div class="card"><h2>${icon("door")}Porte</h2>${doors}</div>
         <div class="card"><h2>${statusDot(!m.configured || !m.connected ? "err" : m.access_events_seen ? "ok" : "warn")}Eventi MQTT</h2>${mqtt}</div>
-        ${intercom}
       </div>
       <div>
+        ${intercoms}
         <div class="card"><h2>${icon("dashboard")}Home Assistant</h2>${haCard}</div>
-        <div class="card"><h2>${icon("cog")}Opzioni dell'add-on</h2>${props([
-          ["Porta", `<code>${esc(o.door_token)}</code>`], ["Gruppo predefinito", `<code>${esc(o.access_profile)}</code>`],
-          ["Conservazione registro", `${o.event_retention_days} giorni`], ["Utenti in sola lettura", o.readonly_users.length ? esc(o.readonly_users.join(", ")) : "nessuno"],
-        ])}<p class="hint">Si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione.</p></div>
-        <div class="card"><h2>${icon("download")}Esporta e importa</h2>
-          <div class="row"><a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a><a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>
-          <label class="btn small write" style="cursor:pointer">${icon("upload")}Importa anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). Prima vedi un'anteprima, poi confermi. Le tessere già registrate vengono saltate.</p></div>
+        <div class="card"><h2>${icon("cog")}Opzioni dell'Add-on</h2>${props([
+          ["Gruppo Predefinito", esc(o.default_group ? (await loadGroups(), groupName(o.default_group)) : "—")],
+          ["Conservazione Registro", `${o.event_retention_days} giorni`],
+          ["Broker MQTT", o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
+        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti Aggiuntivi → Axis Access Manager → Configurazione. Il gruppo predefinito si sceglie in Regole → Gruppi.</p></div>
+        <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
+          <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
+          <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). Prima vedi un'anteprima, poi confermi. Le tessere già registrate vengono saltate.</p></div>
       </div>
     </div>
-    <div class="card flush"><h2>Attività<span class="spacer"></span><span class="muted small-text">chi ha fatto cosa dall'add-on</span></h2>
-      <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Azione</th></tr></thead><tbody id="audit"></tbody></table></div>
-      <div style="text-align:center;padding:12px" id="audit-more-box" hidden><button type="button" id="audit-more">Carica altre</button></div></div>
     <p class="muted small-text" style="text-align:center">Axis Access Manager ${esc(store.me.version || "")}</p>`;
-  $("#import-file").addEventListener("change", importCsv);
+  paintIcons(body);
+  if ($("#import-file")) $("#import-file").addEventListener("change", importCsv);
+}
+
+async function viewAudit(body) {
+  body.innerHTML = `<div class="card flush"><h2>Attività<span class="spacer"></span><span class="muted small-text">chi ha fatto cosa dall'add-on</span></h2>
+      <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Azione</th></tr></thead><tbody id="audit"></tbody></table></div>
+      <div style="text-align:center;padding:12px" id="audit-more-box" hidden><button type="button" id="audit-more">Carica Altre</button></div></div>`;
   $("#audit-more").onclick = () => loadAudit(true);
   await loadAudit();
+}
+
+async function viewUsers(body) {
+  let data;
+  try { data = await api("api/users"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  const roleLabel = (u) => data.roles[u.role]?.label || "Personalizzato";
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Gli utenti sono quelli di Home Assistant: chi apre l'app per la prima volta viene aggiunto con "Solo Stato" e qui gli dai i permessi. Puoi anche aggiungerli prima, con il loro nome utente.</p>
+    <button type="button" class="primary" id="u-new">${icon("plus")}Nuovo Utente</button></div>
+    <div class="card flush"><div class="list">${data.users.map((u) => `<div class="item">
+      <div class="avatar ${u.perms.length ? "" : "off"}">${esc(initials(u.name || u.username))}</div>
+      <div class="grow"><div class="title">${esc(u.name || u.username)}${u.username === store.me.username ? ' <span class="muted" style="font-weight:400">· tu</span>' : ""}</div>
+        <div class="meta"><code>${esc(u.username)}</code><span class="pill ${u.admin ? "accent" : u.perms.length ? "" : "warn"}">${esc(roleLabel(u))}</span><span>${u.last_seen ? "ultimo accesso " + esc(relTime(u.last_seen)) : "mai entrato"}</span></div></div>
+      <div class="row item-actions"><button type="button" class="small" data-u-edit="${esc(u.username)}">${icon("edit")}Permessi</button>
+        ${u.username === store.me.username ? "" : `<button type="button" class="small danger" data-u-del="${esc(u.username)}">Elimina</button>`}</div></div>`).join("")}</div></div>`;
+  paintIcons(body);
+  const form = (u) => `${u ? "" : field("Nome Utente di Home Assistant", `<input name="username" autocomplete="off" placeholder="es. mario">`, "Lo trovi in Impostazioni → Persone → Utenti di Home Assistant.")}
+    ${field("Nome", `<input name="name" maxlength="100" value="${esc(u?.name || "")}" placeholder="facoltativo">`)}
+    ${field("Ruolo", `<select name="role">${Object.entries(data.roles).map(([k, r]) => `<option value="${k}" ${u?.role === k ? "selected" : ""}>${esc(r.label)}</option>`).join("")}<option value="personalizzato" ${u?.role === "personalizzato" ? "selected" : ""}>Personalizzato</option></select>`)}
+    <div class="field"><label>Permessi</label><div class="perm-list">${Object.entries(data.permissions).map(([k, label]) => `<label><input type="checkbox" name="perm" value="${k}" ${(u ? u.perms : data.roles.solo_stato.perms).includes(k) ? "checked" : ""}>${esc(label)}</label>`).join("")}</div>
+      <p class="hint">Tutti vedono il cruscotto e lo stato del controller.</p></div>`;
+  const bind = (dlg) => {
+    const role = $("[name=role]", dlg);
+    const boxes = $$("[name=perm]", dlg);
+    role.onchange = () => { const r = data.roles[role.value]; if (r) boxes.forEach((b) => { b.checked = r.perms.includes(b.value); }); };
+    boxes.forEach((b) => b.onchange = () => {
+      const chosen = boxes.filter((x) => x.checked).map((x) => x.value).sort().join(",");
+      role.value = Object.entries(data.roles).find(([, r]) => [...r.perms].sort().join(",") === chosen)?.[0] || "personalizzato";
+    });
+  };
+  const save = (u) => async (dlg) => {
+    const payload = {username: u ? u.username : val(dlg, "username"), name: val(dlg, "name"), perms: $$("[name=perm]:checked", dlg).map((x) => x.value)};
+    return (await run(() => api(u ? `api/users/${encodeURIComponent(u.username)}` : "api/users", {method: u ? "PUT" : "POST", body: payload}), "Utente salvato")) || false;
+  };
+  $("#u-new").onclick = async () => {
+    if (await modal({title: "Nuovo Utente", body: form(null), onOpen: bind, actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: save(null)}]})) render();
+  };
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const u = data.users.find((x) => x.username === (b.dataset.uEdit || b.dataset.uDel));
+    if (!u) return;
+    if (b.dataset.uEdit) {
+      if (await modal({title: "Permessi di " + (u.name || u.username), body: form(u), onOpen: bind, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: save(u)}]})) {
+        if (u.username === store.me.username) location.reload(); else render();
+      }
+    } else if (await confirmBox("Elimina Utente", `Eliminare <b>${esc(u.name || u.username)}</b>? Se riapre l'app verrà aggiunto di nuovo con "Solo Stato".`, "Elimina", true) &&
+        await run(() => api(`api/users/${encodeURIComponent(u.username)}`, {method: "DELETE"}), "Utente eliminato")) render();
+  };
 }
 async function loadAudit(more = false) {
   const params = new URLSearchParams({limit: "50"});
@@ -1178,9 +1606,11 @@ async function start() {
   paintIcons();
   try {
     store.me = await api("api/me");
-    document.body.classList.toggle("readonly", Boolean(store.me.readonly));
-    $("#nav-foot").textContent = store.me.readonly ? `${store.me.user} · sola lettura` : store.me.user;
   } catch (err) { /* la pagina funziona anche senza */ }
+  // Nasconde pagine e pulsanti per cui l'utente non ha il permesso
+  ALL_PERMS.forEach((perm) => document.body.classList.toggle("no-" + perm, !can(perm)));
+  $$("#nav a").forEach((a) => { const need = ROUTES[a.dataset.route]?.[2]; a.hidden = Boolean(need) && !can(need); });
+  $("#nav-foot").textContent = store.me.user ? `${store.me.user}${store.me.admin ? " · Amministratore" : store.me.perms.length ? "" : " · Solo Stato"}` : "";
   await loadSummary();
   await render();
   setInterval(loadSummary, 5000);

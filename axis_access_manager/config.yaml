@@ -1,5 +1,5 @@
 name: Axis Access Manager
-version: "0.3.1"
+version: "0.5.0"
 slug: axis_access_manager
 description: Gestione tessere e controllo accessi per il controller Axis A1210
 url: https://github.com/lurisin/axis-access-manager
@@ -9,52 +9,38 @@ arch:
 init: false
 ingress: true
 panel_icon: mdi:card-account-details
-panel_title: Controllo accessi
+panel_title: Controllo Accessi
+panel_admin: false
 homeassistant_api: true
 services:
   - mqtt:want
 options:
-  a1210_host: ""
-  a1210_username: ""
-  a1210_password: ""
-  a1210_verify_ssl: false
-  door_token: porta_via_consulta_ingresso_scala
-  access_profile: profilo_via_consulta_ingresso_scala_sempre
   event_retention_days: 365
-  mqtt_topic_prefix: accessi/via_consulta_controller
   ha_integration: true
-  ha_door_buttons: true
   ha_topic_prefix: axis_access_manager
-  snapshot_camera: ""
-  snapshot_on_granted: false
-  readonly_users: []
-  intercom_name: ""
-  intercom_open_door: false
-  intercom_relay: 1
-  intercom_mqtt_prefix: hmd
   log_level: info
+# Controller, porte, citofono e telecamere si configurano nell'app (pagina Impianti).
+# Le vecchie opzioni restano facoltative solo per importare la configurazione delle versioni precedenti.
 schema:
-  a1210_host: str
-  a1210_username: str
-  a1210_password: password
-  a1210_verify_ssl: bool
-  door_token: str
-  access_profile: str
   event_retention_days: int(1,3650)
-  mqtt_topic_prefix: str
+  ha_integration: bool
+  ha_topic_prefix: str
   mqtt_host: str?
   mqtt_port: port?
   mqtt_username: str?
   mqtt_password: password?
-  ha_integration: bool
-  ha_door_buttons: bool
-  ha_topic_prefix: str
-  snapshot_camera: str?
-  snapshot_on_granted: bool
-  readonly_users:
-    - str
-  intercom_name: str?
-  intercom_open_door: bool
-  intercom_relay: int(1,2)
-  intercom_mqtt_prefix: str
   log_level: list(debug|info|warning|error)
+  a1210_host: str?
+  a1210_username: str?
+  a1210_password: password?
+  a1210_verify_ssl: bool?
+  door_token: str?
+  access_profile: str?
+  mqtt_topic_prefix: str?
+  ha_door_buttons: bool?
+  snapshot_camera: str?
+  snapshot_on_granted: bool?
+  intercom_name: str?
+  intercom_open_door: bool?
+  intercom_relay: int(1,2)?
+  intercom_mqtt_prefix: str?

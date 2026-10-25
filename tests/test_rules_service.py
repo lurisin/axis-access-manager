@@ -36,13 +36,32 @@ async def test_holidays_are_written_as_exceptions(rules, controller):
     assert controller.schedules[token]["ExceptionScheduleDefinition"] is None
 
 
-async def test_standard_and_external_schedules_are_read_only(rules):
-    with pytest.raises(ServiceError):
-        await rules.update_schedule("standard_always", "x", "", OFFICE, True, "admin")
-    with pytest.raises(ServiceError):
+async def test_standard_and_external_schedules_can_be_edited_and_hidden(rules, controller):
+    controller.schedules["altra"] = {
+        "token": "altra",
+        "Name": "Notturno",
+        "ScheduleDefinition": "BEGIN:VEVENT\r\nDTSTART:19700101T200000\r\nDTEND:19700101T230000\r\n"
+        "RRULE:FREQ=WEEKLY;BYDAY=MO\r\nEND:VEVENT",
+    }
+    listed = {s["token"]: s for s in await rules.list_schedules()}
+    assert listed["altra"]["managed"] is False
+    assert listed["altra"]["summary"] == "lun 20:00-23:00"
+
+    await rules.update_schedule("standard_office_hours", "Ufficio", "", OFFICE, False, "admin")
+    listed = {s["token"]: s for s in await rules.list_schedules()}
+    assert listed["standard_office_hours"]["managed"] is True
+    assert listed["standard_office_hours"]["name"] == "Ufficio"
+    with pytest.raises(ServiceError, match="non trovata"):
+        await rules.update_schedule("manca", "x", "", OFFICE, True, "admin")
+
+    rules.set_hidden("schedule", "altra", True, "admin")
+    listed = await rules.list_schedules()
+    assert listed[-1]["token"] == "altra" and listed[-1]["hidden"] is True
+    await rules.delete_schedule("altra", "admin")
+    assert "altra" not in controller.schedules
+    # Usata dal gruppo predefinito
+    with pytest.raises(ServiceError, match="usata dai gruppi"):
         await rules.delete_schedule("standard_always", "admin")
-    with pytest.raises(ServiceError, match="fuori dall'add-on"):
-        await rules.update_schedule("altra", "x", "", OFFICE, True, "admin")
 
 
 async def test_create_group_copies_default_profile_with_new_schedule(rules, controller):
@@ -72,9 +91,9 @@ async def test_group_rules(rules, controller, db):
     with pytest.raises(ServiceError, match="non esiste"):
         await rules.create_group("X", "", "manca", "admin")
     with pytest.raises(ServiceError, match="predefinito"):
-        await rules.update_group("profilo_sempre", "X", "", "standard_always", "admin")
-    with pytest.raises(ServiceError, match="predefinito"):
         await rules.delete_group("profilo_sempre", "admin")
+    with pytest.raises(ServiceError, match="predefinito"):
+        rules.set_hidden("group", "profilo_sempre", True, "admin")
 
     token = (await rules.create_group("Ospiti", "", "standard_always", "admin"))["token"]
     await rules.update_group(token, "Visitatori", "", "standard_office_hours", "admin")
@@ -87,3 +106,55 @@ async def test_group_rules(rules, controller, db):
     assert groups["profilo_sempre"]["default"] is True
     with pytest.raises(ServiceError, match="assegnato a 1 persone"):
         await rules.delete_group(token, "admin")
+
+
+async def test_default_group_is_chosen_in_the_app(rules, controller, db):
+    token = (await rules.create_group("Dipendenti", "", "standard_always", "admin"))["token"]
+    await rules.set_default_group(token, "admin")
+    assert rules.access.default_group == token
+    person = await rules.access.create_person("Anna", "04aa", "admin")
+    assert person["cards"][0]["access_profile"] == token
+    groups = {g["token"]: g for g in (await rules.list_groups())["groups"]}
+    assert groups[token]["default"] is True and groups["profilo_sempre"]["default"] is False
+    # Il vecchio predefinito ora si può modificare, nascondere ed eliminare
+    await rules.update_group("profilo_sempre", "Tutti", "", "standard_always", "admin")
+    rules.set_hidden("group", "profilo_sempre", True, "admin")
+    assert {g["token"]: g for g in (await rules.list_groups())["groups"]}["profilo_sempre"]["hidden"] is True
+    await rules.delete_group("profilo_sempre", "admin")
+    with pytest.raises(ServiceError, match="non trovato"):
+        await rules.set_default_group("manca", "admin")
+
+
+async def test_categories_assign_group_and_validity(rules, controller, db):
+    group = (await rules.create_group("Manutenzione", "", "standard_always", "admin"))["token"]
+    maint = (await rules.save_category(None, {"name": "Manutentore", "group_token": group, "color": "orange"}, "a"))[
+        "id"
+    ]
+    guest = (await rules.save_category(None, {"name": "Ospite", "valid_days": 7}, "a"))["id"]
+    with pytest.raises(ServiceError, match="esiste già"):
+        await rules.save_category(None, {"name": "manutentore"}, "a")
+    with pytest.raises(ServiceError, match="non esiste più"):
+        await rules.save_category(None, {"name": "X", "group_token": "manca"}, "a")
+
+    anna = await rules.access.create_person("Anna", "04aa", "admin", category_id=maint)
+    assert anna["category_id"] == maint
+    assert anna["cards"][0]["access_profile"] == group
+    bruno = await rules.access.create_person("Bruno", "04bb", "admin", category_id=guest)
+    assert bruno["cards"][0]["access_profile"] == "profilo_sempre"
+    assert bruno["cards"][0]["valid_to"].endswith("Z")
+    with pytest.raises(ServiceError, match="usato dalle tipologie Manutentore"):
+        await rules.delete_group(group, "admin")
+
+    # Cambio di gruppo della tipologia applicato a chi ne fa parte
+    other = (await rules.create_group("Notte", "", "standard_office_hours", "admin"))["token"]
+    result = await rules.save_category(maint, {"name": "Manutentore", "group_token": other}, "a", apply=True)
+    assert result["updated"] == 1
+    assert db.get_person(anna["id"])["cards"][0]["access_profile"] == other
+
+    # Cambio di tipologia di una persona: prende il gruppo della nuova tipologia
+    person = await rules.access.set_person_access(bruno["id"], "", "", "", "admin", category_id=maint)
+    assert person["category_id"] == maint and person["cards"][0]["access_profile"] == other
+
+    rules.delete_category(maint, "admin")
+    assert db.get_person(anna["id"])["category_id"] == 0
+    assert [c["name"] for c in rules.list_categories()] == ["Ospite"]

@@ -56,5 +56,5 @@ async def test_import_preview_then_apply(service, controller, db):
 
 def test_events_csv_is_excel_friendly():
     text = events_csv([{"ts": "2026-10-25T08:00:00+00:00", "kind": "concesso", "person_name": "Anna", "card": "04aa"}])
-    assert text.startswith("﻿Data e ora;Evento;Persona")
-    assert "Accesso concesso;Anna;04aa" in text
+    assert text.startswith("﻿Data e Ora;Evento;Persona")
+    assert "Accesso Concesso;Anna;04aa" in text

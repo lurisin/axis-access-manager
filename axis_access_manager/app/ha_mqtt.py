@@ -18,12 +18,12 @@ NODE_ID = "axis_access_manager"
 
 DOOR_MODES = {
     "Locked": "Bloccata",
-    "Accessed": "Aperta a tempo",
+    "Accessed": "Aperta a Tempo",
     "Unlocked": "Sbloccata",
     "LockedOpen": "Aperta",
-    "Blocked": "Bloccata da regola",
-    "LockedDown": "In blocco",
-    "DoubleLocked": "Doppia chiusura",
+    "Blocked": "Bloccata da Regola",
+    "LockedDown": "In Blocco",
+    "DoubleLocked": "Doppia Chiusura",
 }
 
 # Tipo di evento del log → tipo di evento in Home Assistant
@@ -41,11 +41,31 @@ EVENT_TYPES = {
 COMMANDS = {"apri": False, "apri_lungo": True}
 
 
+def parse_command(command: str) -> tuple[bool, str] | None:
+    """Comando dei pulsanti: "apri" o "apri_lungo", seguito da ":<porta>" per le porte oltre la prima."""
+    action, _, door = command.partition(":")
+    if action not in COMMANDS:
+        return None
+    return COMMANDS[action], door
+
+
+def door_label(mode: str | None) -> str:
+    return DOOR_MODES.get(mode, mode) if mode else "Sconosciuto"
+
+
 class HaBridge:
-    def __init__(self, settings: Settings, monitor: EventMonitor, db: Database) -> None:
+    def __init__(
+        self, settings: Settings, monitor: EventMonitor, db: Database, doors: list[dict] | None = None
+    ) -> None:
         self.settings = settings
         self.monitor = monitor
         self.db = db
+        # Porte configurate nell'app: la prima mantiene gli identificativi delle versioni precedenti
+        self.doors = (
+            doors
+            if doors is not None
+            else [{"id": 0, "door_token": settings.door_token, "name": "Porta", "ha_buttons": settings.ha_door_buttons}]
+        )
         base = settings.ha_topic_prefix
         self.availability_topic = f"{base}/disponibile"
         self.state_topic = f"{base}/stato"
@@ -58,6 +78,10 @@ class HaBridge:
     def enabled(self) -> bool:
         return self.settings.ha_integration
 
+    @property
+    def has_buttons(self) -> bool:
+        return any(d.get("ha_buttons") for d in self.doors)
+
     def will(self) -> aiomqtt.Will | None:
         if not self.enabled:
             return None
@@ -66,7 +90,7 @@ class HaBridge:
     def _device(self) -> dict:
         return {
             "identifiers": [f"{NODE_ID}_{self.settings.door_token or 'porta'}"],
-            "name": "Controllo accessi",
+            "name": "Controllo Accessi",
             "manufacturer": "Axis Access Manager",
             "model": "Axis A1210",
         }
@@ -82,13 +106,13 @@ class HaBridge:
             (
                 "sensor",
                 "stato_porta",
-                {**state, "name": "Stato porta", "icon": "mdi:door", "value_template": "{{ value_json.porta }}"},
+                {**state, "name": "Stato Porta", "icon": "mdi:door", "value_template": "{{ value_json.porta }}"},
             ),
             (
                 "sensor",
                 "ultimo_accesso",
                 {
-                    "name": "Ultimo accesso",
+                    "name": "Ultimo Accesso",
                     "icon": "mdi:card-account-details",
                     "state_topic": self.last_topic,
                     "value_template": "{{ value_json.persona or value_json.tessera or 'nessuno' }}",
@@ -100,7 +124,7 @@ class HaBridge:
                 "accessi_oggi",
                 {
                     **state,
-                    "name": "Accessi oggi",
+                    "name": "Accessi Oggi",
                     "icon": "mdi:login",
                     "value_template": "{{ value_json.accessi_oggi }}",
                 },
@@ -110,7 +134,7 @@ class HaBridge:
                 "negati_oggi",
                 {
                     **state,
-                    "name": "Accessi negati oggi",
+                    "name": "Accessi Negati Oggi",
                     "icon": "mdi:account-cancel",
                     "value_template": "{{ value_json.negati_oggi }}",
                 },
@@ -120,7 +144,7 @@ class HaBridge:
                 "tessere_da_registrare",
                 {
                     **state,
-                    "name": "Tessere da registrare",
+                    "name": "Tessere da Registrare",
                     "icon": "mdi:card-plus",
                     "value_template": "{{ value_json.da_registrare }}",
                 },
@@ -130,7 +154,7 @@ class HaBridge:
                 "persone_registrate",
                 {
                     **state,
-                    "name": "Persone registrate",
+                    "name": "Persone Registrate",
                     "icon": "mdi:account-group",
                     "value_template": "{{ value_json.persone }}",
                 },
@@ -139,33 +163,52 @@ class HaBridge:
                 "event",
                 "eventi",
                 {
-                    "name": "Eventi accessi",
+                    "name": "Eventi Accessi",
                     "icon": "mdi:shield-account",
                     "state_topic": self.event_topic,
                     "event_types": sorted(set(EVENT_TYPES.values())),
                 },
             ),
         ]
-        if self.settings.ha_door_buttons:
+        for index, door in enumerate(self.doors):
+            # Prima porta: nomi e identificativi di sempre; le altre hanno il loro nome e id
+            suffix, label, extra = (
+                ("", "Porta", "") if index == 0 else (f"_{door['id']}", door["name"], f":{door['door_token']}")
+            )
+            if index:
+                entities.append(
+                    (
+                        "sensor",
+                        f"stato_porta{suffix}",
+                        {
+                            **state,
+                            "name": f"Stato {label}",
+                            "icon": "mdi:door",
+                            "value_template": f"{{{{ value_json.porte['{door['door_token']}'] }}}}",
+                        },
+                    )
+                )
+            if not door.get("ha_buttons"):
+                continue
             entities += [
                 (
                     "button",
-                    "apri_porta",
+                    f"apri_porta{suffix}",
                     {
-                        "name": "Apri porta",
+                        "name": f"Apri {label}",
                         "icon": "mdi:door-open",
                         "command_topic": self.command_topic,
-                        "payload_press": "apri",
+                        "payload_press": f"apri{extra}",
                     },
                 ),
                 (
                     "button",
-                    "apri_porta_a_lungo",
+                    f"apri_porta_a_lungo{suffix}",
                     {
-                        "name": "Apri porta a lungo",
+                        "name": f"Apri {label} a Lungo",
                         "icon": "mdi:door-open",
                         "command_topic": self.command_topic,
-                        "payload_press": "apri_lungo",
+                        "payload_press": f"apri_lungo{extra}",
                     },
                 ),
             ]
@@ -207,8 +250,9 @@ class HaBridge:
         counts = self.db.count_events(local_day_start())
         mode = self.monitor.door_mode
         return {
-            "porta": DOOR_MODES.get(mode, mode) if mode else "Sconosciuto",
+            "porta": door_label(mode),
             "modalita": mode,
+            "porte": {d["door_token"]: door_label(self.monitor.door_modes.get(d["door_token"])) for d in self.doors},
             "accessi_oggi": counts.get("concesso", 0) + counts.get("apertura_remota", 0),
             "negati_oggi": counts.get("negato", 0) + counts.get("sconosciuta", 0),
             "da_registrare": len(self.db.list_unknown_cards()),
@@ -242,7 +286,7 @@ class HaBridge:
         await self.monitor.publish(self.event_topic, json.dumps(payload))
         if row.get("kind") in ("concesso", "negato", "sconosciuta", "lettura", "apertura_remota"):
             self.last_access = {
-                "persona": payload["persona"] or ("app" if row.get("kind") == "apertura_remota" else ""),
+                "persona": payload["persona"] or (payload["origine"] if row.get("kind") == "apertura_remota" else ""),
                 "tessera": payload["tessera"],
                 "esito": event_type,
                 "dettaglio": payload["dettaglio"],

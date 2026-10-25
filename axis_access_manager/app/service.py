@@ -7,11 +7,11 @@ import logging
 import re
 import unicodedata
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from .config import Settings
 from .db import Database, now_iso
-from .events import Event, EventMonitor
+from .events import Event, EventMonitor, door_of_topic
 from .rules import RuleError, check_validity, normalize_validity
 from .vapix import A1210Client, VapixError
 
@@ -99,6 +99,8 @@ class AccessService:
         # Chiamata quando cambia qualcosa che Home Assistant mostra (porta, contatori)
         self.on_change: Callable[[], Awaitable[None]] | None = None
         self._tasks: set[asyncio.Task] = set()
+        # Punto di accesso → porta, per sapere a quale porta si riferisce un evento
+        self.access_point_doors: dict[str, str] = {}
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         try:
@@ -174,16 +176,34 @@ class AccessService:
             for person in self.db.all_persons():
                 if not self.db.cards_of(person["id"]):
                     self.db.delete_person(person["id"])
+            try:
+                points = await self.controller.list_access_points()
+                self.access_point_doors = {p.get("token"): p.get("Entity") or "" for p in points if p.get("token")}
+            except VapixError as err:
+                _LOGGER.debug("Punti di accesso non leggibili: %s", err)
             self._changed()
             return {"cards": len(seen_cards), "added": added, "removed": removed}
 
     # Anagrafica
 
+    @property
+    def default_group(self) -> str:
+        """Gruppo delle nuove tessere: scelto nell'app, altrimenti quello delle opzioni."""
+        return self.db.get_setting("default_group") or self.settings.access_profile
+
+    def _category(self, category_id: int | None) -> dict | None:
+        if not category_id:
+            return None
+        category = self.db.get_category(category_id)
+        if category is None:
+            raise ServiceError("tipologia non trovata")
+        return category
+
     def _access(self, group: str | None, valid_from: str | None, valid_to: str | None) -> dict:
-        """Gruppo (vuoto = quello predefinito delle opzioni) e validità controllati."""
-        profile = (group or "").strip() or self.settings.access_profile
+        """Gruppo (vuoto = quello predefinito) e validità controllati."""
+        profile = (group or "").strip() or self.default_group
         if not profile:
-            raise ServiceError("nessun gruppo scelto e nessun profilo predefinito nelle opzioni dell'add-on")
+            raise ServiceError("nessun gruppo scelto e nessun gruppo predefinito: impostalo in Regole → Gruppi")
         try:
             access = {
                 "access_profile": profile,
@@ -234,10 +254,19 @@ class AccessService:
         valid_to: str = "",
         company: str = "",
         notes: str = "",
+        category_id: int = 0,
     ) -> dict:
         name, number = normalize_name(name), normalize_card(card)
         company = normalize_text(company, 100, "ditta o reparto")
         notes = normalize_text(notes, 1000, "testo delle note")
+        category = self._category(category_id)
+        if category:
+            # La tipologia decide gruppo e durata, se non sono stati scelti a mano
+            group = group or category["group_token"]
+            if category["valid_days"] and not valid_to:
+                start = datetime.now(tz=UTC).replace(microsecond=0)
+                valid_from = valid_from or start.isoformat()
+                valid_to = (start + timedelta(days=category["valid_days"])).isoformat()
         access = self._access(group, valid_from, valid_to)
         async with self.lock:
             self._check_card_free(number)
@@ -259,8 +288,11 @@ class AccessService:
             person_id = self.db.add_person(name, user_token)
             if company or notes:
                 self.db.update_person_details(person_id, company, notes)
+            if category:
+                self.db.set_person_category(person_id, category["id"])
             self.db.add_card(person_id, number, credential_token, access=access)
-            self.db.add_audit(user, "persona creata", f"{name}, tessera {number}")
+            detail = f"{name}, tessera {number}" + (f", tipologia {category['name']}" if category else "")
+            self.db.add_audit(user, "persona creata", detail)
             self._changed()
             return self.db.get_person(person_id)
 
@@ -318,11 +350,27 @@ class AccessService:
             self.db.add_audit(user, "persona rinominata", f"{person['name']} → {name}")
             return self.db.get_person(person_id)
 
-    async def set_person_access(self, person_id: int, group: str, valid_from: str, valid_to: str, user: str) -> dict:
-        """Gruppo e validità per tutte le tessere della persona."""
+    async def set_person_access(
+        self,
+        person_id: int,
+        group: str,
+        valid_from: str,
+        valid_to: str,
+        user: str,
+        category_id: int | None = None,
+    ) -> dict:
+        """Gruppo e validità per tutte le tessere della persona; category_id None lascia la tipologia com'è."""
+        category = self._category(category_id)
+        if category and not group:
+            group = category["group_token"]
         access = self._access(group, valid_from, valid_to)
         async with self.lock:
             person = self._person(person_id)
+            if category_id is not None and category_id != person["category_id"]:
+                self.db.set_person_category(person_id, category_id)
+                self.db.add_audit(
+                    user, "tipologia cambiata", f"{person['name']}: {category['name'] if category else 'nessuna'}"
+                )
             for card in person["cards"]:
                 credentials = await self.controller.get_credentials([card["axis_credential_token"]])
                 if not credentials:
@@ -402,10 +450,12 @@ class AccessService:
 
     # Porta
 
-    async def open_door(self, extended: bool, user: str) -> None:
+    async def open_door(self, extended: bool, user: str, door: str = "") -> None:
         """Sblocco temporaneo, solo a serratura bloccata: la serratura non regge l'alimentazione continua."""
-        door = self.settings.door_token
-        mode = self.monitor.door_mode if self.monitor else None
+        door = door or self.settings.door_token
+        if not door:
+            raise ServiceError("nessuna porta configurata")
+        mode = self.monitor.door_modes.get(door) if self.monitor else None
         if mode is None:
             try:
                 mode = await self.controller.door_mode(door)
@@ -418,9 +468,9 @@ class AccessService:
         await self.controller.access_door(door, extended)
         if self.monitor and self.monitor.connected:
             # Evita un secondo comando finché MQTT non segnala che la porta si è richiusa
-            self.monitor.door_mode = "Accessed"
+            self.monitor.door_modes[door] = "Accessed"
         detail = "tempo esteso" if extended else ""
-        self.log_event(ts=now_iso(), kind="apertura_remota", detail=detail, source=user)
+        self.log_event(ts=now_iso(), kind="apertura_remota", detail=detail, source=user, door=door)
         self.db.add_audit(user, "porta aperta", detail)
 
     # Eventi
@@ -436,6 +486,7 @@ class AccessService:
         ts = event.timestamp.isoformat(timespec="seconds")
         data = event.data
         topic = event.topic
+        door = self._door_of(event)
         if topic.startswith("IdPoint/Request/IdData"):
             number = str(data.get("Card") or "")
             if not number:
@@ -443,7 +494,7 @@ class AccessService:
             card = self.db.card_by_number(number)
             if card is None:
                 self.db.note_unknown_card(number, ts)
-                self.log_event(ts=ts, kind="sconosciuta", card=number, source="lettore", raw=data)
+                self.log_event(ts=ts, kind="sconosciuta", card=number, source="lettore", raw=data, door=door)
             else:
                 self.log_event(
                     ts=ts,
@@ -454,6 +505,7 @@ class AccessService:
                     detail="" if card["enabled"] else "tessera sospesa",
                     source="lettore",
                     raw=data,
+                    door=door,
                 )
         elif topic.startswith("AccessControl/AccessGranted") or topic.startswith("AccessControl/Denied"):
             granted = topic.startswith("AccessControl/AccessGranted")
@@ -473,14 +525,24 @@ class AccessService:
                 detail="" if granted else DENIED_REASONS.get(reason, reason),
                 source="controller",
                 raw=data,
+                door=door,
             )
         elif topic.startswith("Door/State/DoorAlarm/") and data.get("State") not in (None, "Normal"):
             state = str(data["State"])
-            self.log_event(ts=ts, kind="allarme", detail=DOOR_ALARMS.get(state, state), source="porta", raw=data)
+            self.log_event(
+                ts=ts, kind="allarme", detail=DOOR_ALARMS.get(state, state), source="porta", raw=data, door=door
+            )
         elif topic.startswith("Door/State/DoorTamper/") and data.get("State") == "TamperDetected":
-            self.log_event(ts=ts, kind="manomissione", detail="manomissione porta", source="porta", raw=data)
+            self.log_event(ts=ts, kind="manomissione", detail="manomissione porta", source="porta", raw=data, door=door)
         elif topic.startswith("Device/Casing/Open") and str(data.get("Open")) == "1":
             self.log_event(ts=ts, kind="manomissione", detail="alloggiamento controller aperto", source="controller")
+
+    def _door_of(self, event: Event) -> str:
+        """Porta dell'evento: dal topic, dai dati o dal punto di accesso; altrimenti la porta principale."""
+        token = door_of_topic(event.topic) or str(event.data.get("DoorToken") or "")
+        if not token and event.data.get("AccessPointToken"):
+            token = self.access_point_doors.get(str(event.data["AccessPointToken"]), "")
+        return token or self.settings.door_token
 
     def record_intercom(self, entity_id: str, name: str) -> dict:
         """Chiamata dal citofono (entità di Home Assistant)."""

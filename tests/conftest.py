@@ -18,7 +18,34 @@ class FakeController:
         self.door = "Locked"
         self.fail_set_credential = False
         self._ids = itertools.count(1)
-        self.access_points = [{"token": "ap-in", "Entity": "porta", "Name": "Ingresso"}]
+        self.access_points = [
+            {
+                "token": "ap-in",
+                "Entity": "porta",
+                "EntityType": "axtdc:Door",
+                "Name": "Ingresso",
+                "Enabled": True,
+                "IdPointDevice": [{"IdPoint": "lettore-1", "DeviceUUID": ""}],
+                "Attribute": [{"Name": "Direction", "Value": "in"}],
+            }
+        ]
+        self.doors = {
+            "porta": {
+                "token": "porta",
+                "Name": "Ingresso scala",
+                "Description": "",
+                "AccessTime": "PT7S",
+                "ExtendedAccessTime": "PT30S",
+                "OpenTooLongTime": "PT15S",
+                "ExtendedOpenTooLongTime": "PT1M",
+                "PreAlarmTime": "PT5S",
+            },
+            "porta2": {"token": "porta2", "Name": "Cantina", "Description": "", "AccessTime": "PT5S"},
+        }
+        self.idpoints = {
+            "lettore-1": {"token": "lettore-1", "Name": "Lettore esterno", "Location": "", "Timeout": "PT3S"},
+            "lettore-2": {"token": "lettore-2", "Name": "Lettore interno", "Location": "", "Timeout": "PT3S"},
+        }
         self.schedules: dict[str, dict] = {
             "standard_always": {"token": "standard_always", "Name": "", "Description": "", "ScheduleDefinition": ""},
             "standard_office_hours": {"token": "standard_office_hours", "Name": "Office hours", "Description": ""},
@@ -49,7 +76,41 @@ class FakeController:
         return {"ProdNbr": "A1210", "Version": "10.12.288.1", "SerialNumber": "X"}
 
     async def door_info_list(self):
-        return [{"token": "porta"}]
+        return [{"token": t, "Name": d["Name"]} for t, d in self.doors.items()]
+
+    async def list_doors(self):
+        return [copy.deepcopy(d) for d in self.doors.values()]
+
+    async def get_doors(self, tokens):
+        return [copy.deepcopy(self.doors[t]) for t in tokens if t in self.doors]
+
+    async def set_door(self, door):
+        self.calls.append(("set_door", door["token"]))
+        self.doors[door["token"]] = copy.deepcopy(door)
+
+    async def list_door_configurations(self):
+        return [{"token": "porta", "Configuration": [{"Name": "Lock.Type", "Value": "FailSecure"}]}]
+
+    async def list_idpoints(self):
+        return [copy.deepcopy(i) for i in self.idpoints.values()]
+
+    async def get_idpoints(self, tokens):
+        return [copy.deepcopy(self.idpoints[t]) for t in tokens if t in self.idpoints]
+
+    async def set_idpoint(self, idpoint):
+        self.calls.append(("set_idpoint", idpoint["token"]))
+        self.idpoints[idpoint["token"]] = copy.deepcopy(idpoint)
+
+    async def list_idpoint_configurations(self):
+        raise VapixError("non supportato")
+
+    async def get_access_points(self, tokens):
+        return [copy.deepcopy(a) for a in self.access_points if a["token"] in tokens]
+
+    async def set_access_point(self, access_point):
+        self.calls.append(("set_access_point", access_point["token"]))
+        self.access_points = [a for a in self.access_points if a["token"] != access_point["token"]]
+        self.access_points.append(copy.deepcopy(access_point))
 
     async def list_users(self):
         return list(self.users.values())
@@ -98,7 +159,7 @@ class FakeController:
         self.calls.append(("access_door", door_token, extended))
 
     async def list_access_points(self):
-        return [dict(p) for p in self.access_points]
+        return [copy.deepcopy(p) for p in self.access_points]
 
     async def list_access_profiles(self):
         return [copy.deepcopy(p) for p in self.profiles.values()]
