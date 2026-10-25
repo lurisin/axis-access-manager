@@ -69,13 +69,20 @@
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .topbar { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
             backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid transparent;
-            display: flex; align-items: center; gap: 12px; padding: 12px 24px; flex-wrap: wrap; }
+            display: flex; align-items: center; gap: 12px; padding: 8px 24px; min-height: 52px; flex-wrap: wrap; }
   .topbar.scrolled { border-bottom-color: var(--border); }
   .topbar h1 { font-size: 20px; margin: 0; flex: 0 1 auto; min-width: 0; }
   .page-sub { color: var(--muted); font-size: 14px; white-space: nowrap; }
   .top-space { flex: 1; }
+  /* Matita del cruscotto: solo l'icona, la scritta si apre passandoci sopra */
+  .top-edit { display: inline-flex; align-items: center; gap: 0; height: 30px; padding: 0 7px; border-radius: 999px; color: var(--muted); font-size: 13px; }
+  .top-edit[hidden] { display: none; }
+  .top-edit svg.icon { width: 17px; height: 17px; flex: none; }
+  .top-edit .lbl { max-width: 0; overflow: hidden; white-space: nowrap; transition: max-width .2s ease, margin .2s ease; }
+  .top-edit:hover, .top-edit:focus-visible { color: var(--text); background: var(--surface-2); }
+  .top-edit:hover .lbl, .top-edit:focus-visible .lbl { max-width: 160px; margin-left: 6px; }
   .top-chips { display: flex; gap: 8px; align-items: center; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 999px; font-size: 14px; font-weight: 500;
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px; font-size: 14px; font-weight: 500;
           border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); white-space: nowrap; cursor: pointer; }
   a.chip:hover, button.chip:hover { text-decoration: none; background: var(--surface-2); }
   .chip svg.icon { width: 17px; height: 17px; }
@@ -262,6 +269,8 @@
   @media (max-width: 640px) {
     .dash { gap: 12px; }
     .dw.w-2 { grid-column: span 4; }
+    /* Sul telefono a metà riga restano solo i riquadri con un numero: gli elenchi non ci stanno */
+    .dw.w-1:not(.kpi) { grid-column: span 4; }
     .dw-kpi .value { font-size: 22px; }
     .dash-bar button { flex: 1 1 auto; }
   }
@@ -541,9 +550,9 @@
     <header class="topbar">
       <h1 id="page-title">Cruscotto</h1>
       <span class="page-sub" id="page-sub" hidden></span>
+      <!-- Matita del cruscotto accanto all'ora; guasti e allarmi su ogni pagina, solo quando ci sono -->
+      <button type="button" class="ghost top-edit" id="top-edit" hidden aria-label="Modifica Cruscotto"><span data-icon="edit" style="display:inline-flex"></span><span class="lbl">Modifica Cruscotto</span></button>
       <span class="top-space"></span>
-      <!-- Accessi e negati di oggi, solo sul cruscotto; guasti e allarmi su ogni pagina, solo quando ci sono -->
-      <div class="top-chips" id="top-today" hidden></div>
       <div class="top-chips" id="top-status"></div>
       <span class="pill err" id="offline-pill" hidden>Add-on Non Raggiungibile</span>
       <div class="top-pop card" id="top-pop" hidden></div>
@@ -930,7 +939,7 @@ async function render() {
   $("#page-title").textContent = title;
   document.title = `${title} · Controllo Accessi`;
   // Riga accanto al titolo: la scrive la pagina (data nel cruscotto, ultime 24 ore nelle notifiche)
-  if (route.name !== "cruscotto") $("#top-today").hidden = true;
+  if (route.name !== "cruscotto") $("#top-edit").hidden = true;
   if (route.name !== "cruscotto" && route.name !== "notifiche") $("#page-sub").hidden = true;
   $("#top-pop").hidden = true;
   markTopChips();
@@ -1026,11 +1035,29 @@ const fitWidget = (w) => {
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   return {type: w.type, size: clamp(w.size || WIDGETS[w.type].size, lim.minSize, 4), height: clamp(w.height || WIDGETS[w.type].height, lim.minHeight, lim.maxHeight)};
 };
-// Accessi e negati di oggi sono nella barra in alto: i riquadri con i numeri restano nel catalogo
-const DEFAULT_DASH = ["da_gestire", "ultimi_eventi", "porte", "settimana"].map((type) => fitWidget({type}));
+// Cruscotti predefiniti per ruolo, a griglia piena: [riquadro, larghezza, altezza] nell'ordine di riempimento
+const DEFAULT_DASHES = {
+  // Amministratore: tessere da sistemare, numeri del giorno, andamento, registro e cose da gestire
+  admin: [["scadenze", 1, 5], ["da_registrare", 1, 5], ["accessi_oggi", 1, 1], ["persone", 1, 1], ["negati_oggi", 1, 1],
+    ["allarmi_oggi", 1, 1], ["settimana", 2, 3], ["ultimi_eventi", 2, 4], ["da_gestire", 2, 4]],
+  // Operatore (registra e modifica tessere): prima le tessere da registrare e da gestire
+  operatore: [["da_registrare", 2, 4], ["da_gestire", 2, 4], ["persone", 1, 1], ["accessi_oggi", 1, 1], ["negati_oggi", 1, 1],
+    ["allarmi_oggi", 1, 1], ["ultimi_eventi", 2, 5], ["scadenze", 2, 2], ["settimana", 2, 3]],
+  // Consultazione (vede registro e persone): numeri del giorno e registro in grande
+  registro: [["accessi_oggi", 1, 1], ["negati_oggi", 1, 1], ["allarmi_oggi", 1, 1], ["persone", 1, 1],
+    ["ultimi_eventi", 2, 6], ["da_gestire", 2, 3], ["settimana", 2, 3]],
+  // Solo Stato: porte, impianto e numeri, senza nomi né registro
+  stato: [["accessi_oggi", 1, 1], ["negati_oggi", 1, 1], ["allarmi_oggi", 1, 1], ["persone", 1, 1],
+    ["da_gestire", 2, 4], ["porte", 2, 4], ["settimana", 2, 3], ["impianto", 2, 3]],
+};
+// Il predefinito segue i permessi, così vale anche per i ruoli personalizzati
+const defaultDash = () => {
+  const key = store.me.admin ? "admin" : can("persone_modifica") && can("registro") ? "operatore" : can("registro") ? "registro" : "stato";
+  return DEFAULT_DASHES[key].map(([type, size, height]) => fitWidget({type, size, height}));
+};
 const KPI_WIDGETS = ["accessi_oggi", "negati_oggi", "allarmi_oggi", "persone"];
 // Colonne occupate da ogni larghezza: sugli schermi stretti i quarti si accorpano (vedi il CSS del cruscotto)
-const dashSpan = (size) => window.innerWidth > 1000 ? size : window.innerWidth > 640 ? (size <= 2 ? 2 : 4) : (size === 1 ? 2 : 4);
+const dashSpan = (size, kpi = true) => window.innerWidth > 1000 ? size : window.innerWidth > 640 ? (size <= 2 ? 2 : 4) : (size === 1 && kpi ? 2 : 4);
 const dash = {layout: null, draft: null, editing: false};
 const widgetAllowed = (w) => WIDGETS[w.type] && (!WIDGETS[w.type].perm || can(WIDGETS[w.type].perm));
 
@@ -1097,7 +1124,7 @@ async function viewDashboard(el) {
       api("api/notifications").catch(() => null), api("api/dashboard/layout").catch(() => ({widgets: null}))]);
   } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   // Si arriva qui aprendo la pagina: una modifica lasciata a metà altrove non resta aperta
-  dash.layout = (saved.widgets || DEFAULT_DASH).filter((w) => WIDGETS[w.type]).map(fitWidget);
+  dash.layout = (saved.widgets || defaultDash()).filter((w) => WIDGETS[w.type]).map(fitWidget);
   dash.editing = false;
   dash.draft = null;
   const layout = () => dash.draft || dash.layout;
@@ -1107,24 +1134,19 @@ async function viewDashboard(el) {
   const day = now.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long"});
   $("#page-sub").textContent = `${day[0].toUpperCase()}${day.slice(1)} · ${fmtTime(now.toISOString())}`;
   $("#page-sub").hidden = false;
-  const t = d.today;
-  $("#top-today").innerHTML = `<a class="chip muted-chip" href="#registro" title="Accessi di oggi: con tessera e aperture remote">${icon("dooropen")}<b>${t.granted + t.remote}</b><span class="lbl">${t.granted + t.remote === 1 ? "accesso" : "accessi"}</span></a>
-    <a class="chip ${t.denied ? "warn" : "muted-chip"}" href="#registro" data-negati title="Accessi negati di oggi${t.unknown ? `, di cui ${plural(t.unknown, "tessera sconosciuta", "tessere sconosciute")}` : ""}">${icon("block")}<b>${t.denied}</b><span class="lbl">${t.denied === 1 ? "negato" : "negati"}</span></a>`;
-  $("#top-today").hidden = false;
-  $("[data-negati]").onclick = () => { logFilters.view = "negati"; };
   const draw = () => {
     // Ridisegnando la pagina resta dov'era: in modifica i clic successivi cadono sul riquadro giusto
     const scroll = window.scrollY;
     const widgets = layout().filter(widgetAllowed);
     const missing = Object.keys(WIDGETS).filter((t) => widgetAllowed({type: t}) && !layout().some((w) => w.type === t));
+    $("#top-edit").hidden = dash.editing;
+    paintIcons($("#top-edit"));
     el.innerHTML = `
-      <div class="dash-bar">${dash.editing
-        ? `<p class="muted small-text" style="margin:0;flex:1 1 280px">Trascina ${icon("drag")} per spostare un riquadro e ${icon("resize")} nell'angolo per cambiarne larghezza e altezza. Togli con × quelli che non ti servono.</p>
+      ${dash.editing ? `<div class="dash-bar"><p class="muted small-text" style="margin:0;flex:1 1 280px">Trascina ${icon("drag")} per spostare un riquadro e ${icon("resize")} nell'angolo per cambiarne larghezza e altezza. Togli con × quelli che non ti servono.</p>
            <button type="button" id="dash-add" ${missing.length ? "" : "disabled"}>${icon("plus")}Aggiungi Riquadro</button>
            <button type="button" class="ghost" id="dash-reset">Ripristina Predefinito</button>
            <button type="button" class="ghost" id="dash-cancel">Annulla</button>
-           <button type="button" class="primary" id="dash-save">${icon("check")}Salva</button>`
-        : `<span class="spacer" style="flex:1"></span><button type="button" class="ghost small" id="dash-edit">${icon("edit")}Modifica Cruscotto</button>`}</div>
+           <button type="button" class="primary" id="dash-save">${icon("check")}Salva</button></div>` : ""}
       <div class="dash ${dash.editing ? "editing" : ""}" id="dash">${widgets.map((w) => `
         <section class="card dw w-${w.size} dw-${w.type}${KPI_WIDGETS.includes(w.type) ? " kpi" : ""}" data-w="${w.type}" style="grid-row:span ${w.height}">
           ${dash.editing ? `<div class="dw-edit">
@@ -1133,7 +1155,7 @@ async function viewDashboard(el) {
             <button type="button" class="ghost icon-only" data-remove aria-label="Togli ${esc(WIDGETS[w.type].title)}" title="Togli">${icon("close")}</button></div>` : ""}
           <div class="dw-body">${WIDGET_BODY[w.type](ctx)}</div>
           ${dash.editing ? `<button type="button" class="dw-resize" aria-label="Ridimensiona ${esc(WIDGETS[w.type].title)}: ${w.size}/4 di larghezza, ${plural(w.height, "riga", "righe")} di altezza" title="Trascina per cambiare larghezza e altezza (o usa le frecce)">${icon("resize")}</button>` : ""}
-        </section>`).join("") || `<div class="card dw w-4"><div class="empty">Il cruscotto è vuoto. ${dash.editing ? "Usa Aggiungi Riquadro." : "Premi Modifica Cruscotto per aggiungere i riquadri."}</div></div>`}
+        </section>`).join("") || `<div class="card dw w-4"><div class="empty">Il cruscotto è vuoto. ${dash.editing ? "Usa Aggiungi Riquadro." : "Premi la matita accanto all'ora per aggiungere i riquadri."}</div></div>`}
       </div>`;
     paintIcons(el);
     window.scrollTo(0, scroll);
@@ -1143,7 +1165,7 @@ async function viewDashboard(el) {
       if (row && !dash.editing) showEvent(d.recent.find((x) => x.id === Number(row.dataset.event)));
     };
     if (dash.editing) bindDashEdit(el, draw, missing);
-    else $("#dash-edit").onclick = () => {
+    else $("#top-edit").onclick = () => {
       dash.editing = true;
       dash.draft = dash.layout.map((w) => ({...w}));
       pageGuard = {dirty: () => JSON.stringify(dash.draft) !== JSON.stringify(dash.layout), save: saveDash};
@@ -1251,7 +1273,8 @@ function bindDashEdit(el, draw, missing) {
     const move = (ev) => {
       // Larghezza più piccola che occupa le colonne raggiunte, anche dove i quarti si accorpano
       const cols = Math.max(1, Math.round((ev.clientX - left + gap) / (col + gap)));
-      const size = [2, 3, 4].reduce((best, n) => Math.abs(dashSpan(n) - cols) < Math.abs(dashSpan(best) - cols) ? n : best, 1);
+      const kpi = section.classList.contains("kpi");
+      const size = [2, 3, 4].reduce((best, n) => Math.abs(dashSpan(n, kpi) - cols) < Math.abs(dashSpan(best, kpi) - cols) ? n : best, 1);
       const height = Math.round((ev.clientY + window.scrollY - top + gap) / (row + gap));
       resizeTo(section, w, size, height);
       show();

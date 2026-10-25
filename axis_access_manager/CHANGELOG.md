@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.17.0
+
+- **Cruscotti predefiniti per ruolo**, tutti a griglia piena senza buchi:
+  - **Amministratore**: Tessere in Scadenza e Tessere da Registrare, i quattro numeri del giorno, Ultimi 7 Giorni, Ultimi Eventi e Da Gestire (la disposizione che hai preparato tu).
+  - **Operatore** (registra e modifica tessere): Tessere da Registrare e Da Gestire in alto, poi i numeri del giorno, Ultimi Eventi, Tessere in Scadenza e Ultimi 7 Giorni.
+  - **Consultazione** (vede il registro): i numeri del giorno, Ultimi Eventi in grande, Da Gestire e Ultimi 7 Giorni.
+  - **Solo Stato**: i numeri del giorno, Da Gestire, Porte, Ultimi 7 Giorni e Stato Impianto.
+  - Il predefinito si sceglie dai permessi, quindi vale anche per i ruoli personalizzati. Chi ha già salvato il suo cruscotto lo tiene; Ripristina Predefinito porta a quello del suo ruolo.
+- **Barra in alto più bassa**: tolti i bollini di accessi e negati (restano nei riquadri). Restano solo Allarmi, Guasti, Sistema OK e Add-on Non Raggiungibile.
+- La riga "Modifica Cruscotto" sotto la barra non c'è più: al suo posto una matita accanto all'ora, la scritta compare passandoci sopra.
+- Sul telefono gli elenchi larghi un quarto vanno a riga intera; a metà riga restano solo i riquadri con un numero.
+
 ## 0.16.2
 
 - **Telecamera del controller**: se il controller è in un altro locale, nella scheda Telecamere puoi dargli una sua telecamera ("Inquadra: Coperchio del Controller"). Quando si apre il coperchio la foto viene da quella telecamera. Senza, come prima, nessuna foto.
