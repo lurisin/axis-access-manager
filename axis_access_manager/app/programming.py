@@ -38,6 +38,25 @@ CONTROLLER_INPUTS = {
     "EXTERNAL_TAMPER": ("Ingresso Manomissione", "2"),
     "ALARM": ("Ingresso Allarme", "3"),
 }
+INPUT_ROLES = {
+    "": "Non Usato",
+    "rex": "Pulsante Uscita",
+    "intercom": "Relè Citofono",
+    "door_monitor": "Sensore Porta",
+    "alarm": "Ingresso di Allarme",
+}
+# Ruoli che aprono o sorvegliano una porta: vanno collegati a una porta del controller
+DOOR_ROLES = {"rex", "intercom", "door_monitor"}
+# Ruoli possibili per ogni ingresso: il contatto porta e il REX sono del connettore Door, gli AUX sono liberi
+ALLOWED_ROLES = {
+    "DPS": {"", "door_monitor"},
+    "REX": {"", "rex", "intercom"},
+    "IO1": {"", "rex", "intercom", "alarm"},
+    "IO2": {"", "rex", "intercom", "alarm"},
+    "EXTERNAL_TAMPER": {"", "alarm"},
+    "ALARM": {"", "alarm"},
+}
+CONTACTS = {"no": "Normalmente Aperto", "nc": "Normalmente Chiuso"}
 
 
 def parse_duration(value: str | None) -> float | None:
@@ -66,8 +85,9 @@ def _configuration(items: list[dict], token: str) -> list[dict]:
     return []
 
 
-def _inputs(info: list[dict], assigned: list[dict]) -> list[dict]:
-    """Ingressi fisici del controller: morsetti, supervisione e a chi sono assegnati ora."""
+def _inputs(info: list[dict], assigned: list[dict], saved: dict[str, dict] | None = None) -> list[dict]:
+    """Ingressi fisici del controller: morsetti, supervisione, a chi sono assegnati ora e cosa ne fa l'app."""
+    saved = saved or {}
     users = {a.get("IoName"): a.get("IoUser") or [] for a in assigned}
     found = {i.get("IoName"): i for i in info}
     result = []
@@ -75,13 +95,20 @@ def _inputs(info: list[dict], assigned: list[dict]) -> list[dict]:
         item = found.get(io)
         if item is None:
             continue
+        mine = saved.get(io, {})
         result.append(
             {
                 "io": io,
-                "name": name,
+                "name": mine.get("name") or name,
+                "default_name": name,
+                "role": mine.get("role", ""),
+                "door": mine.get("door_token", ""),
+                "contact": mine.get("contact", "no"),
+                "supervised": bool(mine.get("supervised")),
+                "roles": [r for r in INPUT_ROLES if r in ALLOWED_ROLES.get(io, {""})],
                 "pins": [p.get("Name", "") for p in item.get("PinInfo") or [] if p.get("Description") != "GND"]
                 or [p.get("Name", "") for p in item.get("PinInfo") or []],
-                "supervised": "supervised" in (item.get("IoMode") or []),
+                "can_supervise": "supervised" in (item.get("IoMode") or []),
                 "port": port,
                 "assigned": [
                     {"type": u.get("Type", ""), "token": u.get("token", ""), "usage": u.get("Usage", "")}
@@ -175,7 +202,9 @@ class ProgrammingService:
                 }
                 for a in points
             ],
-            "inputs": _inputs(io_info, io_assigned),
+            "inputs": _inputs(io_info, io_assigned, self.db.controller_inputs(self.controller_id)),
+            "input_roles": INPUT_ROLES,
+            "contacts": CONTACTS,
             "directions": DIRECTIONS,
             "changes": self.db.list_controller_changes(self.controller_id),
             "errors": errors,
@@ -261,6 +290,38 @@ class ProgrammingService:
                 data.get("description", before.get("Description")), 1024, "descrizione"
             )
             await self._save("reader", token, before, after, f"lettore {after['Name']}", user)
+
+    async def update_input(self, io: str, data: dict, user: str) -> dict:
+        """Nome, ruolo, porta e cablaggio di un ingresso fisico. Restituisce i valori salvati."""
+        controller_id = self._check()
+        if io not in CONTROLLER_INPUTS:
+            raise ServiceError("ingresso non trovato")
+        role = data.get("role") or ""
+        if role not in INPUT_ROLES:
+            raise ServiceError("ruolo non valido")
+        if role not in ALLOWED_ROLES[io]:
+            raise ServiceError(f"{INPUT_ROLES[role]}: non disponibile su questo ingresso")
+        door = (data.get("door") or "") if role in DOOR_ROLES else ""
+        if role in DOOR_ROLES:
+            if not door:
+                raise ServiceError(f"{INPUT_ROLES[role]}: scegli la porta")
+            if door not in {d.get("token") for d in await self.controller.door_info_list()}:
+                raise ServiceError("porta non trovata sul controller")
+        contact = data.get("contact") or "no"
+        if contact not in CONTACTS:
+            raise ServiceError("tipo di contatto non valido")
+        name = " ".join(normalize_text(data.get("name"), 64, "nome").split())
+        values = {
+            "name": name or (INPUT_ROLES[role] if role else CONTROLLER_INPUTS[io][0]),
+            "role": role,
+            "door_token": door,
+            "contact": contact,
+            "supervised": bool(data.get("supervised")),
+            "schedule": "",
+        }
+        self.db.save_controller_input(controller_id, io, values)
+        self.db.add_audit(user, "ingresso controller", f"{values['name']}: {INPUT_ROLES[role]}")
+        return values
 
     async def update_access_point(self, token: str, data: dict, user: str) -> None:
         """Nome, porta comandata, lettori collegati, direzione e attivazione di un punto di accesso."""

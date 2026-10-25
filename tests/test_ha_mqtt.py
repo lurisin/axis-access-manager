@@ -121,3 +121,18 @@ async def test_controller_and_door_condition_entities(bridge):
     porta = state["condizioni"]["porta"]
     assert porta["allarme"] == {"stato": "ON", "tipo": "Porta Forzata", "ultimo_cambio": "t"}
     assert porta["preallarme"]["stato"] == "None"
+
+
+async def test_input_entities_take_the_name_chosen_in_the_app(bridge, db):
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    db.save_controller_input(controller_id, "IO1", {"name": "Relè Citofono", "role": "intercom", "door_token": "porta"})
+    db.save_controller_input(controller_id, "REX", {"name": "Pulsante Portineria", "role": "rex"})
+    client = FakeClient()
+    await bridge.on_connect(client)
+
+    def config(object_id):
+        return json.loads(client.published[f"homeassistant/binary_sensor/axis_access_manager/{object_id}/config"])
+
+    # Stesso id dell'entità (storico e automazioni restano), nome nuovo
+    assert config("ingresso_aux_1")["name"] == "Relè Citofono"
+    assert config("ingresso_aux_2")["name"] == "Ingresso AUX 2"

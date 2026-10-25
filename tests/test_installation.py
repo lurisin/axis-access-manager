@@ -83,6 +83,30 @@ async def test_door_times_already_over_the_limit_do_not_block_saving(db, control
         await service.update_door("porta", {"name": "Portone", "extended_access_time": 90}, "admin")
 
 
+async def test_controller_inputs_get_name_role_and_door(db, controller):
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    saved = await service.update_input(
+        "IO1", {"name": "", "role": "intercom", "door": "porta", "supervised": True}, "admin"
+    )
+    assert saved["name"] == "Relè Citofono" and saved["supervised"] is True
+    inputs = {i["io"]: i for i in (await service.read())["inputs"]}
+    assert inputs["IO1"]["role"] == "intercom" and inputs["IO1"]["door"] == "porta"
+    assert inputs["IO1"]["name"] == "Relè Citofono" and inputs["IO1"]["default_name"] == "Ingresso AUX 1"
+
+    with pytest.raises(ServiceError, match="scegli la porta"):
+        await service.update_input("REX", {"role": "rex"}, "admin")
+    with pytest.raises(ServiceError, match="porta non trovata"):
+        await service.update_input("REX", {"role": "rex", "door": "manca"}, "admin")
+    with pytest.raises(ServiceError, match="non disponibile"):
+        await service.update_input("ALARM", {"role": "rex", "door": "porta"}, "admin")
+    with pytest.raises(ServiceError, match="non trovato"):
+        await service.update_input("XX", {"role": ""}, "admin")
+    # Un ingresso di allarme non ha porta
+    saved = await service.update_input("ALARM", {"name": "Allagamento", "role": "alarm", "door": "porta"}, "admin")
+    assert saved["door_token"] == "" and saved["name"] == "Allagamento"
+
+
 async def test_programming_changes_can_be_undone(db, controller):
     service = ProgrammingService(db, controller, 1, asyncio.Lock())
     data = await service.read()
@@ -94,9 +118,10 @@ async def test_programming_changes_can_be_undone(db, controller):
     assert data["errors"] == ["configurazione lettori: non supportato"]
     inputs = {i["io"]: i for i in data["inputs"]}
     assert list(inputs) == ["DPS", "REX", "IO1", "ALARM"]
-    assert inputs["REX"]["pins"] == ["Door 1:4"] and inputs["REX"]["supervised"] is True
+    assert inputs["REX"]["pins"] == ["Door 1:4"] and inputs["REX"]["can_supervise"] is True
     assert inputs["REX"]["assigned"] == [] and inputs["IO1"]["port"] == "0"
-    assert inputs["ALARM"]["name"] == "Ingresso Allarme" and inputs["ALARM"]["supervised"] is False
+    assert inputs["ALARM"]["name"] == "Ingresso Allarme" and inputs["ALARM"]["can_supervise"] is False
+    assert inputs["REX"]["roles"] == ["", "rex", "intercom"] and inputs["REX"]["role"] == ""
 
     await service.update_door("porta", {"name": "Portone", "access_time": 10}, "admin")
     assert controller.doors["porta"]["AccessTime"] == "PT10S"
