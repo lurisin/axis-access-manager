@@ -7,6 +7,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -243,6 +244,7 @@ DASHBOARD_WIDGETS = (
     "impianto",
 )
 SETTING_DASHBOARD = "dashboard_layout:"
+CAMERA_NAMES_TTL = 300
 
 
 class DashboardWidgetIn(BaseModel):
@@ -325,6 +327,9 @@ def create_app(
         app.state.notifications = NotificationService(app.state.db)
         app.state.ha = home_assistant or HomeAssistant()
         app.state.snapshot_errors = {}
+        # Nomi delle telecamere di Home Assistant (entity_id → friendly name), riletti ogni CAMERA_NAMES_TTL
+        app.state.camera_names = {}
+        app.state.camera_names_at = None
         app.state.reload_lock = asyncio.Lock()
         app.state.last_sync = {"ok": None, "error": "", "result": None, "at": None}
         app.state.mqtt = await resolve_mqtt(options)
@@ -421,6 +426,7 @@ def create_app(
         user = current_user(request)
         status = user.can("stato")
         doors = _doors_status(state)
+        names = await _camera_names(state)
         return {
             "door_mode": state.monitor.door_mode if status else None,
             "doors": doors if status else [{**d, "mode": None} for d in doors],
@@ -429,6 +435,8 @@ def create_app(
             "unknown_cards": len(state.db.list_unknown_cards()) if user.can("persone") else 0,
             "sync": state.last_sync,
             "notifications": _notification_listing(request)["open"] if status else 0,
+            # Per mostrare le telecamere delle porte con il nome di Home Assistant
+            "camera_names": {d["camera"]: names.get(d["camera"], "") for d in doors if d["camera"]},
         }
 
     @app.get("/api/notifications", dependencies=[need("stato")])
@@ -1089,8 +1097,12 @@ def create_app(
     @app.get("/api/cameras", dependencies=[need("impianti")])
     async def cameras(request: Request) -> list[dict]:
         """Telecamere di Home Assistant con l'ultima istantanea non riuscita, se c'è."""
-        errors = request.app.state.snapshot_errors
-        return [{**c, "last_error": errors.get(c["entity_id"])} for c in await request.app.state.ha.states()]
+        state = request.app.state
+        cameras = await state.ha.states()
+        if cameras:
+            state.camera_names = {c["entity_id"]: c["name"] for c in cameras}
+            state.camera_names_at = time.monotonic()
+        return [{**c, "last_error": state.snapshot_errors.get(c["entity_id"])} for c in cameras]
 
     # Utenti dell'app
 
@@ -1283,6 +1295,18 @@ def _doors_status(state) -> list[dict]:
         }
         for d in state.doors
     ]
+
+
+async def _camera_names(state) -> dict[str, str]:
+    """Nomi delle telecamere, dalla cache se recente: il riepilogo si legge spesso."""
+    # Mai letti finora: None, non 0 (l'orologio monotono può partire da pochi secondi dopo l'avvio)
+    stale = state.camera_names_at is None or time.monotonic() - state.camera_names_at > CAMERA_NAMES_TTL
+    if state.ha.available and stale:
+        state.camera_names_at = time.monotonic()
+        cameras = await state.ha.states()
+        if cameras:
+            state.camera_names = {c["entity_id"]: c["name"] for c in cameras}
+    return state.camera_names
 
 
 def _dashboard_key(request: Request) -> str:

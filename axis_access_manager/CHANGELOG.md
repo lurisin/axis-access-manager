@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.1
+
+- Le telecamere si vedono ovunque con il nome di Home Assistant, non con l'entity id: porte, dettaglio della porta, impostazioni della porta, scheda Telecamere e scelta della telecamera. L'entity id compare solo se due telecamere hanno lo stesso nome, o se la telecamera non esiste più in Home Assistant.
+
 ## 0.15.0
 
 - **Cruscotto personalizzabile**, per ogni utente dell'app.

@@ -555,6 +555,8 @@ const doorModeClass = (mode) => mode === "Locked" ? "ok" : mode ? "warn" : "";
 const allDoors = () => store.summary.doors || [];
 const multiDoor = () => allDoors().length > 1;
 const doorByToken = (token) => allDoors().find((d) => d.token === token);
+// Telecamera con il nome di Home Assistant; l'entity id solo se il nome non si conosce
+const cameraName = (entity) => store.summary.camera_names?.[entity] || entity;
 const doorLabel = (token) => doorByToken(token)?.name || (multiDoor() ? token || "" : allDoors()[0]?.name || "");
 // Manomissione del coperchio: riguarda il controller, non una porta (l'origine è il nome del controller)
 const controllerEvent = (e) => e.kind === "manomissione" && !e.door && e.source !== "porta";
@@ -1108,7 +1110,7 @@ function doorTile(d) {
     <div class="row small-text muted" style="margin-top:auto">
       <span>Oggi <b class="t">${d.today.granted}</b> accessi${d.today.denied ? ` · <b style="color:var(--warn)">${d.today.denied}</b> negati` : ""}${d.today.alarms ? ` · <b style="color:var(--err)">${d.today.alarms}</b> allarmi` : ""}</span>
       <span class="spacer" style="flex:1"></span>
-      ${d.intercom ? `<span title="Videocitofono ${esc(d.intercom)}">${icon("phone")}</span>` : ""}${d.camera ? `<span title="Telecamera ${esc(d.camera)}">${icon("camera")}</span>` : ""}
+      ${d.intercom ? `<span title="Videocitofono ${esc(d.intercom)}">${icon("phone")}</span>` : ""}${d.camera ? `<span title="Telecamera ${esc(cameraName(d.camera))}">${icon("camera")}</span>` : ""}
     </div></a>`;
 }
 // Porte raggruppate per struttura e area; le intestazioni compaiono solo quando servono a distinguere
@@ -1175,7 +1177,7 @@ async function viewDoorDetail(el, id, doors) {
   const devices = [
     ...d.readers.map((r) => [icon(r.role_key === "intercom" ? "bell" : r.role ? "dooropen" : "card"), r.name, readerMeta(r), off(r)]),
     d.intercom ? [icon("phone"), d.intercom, d.intercom_open_door ? `Videocitofono Hikvision · apre la porta con il relè ${d.intercom_relay}` : "Videocitofono Hikvision · registra le chiamate, non apre la porta", null] : null,
-    d.camera ? [icon("camera"), d.camera, d.snapshot_on_granted ? "Telecamera · istantanea a ogni passaggio" : "Telecamera · istantanea su rifiuti, aperture a distanza, citofono e allarmi", null] : null,
+    d.camera ? [icon("camera"), cameraName(d.camera), d.snapshot_on_granted ? "Telecamera · istantanea a ogni passaggio" : "Telecamera · istantanea su rifiuti, aperture a distanza, citofono e allarmi", null] : null,
     [icon("chip"), d.controller.name || "Controller", ["Controller", d.controller.host].filter(Boolean).join(" · "), null],
   ].filter(Boolean);
   const kpi = (label, value, sub, color = "") => `<div class="card"><div class="label">${label}</div><div class="value" ${color ? `style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
@@ -2566,7 +2568,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
     if (!door) return `<p class="muted small-text" style="margin:8px 0 0">Non gestita dall'app: niente registro per porta, pulsanti in Home Assistant o citofono.</p>`;
     return props([
       ["Nome nell'App", esc(door.name)],
-      ["Telecamera", `${door.snapshot_camera ? `<code>${esc(door.snapshot_camera)}</code>${door.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'} · <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a>`],
+      ["Telecamera", `${door.snapshot_camera ? `${esc(cameraName(door.snapshot_camera))}${door.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'} · <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a>`],
       ["Citofono", `${door.intercom_name ? `${esc(door.intercom_name)} · relè ${door.intercom_relay}${door.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'} · <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a>`],
       ["Pulsanti HA", door.ha_buttons ? "Apri e Apri a Lungo" : '<span class="muted">Nessuno</span>'],
     ]);
@@ -2662,7 +2664,7 @@ async function controllerStatus(body, ctrl) {
   const doorList = doors.length ? `<div class="list">${doors.map((d) => `<a class="item door-row" href="#porte/${d.id}" style="padding-left:0;padding-right:0">
       <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
       <div class="grow"><div class="title">${esc(d.name)}</div>
-        <div class="meta">${d.camera ? `<span>telecamera ${esc(d.camera)}</span>` : ""}${d.intercom ? `<span>citofono ${esc(d.intercom)}</span>` : ""}${d.ha_buttons ? "<span>pulsanti in Home Assistant</span>" : ""}</div></div>
+        <div class="meta">${d.camera ? `<span>telecamera ${esc(cameraName(d.camera))}</span>` : ""}${d.intercom ? `<span>citofono ${esc(d.intercom)}</span>` : ""}${d.ha_buttons ? "<span>pulsanti in Home Assistant</span>" : ""}</div></div>
       <span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span></a>`).join("")}</div>`
     : `<p class="muted" style="margin:0">Nessuna porta gestita dall'app: aggiungile nella scheda <a href="#impianti/c${ctrl.id}/porte">Porte</a>.</p>`;
   const names = doors.map((d) => d.name);
@@ -2767,7 +2769,7 @@ const cameraNote = (c) => CAMERA_DOWN.includes(c.state) ? "non disponibile"
 async function controllerCameras(body, ctrl) {
   const cameras = await api("api/cameras").catch(() => []);
   if (!body.isConnected) return;
-  const label = (entity) => cameras.find((c) => c.entity_id === entity)?.name || entity;
+  const label = (entity) => cameras.find((c) => c.entity_id === entity)?.name || cameraName(entity);
   // Telecamera spenta in Home Assistant o ultima foto non riuscita: si vede qui, non solo nel log
   const problem = (entity) => {
     const cam = cameras.find((c) => c.entity_id === entity);
@@ -2784,7 +2786,7 @@ async function controllerCameras(body, ctrl) {
       : rows.length ? `<div class="card flush"><div class="list">${rows.map((d) => `<div class="item">
         <div class="ev-icon k-accent">${icon("camera")}</div>
         <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}${problem(d.snapshot_camera) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
-          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto solo sui rifiuti e le aperture a distanza"}</span><code>${esc(d.snapshot_camera)}</code></div>
+          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto solo sui rifiuti e le aperture a distanza"}</span></div>
           ${problem(d.snapshot_camera) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(d.snapshot_camera))}</div>` : ""}</div>
         <button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
@@ -2802,12 +2804,12 @@ async function controllerCameras(body, ctrl) {
 async function cameraEditor(ctrl, cameras, door) {
   const current = door?.snapshot_camera || "";
   const cameraInput = cameras.length
-    ? `<select name="camera">${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === current ? "selected" : ""}>${cameraNote(c) ? "⚠ " : ""}${esc(c.name)} (${esc(c.entity_id)})${cameraNote(c) ? ` · ${cameraNote(c)}` : ""}</option>`).join("")}${current && !cameras.some((c) => c.entity_id === current) ? `<option value="${esc(current)}" selected>${esc(current)}</option>` : ""}</select>`
+    ? `<select name="camera">${cameras.map((c) => `<option value="${esc(c.entity_id)}" ${c.entity_id === current ? "selected" : ""}>${cameraNote(c) ? "⚠ " : ""}${esc(c.name)}${cameras.some((x) => x !== c && x.name === c.name) ? ` (${esc(c.entity_id)})` : ""}${cameraNote(c) ? ` · ${cameraNote(c)}` : ""}</option>`).join("")}${current && !cameras.some((c) => c.entity_id === current) ? `<option value="${esc(current)}" selected>${esc(cameraName(current))} · non trovata</option>` : ""}</select>`
     : `<input name="camera" class="mono" value="${esc(current)}" placeholder="camera.ingresso">`;
-  const doorSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${d.id === door?.id ? "selected" : ""}>${esc(d.name)}${d.snapshot_camera && d.id !== door?.id ? ` (ora ${esc(d.snapshot_camera)})` : ""}</option>`).join("")}</select>`;
+  const doorSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${d.id === door?.id ? "selected" : ""}>${esc(d.name)}${d.snapshot_camera && d.id !== door?.id ? ` (ora ${esc(cameras.find((c) => c.entity_id === d.snapshot_camera)?.name || cameraName(d.snapshot_camera))})` : ""}</option>`).join("")}</select>`;
   const result = await modal({
     title: door ? "Modifica Telecamera" : "Aggiungi Telecamera",
-    body: `${field("Telecamera", cameraInput, cameras.length ? "Le entità camera.* di Home Assistant. Ferma: non trasmette (con Frigate anche se spenta), la foto potrebbe non riuscire." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
+    body: `${field("Telecamera", cameraInput, cameras.length ? "Le telecamere di Home Assistant, con il loro nome. Ferma: non trasmette (con Frigate anche se spenta), la foto potrebbe non riuscire." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
       ${field("Porta", doorSelect, "Se la porta ha già una telecamera, viene sostituita.")}
       <div class="field inline"><input type="checkbox" name="granted" id="f-cg" ${door?.snapshot_on_granted ? "checked" : ""}><label for="f-cg">Istantanea Anche sugli Accessi Concessi</label></div>
       <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su rifiuti, aperture a distanza, citofono e allarmi.</p>`,
