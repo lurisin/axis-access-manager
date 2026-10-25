@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.1
+
+- L'elenco a tendina dei bollini in alto si stacca meglio dai riquadri, soprattutto con il tema scuro: sfondo più chiaro, bordo e ombra più marcati. Il bollino della tendina aperta resta evidenziato.
+
 ## 0.16.0
 
 - **Cruscotto a griglia**: ogni riquadro ha larghezza (quarti di riga) e altezza (righe da 64 px), quindi i bordi restano allineati.

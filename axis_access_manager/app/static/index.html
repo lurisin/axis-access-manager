@@ -86,7 +86,11 @@
   .chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; cursor: default; }
   .chip.ok .dot { background: var(--ok); width: 8px; height: 8px; }
   .top-pop { position: absolute; right: 16px; top: calc(100% + 6px); width: min(420px, calc(100% - 16px)); margin: 0; padding: 0; z-index: 40;
-             box-shadow: 0 8px 28px rgba(0, 0, 0, .18); overflow: hidden; }
+             border-color: var(--border-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .22), 0 2px 6px rgba(0, 0, 0, .12); overflow: hidden; }
+  /* Sul tema scuro la tendina deve staccarsi dai riquadri sotto, che hanno lo stesso colore */
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .top-pop { background: var(--surface-2); box-shadow: 0 12px 32px rgba(0, 0, 0, .6); } }
+  :root[data-theme="dark"] .top-pop { background: var(--surface-2); box-shadow: 0 12px 32px rgba(0, 0, 0, .6); }
+  .chip[aria-expanded=true] { box-shadow: 0 0 0 2px currentColor; }
   .top-pop .pop-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
   .top-pop .pop-head b { flex: 1; font-size: 15px; }
   .top-pop .pop-row { display: flex; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); color: var(--text); }
@@ -852,11 +856,17 @@ function renderTopStatus() {
     : `<span class="chip ok" title="Nessun guasto né allarme"><span class="dot"></span><span class="lbl">Sistema OK</span></span>`;
   const pop = $("#top-pop");
   if (!pop.hidden) showTopPop(pop.dataset.kind);
+  else markTopChips();
+}
+// Il bollino della tendina aperta resta evidenziato
+function markTopChips() {
+  const pop = $("#top-pop");
+  $$("#top-status [data-pop]").forEach((c) => c.setAttribute("aria-expanded", String(!pop.hidden && pop.dataset.kind === c.dataset.pop)));
 }
 function showTopPop(kind) {
   const pop = $("#top-pop");
   const items = (kind === "faults" ? store.summary.faults : store.summary.alarms) || [];
-  if (!items.length) { pop.hidden = true; return; }
+  if (!items.length) { pop.hidden = true; markTopChips(); return; }
   pop.dataset.kind = kind;
   pop.innerHTML = `<div class="pop-head"><b>${kind === "faults" ? "Guasti" : "Allarmi da Gestire"}</b>
       ${kind === "alarms" ? '<button type="button" class="ghost small" data-pop-seen>Segna Tutti Come Visti</button>' : ""}</div>
@@ -865,17 +875,18 @@ function showTopPop(kind) {
       <time title="${esc(fmtFull(i.ts))}">${esc(dayTime(i.ts))}</time></a>`).join("")}
     <a class="pop-foot" href="#notifiche">Tutte le Notifiche</a>`;
   pop.hidden = false;
+  markTopChips();
 }
 document.addEventListener("click", async (e) => {
   const chip = e.target.closest("[data-pop]");
   const pop = $("#top-pop");
-  if (chip) { if (!pop.hidden && pop.dataset.kind === chip.dataset.pop) pop.hidden = true; else showTopPop(chip.dataset.pop); return; }
+  if (chip) { if (!pop.hidden && pop.dataset.kind === chip.dataset.pop) { pop.hidden = true; markTopChips(); } else showTopPop(chip.dataset.pop); return; }
   if (e.target.closest("[data-pop-seen]")) {
     const ids = (store.summary.alarms || []).map((i) => i.id);
     if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids}}))) { pop.hidden = true; await loadSummary(); if (route.name === "notifiche" || route.name === "cruscotto") render(); }
     return;
   }
-  if (!pop.hidden && (!e.target.closest("#top-pop") || e.target.closest("a"))) pop.hidden = true;
+  if (!pop.hidden && (!e.target.closest("#top-pop") || e.target.closest("a"))) { pop.hidden = true; markTopChips(); }
 });
 
 // Separatore sotto la barra solo quando la pagina scorre sotto
@@ -922,6 +933,7 @@ async function render() {
   if (route.name !== "cruscotto") $("#top-today").hidden = true;
   if (route.name !== "cruscotto" && route.name !== "notifiche") $("#page-sub").hidden = true;
   $("#top-pop").hidden = true;
+  markTopChips();
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === route.name));
   const el = $("#view");
   el.dataset.route = route.name;
