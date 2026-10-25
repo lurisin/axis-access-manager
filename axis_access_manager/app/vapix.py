@@ -20,6 +20,14 @@ def _fault_text(fault) -> str:
     return str(fault)
 
 
+def _first_token(data: dict, item: dict) -> str:
+    """Token restituito da una chiamata Set (lista o stringa), altrimenti quello inviato."""
+    token = data.get("Token")
+    if isinstance(token, list):
+        token = token[0] if token else ""
+    return str(token or item.get("token", ""))
+
+
 class A1210Client:
     def __init__(
         self,
@@ -73,35 +81,28 @@ class A1210Client:
         data = await self._post("/vapix/doorcontrol", {"tdc:GetDoorInfoList": {}})
         return data.get("DoorInfo", [])
 
-    async def list_credentials(self) -> list[dict]:
-        """Tutte le tessere, lette a pagine da CREDENTIAL_PAGE_SIZE."""
-        credentials: list[dict] = []
+    async def _list_all(self, path: str, method: str, key: str, required: bool = False) -> list[dict]:
+        """Elenco completo letto a pagine da CREDENTIAL_PAGE_SIZE."""
+        items: list[dict] = []
         start: str | None = None
         while True:
             request: dict = {"Limit": CREDENTIAL_PAGE_SIZE}
             if start:
                 request["StartReference"] = start
-            data = await self._post("/vapix/pacs", {"pacsaxis:GetCredentialList": request})
-            if "Credential" not in data:
+            data = await self._post(path, {method: request})
+            if required and key not in data:
                 raise VapixError("risposta del controller non riconosciuta")
-            credentials.extend(data["Credential"])
+            items.extend(data.get(key) or [])
             start = data.get("NextStartReference")
             if not start:
-                return credentials
+                return items
+
+    async def list_credentials(self) -> list[dict]:
+        return await self._list_all("/vapix/pacs", "pacsaxis:GetCredentialList", "Credential", required=True)
 
     async def list_users(self) -> list[dict]:
-        """Tutti gli utenti (titolari delle tessere), letti a pagine."""
-        users: list[dict] = []
-        start: str | None = None
-        while True:
-            request: dict = {"Limit": CREDENTIAL_PAGE_SIZE}
-            if start:
-                request["StartReference"] = start
-            data = await self._post("/vapix/pacs", {"axudb:GetUserList": request})
-            users.extend(data.get("User", []))
-            start = data.get("NextStartReference")
-            if not start:
-                return users
+        """Tutti gli utenti (titolari delle tessere)."""
+        return await self._list_all("/vapix/pacs", "axudb:GetUserList", "User")
 
     async def get_users(self, tokens: list[str]) -> list[dict]:
         data = await self._post("/vapix/pacs", {"axudb:GetUser": {"Token": tokens}})
@@ -121,8 +122,7 @@ class A1210Client:
     async def set_credential(self, credential: dict) -> str:
         """Crea (token vuoto) o aggiorna una tessera; restituisce il token assegnato."""
         data = await self._post("/vapix/pacs", {"pacsaxis:SetCredential": {"Credential": [credential]}})
-        tokens = data.get("Token") or []
-        return tokens[0] if tokens else credential.get("token", "")
+        return _first_token(data, credential)
 
     async def remove_credential(self, token: str) -> None:
         await self._post("/vapix/pacs", {"pacsaxis:RemoveCredential": {"Token": [token]}})
@@ -132,6 +132,39 @@ class A1210Client:
 
     async def disable_credential(self, token: str) -> None:
         await self._post("/vapix/pacs", {"pacsaxis:DisableCredential": {"Token": token, "Status": "Disabled"}})
+
+    # Gruppi (profili di accesso) e punti di accesso
+
+    async def list_access_points(self) -> list[dict]:
+        return await self._list_all("/vapix/pacs", "pacsaxis:GetAccessPointList", "AccessPoint")
+
+    async def list_access_profiles(self) -> list[dict]:
+        return await self._list_all("/vapix/pacs", "pacsaxis:GetAccessProfileList", "AccessProfile", required=True)
+
+    async def get_access_profiles(self, tokens: list[str]) -> list[dict]:
+        data = await self._post("/vapix/pacs", {"pacsaxis:GetAccessProfile": {"Token": tokens}})
+        return data.get("AccessProfile", [])
+
+    async def set_access_profile(self, profile: dict) -> str:
+        """Crea (token vuoto) o aggiorna un profilo; restituisce il token assegnato."""
+        data = await self._post("/vapix/pacs", {"pacsaxis:SetAccessProfile": {"AccessProfile": [profile]}})
+        return _first_token(data, profile)
+
+    async def remove_access_profile(self, token: str) -> None:
+        await self._post("/vapix/pacs", {"pacsaxis:RemoveAccessProfile": {"Token": [token]}})
+
+    # Fasce orarie
+
+    async def list_schedules(self) -> list[dict]:
+        return await self._list_all("/vapix/schedule", "axsch:GetScheduleList", "Schedule", required=True)
+
+    async def set_schedule(self, schedule: dict) -> str:
+        """Crea (token vuoto) o aggiorna una fascia oraria; restituisce il token assegnato."""
+        data = await self._post("/vapix/schedule", {"axsch:SetSchedule": {"Schedule": [schedule]}})
+        return _first_token(data, schedule)
+
+    async def remove_schedule(self, token: str) -> None:
+        await self._post("/vapix/schedule", {"axsch:RemoveSchedule": {"Token": [token]}})
 
     async def door_mode(self, door_token: str) -> str | None:
         """Modalità attuale della porta (Locked, Accessed, Unlocked...)."""

@@ -4,7 +4,9 @@ Add-on di Home Assistant per gestire tessere, anagrafica e log di accesso di un 
 L'interfaccia compare nella barra laterale di Home Assistant tramite Ingress; il controller resta la fonte
 di verità per le aperture, quindi la porta funziona anche se Home Assistant è spento.
 
-Stato: **Fase 1**: anagrafica persone e tessere sincronizzata con l'A1210, tessere da registrare, log degli accessi, apertura porta.
+Stato: **0.3.0**: anagrafica sincronizzata con l'A1210, tessere da registrare, gruppi, fasce orarie e festività,
+validità temporanea, registro con istantanee ed esportazione CSV, entità ed eventi in Home Assistant, importazione CSV,
+registro delle attività e utenti in sola lettura. Dettagli in [DOCS.md](axis_access_manager/DOCS.md).
 
 ## Struttura
 
@@ -17,27 +19,26 @@ axis_access_manager/         l'add-on
     config.py                lettura di /data/options.json e broker MQTT dal Supervisor
     vapix.py                 client VAPIX per l'A1210 (HTTPS + digest)
     events.py                ascolto degli eventi pubblicati via MQTT dall'A1210
-    db.py                    database SQLite in /data (persone, tessere, eventi, audit)
-    service.py               logica: sincronizzazione, anagrafica, eventi, apertura porta
+    db.py                    database SQLite in /data (persone, tessere, regole, eventi, audit)
+    service.py               logica: sincronizzazione, anagrafica, gruppo e validità, eventi, apertura porta
+    rules.py                 fasce orarie e festività in iCalendar, validità delle tessere
+    rules_service.py         gruppi (profili Axis), fasce orarie e festività sul controller
+    ha.py                    API di Home Assistant: istantanee dalle telecamere
+    ha_mqtt.py               entità ed eventi per Home Assistant via MQTT Discovery
+    transfer.py              esportazione e importazione CSV
     main.py                  API e pagina servite tramite Ingress
-    static/index.html        interfaccia a schede
+    static/index.html        interfaccia (HTML e JavaScript senza dipendenze)
 tests/                       test (pytest)
 ```
 
 ## Installazione in Home Assistant
 
-Il repository è privato, quindi il modo più semplice è installarlo come **add-on locale**:
+1. *Impostazioni → Componenti aggiuntivi → Raccolta componenti aggiuntivi*, menu in alto a destra, *Repository*.
+2. Aggiungi `https://github.com/lurisin/axis-access-manager`.
+3. Installa **Axis Access Manager**, compila le opzioni (indirizzo, utente e password dell'A1210) e avvia.
+4. Attiva *Mostra nella barra laterale*.
 
-1. Installa l'add-on *Samba share* o *Advanced SSH & Web Terminal*.
-2. Copia la cartella `axis_access_manager` dentro la cartella `addons` di Home Assistant
-   (`/addons/axis_access_manager`).
-3. Vai in *Impostazioni → Componenti aggiuntivi → Raccolta componenti aggiuntivi*, menu in alto a destra,
-   *Controlla aggiornamenti*: l'add-on compare sotto *Componenti aggiuntivi locali*.
-4. Installa, compila le opzioni (indirizzo, utente e password dell'A1210) e avvia.
-5. Attiva *Mostra nella barra laterale*.
-
-Se in futuro il repository diventa pubblico basterà aggiungere `https://github.com/lurisin/axis-access-manager`
-come repository nella raccolta componenti aggiuntivi.
+Gli aggiornamenti compaiono nella stessa pagina dopo *Controlla aggiornamenti*.
 
 ## Sviluppo
 

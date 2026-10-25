@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -188,3 +189,83 @@ async def test_sync_uses_card_description_when_users_unavailable(service, contro
     controller.list_users = broken
     await service.sync_from_controller()
     assert db.list_persons()[0]["name"] == "Mario Rossi"
+
+
+async def test_create_person_with_group_and_validity(service, controller, db):
+    person = await service.create_person(
+        "Ospite",
+        "04aa",
+        "admin",
+        group="p2",
+        valid_from="2026-10-25T08:00:00Z",
+        valid_to="2026-10-26T08:00:00+00:00",
+        company="Ditta",
+        notes="badge visitatore",
+    )
+
+    credential = next(iter(controller.credentials.values()))
+    assert credential["CredentialAccessProfile"] == [{"AccessProfile": "p2", "ValidFrom": "", "ValidTo": ""}]
+    assert credential["ValidFrom"] == "2026-10-25T08:00:00Z"
+    assert credential["ValidTo"] == "2026-10-26T08:00:00Z"
+    assert person["company"] == "Ditta" and person["notes"] == "badge visitatore"
+    assert person["cards"][0]["access_profile"] == "p2"
+
+
+async def test_validity_must_end_after_start(service):
+    with pytest.raises(ServiceError, match="dopo l'inizio"):
+        await service.create_person(
+            "X", "04aa", "admin", valid_from="2026-10-26T00:00:00Z", valid_to="2026-10-25T00:00:00Z"
+        )
+
+
+async def test_new_card_inherits_access(service, controller):
+    person = await service.create_person("Ospite", "04aa", "admin", group="p2", valid_to="2026-12-31T00:00:00Z")
+    person = await service.add_card(person["id"], "04bb", "admin")
+    second = controller.credentials[person["cards"][1]["axis_credential_token"]]
+    assert second["CredentialAccessProfile"][0]["AccessProfile"] == "p2"
+    assert second["ValidTo"] == "2026-12-31T00:00:00Z"
+
+
+async def test_set_person_access_updates_every_card(service, controller, db):
+    person = await service.create_person("Mario", "04aa", "admin")
+    await service.add_card(person["id"], "04bb", "admin")
+
+    person = await service.set_person_access(person["id"], "p2", "", "2027-01-01T00:00:00Z", "admin")
+
+    for card in person["cards"]:
+        credential = controller.credentials[card["axis_credential_token"]]
+        assert credential["CredentialAccessProfile"][0]["AccessProfile"] == "p2"
+        assert credential["ValidTo"] == "2027-01-01T00:00:00Z"
+        assert card["access_profile"] == "p2"
+    assert db.list_audit()[0]["action"] == "accesso modificato"
+
+
+async def test_sync_reads_group_and_validity(service, controller, db):
+    token = controller.add_existing("utente_mario", "Mario", "04aa")
+    controller.credentials[token]["ValidTo"] = "2027-01-01T00:00:00Z"
+    await service.sync_from_controller()
+    card = db.list_persons()[0]["cards"][0]
+    assert card["access_profile"] == "profilo_sempre"
+    assert card["valid_to"] == "2027-01-01T00:00:00Z"
+
+
+async def test_update_person_details_only_in_addon(service, controller, db):
+    person = await service.create_person("Mario", "04aa", "admin")
+    calls = len(controller.calls)
+    person = await service.update_person(person["id"], "admin", company="Studio", notes="note")
+    assert person["company"] == "Studio"
+    assert len(controller.calls) == calls
+    person = await service.update_person(person["id"], "admin", name="Mario Rossi")
+    assert controller.users[person["axis_user_token"]]["Name"] == "Mario Rossi"
+
+
+async def test_log_event_notifies_listeners(service):
+    seen = []
+
+    async def after(row):
+        seen.append(row["kind"])
+
+    service.after_event = after
+    service.record_intercom("sensor.citofono", "Citofono")
+    await asyncio.sleep(0)
+    assert seen == ["citofono"]

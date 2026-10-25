@@ -2,491 +2,1191 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>Controllo accessi</title>
 <style>
   :root {
-    --bg: #f5f6f8; --card: #ffffff; --text: #1f2328; --muted: #5f6b7a; --border: #d8dde3;
-    --ok: #1a7f37; --warn: #9a6700; --err: #cf222e; --accent: #0969da; --accent-text: #ffffff;
-    --chip: #eef1f4;
+    --bg: #f3f5f8; --surface: #ffffff; --surface-2: #f7f8fa; --text: #1b1f24; --muted: #5f6b7a;
+    --border: #dde2e8; --border-strong: #c5ccd5;
+    --accent: #0b6bcb; --accent-soft: #e3effc; --accent-text: #ffffff;
+    --ok: #1a7f37; --ok-soft: #e4f4e8; --warn: #9a6700; --warn-soft: #fbf0d9; --err: #c62828; --err-soft: #fde7e7;
+    --info: #6639ba; --info-soft: #efe9fb;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+    --radius: 12px; --nav-w: 232px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #111418; --card: #1b1f24; --text: #e6e8eb; --muted: #9aa4af; --border: #30363d;
-      --ok: #3fb950; --warn: #d29922; --err: #f85149; --accent: #4493f8; --accent-text: #0d1117;
-      --chip: #262c33;
+      --bg: #0f1216; --surface: #181c22; --surface-2: #1f242b; --text: #e7eaee; --muted: #9aa5b1;
+      --border: #2b323b; --border-strong: #3a434e;
+      --accent: #4c9cf0; --accent-soft: #15283d; --accent-text: #0b1118;
+      --ok: #4ac26b; --ok-soft: #13291b; --warn: #e3b341; --warn-soft: #2e2511; --err: #ff6b6b; --err-soft: #331617;
+      --info: #b093f5; --info-soft: #241c3a;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4);
     }
   }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   [hidden] { display: none !important; }
-  body { margin: 0; padding: 16px 16px 48px; background: var(--bg); color: var(--text);
-         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 900px; margin: 0 auto; }
-  header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
-  h1 { font-size: 22px; margin: 0; }
-  h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
-  button { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
-           padding: 6px 12px; font: inherit; cursor: pointer; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
-  button.danger { color: var(--err); }
-  button.small { padding: 2px 8px; font-size: 13px; }
-  button:disabled { opacity: .5; cursor: default; }
-  input, select { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--border);
-                  border-radius: 8px; padding: 6px 10px; min-width: 0; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  svg.icon { width: 20px; height: 20px; fill: currentColor; flex: none; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+
+  /* Struttura */
+  .app { display: flex; min-height: 100vh; }
+  .nav { width: var(--nav-w); flex: none; background: var(--surface); border-right: 1px solid var(--border);
+         position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 16px 12px; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 8px 16px; font-weight: 700; font-size: 16px; }
+  .brand .logo { width: 32px; height: 32px; border-radius: 9px; background: var(--accent); color: var(--accent-text);
+                 display: grid; place-items: center; }
+  .nav a { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 10px; color: var(--muted);
+           font-weight: 500; position: relative; }
+  .nav a:hover { background: var(--surface-2); text-decoration: none; color: var(--text); }
+  .nav a.active { background: var(--accent-soft); color: var(--accent); }
+  .nav .count { margin-left: auto; background: var(--err); color: #fff; border-radius: 10px; font-size: 12px;
+                min-width: 20px; padding: 0 6px; text-align: center; line-height: 20px; }
+  .nav .foot { margin-top: auto; padding: 8px 12px; color: var(--muted); font-size: 12px; }
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .topbar { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; gap: 12px; padding: 12px 24px; flex-wrap: wrap; }
+  .topbar h1 { font-size: 20px; margin: 0; flex: 1; min-width: 120px; }
   .door { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; overflow-x: auto; }
-  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none;
-                 padding: 8px 12px; color: var(--muted); white-space: nowrap; }
-  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
-  .badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 10px; background: var(--err);
-           color: #fff; font-size: 12px; text-align: center; margin-left: 4px; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
-  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
-  .toolbar input[type=search] { flex: 1 1 200px; }
-  .person { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 12px 0;
-            border-bottom: 1px solid var(--border); }
-  .person:last-child { border-bottom: none; }
-  .person .name { font-weight: 600; }
-  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); border-radius: 8px; padding: 2px 4px 2px 8px; }
-  .chip code { font-size: 13px; }
-  .chip.off code { text-decoration: line-through; color: var(--muted); }
-  .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
+  .content { padding: 20px 24px 48px; max-width: 1180px; width: 100%; }
+
+  /* Elementi */
+  button, .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: var(--surface);
+                 color: var(--text); border: 1px solid var(--border-strong); border-radius: 9px; padding: 7px 14px;
+                 font: inherit; font-weight: 500; cursor: pointer; white-space: nowrap; text-decoration: none; }
+  button:hover, .btn:hover { background: var(--surface-2); text-decoration: none; }
+  button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  button.primary:hover { filter: brightness(1.06); }
+  button.danger { color: var(--err); }
+  button.danger.primary { background: var(--err); border-color: var(--err); color: #fff; }
+  button.ghost { border-color: transparent; background: transparent; }
+  button.ghost:hover { background: var(--surface-2); }
+  button.small, .btn.small { padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+  button.icon-only { padding: 6px; }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong);
+                            border-radius: 9px; padding: 7px 10px; min-width: 0; }
+  input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  textarea { resize: vertical; min-height: 70px; }
+  input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); vertical-align: middle; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+          padding: 18px; margin-bottom: 16px; }
+  .card > h2, .section-title { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
+  .card > h2 .spacer, .row .spacer { flex: 1; }
+  .card.flush { padding: 0; }
+  .card.flush > h2 { padding: 16px 18px 0; }
+  .grid { display: grid; gap: 16px; }
+  .grid.kpi { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .grid.two { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); align-items: start; }
+  .grid.cards { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center; }
+  .toolbar input[type=search] { flex: 1 1 220px; }
+  .muted { color: var(--muted); }
+  .small-text { font-size: 13px; }
+  .empty { color: var(--muted); padding: 28px 12px; text-align: center; }
+  .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  .kpi .card { margin: 0; padding: 16px; }
+  .kpi .label { color: var(--muted); font-size: 13px; font-weight: 500; }
+  .kpi .value { font-size: 28px; font-weight: 700; line-height: 1.2; margin-top: 4px; }
+  .kpi .sub { color: var(--muted); font-size: 12px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 2px 10px; font-size: 13px;
+          font-weight: 500; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
+  .pill.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+  .pill.warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
+  .pill.err { background: var(--err-soft); color: var(--err); border-color: transparent; }
+  .pill.info { background: var(--info-soft); color: var(--info); border-color: transparent; }
+  .pill.accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
-  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
-  dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  th { color: var(--muted); font-weight: 500; }
-  td code { word-break: break-all; }
-  .col-count { width: 72px; } .col-when { width: 110px; }
-  .log-row { display: grid; grid-template-columns: 130px 1fr; gap: 2px 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
-  .log-row .when { color: var(--muted); font-size: 13px; }
-  .kind { font-weight: 600; } .kind.concesso, .kind.lettura, .kind.apertura_remota { color: var(--ok); }
-  .kind.negato, .kind.sconosciuta { color: var(--warn); } .kind.allarme, .kind.manomissione { color: var(--err); }
-  .muted { color: var(--muted); } .hint { color: var(--warn); margin: 12px 0 0; }
-  .empty { color: var(--muted); padding: 12px 0; }
-  code { font-size: 13px; }
-  dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--text);
-           padding: 20px; width: min(420px, calc(100vw - 32px)); }
-  dialog::backdrop { background: rgba(0, 0, 0, .45); }
-  dialog label { display: block; margin: 12px 0 4px; color: var(--muted); font-size: 14px; }
-  dialog input { width: 100%; }
-  dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
-  dialog p { margin: 0; }
-  #toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100vw - 32px);
-           background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; display: none; z-index: 10; }
+  .door-pill { font-size: 14px; padding: 5px 12px; }
+  .alert { display: flex; gap: 12px; align-items: flex-start; border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
+           background: var(--warn-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
+  .alert.err { background: var(--err-soft); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
+  .alert.info { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .alert b { display: block; }
+  .alert .grow { flex: 1; }
+  dl.props { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0; }
+  dl.props dt { color: var(--muted); }
+  dl.props dd { margin: 0; overflow-wrap: anywhere; }
+  .list > .item { display: flex; gap: 12px; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border); }
+  .list > .item:first-child { border-top: none; }
+  .list > .item.click { cursor: pointer; }
+  .list > .item.click:hover { background: var(--surface-2); }
+  .item .grow { flex: 1; min-width: 0; }
+  .item .title { font-weight: 600; overflow-wrap: anywhere; }
+  .item .meta { color: var(--muted); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+  .item .side { text-align: right; color: var(--muted); font-size: 13px; flex: none; }
+  .avatar { width: 38px; height: 38px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); flex: none;
+            display: grid; place-items: center; font-weight: 700; font-size: 14px; }
+  .avatar.big { width: 52px; height: 52px; font-size: 18px; }
+  .avatar.off { background: var(--surface-2); color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--surface-2); border: 1px solid var(--border);
+          border-radius: 7px; padding: 1px 8px; font-size: 13px; }
+  .chip.off { text-decoration: line-through; color: var(--muted); }
+  .chip svg.icon { width: 14px; height: 14px; }
+  .ev-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none; font-size: 16px; }
+  .ev-icon svg { width: 18px; height: 18px; fill: currentColor; }
+  .k-ok { background: var(--ok-soft); color: var(--ok); }
+  .k-warn { background: var(--warn-soft); color: var(--warn); }
+  .k-err { background: var(--err-soft); color: var(--err); }
+  .k-info { background: var(--info-soft); color: var(--info); }
+  .k-accent { background: var(--accent-soft); color: var(--accent); }
+  .k-muted { background: var(--surface-2); color: var(--muted); }
+  .thumb { width: 64px; height: 48px; border-radius: 8px; object-fit: cover; cursor: zoom-in; border: 1px solid var(--border);
+           flex: none; background: var(--surface-2); }
+  .segmented { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 3px; gap: 2px; margin-bottom: 16px; }
+  .segmented a { padding: 6px 14px; border-radius: 8px; color: var(--muted); font-weight: 500; }
+  .segmented a:hover { text-decoration: none; color: var(--text); }
+  .segmented a.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.table th, table.table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  table.table th { color: var(--muted); font-weight: 500; font-size: 13px; }
+  table.table td code { word-break: break-all; }
+  .table-wrap { overflow-x: auto; }
+
+  /* Grafico settimanale */
+  .chart { display: flex; align-items: flex-end; gap: 10px; height: 160px; padding-top: 8px; }
+  .chart .col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; min-width: 0; }
+  .chart .bars { flex: 1; width: 100%; max-width: 44px; display: flex; flex-direction: column-reverse; border-radius: 6px; overflow: hidden;
+                 background: var(--surface-2); }
+  .chart .bar.g { background: var(--ok); } .chart .bar.d { background: var(--warn); } .chart .bar.u { background: var(--err); }
+  .chart .lbl { font-size: 12px; color: var(--muted); }
+  .chart .num { font-size: 12px; font-weight: 600; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 10px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+  /* Anteprima fascia oraria */
+  .week { display: grid; grid-template-columns: 34px 1fr; gap: 3px 8px; font-size: 12px; color: var(--muted); align-items: center; }
+  .week .track { position: relative; height: 12px; background: var(--surface-2); border-radius: 4px; border: 1px solid var(--border); }
+  .week .seg { position: absolute; top: 0; bottom: 0; background: var(--accent); border-radius: 3px; }
+  .week .axis { display: flex; justify-content: space-between; font-size: 11px; }
+  .days { display: inline-flex; gap: 3px; }
+  .days button { width: 32px; height: 32px; padding: 0; border-radius: 8px; font-size: 13px; }
+  .days button.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+  .rule-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--border);
+              border-radius: 10px; margin-bottom: 8px; background: var(--surface-2); }
+  .field .rule-row input[type=time] { width: 116px; }
+
+  /* Finestre */
+  dialog { border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); padding: 0;
+           width: min(520px, calc(100vw - 24px)); max-height: calc(100vh - 32px); box-shadow: 0 20px 50px rgba(0, 0, 0, .3); }
+  dialog.wide { width: min(780px, calc(100vw - 24px)); }
+  dialog::backdrop { background: rgba(10, 14, 20, .5); }
+  .dlg { display: flex; flex-direction: column; max-height: calc(100vh - 34px); }
+  .dlg-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .dlg-head h2 { font-size: 17px; margin: 0; flex: 1; }
+  .dlg-body { padding: 18px 20px; overflow-y: auto; }
+  .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+  .field { margin-bottom: 14px; }
+  .field > label { display: block; margin-bottom: 5px; color: var(--muted); font-size: 13px; font-weight: 500; }
+  .field input:not([type=checkbox]), .field select, .field textarea { width: 100%; }
+  .field.inline { display: flex; align-items: center; gap: 8px; }
+  .field.inline > label { margin: 0; color: var(--text); font-size: 14px; }
+  .fields-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+  .presets { display: flex; gap: 6px; flex-wrap: wrap; margin: -6px 0 12px; }
+  dialog.sheet { margin: 0 0 0 auto; height: 100vh; max-height: 100vh; width: min(560px, 100vw); max-width: 100vw; border-radius: 0;
+                 border-width: 0 0 0 1px; }
+  dialog.sheet .dlg { max-height: 100vh; height: 100%; }
+  dialog.sheet .dlg-body { flex: 1; background: var(--bg); }
+  dialog.image { width: auto; max-width: calc(100vw - 24px); }
+  dialog.image img { display: block; max-width: calc(100vw - 26px); max-height: calc(100vh - 120px); }
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: calc(100vw - 32px); z-index: 50;
+           background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 10px; display: none;
+           box-shadow: 0 8px 24px rgba(0, 0, 0, .25); font-weight: 500; }
   #toast.error { background: var(--err); color: #fff; }
-  @media (max-width: 600px) {
-    .col-when, #events td:nth-child(4) { display: none; }
-    .col-count { width: 64px; }
-    .log-row { grid-template-columns: 1fr; }
+  .spinner { width: 18px; height: 18px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%;
+             animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading { padding: 40px; text-align: center; color: var(--muted); }
+  body.readonly .write { display: none !important; }
+
+  @media (max-width: 1000px) {
+    .grid.kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid.two { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 860px) {
+    .nav { position: fixed; bottom: 0; left: 0; right: 0; top: auto; height: auto; width: 100%; z-index: 20;
+           flex-direction: row; padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); border-right: none;
+           border-top: 1px solid var(--border); justify-content: space-around; }
+    .brand, .nav .foot { display: none; }
+    .nav a { flex-direction: column; gap: 2px; padding: 6px 2px; font-size: 10.5px; flex: 1; min-width: 0; text-align: center; border-radius: 8px; }
+    .nav a span.lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+    .nav .count { position: absolute; top: 2px; left: 55%; margin: 0; font-size: 10px; min-width: 16px; line-height: 16px; padding: 0 4px; }
+    .topbar { padding: 10px 14px; }
+    .topbar h1 { font-size: 18px; }
+    .content { padding: 14px 12px calc(90px + env(safe-area-inset-bottom)); }
+    .card { padding: 14px; }
+    .list > .item { padding: 12px 14px; }
+    .item .side { display: none; }
+    .list > .item { flex-wrap: wrap; }
+    .item .item-actions { flex-basis: 100%; margin-left: 46px; }
+    .topbar { position: static; }
+    .toolbar input[type=date], .toolbar select { flex: 1 1 40%; }
+    .fields-2 { grid-template-columns: 1fr; }
+    dialog { width: calc(100vw - 16px); }
+  }
+  @media (max-width: 480px) {
+    .topbar h1 { display: none; }
+    .door { width: 100%; display: grid; grid-template-columns: 1fr 1fr; }
+    .door .door-pill { grid-column: 1 / -1; justify-content: center; }
+    .kpi .value { font-size: 24px; }
   }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>Controllo accessi</h1>
-    <div class="door">
-      <span class="dot" id="door-dot"></span><span id="door-state" class="muted">porta: …</span>
-      <button type="button" class="primary" data-open="0">Apri</button>
-      <button type="button" data-open="1">Apri a lungo</button>
-    </div>
-  </header>
-
-  <nav class="tabs">
-    <button type="button" data-tab="persons" class="active">Persone</button>
-    <button type="button" data-tab="unknown">Da registrare<span class="badge" id="unknown-badge" hidden></span></button>
-    <button type="button" data-tab="log">Log</button>
-    <button type="button" data-tab="status">Stato</button>
+<div class="app">
+  <nav class="nav" id="nav">
+    <div class="brand"><span class="logo" data-icon="door"></span>Controllo accessi</div>
+    <a href="#cruscotto" data-route="cruscotto"><span data-icon="dashboard"></span><span class="lbl">Cruscotto</span></a>
+    <a href="#persone" data-route="persone"><span data-icon="people"></span><span class="lbl">Persone</span></a>
+    <a href="#da-registrare" data-route="da-registrare"><span data-icon="cardplus"></span><span class="lbl">Da registrare</span><span class="count" id="nav-unknown" hidden></span></a>
+    <a href="#registro" data-route="registro"><span data-icon="list"></span><span class="lbl">Registro</span></a>
+    <a href="#regole" data-route="regole"><span data-icon="clock"></span><span class="lbl">Regole</span></a>
+    <a href="#impostazioni" data-route="impostazioni"><span data-icon="cog"></span><span class="lbl">Impostazioni</span></a>
+    <div class="foot" id="nav-foot"></div>
   </nav>
+  <div class="main">
+    <header class="topbar">
+      <h1 id="page-title">Cruscotto</h1>
+      <div class="door">
+        <span class="pill door-pill" id="door-pill"><span class="dot" id="door-dot"></span><span id="door-text">porta: …</span></span>
+        <button type="button" class="primary write" data-open="0"><span data-icon="dooropen"></span>Apri</button>
+        <button type="button" class="write" data-open="1">Apri a lungo</button>
+      </div>
+    </header>
+    <div class="content" id="view"><div class="loading"><span class="spinner"></span></div></div>
+  </div>
+</div>
 
-  <section id="tab-persons">
-    <div class="toolbar">
-      <input type="search" id="person-search" placeholder="Cerca per nome o numero tessera">
-      <button type="button" class="primary" id="new-person">Nuova persona</button>
-      <button type="button" id="sync">Rileggi dal controller</button>
-    </div>
-    <div class="card" id="persons"><div class="empty">caricamento…</div></div>
-  </section>
-
-  <section id="tab-unknown" hidden>
-    <p class="muted">Tessere passate sul lettore che non sono registrate. Assegnale a una persona nuova o esistente.</p>
-    <div class="card" id="unknown"><div class="empty">caricamento…</div></div>
-  </section>
-
-  <section id="tab-log" hidden>
-    <div class="toolbar">
-      <input type="search" id="log-search" placeholder="Cerca per nome, tessera o dettaglio">
-      <select id="log-kind">
-        <option value="">Tutti gli eventi</option>
-        <option value="concesso">Accesso concesso</option>
-        <option value="negato">Accesso negato</option>
-        <option value="lettura">Tessera letta</option>
-        <option value="sconosciuta">Tessera sconosciuta</option>
-        <option value="apertura_remota">Apertura da app</option>
-        <option value="allarme">Allarme porta</option>
-        <option value="manomissione">Manomissione</option>
-      </select>
-    </div>
-    <div class="card"><div id="log"><div class="empty">caricamento…</div></div>
-      <button type="button" id="log-more" hidden>Carica altri</button>
-    </div>
-  </section>
-
-  <section id="tab-status" hidden>
-    <div class="card">
-      <h2><span class="dot" id="ctrl-dot"></span>Controller A1210</h2>
-      <dl id="ctrl"><dt>Stato</dt><dd class="muted">verifica in corso…</dd></dl>
-    </div>
-    <div class="card">
-      <h2><span class="dot" id="mqtt-dot"></span>MQTT</h2>
-      <dl id="mqtt"><dt>Stato</dt><dd class="muted">verifica in corso…</dd></dl>
-      <p class="hint" id="mqtt-hint" hidden></p>
-    </div>
-    <div class="card">
-      <h2>Eventi ricevuti dall'avvio</h2>
-      <table>
-        <thead><tr><th>Categoria</th><th class="col-count">Numero</th><th>Ultimo topic</th><th class="col-when">Ultimo</th></tr></thead>
-        <tbody id="events"><tr><td colspan="4" class="muted">nessun evento</td></tr></tbody>
-      </table>
-    </div>
-  </section>
-</main>
-
-<dialog id="dialog">
-  <form method="dialog" id="dialog-form">
-    <h2 id="dialog-title"></h2>
-    <div id="dialog-body"></div>
-    <div class="buttons">
-      <button type="button" id="dialog-cancel">Annulla</button>
-      <button type="submit" class="primary" id="dialog-ok">OK</button>
-    </div>
-  </form>
-</dialog>
-<div id="toast"></div>
+<dialog id="sheet" class="sheet"></dialog>
+<dialog id="modal"></dialog>
+<div id="toast" role="status"></div>
 
 <script>
-  // Percorsi relativi: con Ingress la pagina è servita sotto un prefisso variabile
-  const $ = (id) => document.getElementById(id);
-  const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-  const when = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {dateStyle: "short", timeStyle: "medium"}) : "";
-  const rows = (pairs) => pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
-  const setDot = (id, cls) => { $(id).className = "dot " + cls; };
-  const KINDS = {
-    concesso: "Accesso concesso", negato: "Accesso negato", lettura: "Tessera letta",
-    sconosciuta: "Tessera sconosciuta", apertura_remota: "Apertura da app", allarme: "Allarme porta",
-    manomissione: "Manomissione",
-  };
-  const DOOR_MODES = {
-    Locked: "bloccata", Accessed: "aperta (tempo)", Unlocked: "sbloccata", LockedOpen: "aperta",
-    Blocked: "bloccata da regola", LockedDown: "in blocco", DoubleLocked: "doppia chiusura",
-  };
+"use strict";
+// Percorsi relativi: con Ingress la pagina è servita sotto un prefisso variabile
 
-  let toastTimer;
-  function toast(message, error = false) {
-    const el = $("toast");
-    el.textContent = message;
-    el.className = error ? "error" : "";
-    el.style.display = "block";
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { el.style.display = "none"; }, error ? 6000 : 3000);
-  }
+// ---------- Utilità ----------
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const pad = (n) => String(n).padStart(2, "0");
 
-  async function api(path, options = {}) {
-    const res = await fetch(path, {
-      ...options,
-      headers: options.body ? {"Content-Type": "application/json"} : {},
-      body: options.body ? JSON.stringify(options.body) : undefined,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.detail || "errore " + res.status);
-    return data;
-  }
+const ICONS = {
+  door: "M8,3C6.89,3 6,3.89 6,5V21H18V5C18,3.89 17.11,3 16,3H8M8,5H16V19H8V5M13,11V13H15V11H13Z",
+  dooropen: "M12,3C10.89,3 10,3.89 10,5H3V19H2V21H22V19H21V5C21,3.89 20.11,3 19,3H12M12,5H19V19H12V5M5,11H7V13H5V11Z",
+  dashboard: "M13,3V9H21V3M13,21H21V11H13M3,21H11V15H3M3,13H11V3H3V13Z",
+  people: "M16,13C15.71,13 15.38,13 15.03,13.05C16.19,13.89 17,15 17,16.5V19H23V16.5C23,14.17 18.33,13 16,13M8,13C5.67,13 1,14.17 1,16.5V19H15V16.5C15,14.17 10.33,13 8,13M8,11A3,3 0 0,0 11,8A3,3 0 0,0 8,5A3,3 0 0,0 5,8A3,3 0 0,0 8,11M16,11A3,3 0 0,0 19,8A3,3 0 0,0 16,5A3,3 0 0,0 13,8A3,3 0 0,0 16,11Z",
+  cardplus: "M21,8V7L18,9L15,7V8L18,10M22,3H2A2,2 0 0,0 0,5V19A2,2 0 0,0 2,21H22A2,2 0 0,0 24,19V5A2,2 0 0,0 22,3M8,6A3,3 0 0,1 11,9A3,3 0 0,1 8,12A3,3 0 0,1 5,9A3,3 0 0,1 8,6M14,18H2V17C2,15 6,13.9 8,13.9C10,13.9 14,15 14,17M22,12H14V6H22",
+  list: "M3,4H7V8H3V4M9,5V7H21V5H9M3,10H7V14H3V10M9,11V13H21V11H9M3,16H7V20H3V16M9,17V19H21V17H9",
+  clock: "M15,13H16.5V15.82L18.94,17.23L18.19,18.53L15,16.69V13M19,8H5V19H9.67C9.24,18.09 9,17.07 9,16A7,7 0 0,1 16,9C17.07,9 18.09,9.24 19,9.67V8M5,21C3.89,21 3,20.1 3,19V5C3,3.89 3.89,3 5,3H6V1H8V3H16V1H18V3H19A2,2 0 0,1 21,5V11.1C22.24,12.36 23,14.09 23,16A7,7 0 0,1 16,23C14.09,23 12.36,22.24 11.1,21H5M16,11.15A4.85,4.85 0 0,0 11.15,16C11.15,18.68 13.32,20.85 16,20.85A4.85,4.85 0 0,0 20.85,16C20.85,13.32 18.68,11.15 16,11.15Z",
+  cog: "M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z",
+  close: "M19,6.41L17.59,5L12,10.59L6.41,5L5,6.41L10.59,12L5,17.59L6.41,19L12,13.41L17.59,19L19,17.59L13.41,12L19,6.41Z",
+  plus: "M19,13H13V19H11V13H5V11H11V5H13V11H19V13Z",
+  download: "M5,20H19V18H5M19,9H15V3H9V9H5L12,16L19,9Z",
+  upload: "M9,16V10H5L12,3L19,10H15V16H9M5,20V18H19V20H5Z",
+  refresh: "M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z",
+  check: "M21,7L9,19L3.5,13.5L4.91,12.09L9,16.17L19.59,5.59L21,7Z",
+  block: "M12,2C17.5,2 22,6.5 22,12C22,17.5 17.5,22 12,22C6.5,22 2,17.5 2,12C2,6.5 6.5,2 12,2M12,4C10.1,4 8.4,4.6 7.1,5.7L18.3,16.9C19.3,15.5 20,13.8 20,12C20,7.6 16.4,4 12,4M16.9,18.3L5.7,7.1C4.6,8.4 4,10.1 4,12C4,16.4 7.6,20 12,20C13.9,20 15.6,19.4 16.9,18.3Z",
+  card: "M20,8H4V6H20M20,18H4V12H20M20,4H4C2.89,4 2,4.89 2,6V18A2,2 0 0,0 4,20H20A2,2 0 0,0 22,18V6C22,4.89 21.1,4 20,4Z",
+  question: "M10,19H13V22H10V19M12,2C17.35,2.22 19.68,7.62 16.5,11.67C15.67,12.67 14.33,13.33 13.67,14.17C13,15 13,16 13,17H10C10,15.33 10,13.92 10.67,12.92C11.33,11.92 12.67,11.33 13.5,10.67C15.92,8.43 15.32,5.26 12,5A3,3 0 0,0 9,8H6A6,6 0 0,1 12,2Z",
+  alert: "M13,14H11V9H13M13,18H11V16H13M1,21H23L12,2L1,21Z",
+  bell: "M21,19V20H3V19L5,17V11C5,7.9 7.03,5.17 10,4.29C10,4.19 10,4.1 10,4A2,2 0 0,1 12,2A2,2 0 0,1 14,4C14,4.1 14,4.19 14,4.29C16.97,5.17 19,7.9 19,11V17L21,19M14,21A2,2 0 0,1 12,23A2,2 0 0,1 10,21",
+  phone: "M6.62,10.79C8.06,13.62 10.38,15.94 13.21,17.38L15.41,15.18C15.69,14.9 16.08,14.82 16.43,14.93C17.55,15.3 18.75,15.5 20,15.5A1,1 0 0,1 21,16.5V20A1,1 0 0,1 20,21A17,17 0 0,1 3,4A1,1 0 0,1 4,3H7.5A1,1 0 0,1 8.5,4C8.5,5.25 8.7,6.45 9.07,7.57C9.18,7.92 9.1,8.31 8.82,8.59L6.62,10.79Z",
+  shield: "M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1Z",
+  edit: "M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z",
+  trash: "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z",
+};
+const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ""}"/></svg>`;
+function paintIcons(root = document) {
+  $$("[data-icon]", root).forEach((el) => { el.innerHTML = icon(el.dataset.icon); el.removeAttribute("data-icon"); });
+}
 
-  // Finestra di dialogo: fields = [{name, label, value, placeholder}], restituisce i valori o null
-  function ask({title, text = "", fields = [], ok = "OK", danger = false}) {
-    return new Promise((resolve) => {
-      const dialog = $("dialog");
-      $("dialog-title").textContent = title;
-      $("dialog-body").innerHTML = (text ? `<p>${esc(text)}</p>` : "") + fields.map((f) =>
-        `<label for="f-${f.name}">${esc(f.label)}</label>` +
-        `<input id="f-${f.name}" name="${f.name}" value="${esc(f.value || "")}" placeholder="${esc(f.placeholder || "")}" autocomplete="off">`
-      ).join("");
-      $("dialog-ok").textContent = ok;
-      $("dialog-ok").className = danger ? "primary danger" : "primary";
-      const finish = (value) => {
-        dialog.close();
-        $("dialog-form").onsubmit = null;
-        $("dialog-cancel").onclick = null;
-        resolve(value);
-      };
-      $("dialog-form").onsubmit = (e) => {
-        e.preventDefault();
-        const values = {};
-        fields.forEach((f) => { values[f.name] = $("f-" + f.name).value.trim(); });
-        finish(values);
-      };
-      $("dialog-cancel").onclick = () => finish(null);
-      dialog.oncancel = () => finish(null);
-      dialog.showModal();
-      const first = dialog.querySelector("input");
-      if (first) first.focus();
-    });
-  }
+const DOOR_MODES = {
+  Locked: "bloccata", Accessed: "aperta a tempo", Unlocked: "sbloccata", LockedOpen: "aperta",
+  Blocked: "bloccata da regola", LockedDown: "in blocco", DoubleLocked: "doppia chiusura",
+};
+// Tipi di evento del registro: etichetta, colore, icona
+const KINDS = {
+  concesso: ["Accesso concesso", "k-ok", "check"],
+  negato: ["Accesso negato", "k-warn", "block"],
+  lettura: ["Tessera letta", "k-accent", "card"],
+  sconosciuta: ["Tessera sconosciuta", "k-warn", "question"],
+  apertura_remota: ["Apertura da app", "k-ok", "dooropen"],
+  allarme: ["Allarme porta", "k-err", "alert"],
+  manomissione: ["Manomissione", "k-err", "shield"],
+  citofono: ["Citofono", "k-info", "phone"],
+};
+const DAYS = [["MO", "L", "lun"], ["TU", "M", "mar"], ["WE", "M", "mer"], ["TH", "G", "gio"], ["FR", "V", "ven"], ["SA", "S", "sab"], ["SU", "D", "dom"]];
 
-  async function run(action, success) {
-    try {
-      const result = await action();
-      if (success) toast(success);
-      return result;
-    } catch (err) {
-      toast(err.message, true);
-      return undefined;
-    }
-  }
+const fmtDateTime = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {dateStyle: "short", timeStyle: "short"}) : "";
+const fmtFull = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {dateStyle: "medium", timeStyle: "medium"}) : "";
+const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", {day: "numeric", month: "short", year: "numeric"}) : "";
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("it-IT", {hour: "2-digit", minute: "2-digit"}) : "";
+function relTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso), now = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 60) return "adesso";
+  if (diff < 3600) return `${Math.floor(diff / 60)} min fa`;
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (d >= startToday) return `oggi ${fmtTime(iso)}`;
+  if (d >= new Date(startToday - 86400000)) return `ieri ${fmtTime(iso)}`;
+  if (diff < 6 * 86400) return d.toLocaleDateString("it-IT", {weekday: "long"}) + " " + fmtTime(iso);
+  return fmtDate(iso);
+}
+// Valori per <input type=datetime-local> e ritorno in UTC
+function toLocalInput(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+const fromLocalInput = (v) => v ? new Date(v).toISOString() : "";
+const initials = (name) => (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
-  // Schede
-  let currentTab = "persons";
-  document.querySelectorAll(".tabs button").forEach((btn) => btn.addEventListener("click", () => showTab(btn.dataset.tab)));
-  function showTab(tab) {
-    currentTab = tab;
-    document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-    document.querySelectorAll("main > section").forEach((s) => { s.hidden = s.id !== "tab-" + tab; });
-    refreshTab();
-  }
-  function refreshTab() {
-    if (currentTab === "persons") loadPersons();
-    if (currentTab === "unknown") loadUnknown();
-    if (currentTab === "log") loadLog();
-    if (currentTab === "status") loadStatus();
-  }
+let toastTimer;
+function toast(message, error = false) {
+  const el = $("#toast");
+  el.textContent = message;
+  el.className = error ? "error" : "";
+  el.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = "none"; }, error ? 7000 : 3000);
+}
 
-  // Intestazione: stato porta e tessere da registrare
-  async function loadSummary() {
-    try {
-      const s = await api("api/summary");
-      const mode = s.door_mode;
-      setDot("door-dot", mode === "Locked" ? "ok" : mode ? "warn" : "");
-      $("door-state").textContent = "porta: " + (mode ? (DOOR_MODES[mode] || mode) : "stato non ricevuto");
-      const badge = $("unknown-badge");
-      badge.hidden = !s.unknown_cards;
-      badge.textContent = s.unknown_cards;
-    } catch (err) {
-      $("door-state").textContent = "add-on non raggiungibile";
-    }
-  }
-  document.querySelectorAll("[data-open]").forEach((btn) => btn.addEventListener("click", async () => {
-    const extended = btn.dataset.open === "1";
-    btn.disabled = true;
-    await run(() => api("api/door/open", {method: "POST", body: {extended}}), extended ? "Porta aperta a lungo" : "Porta aperta");
-    btn.disabled = false;
-    loadSummary();
-  }));
-
-  // Persone
-  let persons = [];
-  async function loadPersons() {
-    const data = await run(() => api("api/persons"));
-    if (data) { persons = data; renderPersons(); }
-  }
-  function renderPersons() {
-    const q = $("person-search").value.trim().toLowerCase();
-    const list = persons.filter((p) => !q || p.name.toLowerCase().includes(q) ||
-      p.cards.some((c) => c.number.toLowerCase().includes(q)));
-    $("persons").innerHTML = list.length ? list.map((p) => `
-      <div class="person">
-        <div>
-          <div class="name">${esc(p.name)}</div>
-          <div class="chips">${p.cards.map((c) => `
-            <span class="chip ${c.enabled ? "" : "off"}" title="${c.enabled ? "attiva" : "sospesa"}">
-              <code>${esc(c.number)}</code>${c.enabled ? "" : '<span class="muted">sospesa</span>'}
-              <button type="button" class="small" data-card-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>
-              <button type="button" class="small danger" data-card-delete="${c.id}">Elimina</button>
-            </span>`).join("")}
-          </div>
-        </div>
-        <div class="actions">
-          <button type="button" class="small" data-add-card="${p.id}">+ Tessera</button>
-          <button type="button" class="small" data-rename="${p.id}">Rinomina</button>
-          <button type="button" class="small danger" data-person-delete="${p.id}">Elimina</button>
-        </div>
-      </div>`).join("") : `<div class="empty">${persons.length ? "nessun risultato" : "nessuna persona registrata"}</div>`;
-  }
-  $("person-search").addEventListener("input", renderPersons);
-  const personById = (id) => persons.find((p) => p.id === Number(id));
-  const cardById = (id) => persons.flatMap((p) => p.cards.map((c) => ({...c, person: p}))).find((c) => c.id === Number(id));
-
-  $("persons").addEventListener("click", async (e) => {
-    const t = e.target.closest("button");
-    if (!t) return;
-    if (t.dataset.rename) {
-      const p = personById(t.dataset.rename);
-      const v = await ask({title: "Rinomina", fields: [{name: "name", label: "Nome e cognome", value: p.name}], ok: "Salva"});
-      if (v && v.name && v.name !== p.name && await run(() => api(`api/persons/${p.id}`, {method: "PATCH", body: {name: v.name}}), "Nome aggiornato")) loadPersons();
-    } else if (t.dataset.addCard) {
-      const p = personById(t.dataset.addCard);
-      const v = await ask({title: "Aggiungi tessera a " + p.name, text: "Più semplice: passa la tessera sul lettore e assegnala da \"Da registrare\".",
-        fields: [{name: "card", label: "Numero tessera (esadecimale)", placeholder: "04a1b2c3d4e5f6"}], ok: "Aggiungi"});
-      if (v && v.card && await run(() => api(`api/persons/${p.id}/cards`, {method: "POST", body: {card: v.card}}), "Tessera aggiunta")) loadPersons();
-    } else if (t.dataset.personDelete) {
-      const p = personById(t.dataset.personDelete);
-      const v = await ask({title: "Elimina persona", text: `Eliminare ${p.name} e le sue ${p.cards.length} tessere dal controller? Non apriranno più la porta.`, ok: "Elimina", danger: true});
-      if (v && await run(() => api(`api/persons/${p.id}`, {method: "DELETE"}), "Persona eliminata")) loadPersons();
-    } else if (t.dataset.cardToggle) {
-      const c = cardById(t.dataset.cardToggle);
-      const enable = t.dataset.enabled !== "1";
-      if (await run(() => api(`api/cards/${c.id}`, {method: "PATCH", body: {enabled: enable}}), enable ? "Tessera riattivata" : "Tessera sospesa")) loadPersons();
-    } else if (t.dataset.cardDelete) {
-      const c = cardById(t.dataset.cardDelete);
-      const last = c.person.cards.length === 1;
-      const v = await ask({title: "Elimina tessera", text: `Eliminare la tessera ${c.number} di ${c.person.name}?` + (last ? " È la sua unica tessera: verrà eliminata anche la persona." : ""), ok: "Elimina", danger: true});
-      if (v && await run(() => api(`api/cards/${c.id}`, {method: "DELETE"}), "Tessera eliminata")) loadPersons();
-    }
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    method: options.method || "GET",
+    headers: options.body !== undefined ? {"Content-Type": "application/json"} : {},
+    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
   });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : "errore " + res.status);
+  return data;
+}
 
-  async function newPerson(card = "") {
-    const v = await ask({title: "Nuova persona", fields: [
-      {name: "name", label: "Nome e cognome"},
-      {name: "card", label: "Numero tessera (esadecimale)", value: card, placeholder: "04a1b2c3d4e5f6"},
-    ], ok: "Registra"});
-    if (!v || !v.name || !v.card) return false;
-    const ok = await run(() => api("api/persons", {method: "POST", body: v}), "Tessera registrata: apre subito la porta");
-    if (ok) { loadSummary(); refreshTab(); }
-    return Boolean(ok);
+async function run(action, success) {
+  try {
+    const result = await action();
+    if (success) toast(success);
+    return result ?? true;
+  } catch (err) {
+    toast(err.message, true);
+    return undefined;
   }
-  $("new-person").addEventListener("click", () => newPerson());
-  $("sync").addEventListener("click", async () => {
-    const r = await run(() => api("api/sync", {method: "POST"}));
-    if (r) { toast(`Riletto dal controller: ${r.cards} tessere`); loadPersons(); }
+}
+
+// ---------- Finestre ----------
+// Apre una finestra: body è HTML, actions [{label, kind, onClick(dialogEl) → false per lasciarla aperta}]
+function modal({title, body = "", actions = [], wide = false, cls = "", onOpen}) {
+  return new Promise((resolve) => {
+    const dlg = $("#modal");
+    dlg.className = (wide ? "wide " : "") + cls;
+    dlg.innerHTML = `<form class="dlg" method="dialog">
+      <div class="dlg-head"><h2>${esc(title)}</h2><button type="button" class="ghost icon-only" data-x aria-label="Chiudi">${icon("close")}</button></div>
+      <div class="dlg-body">${body}</div>
+      ${actions.length ? `<div class="dlg-foot">${actions.map((a, i) => `<button type="${a.submit ? "submit" : "button"}" class="${a.kind || ""}" data-a="${i}">${esc(a.label)}</button>`).join("")}</div>` : ""}
+    </form>`;
+    let done = false;
+    const finish = (value) => { if (done) return; done = true; dlg.close(); resolve(value); };
+    $("[data-x]", dlg).onclick = () => finish(null);
+    dlg.oncancel = (e) => { e.preventDefault(); finish(null); };
+    const invoke = async (i) => {
+      const action = actions[i];
+      if (!action.onClick) return finish("value" in action ? action.value : i);
+      const btns = $$(".dlg-foot button", dlg);
+      btns.forEach((b) => { b.disabled = true; });
+      try {
+        const result = await action.onClick(dlg);
+        if (result !== false) finish(result ?? true);
+      } finally {
+        btns.forEach((b) => { b.disabled = false; });
+      }
+    };
+    $$(".dlg-foot button", dlg).forEach((b) => { if (!actions[b.dataset.a].submit) b.onclick = () => invoke(Number(b.dataset.a)); });
+    $("form", dlg).onsubmit = (e) => {
+      e.preventDefault();
+      const i = actions.findIndex((a) => a.submit);
+      if (i >= 0) invoke(i);
+    };
+    dlg.showModal();
+    if (onOpen) onOpen(dlg);
+    const first = $(".dlg-body input:not([type=checkbox]), .dlg-body select, .dlg-body textarea", dlg);
+    if (first && !("ontouchstart" in window)) first.focus();
   });
+}
+const confirmBox = (title, text, ok = "Conferma", danger = false) =>
+  modal({title, body: `<p style="margin:0">${text}</p>`, actions: [{label: "Annulla", value: false}, {label: ok, kind: danger ? "danger primary" : "primary", value: true}]});
+const field = (label, input, hint = "") => `<div class="field"><label>${esc(label)}</label>${input}${hint ? `<p class="hint">${hint}</p>` : ""}</div>`;
+const val = (dlg, name) => { const el = $(`[name="${name}"]`, dlg); return el ? (el.type === "checkbox" ? el.checked : el.value.trim()) : ""; };
 
-  // Tessere da registrare
-  let unknown = [];
-  async function loadUnknown() {
-    const data = await run(() => api("api/unknown-cards"));
-    if (!data) return;
-    unknown = data;
-    $("unknown").innerHTML = data.length ? data.map((u) => `
-      <div class="person">
-        <div><code>${esc(u.number)}</code>
-          <div class="muted">ultima lettura ${esc(when(u.last_seen))} · ${esc(u.count)} ${u.count === 1 ? "volta" : "volte"}</div></div>
-        <div class="actions">
-          <button type="button" class="small primary" data-assign-new="${esc(u.number)}">Nuova persona</button>
-          <button type="button" class="small" data-assign-existing="${esc(u.number)}">A persona esistente</button>
-          <button type="button" class="small" data-ignore="${esc(u.number)}">Ignora</button>
-        </div>
-      </div>`).join("") : '<div class="empty">nessuna tessera da registrare: passane una sul lettore</div>';
-  }
-  $("unknown").addEventListener("click", async (e) => {
-    const t = e.target.closest("button");
-    if (!t) return;
-    if (t.dataset.assignNew) {
-      await newPerson(t.dataset.assignNew);
-    } else if (t.dataset.assignExisting) {
-      if (!persons.length) await loadPersons();
-      const v = await ask({title: "Assegna tessera " + t.dataset.assignExisting, fields: [{name: "name", label: "Nome della persona (come in elenco)"}], ok: "Assegna"});
-      if (!v || !v.name) return;
-      const matches = persons.filter((p) => p.name.toLowerCase() === v.name.toLowerCase());
-      if (matches.length !== 1) { toast(matches.length ? "Più persone con questo nome: usa + Tessera dall'elenco" : "Nessuna persona con questo nome", true); return; }
-      if (await run(() => api(`api/persons/${matches[0].id}/cards`, {method: "POST", body: {card: t.dataset.assignExisting}}), "Tessera assegnata a " + matches[0].name)) { loadUnknown(); loadSummary(); }
-    } else if (t.dataset.ignore) {
-      if (await run(() => api(`api/unknown-cards/${encodeURIComponent(t.dataset.ignore)}`, {method: "DELETE"}))) { loadUnknown(); loadSummary(); }
-    }
-  });
+function showImage(src, title) {
+  modal({title, body: `<img src="${esc(src)}" alt="">`, cls: "image"});
+}
 
-  // Log
-  let logEvents = [];
-  async function loadLog(more = false) {
-    const params = new URLSearchParams({kind: $("log-kind").value, q: $("log-search").value.trim(), limit: "100"});
-    if (more && logEvents.length) params.set("before_id", logEvents[logEvents.length - 1].id);
-    const data = await run(() => api("api/events?" + params));
-    if (!data) return;
-    logEvents = more ? logEvents.concat(data) : data;
-    $("log").innerHTML = logEvents.length ? logEvents.map((e) => `
-      <div class="log-row">
-        <div class="when">${esc(when(e.ts))}</div>
-        <div><span class="kind ${esc(e.kind)}">${esc(KINDS[e.kind] || e.kind)}</span>
-          ${e.person_name ? " · " + esc(e.person_name) : ""}
-          ${e.card ? ` · <code>${esc(e.card)}</code>` : ""}
-          ${e.detail ? `<div class="muted">${esc(e.detail)}</div>` : ""}
-          ${e.kind === "apertura_remota" && e.source ? `<div class="muted">da ${esc(e.source)}</div>` : ""}
-        </div>
-      </div>`).join("") : '<div class="empty">nessun evento</div>';
-    $("log-more").hidden = data.length < 100;
+// ---------- Stato condiviso ----------
+const store = {me: {readonly: false}, persons: [], groups: null, schedules: null, summary: {}};
+async function loadGroups(force = false) {
+  if (store.groups && !force) return store.groups;
+  try {
+    const data = await api("api/groups");
+    store.groups = data.groups;
+    store.schedules = data.schedules;
+  } catch (err) {
+    store.groups = store.groups || [];
+    store.schedules = store.schedules || [];
+    store.groupsError = err.message;
   }
-  let searchTimer;
-  $("log-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadLog(), 300); });
-  $("log-kind").addEventListener("change", () => loadLog());
-  $("log-more").addEventListener("click", () => loadLog(true));
+  return store.groups;
+}
+const groupName = (token) => (store.groups || []).find((g) => g.token === token)?.name || token || "—";
+function personAccess(p) {
+  const c = p.cards[0] || {};
+  return {group: c.access_profile || "", from: c.valid_from || "", to: c.valid_to || ""};
+}
+// Stato di validità: "" (valida), futura, scaduta, in_scadenza
+function validityState(from, to) {
+  const now = Date.now();
+  if (from && new Date(from).getTime() > now) return "futura";
+  if (to) {
+    const end = new Date(to).getTime();
+    if (end <= now) return "scaduta";
+    if (end - now < 7 * 86400000) return "in_scadenza";
+  }
+  return "";
+}
+function validityText(from, to) {
+  if (!from && !to) return "sempre valida";
+  if (from && to) return `dal ${fmtDateTime(from)} al ${fmtDateTime(to)}`;
+  return from ? `dal ${fmtDateTime(from)}` : `fino al ${fmtDateTime(to)}`;
+}
+const VALIDITY_PILL = {
+  futura: '<span class="pill info">non ancora valida</span>',
+  scaduta: '<span class="pill err">scaduta</span>',
+  in_scadenza: '<span class="pill warn">in scadenza</span>',
+};
 
-  // Stato
-  function renderController(c) {
-    if (!c.ok) {
-      setDot("ctrl-dot", "err");
-      $("ctrl").innerHTML = rows([["Stato", `<span style="color:var(--err)">${esc(c.error)}</span>`]]);
-      return;
-    }
-    setDot("ctrl-dot", c.door_found ? "ok" : "warn");
-    $("ctrl").innerHTML = rows([
-      ["Stato", "raggiungibile"],
-      ["Modello", esc(c.model)],
-      ["Firmware", esc(c.firmware)],
-      ["Numero di serie", esc(c.serial)],
-      ["Porte", c.doors.map((d) => `<code>${esc(d)}</code>`).join(", ") +
-        (c.door_found ? "" : ` <span style="color:var(--warn)">(il token configurato non c'è)</span>`)],
-      ["Tessere registrate", esc(c.credentials)],
-    ]);
+// ---------- Intestazione ----------
+async function loadSummary() {
+  try {
+    const s = await api("api/summary");
+    store.summary = s;
+    const mode = s.door_mode;
+    $("#door-dot").className = "dot " + (mode === "Locked" ? "ok" : mode ? "warn" : "");
+    $("#door-pill").className = "pill door-pill " + (mode === "Locked" ? "ok" : mode ? "warn" : "");
+    $("#door-text").textContent = mode ? "Porta " + (DOOR_MODES[mode] || mode) : "Stato porta sconosciuto";
+    const badge = $("#nav-unknown");
+    badge.hidden = !s.unknown_cards;
+    badge.textContent = s.unknown_cards;
+  } catch (err) {
+    $("#door-text").textContent = "add-on non raggiungibile";
+    $("#door-pill").className = "pill door-pill err";
   }
-  function renderMqtt(m) {
-    const hint = $("mqtt-hint");
-    hint.hidden = true;
-    if (!m.configured) {
-      setDot("mqtt-dot", "err");
-      $("mqtt").innerHTML = rows([["Stato", "nessun broker: installa Mosquitto o imposta mqtt_host"]]);
-      return;
-    }
-    setDot("mqtt-dot", !m.connected ? "err" : m.access_events_seen ? "ok" : "warn");
-    $("mqtt").innerHTML = rows([
-      ["Broker", m.connected ? "collegato" : `non collegato ${esc(m.error)}`],
-      ["Prefisso", `<code>${esc(m.prefix)}</code>`],
-      ["Controller", m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? "online" : "offline"],
-      ["Ultima tessera letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(when(m.last_card.read_at))}` : "nessuna dall'avvio"],
-    ]);
-    if (m.connected && !m.access_events_seen) {
-      hint.textContent = "Nessun evento AccessControl ricevuto. Passa una tessera: se compare solo IdPoint, " +
-        "aggiungi gli eventi AccessControl (concesso, negato) al filtro eventi MQTT dell'A1210.";
-      hint.hidden = false;
-    }
-    const cats = Object.entries(m.categories);
-    $("events").innerHTML = cats.length
-      ? cats.map(([name, s]) => `<tr><td>${esc(name)}</td><td>${esc(s.count)}</td><td><code>${esc(s.last_topic)}</code></td><td>${esc(when(s.last_seen))}</td></tr>`).join("")
-      : `<tr><td colspan="4" class="muted">nessun evento</td></tr>`;
-  }
-  async function loadStatus() {
-    try {
-      const data = await api("api/status");
-      renderController(data.controller);
-      renderMqtt(data.mqtt);
-    } catch (err) {
-      setDot("ctrl-dot", "err");
-      $("ctrl").innerHTML = rows([["Stato", esc("add-on non raggiungibile: " + err.message)]]);
-    }
-  }
-
+}
+$$("[data-open]").forEach((btn) => btn.addEventListener("click", async () => {
+  const extended = btn.dataset.open === "1";
+  btn.disabled = true;
+  await run(() => api("api/door/open", {method: "POST", body: {extended}}), extended ? "Porta aperta con tempo esteso" : "Porta aperta");
+  btn.disabled = false;
   loadSummary();
-  loadPersons();
+}));
+
+// ---------- Navigazione ----------
+const ROUTES = {
+  cruscotto: ["Cruscotto", viewDashboard],
+  persone: ["Persone", viewPersons],
+  "da-registrare": ["Da registrare", viewUnknown],
+  registro: ["Registro accessi", viewLog],
+  regole: ["Regole di accesso", viewRules],
+  impostazioni: ["Impostazioni", viewSettings],
+};
+let route = {name: "cruscotto", sub: ""};
+function parseHash() {
+  const [name, sub = ""] = location.hash.replace(/^#/, "").split("/");
+  return ROUTES[name] ? {name, sub} : {name: "cruscotto", sub: ""};
+}
+async function render() {
+  route = parseHash();
+  if ($("#sheet").open && !(route.name === "persone" && route.sub)) $("#sheet").close();
+  const [title, view] = ROUTES[route.name];
+  $("#page-title").textContent = title;
+  document.title = `${title} · Controllo accessi`;
+  $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === route.name));
+  const el = $("#view");
+  el.dataset.route = route.name;
+  await view(el, route.sub);
+  paintIcons(el);
+}
+window.addEventListener("hashchange", () => { $("#view").innerHTML = '<div class="loading"><span class="spinner"></span></div>'; render(); });
+// Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta
+async function refreshView() {
+  if ($("#modal").open || $("#sheet").open) return;
+  if (["cruscotto", "da-registrare"].includes(route.name)) await render();
+  if (route.name === "registro") await refreshLog();
+}
+
+// ---------- Cruscotto ----------
+function eventItem(e, {showSnapshot = true} = {}) {
+  const [label, cls, ic] = KINDS[e.kind] || [e.kind, "k-muted", "list"];
+  const source = e.kind === "apertura_remota" && e.source ? `da ${esc(e.source)}` : "";
+  return `<div class="item">
+    <div class="ev-icon ${cls}">${icon(ic)}</div>
+    <div class="grow">
+      <div class="title">${esc(label)}${e.person_name ? ` · ${esc(e.person_name)}` : ""}</div>
+      <div class="meta"><span title="${esc(fmtFull(e.ts))}">${esc(relTime(e.ts))}</span>
+        ${e.card ? `<code>${esc(e.card)}</code>` : ""}${e.detail ? `<span>${esc(e.detail)}</span>` : ""}${source ? `<span>${source}</span>` : ""}</div>
+    </div>
+    ${showSnapshot && e.snapshot ? `<img class="thumb" loading="lazy" src="api/events/${e.id}/snapshot" alt="istantanea" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    <div class="side">${esc(fmtDateTime(e.ts))}</div>
+  </div>`;
+}
+
+async function viewDashboard(el) {
+  let d;
+  try { d = await api("api/dashboard"); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  const t = d.today;
+  const alerts = [];
+  if (d.unknown_cards) alerts.push(`<div class="alert info">${icon("cardplus")}<div class="grow"><b>${plural(d.unknown_cards, "tessera da registrare", "tessere da registrare")}</b>
+    Sono state passate sul lettore ma non appartengono a nessuno.</div><a class="btn small" href="#da-registrare">Registra</a></div>`);
+  if (d.expiring.length) alerts.push(`<div class="alert">${icon("clock")}<div class="grow"><b>Tessere in scadenza nei prossimi 7 giorni</b>
+    ${d.expiring.map((e) => `<a href="#persone/${e.id}">${esc(e.name)}</a> (${esc(fmtDateTime(e.valid_to))})`).join(", ")}</div></div>`);
+  if (store.summary.mqtt_connected === false) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>Eventi non in arrivo</b>
+    Il collegamento MQTT non è attivo: registro e stato porta non si aggiornano.</div><a class="btn small" href="#impostazioni">Dettagli</a></div>`);
+  if (t.alarms) alerts.push(`<div class="alert err">${icon("alert")}<div class="grow"><b>${plural(t.alarms, "allarme", "allarmi")} oggi</b>Porta forzata, aperta troppo a lungo o manomissione.</div><a class="btn small" href="#registro">Vedi</a></div>`);
+  const max = Math.max(1, ...d.week.map((w) => w.granted + w.denied + w.unknown));
+  const chart = d.week.map((w) => {
+    const total = w.granted + w.denied + w.unknown;
+    const h = (n) => `${(n / max) * 100}%`;
+    const label = new Date(w.day + "T12:00:00").toLocaleDateString("it-IT", {weekday: "short"});
+    return `<div class="col" title="${esc(fmtDate(w.day + "T12:00:00"))}: ${w.granted} concessi, ${w.denied} negati, ${w.unknown} sconosciute">
+      <div class="num">${total || ""}</div>
+      <div class="bars"><div class="bar g" style="height:${h(w.granted)}"></div><div class="bar d" style="height:${h(w.denied)}"></div><div class="bar u" style="height:${h(w.unknown)}"></div></div>
+      <div class="lbl">${esc(label)}</div></div>`;
+  }).join("");
+  el.innerHTML = `
+    ${alerts.join("")}
+    <div class="grid kpi" style="margin-bottom:16px">
+      <div class="card"><div class="label">Accessi oggi</div><div class="value">${t.granted + t.remote}</div><div class="sub">${t.remote ? `di cui ${t.remote} da app` : "con tessera"}${!t.granted && t.reads ? ` · ${t.reads} letture` : ""}</div></div>
+      <div class="card"><div class="label">Negati oggi</div><div class="value" style="color:${t.denied + t.unknown ? "var(--warn)" : "inherit"}">${t.denied + t.unknown}</div><div class="sub">${t.unknown} tessere sconosciute</div></div>
+      <div class="card"><div class="label">Persone</div><div class="value">${d.persons}</div><div class="sub"><a href="#persone">anagrafica</a></div></div>
+      <div class="card"><div class="label">Tessere</div><div class="value">${d.cards}</div><div class="sub">${d.cards_suspended ? `${d.cards_suspended} sospese` : "tutte attive"}</div></div>
+    </div>
+    <div class="grid two">
+      <div class="card"><h2>Ultimi 7 giorni</h2><div class="chart">${chart}</div>
+        <div class="legend"><span><i style="background:var(--ok)"></i>concessi</span><span><i style="background:var(--warn)"></i>negati</span><span><i style="background:var(--err)"></i>tessere sconosciute</span></div></div>
+      <div class="card flush"><h2>Ultimi eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro completo</a></h2>
+        <div class="list" style="margin-top:8px">${d.recent.length ? d.recent.map((e) => eventItem(e, {showSnapshot: false})).join("") : '<div class="empty">nessun evento registrato</div>'}</div></div>
+    </div>`;
+}
+
+// ---------- Persone ----------
+const personFilters = {q: "", group: "", state: ""};
+async function loadPersons() {
+  store.persons = await api("api/persons");
+  return store.persons;
+}
+async function viewPersons(el, sub) {
+  try { await Promise.all([loadPersons(), loadGroups()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  const groupOptions = (store.groups || []).map((g) => `<option value="${esc(g.token)}">${esc(g.name)}</option>`).join("");
+  el.innerHTML = `
+    <div class="toolbar">
+      <input type="search" id="p-q" placeholder="Cerca nome, ditta o numero tessera" value="${esc(personFilters.q)}">
+      <select id="p-group"><option value="">Tutti i gruppi</option>${groupOptions}</select>
+      <select id="p-state">
+        <option value="">Tutte le persone</option><option value="attive">Con tessere attive</option><option value="sospese">Con tessere sospese</option>
+        <option value="in_scadenza">In scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non ancora valide</option>
+      </select>
+      <button type="button" class="primary write" id="p-new">${icon("plus")}Nuova persona</button>
+    </div>
+    <div class="card flush"><h2 style="padding-bottom:12px"><span id="p-count" class="muted small-text"></span><span class="spacer"></span>
+      <button type="button" class="small ghost write" id="p-sync" title="Rilegge tessere e utenti dal controller">${icon("refresh")}Rileggi dal controller</button></h2>
+      <div class="list" id="p-list"></div></div>`;
+  $("#p-group").value = personFilters.group;
+  $("#p-state").value = personFilters.state;
+  $("#p-q").addEventListener("input", (e) => { personFilters.q = e.target.value; renderPersonList(); });
+  $("#p-group").addEventListener("change", (e) => { personFilters.group = e.target.value; renderPersonList(); });
+  $("#p-state").addEventListener("change", (e) => { personFilters.state = e.target.value; renderPersonList(); });
+  $("#p-new").addEventListener("click", () => newPerson());
+  $("#p-sync").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    const r = await run(() => api("api/sync", {method: "POST"}));
+    e.target.disabled = false;
+    if (r) { toast(`Riletto dal controller: ${r.cards} tessere (${r.added} nuove, ${r.removed} rimosse)`); await loadPersons(); renderPersonList(); }
+  });
+  $("#p-list").addEventListener("click", (e) => {
+    const item = e.target.closest("[data-person]");
+    if (!item) return;
+    history.pushState(null, "", `#persone/${item.dataset.person}`);
+    openPerson(Number(item.dataset.person));
+  });
+  renderPersonList();
+  if (sub) openPerson(Number(sub));
+}
+function renderPersonList() {
+  const list = $("#p-list");
+  if (!list) return;
+  const q = personFilters.q.trim().toLowerCase();
+  const rows = store.persons.filter((p) => {
+    const a = personAccess(p);
+    if (q && !(p.name.toLowerCase().includes(q) || (p.company || "").toLowerCase().includes(q) || p.cards.some((c) => c.number.toLowerCase().includes(q)))) return false;
+    if (personFilters.group && a.group !== personFilters.group) return false;
+    const st = personFilters.state;
+    if (st === "attive" && !p.cards.some((c) => c.enabled)) return false;
+    if (st === "sospese" && !p.cards.some((c) => !c.enabled)) return false;
+    if (["in_scadenza", "scaduta", "futura"].includes(st) && validityState(a.from, a.to) !== st) return false;
+    return true;
+  });
+  const cards = store.persons.reduce((n, p) => n + p.cards.length, 0);
+  $("#p-count").textContent = `${plural(store.persons.length, "persona", "persone")} · ${plural(cards, "tessera", "tessere")}` + (rows.length !== store.persons.length ? ` · ${rows.length} mostrate` : "");
+  list.innerHTML = rows.length ? rows.map((p) => {
+    const a = personAccess(p);
+    const active = p.cards.some((c) => c.enabled);
+    const vs = validityState(a.from, a.to);
+    return `<div class="item click" data-person="${p.id}">
+      <div class="avatar ${active && vs !== "scaduta" ? "" : "off"}">${esc(initials(p.name))}</div>
+      <div class="grow">
+        <div class="title">${esc(p.name)}${p.company ? ` <span class="muted" style="font-weight:400">· ${esc(p.company)}</span>` : ""}</div>
+        <div class="meta">
+          <span class="pill accent">${esc(groupName(a.group))}</span>
+          ${VALIDITY_PILL[vs] || ""}
+          ${p.cards.map((c) => `<span class="chip ${c.enabled ? "" : "off"}" title="${c.enabled ? "attiva" : "sospesa"}">${icon("card", "icon")} <code>${esc(c.number)}</code></span>`).join("")}
+        </div>
+      </div>
+      <div class="side">${p.last_access ? `ultimo accesso<br>${esc(relTime(p.last_access))}` : "mai entrato"}</div>
+    </div>`;
+  }).join("") : `<div class="empty">${store.persons.length ? "nessuna persona corrisponde ai filtri" : "nessuna persona registrata: passa una tessera sul lettore e registrala da \"Da registrare\""}</div>`;
+}
+
+function groupSelect(selected, name = "group") {
+  const groups = store.groups || [];
+  const options = groups.map((g) => `<option value="${esc(g.token)}" ${g.token === selected ? "selected" : ""}>${esc(g.name)}${g.schedule_names.length && g.schedule_names.join(", ") !== g.name ? " · " + esc(g.schedule_names.join(", ")) : ""}${g.default ? " (predefinito)" : ""}</option>`).join("");
+  const missing = selected && !groups.some((g) => g.token === selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : "";
+  return `<select name="${name}">${groups.length ? "" : `<option value="">Predefinito delle opzioni</option>`}${missing}${options}</select>`;
+}
+function validityFields(from = "", to = "") {
+  const limited = Boolean(from || to);
+  return `<div class="field inline"><input type="checkbox" name="limited" id="f-limited" ${limited ? "checked" : ""}><label for="f-limited">Validità limitata (ospiti, imprese, temporanei)</label></div>
+    <div id="f-validity" ${limited ? "" : "hidden"}>
+      <div class="fields-2">${field("Valida dal", `<input type="datetime-local" name="valid_from" value="${esc(toLocalInput(from))}">`)}
+      ${field("Valida fino al", `<input type="datetime-local" name="valid_to" value="${esc(toLocalInput(to))}">`)}</div>
+      <div class="presets"><span class="muted small-text">Da adesso:</span>
+        <button type="button" class="small" data-preset="1">1 giorno</button><button type="button" class="small" data-preset="7">1 settimana</button>
+        <button type="button" class="small" data-preset="30">1 mese</button><button type="button" class="small" data-preset="365">1 anno</button></div>
+    </div>`;
+}
+function bindValidity(dlg) {
+  const box = $("#f-validity", dlg);
+  if (!box) return;
+  $("#f-limited", dlg).addEventListener("change", (e) => { box.hidden = !e.target.checked; });
+  $$("[data-preset]", dlg).forEach((b) => b.addEventListener("click", () => {
+    const now = new Date();
+    now.setSeconds(0, 0);
+    const end = new Date(now.getTime() + Number(b.dataset.preset) * 86400000);
+    $("[name=valid_from]", dlg).value = toLocalInput(now.toISOString());
+    $("[name=valid_to]", dlg).value = toLocalInput(end.toISOString());
+  }));
+}
+function readValidity(dlg) {
+  if (!val(dlg, "limited")) return {valid_from: "", valid_to: ""};
+  return {valid_from: fromLocalInput(val(dlg, "valid_from")), valid_to: fromLocalInput(val(dlg, "valid_to"))};
+}
+
+async function newPerson(card = "") {
+  await loadGroups();
+  const created = await modal({
+    title: "Nuova persona",
+    body: `${field("Nome e cognome", `<input name="name" autocomplete="off" maxlength="100" required>`)}
+      ${field("Ditta o reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
+      ${field("Numero tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="es. 04A1B2C3D4E5F6">`, card ? "" : "Più comodo: passa la tessera sul lettore e registrala da \"Da registrare\".")}
+      ${field("Gruppo", groupSelect(store.me.default_group), "Il gruppo decide in quali orari la tessera apre la porta.")}
+      ${validityFields()}
+      ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}`,
+    actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
+      const body = {name: val(dlg, "name"), card: val(dlg, "card"), company: val(dlg, "company"), notes: val(dlg, "notes"), group: val(dlg, "group"), ...readValidity(dlg)};
+      if (!body.name || !body.card) { toast("Servono nome e numero tessera", true); return false; }
+      const person = await run(() => api("api/persons", {method: "POST", body}), "Persona registrata: la tessera è attiva sul controller");
+      return person || false;
+    }}],
+    onOpen: bindValidity,
+  });
+  if (created) {
+    loadSummary();
+    if (route.name === "persone") { await loadPersons(); renderPersonList(); } else await render();
+  }
+  return created;
+}
+
+// Scheda persona
+async function openPerson(id) {
+  const sheet = $("#sheet");
+  let p;
+  try { p = await api(`api/persons/${id}`); } catch (err) { toast(err.message, true); location.hash = "#persone"; return; }
+  await loadGroups();
+  const a = personAccess(p);
+  const vs = validityState(a.from, a.to);
+  const group = (store.groups || []).find((g) => g.token === a.group);
+  sheet.innerHTML = `<div class="dlg">
+    <div class="dlg-head"><div class="avatar big">${esc(initials(p.name))}</div>
+      <div style="flex:1;min-width:0"><h2 style="margin:0">${esc(p.name)}</h2><div class="muted small-text">${esc(p.company || "")}${p.company ? " · " : ""}${p.last_access ? "ultimo accesso " + esc(relTime(p.last_access)) : "nessun accesso registrato"}</div></div>
+      <button type="button" class="ghost icon-only" data-close aria-label="Chiudi">${icon("close")}</button></div>
+    <div class="dlg-body" tabindex="-1" autofocus>
+      <div class="card"><h2>Accesso<span class="spacer"></span><button type="button" class="small write" data-edit-access>${icon("edit")}Modifica</button></h2>
+        <dl class="props">
+          <dt>Gruppo</dt><dd><span class="pill accent">${esc(groupName(a.group))}</span>${group && group.schedule_names.length && group.schedule_names.join(", ") !== group.name ? `<div class="muted small-text" style="margin-top:4px">${esc(group.schedule_names.join(", "))}</div>` : ""}</dd>
+          <dt>Validità</dt><dd>${esc(validityText(a.from, a.to))} ${VALIDITY_PILL[vs] || ""}</dd>
+        </dl></div>
+      <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small write" data-add-card>${icon("plus")}Aggiungi</button></h2>
+        <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
+          <div class="ev-icon ${c.enabled ? "k-accent" : "k-muted"}">${icon("card")}</div>
+          <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${c.enabled ? '<span class="pill ok">attiva</span>' : '<span class="pill">sospesa</span>'}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
+          <div class="row write item-actions"><button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>
+          <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("")}</div></div>
+      <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small write" data-edit-data>${icon("edit")}Modifica</button></h2>
+        <dl class="props"><dt>Nome</dt><dd>${esc(p.name)}</dd><dt>Ditta o reparto</dt><dd>${esc(p.company || "—")}</dd>
+          <dt>Note</dt><dd style="white-space:pre-wrap">${esc(p.notes || "—")}</dd><dt>Utente Axis</dt><dd><code>${esc(p.axis_user_token || "")}</code></dd></dl></div>
+      <div class="card flush"><h2>Ultimi passaggi<span class="spacer"></span><a class="small-text" href="#registro" data-person-log>Tutto il registro</a></h2>
+        <div class="list" style="margin-top:6px">${p.events.length ? p.events.map((e) => eventItem(e)).join("") : '<div class="empty">nessun passaggio registrato</div>'}</div></div>
+      <div class="write" style="text-align:center;margin:8px 0 20px"><button type="button" class="danger" data-del-person>${icon("trash")}Elimina persona e tessere</button></div>
+    </div></div>`;
+  const close = () => { sheet.close(); };
+  sheet.onclose = () => { if (location.hash.startsWith("#persone/")) history.replaceState(null, "", "#persone"); };
+  sheet.oncancel = (e) => { e.preventDefault(); close(); };
+  $("[data-close]", sheet).onclick = close;
+  const reload = async () => { await loadPersons(); renderPersonList(); await openPerson(id); };
+  $("[data-person-log]", sheet).onclick = (e) => { e.preventDefault(); close(); logFilters.q = p.name; location.hash = "#registro"; };
+  $("[data-edit-access]", sheet).onclick = async () => {
+    const ok = await modal({
+      title: "Accesso di " + p.name,
+      body: `${field("Gruppo", groupSelect(a.group))}${validityFields(a.from, a.to)}<p class="hint">Vale per tutte le tessere della persona.</p>`,
+      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) =>
+        (await run(() => api(`api/persons/${id}/access`, {method: "PUT", body: {group: val(dlg, "group"), ...readValidity(dlg)}}), "Accesso aggiornato sul controller")) || false}],
+      onOpen: bindValidity,
+    });
+    if (ok) reload();
+  };
+  $("[data-edit-data]", sheet).onclick = async () => {
+    const ok = await modal({
+      title: "Dati di " + p.name,
+      body: `${field("Nome e cognome", `<input name="name" value="${esc(p.name)}" maxlength="100">`)}
+        ${field("Ditta o reparto", `<input name="company" value="${esc(p.company || "")}" maxlength="100">`)}
+        ${field("Note", `<textarea name="notes" maxlength="1000">${esc(p.notes || "")}</textarea>`)}`,
+      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) =>
+        (await run(() => api(`api/persons/${id}`, {method: "PATCH", body: {name: val(dlg, "name"), company: val(dlg, "company"), notes: val(dlg, "notes")}}), "Dati aggiornati")) || false}],
+    });
+    if (ok) reload();
+  };
+  $("[data-add-card]", sheet).onclick = async () => {
+    const ok = await modal({
+      title: "Aggiungi tessera a " + p.name,
+      body: `${field("Numero tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, "La nuova tessera avrà lo stesso gruppo e la stessa validità. Puoi anche passarla sul lettore e assegnarla da \"Da registrare\".")}`,
+      actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
+        (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card")}}), "Tessera aggiunta")) || false}],
+    });
+    if (ok) reload();
+  };
+  $$("[data-toggle]", sheet).forEach((b) => b.onclick = async () => {
+    const enable = b.dataset.enabled !== "1";
+    if (await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable}}), enable ? "Tessera riattivata" : "Tessera sospesa")) reload();
+  });
+  $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
+    const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
+    const last = p.cards.length === 1;
+    if (!await confirmBox("Elimina tessera", `Eliminare la tessera <code>${esc(card.number)}</code> dal controller?` + (last ? " È l'unica tessera: verrà eliminata anche la persona." : ""), "Elimina", true)) return;
+    const r = await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), "Tessera eliminata");
+    if (!r) return;
+    if (last) { close(); await loadPersons(); renderPersonList(); } else reload();
+  });
+  $("[data-del-person]", sheet).onclick = async () => {
+    if (!await confirmBox("Elimina persona", `Eliminare <b>${esc(p.name)}</b> e ${plural(p.cards.length, "tessera", "tessere")} dal controller? Non apriranno più la porta. Il registro dei passaggi resta.`, "Elimina", true)) return;
+    if (await run(() => api(`api/persons/${id}`, {method: "DELETE"}), "Persona eliminata")) { close(); await loadPersons(); renderPersonList(); }
+  };
+  bindSnapshots(sheet);
+  paintIcons(sheet);
+  if (!sheet.open) sheet.showModal();
+}
+
+// ---------- Da registrare ----------
+async function viewUnknown(el) {
+  let data;
+  try { [data] = await Promise.all([api("api/unknown-cards"), loadPersons()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  el.innerHTML = `<p class="muted" style="margin-top:0">Tessere passate sul lettore che non sono registrate. Assegnale a una persona nuova o a una già presente: diventano subito attive sul controller.</p>
+    <div class="card flush"><div class="list">${data.length ? data.map((u) => `<div class="item">
+      <div class="ev-icon k-warn">${icon("question")}</div>
+      <div class="grow"><div class="title mono">${esc(u.number)}</div>
+        <div class="meta"><span>ultima lettura ${esc(relTime(u.last_seen))}</span><span>${plural(u.count, "lettura", "letture")}</span>${u.first_seen !== u.last_seen ? `<span>prima ${esc(fmtDateTime(u.first_seen))}</span>` : ""}</div></div>
+      <div class="row write item-actions">
+        <button type="button" class="small primary" data-new="${esc(u.number)}">Nuova persona</button>
+        <button type="button" class="small" data-assign="${esc(u.number)}">A persona esistente</button>
+        <button type="button" class="small ghost" data-ignore="${esc(u.number)}">Ignora</button></div></div>`).join("")
+    : `<div class="empty">${icon("check")}<br>Nessuna tessera da registrare.<br>Passa una tessera nuova sul lettore: comparirà qui in pochi secondi.</div>`}</div></div>`;
+  el.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.new) {
+      if (await newPerson(b.dataset.new)) render();
+    } else if (b.dataset.assign) {
+      const number = b.dataset.assign;
+      const options = store.persons.map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
+      const ok = await modal({
+        title: "Assegna tessera " + number,
+        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso gruppo e la stessa validità delle altre tessere della persona.") : '<p class="muted">Nessuna persona registrata.</p>',
+        actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
+          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number}}), "Tessera assegnata")) || false}] : [])],
+      });
+      if (ok) { loadSummary(); render(); }
+    } else if (b.dataset.ignore) {
+      if (await run(() => api(`api/unknown-cards/${encodeURIComponent(b.dataset.ignore)}`, {method: "DELETE"}))) { loadSummary(); render(); }
+    }
+  };
+}
+
+// ---------- Registro ----------
+const logFilters = {q: "", kind: "", from: "", to: ""};
+let logEvents = [];
+function logParams(extra = {}) {
+  const p = new URLSearchParams();
+  if (logFilters.q) p.set("q", logFilters.q);
+  if (logFilters.kind) p.set("kind", logFilters.kind);
+  if (logFilters.from) p.set("since", new Date(logFilters.from + "T00:00:00").toISOString());
+  if (logFilters.to) p.set("until", new Date(new Date(logFilters.to + "T00:00:00").getTime() + 86400000).toISOString());
+  Object.entries(extra).forEach(([k, v]) => p.set(k, v));
+  return p;
+}
+async function viewLog(el) {
+  const kindOptions = Object.entries(KINDS).map(([k, [label]]) => `<option value="${k}">${esc(label)}</option>`).join("");
+  el.innerHTML = `
+    <div class="toolbar">
+      <input type="search" id="l-q" placeholder="Cerca persona, tessera o dettaglio" value="${esc(logFilters.q)}">
+      <select id="l-kind"><option value="">Tutti gli eventi</option><option value="concesso,apertura_remota">Tutti gli accessi</option><option value="negato,sconosciuta">Tutti i rifiuti</option>${kindOptions}</select>
+      <input type="date" id="l-from" value="${esc(logFilters.from)}" title="Dal giorno" aria-label="Dal giorno">
+      <input type="date" id="l-to" value="${esc(logFilters.to)}" title="Al giorno" aria-label="Al giorno">
+      <a class="btn" id="l-export" href="#" download>${icon("download")}CSV</a>
+    </div>
+    <div class="card flush"><div class="list" id="l-list"><div class="loading"><span class="spinner"></span></div></div>
+      <div style="text-align:center;padding:12px" id="l-more-box" hidden><button type="button" id="l-more">Carica altri</button></div></div>`;
+  $("#l-kind").value = logFilters.kind;
+  let timer;
+  $("#l-q").addEventListener("input", (e) => { logFilters.q = e.target.value.trim(); clearTimeout(timer); timer = setTimeout(() => loadLog(), 300); });
+  $("#l-kind").addEventListener("change", (e) => { logFilters.kind = e.target.value; loadLog(); });
+  $("#l-from").addEventListener("change", (e) => { logFilters.from = e.target.value; loadLog(); });
+  $("#l-to").addEventListener("change", (e) => { logFilters.to = e.target.value; loadLog(); });
+  $("#l-more").addEventListener("click", () => loadLog(true));
+  bindSnapshots(el);
+  await loadLog();
+}
+async function loadLog(more = false) {
+  const params = logParams({limit: "100"});
+  if (more && logEvents.length) params.set("before_id", logEvents[logEvents.length - 1].id);
+  const data = await run(() => api("api/events?" + params));
+  if (!data || !$("#l-list")) return;
+  logEvents = more ? logEvents.concat(data) : data;
+  renderLog();
+  $("#l-more-box").hidden = data.length < 100;
+  $("#l-export").href = "api/export/events.csv?" + logParams();
+}
+function renderLog() {
+  let lastDay = "";
+  $("#l-list").innerHTML = logEvents.length ? logEvents.map((e) => {
+    const day = new Date(e.ts).toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long", year: "numeric"});
+    const head = day !== lastDay ? `<div class="item" style="background:var(--surface-2);padding-top:6px;padding-bottom:6px"><b class="small-text">${esc(day)}</b></div>` : "";
+    lastDay = day;
+    return head + eventItem(e).replace('<div class="side">', '<div class="side" style="min-width:48px">').replace(esc(fmtDateTime(e.ts)), esc(fmtTime(e.ts)));
+  }).join("") : '<div class="empty">nessun evento con questi filtri</div>';
+}
+async function refreshLog() {
+  // Solo se si guarda la cima del registro senza filtri
+  if (logFilters.q || logFilters.kind || logFilters.from || logFilters.to || window.scrollY > 200) return;
+  const data = await api("api/events?limit=100").catch(() => null);
+  if (!data || !$("#l-list")) return;
+  if (data.length && logEvents.length && data[0].id === logEvents[0].id) return;
+  logEvents = data;
+  renderLog();
+}
+function bindSnapshots(root) {
+  root.addEventListener("click", (e) => {
+    const img = e.target.closest("[data-snap]");
+    if (img) { e.stopPropagation(); showImage(`api/events/${img.dataset.snap}/snapshot`, img.dataset.title); }
+  });
+}
+
+// ---------- Regole ----------
+function weekPreview(rules) {
+  const rows = DAYS.map(([code, , name]) => {
+    const segs = rules.filter((r) => r.days.includes(code)).map((r) => {
+      const toMin = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
+      const left = (toMin(r.start) / 1440) * 100, width = ((toMin(r.end) - toMin(r.start)) / 1440) * 100;
+      return width > 0 ? `<span class="seg" style="left:${left}%;width:${width}%" title="${r.start}-${r.end}"></span>` : "";
+    }).join("");
+    return `<span>${name}</span><div class="track">${segs}</div>`;
+  }).join("");
+  return `<div class="week">${rows}<span></span><div class="axis"><span>0</span><span>6</span><span>12</span><span>18</span><span>24</span></div></div>`;
+}
+async function viewRules(el, sub) {
+  const tab = ["gruppi", "fasce", "festivita"].includes(sub) ? sub : "gruppi";
+  el.innerHTML = `<div class="segmented"><a href="#regole/gruppi" class="${tab === "gruppi" ? "active" : ""}">Gruppi</a><a href="#regole/fasce" class="${tab === "fasce" ? "active" : ""}">Fasce orarie</a><a href="#regole/festivita" class="${tab === "festivita" ? "active" : ""}">Festività</a></div><div id="r-body"><div class="loading"><span class="spinner"></span></div></div>`;
+  const body = $("#r-body");
+  if (tab === "festivita") return viewHolidays(body);
+  await loadGroups(true);
+  if (store.groupsError && !store.groups.length) {
+    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Regole non leggibili dal controller</b>${esc(store.groupsError)}</div></div>`;
+    store.groupsError = "";
+    return;
+  }
+  store.groupsError = "";
+  if (tab === "gruppi") viewGroups(body); else viewSchedules(body);
+  paintIcons(body);
+}
+function viewGroups(body) {
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Un gruppo stabilisce in quali fasce orarie le tessere dei suoi membri aprono la porta. Ogni persona appartiene a un gruppo.</p>
+    <button type="button" class="primary write" id="g-new">${icon("plus")}Nuovo gruppo</button></div>
+    <div class="grid cards">${store.groups.map((g) => `<div class="card" style="margin:0">
+      <h2>${esc(g.name)}<span class="spacer"></span>${g.default ? '<span class="pill accent">predefinito</span>' : ""}${g.enabled ? "" : '<span class="pill err">disattivato</span>'}</h2>
+      ${g.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(g.description)}</p>` : ""}
+      <dl class="props"><dt>Fascia oraria</dt><dd>${esc(g.schedule_names.join(", ") || "nessuna")}</dd><dt>Persone</dt><dd>${g.persons}</dd></dl>
+      ${g.default ? '<p class="hint">Assegnato alle nuove tessere se non scegli altro. Si cambia nelle opzioni dell\'add-on.</p>' : `<div class="row write" style="margin-top:12px"><button type="button" class="small" data-g-edit="${esc(g.token)}">${icon("edit")}Modifica</button><button type="button" class="small danger" data-g-del="${esc(g.token)}">Elimina</button></div>`}
+    </div>`).join("") || '<div class="empty">nessun gruppo sul controller</div>'}</div>`;
+  const scheduleSelect = (selected) => `<select name="schedule">${store.schedules.map((s) => `<option value="${esc(s.token)}" ${s.token === selected ? "selected" : ""}>${esc(s.name)}${s.summary ? " · " + esc(s.summary) : ""}</option>`).join("")}</select>`;
+  const groupForm = (g = {}) => `${field("Nome", `<input name="name" maxlength="100" value="${esc(g.name || "")}" placeholder="es. Pulizie, Dipendenti, Fornitori">`)}
+    ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(g.description || "")}" placeholder="facoltativa">`)}
+    ${field("Fascia oraria", scheduleSelect((g.schedules || [])[0] || "standard_always"), 'Le fasce si creano nella scheda <a href="#regole/fasce">Fasce orarie</a>.')}`;
+  const save = (token) => async (dlg) => {
+    const payload = {name: val(dlg, "name"), description: val(dlg, "description"), schedule: val(dlg, "schedule")};
+    const path = token ? `api/groups/${encodeURIComponent(token)}` : "api/groups";
+    return (await run(() => api(path, {method: token ? "PUT" : "POST", body: payload}), token ? "Gruppo aggiornato sul controller" : "Gruppo creato sul controller")) || false;
+  };
+  $("#g-new").onclick = async () => {
+    if (await modal({title: "Nuovo gruppo", body: groupForm(), actions: [{label: "Annulla", value: null}, {label: "Crea", kind: "primary", submit: true, onClick: save("")}]})) render();
+  };
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.gEdit) {
+      const g = store.groups.find((x) => x.token === b.dataset.gEdit);
+      if (await modal({title: "Modifica gruppo", body: groupForm(g) + `<p class="hint">Il cambio vale subito per tutte le ${plural(g.persons, "persona", "persone")} del gruppo.</p>`, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: save(g.token)}]})) render();
+    } else if (b.dataset.gDel) {
+      const g = store.groups.find((x) => x.token === b.dataset.gDel);
+      if (await confirmBox("Elimina gruppo", `Eliminare il gruppo <b>${esc(g.name)}</b> dal controller?`, "Elimina", true) &&
+          await run(() => api(`api/groups/${encodeURIComponent(g.token)}`, {method: "DELETE"}), "Gruppo eliminato")) render();
+    }
+  };
+}
+function viewSchedules(body) {
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Le fasce orarie dicono quando un gruppo può entrare. Quelle predefinite del controller non si modificano.</p>
+    <button type="button" class="primary write" id="s-new">${icon("plus")}Nuova fascia</button></div>
+    <div class="grid cards">${store.schedules.map((s) => `<div class="card" style="margin:0">
+      <h2>${esc(s.name)}<span class="spacer"></span>${s.standard ? '<span class="pill">predefinita</span>' : s.managed ? '<span class="pill accent">creata qui</span>' : '<span class="pill">esterna</span>'}</h2>
+      ${s.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(s.description)}</p>` : ""}
+      ${s.managed ? weekPreview(s.rules) + `<p class="small-text" style="margin:8px 0 0">${esc(s.summary)}</p>` : `<p class="muted small-text">${s.token === "standard_always" ? "Tutti i giorni, 24 ore su 24." : "Definita fuori dall'add-on."}</p>`}
+      <p class="hint">${s.holidays ? "Non vale nei giorni festivi." : "Vale anche nei festivi."}${s.groups.length ? ` Usata da: ${esc(s.groups.join(", "))}.` : ""}</p>
+      ${s.managed ? `<div class="row write" style="margin-top:12px"><button type="button" class="small" data-s-edit="${esc(s.token)}">${icon("edit")}Modifica</button><button type="button" class="small danger" data-s-del="${esc(s.token)}">Elimina</button></div>` : ""}
+    </div>`).join("")}</div>`;
+  $("#s-new").onclick = () => scheduleEditor();
+  body.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.sEdit) scheduleEditor(store.schedules.find((s) => s.token === b.dataset.sEdit));
+    else if (b.dataset.sDel) {
+      const s = store.schedules.find((x) => x.token === b.dataset.sDel);
+      if (await confirmBox("Elimina fascia oraria", `Eliminare <b>${esc(s.name)}</b> dal controller?`, "Elimina", true) &&
+          await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "DELETE"}), "Fascia eliminata")) render();
+    }
+  };
+}
+async function scheduleEditor(s) {
+  let rules = s ? s.rules.map((r) => ({...r, days: [...r.days]})) : [{days: ["MO", "TU", "WE", "TH", "FR"], start: "08:00", end: "18:00"}];
+  const renderRules = (dlg) => {
+    $("#rules", dlg).innerHTML = rules.map((r, i) => `<div class="rule-row" data-i="${i}">
+      <span class="days">${DAYS.map(([code, letter, name]) => `<button type="button" class="${r.days.includes(code) ? "on" : ""}" data-day="${code}" title="${name}">${letter}</button>`).join("")}</span>
+      <span class="row"><input type="time" data-k="start" value="${esc(r.start)}" step="300"> – <input type="time" data-k="end" value="${esc(r.end === "24:00" ? "23:59" : r.end)}" step="60"></span>
+      <button type="button" class="ghost icon-only danger" data-rm title="Rimuovi">${icon("trash")}</button></div>`).join("") || '<p class="muted">Nessun intervallo.</p>';
+    $("#preview", dlg).innerHTML = weekPreview(rules.filter((r) => r.start && r.end && r.end > r.start));
+  };
+  const ok = await modal({
+    title: s ? "Modifica fascia oraria" : "Nuova fascia oraria",
+    wide: true,
+    body: `<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(s?.name || "")}" placeholder="es. Orario negozio">`)}
+      ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(s?.description || "")}" placeholder="facoltativa">`)}</div>
+      <div class="field"><label>Intervalli settimanali</label><div id="rules"></div>
+        <div class="row"><button type="button" class="small" id="add-rule">${icon("plus")}Aggiungi intervallo</button>
+        <span class="muted small-text">Modelli:</span><button type="button" class="small ghost" data-tpl="office">Lun-ven 8-18</button>
+        <button type="button" class="small ghost" data-tpl="shop">Lun-sab 7-20</button><button type="button" class="small ghost" data-tpl="day">Tutti i giorni 6-22</button></div></div>
+      <div class="field inline"><input type="checkbox" name="holidays" id="f-hol" ${s ? (s.holidays ? "checked" : "") : "checked"}><label for="f-hol">Non valida nei giorni festivi</label></div>
+      <p class="hint" style="margin:-8px 0 12px">I festivi si gestiscono nella scheda <a href="#regole/festivita">Festività</a>.</p>
+      <div class="field"><label>Anteprima</label><div id="preview"></div></div>`,
+    actions: [{label: "Annulla", value: null}, {label: s ? "Salva" : "Crea", kind: "primary", submit: true, onClick: async (dlg) => {
+      const payload = {name: val(dlg, "name"), description: val(dlg, "description"), holidays: val(dlg, "holidays"),
+        rules: rules.map((r) => ({...r, end: r.end === "23:59" ? "24:00" : r.end}))};
+      const path = s ? `api/schedules/${encodeURIComponent(s.token)}` : "api/schedules";
+      return (await run(() => api(path, {method: s ? "PUT" : "POST", body: payload}), s ? "Fascia aggiornata sul controller" : "Fascia creata sul controller")) || false;
+    }}],
+    onOpen: (dlg) => {
+      renderRules(dlg);
+      $("#add-rule", dlg).onclick = () => { rules.push({days: ["MO", "TU", "WE", "TH", "FR"], start: "09:00", end: "13:00"}); renderRules(dlg); };
+      $$("[data-tpl]", dlg).forEach((b) => b.onclick = () => {
+        rules = {office: [{days: ["MO", "TU", "WE", "TH", "FR"], start: "08:00", end: "18:00"}],
+          shop: [{days: ["MO", "TU", "WE", "TH", "FR", "SA"], start: "07:00", end: "20:00"}],
+          day: [{days: DAYS.map((d) => d[0]), start: "06:00", end: "22:00"}]}[b.dataset.tpl];
+        renderRules(dlg);
+      });
+      $("#rules", dlg).addEventListener("click", (e) => {
+        const row = e.target.closest("[data-i]");
+        if (!row) return;
+        const r = rules[Number(row.dataset.i)];
+        const day = e.target.closest("[data-day]");
+        if (day) { r.days = r.days.includes(day.dataset.day) ? r.days.filter((d) => d !== day.dataset.day) : [...r.days, day.dataset.day]; renderRules(dlg); }
+        if (e.target.closest("[data-rm]")) { rules.splice(Number(row.dataset.i), 1); renderRules(dlg); }
+      });
+      $("#rules", dlg).addEventListener("change", (e) => {
+        const row = e.target.closest("[data-i]");
+        if (row && e.target.dataset.k) { rules[Number(row.dataset.i)][e.target.dataset.k] = e.target.value; $("#preview", dlg).innerHTML = weekPreview(rules.filter((r) => r.start && r.end && r.end > r.start)); }
+      });
+    },
+  });
+  if (ok) render();
+}
+async function viewHolidays(body) {
+  let list;
+  try { list = await api("api/holidays"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  const year = new Date().getFullYear();
+  body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie create qui con l'opzione "Non valida nei giorni festivi". Le fasce predefinite (come "Sempre") non cambiano.</p>
+    <div class="card write"><h2>Aggiungi festività</h2>
+      <form class="row" id="h-form"><input type="date" name="day" required><input name="name" placeholder="Nome (es. Patrono)" maxlength="60" style="flex:1;min-width:160px">
+      <label class="row small-text"><input type="checkbox" name="yearly" checked> ogni anno</label><button type="submit" class="primary">Aggiungi</button></form>
+      <p class="hint">Oppure <button type="button" class="small" id="h-it">Aggiungi le festività nazionali italiane</button> (fisse ogni anno, Pasquetta ${year} e ${year + 1}).</p></div>
+    <div class="card flush"><div class="list">${list.length ? list.map((h) => `<div class="item">
+      <div class="ev-icon k-accent">${icon("clock")}</div>
+      <div class="grow"><div class="title">${esc(h.name || "Festività")}</div><div class="meta">${h.yearly ? esc(new Date(h.day + "T12:00:00").toLocaleDateString("it-IT", {day: "numeric", month: "long"})) + " · ogni anno" : esc(fmtDate(h.day + "T12:00:00"))}</div></div>
+      <button type="button" class="small danger write" data-h-del="${esc(h.day)}">Elimina</button></div>`).join("") : '<div class="empty">nessuna festività</div>'}</div></div>`;
+  paintIcons(body);
+  $("#h-form").onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    if (await run(() => api("api/holidays", {method: "POST", body: {day: f.day.value, name: f.name.value.trim(), yearly: f.yearly.checked}}), "Festività aggiunta")) viewHolidays(body);
+  };
+  $("#h-it").onclick = async () => {
+    if (await run(() => api("api/holidays/italia", {method: "POST", body: {year}}), "Festività nazionali aggiunte")) viewHolidays(body);
+  };
+  body.onclick = async (e) => {
+    const b = e.target.closest("[data-h-del]");
+    if (b && await run(() => api(`api/holidays/${encodeURIComponent(b.dataset.hDel)}`, {method: "DELETE"}), "Festività eliminata")) viewHolidays(body);
+  };
+}
+
+// ---------- Impostazioni ----------
+const props = (pairs) => `<dl class="props">${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
+const statusDot = (cls) => `<span class="dot ${cls}"></span>`;
+let auditRows = [];
+async function viewSettings(el) {
+  el.innerHTML = '<div class="loading"><span class="spinner"></span> verifica del controller…</div>';
+  let s;
+  try { s = await api("api/status"); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  const c = s.controller, m = s.mqtt, ha = s.home_assistant, o = s.options;
+  const ctrl = c.ok ? props([
+    ["Stato", `${statusDot("ok")} raggiungibile`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di serie", `<code>${esc(c.serial)}</code>`],
+    ["Porte", c.doors.map((d) => `<code>${esc(d)}</code>`).join(", ") + (c.door_found ? "" : ' <span class="pill warn">token configurato assente</span>')],
+    ["Tessere sul controller", esc(c.credentials)],
+  ]) : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller non raggiungibile</b>${esc(c.error)}</div></div>`;
+  const cats = Object.entries(m.categories || {});
+  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun broker</b>Installa l'add-on Mosquitto o imposta mqtt_host nelle opzioni.</div></div>` : props([
+    ["Broker", m.connected ? `${statusDot("ok")} collegato` : `${statusDot("err")} non collegato ${esc(m.error)}`],
+    ["Prefisso", `<code>${esc(m.prefix)}</code>`],
+    ["Controller", m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? `${statusDot("ok")} online` : `${statusDot("err")} offline`],
+    ["Ultima tessera letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
+    ["Eventi AccessControl", m.access_events_seen ? `${statusDot("ok")} ricevuti` : `${statusDot("warn")} non ancora ricevuti`],
+  ]) + (m.connected && !m.access_events_seen ? '<p class="hint">Se dopo il passaggio di una tessera compare solo IdPoint, aggiungi gli eventi AccessControl (accesso concesso e negato) al filtro eventi MQTT dell\'A1210: servono per sapere se la porta si è aperta e perché un accesso è stato negato.</p>' : "")
+    + (cats.length ? `<div class="table-wrap" style="margin-top:12px"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div>` : "");
+  const entities = ["Stato porta", "Ultimo accesso", "Accessi oggi", "Accessi negati oggi", "Tessere da registrare", "Persone registrate", "Eventi accessi (per le automazioni)"].concat(ha.door_buttons ? ["Apri porta", "Apri porta a lungo"] : []);
+  const haCard = props([
+    ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} attive, dispositivo "Controllo accessi"` : `${statusDot("")} disattivate nelle opzioni`],
+    ...(ha.integration ? [["Entità", esc(entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
+    ["API di Home Assistant", ha.api ? `${statusDot("ok")} disponibile` : `${statusDot("warn")} non disponibile`],
+    ["Istantanee", ha.snapshot_camera ? `<code>${esc(ha.snapshot_camera)}</code> su accessi negati, tessere sconosciute, citofono e allarmi${ha.snapshot_on_granted ? " e anche sugli accessi concessi" : ""}` : "nessuna telecamera impostata"],
+  ]) + `<p class="hint">L'evento "Eventi accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni.</p>`;
+  const ic = s.intercom;
+  const intercom = ic ? `<div class="card"><h2>${icon("phone")}Citofono</h2>${props(Object.entries({
+    "Configurato": ic.configured ? `${statusDot("ok")} sì` : `${statusDot("")} no`, "Nome": esc(ic.name ?? "—"),
+    "Apertura dalla app del citofono": ic.open_door ? "attiva" : "disattivata", "Stato chiamata": esc(ic.call_state ?? "—"),
+    "Ultimo messaggio": ic.last_message_at ? esc(relTime(ic.last_message_at)) : "—",
+  }))}</div>` : "";
+  el.innerHTML = `
+    <div class="grid two">
+      <div>
+        <div class="card"><h2>${statusDot(c.ok ? (c.door_found ? "ok" : "warn") : "err")}Controller A1210</h2>${ctrl}
+          <p class="hint">Ultima sincronizzazione: ${s.sync.at ? esc(relTime(s.sync.at)) : "non ancora eseguita"}${s.sync.ok === false ? ` · <span style="color:var(--err)">${esc(s.sync.error)}</span>` : ""}</p></div>
+        <div class="card"><h2>${statusDot(!m.configured || !m.connected ? "err" : m.access_events_seen ? "ok" : "warn")}Eventi MQTT</h2>${mqtt}</div>
+        ${intercom}
+      </div>
+      <div>
+        <div class="card"><h2>${icon("dashboard")}Home Assistant</h2>${haCard}</div>
+        <div class="card"><h2>${icon("cog")}Opzioni dell'add-on</h2>${props([
+          ["Porta", `<code>${esc(o.door_token)}</code>`], ["Gruppo predefinito", `<code>${esc(o.access_profile)}</code>`],
+          ["Conservazione registro", `${o.event_retention_days} giorni`], ["Utenti in sola lettura", o.readonly_users.length ? esc(o.readonly_users.join(", ")) : "nessuno"],
+        ])}<p class="hint">Si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione.</p></div>
+        <div class="card"><h2>${icon("download")}Esporta e importa</h2>
+          <div class="row"><a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a><a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>
+          <label class="btn small write" style="cursor:pointer">${icon("upload")}Importa anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). Prima vedi un'anteprima, poi confermi. Le tessere già registrate vengono saltate.</p></div>
+      </div>
+    </div>
+    <div class="card flush"><h2>Attività<span class="spacer"></span><span class="muted small-text">chi ha fatto cosa dall'add-on</span></h2>
+      <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Azione</th></tr></thead><tbody id="audit"></tbody></table></div>
+      <div style="text-align:center;padding:12px" id="audit-more-box" hidden><button type="button" id="audit-more">Carica altre</button></div></div>
+    <p class="muted small-text" style="text-align:center">Axis Access Manager ${esc(store.me.version || "")}</p>`;
+  $("#import-file").addEventListener("change", importCsv);
+  $("#audit-more").onclick = () => loadAudit(true);
+  await loadAudit();
+}
+async function loadAudit(more = false) {
+  const params = new URLSearchParams({limit: "50"});
+  if (more && auditRows.length) params.set("before_id", auditRows[auditRows.length - 1].id);
+  const rows = await api("api/audit?" + params).catch(() => []);
+  auditRows = more ? auditRows.concat(rows) : rows;
+  const body = $("#audit");
+  if (!body) return;
+  body.innerHTML = auditRows.length ? auditRows.map((a) => `<tr><td>${esc(fmtDateTime(a.ts))}</td><td>${esc(a.user)}</td><td><b>${esc(a.action)}</b>${a.detail ? `<div class="muted small-text">${esc(a.detail)}</div>` : ""}</td></tr>`).join("") : '<tr><td colspan="3" class="muted">nessuna attività</td></tr>';
+  $("#audit-more-box").hidden = rows.length < 50;
+}
+async function importCsv(e) {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  const text = await file.text();
+  const preview = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: false}}));
+  if (!preview) return;
+  const table = (res) => `<p>${res.riepilogo.righe} righe: <b>${res.riepilogo.ok}</b> ${res.applicato ? "importate" : "da importare"}, ${res.riepilogo.saltate} saltate, ${res.riepilogo.errori} con errori.</p>
+    <div class="table-wrap"><table class="table"><thead><tr><th>Riga</th><th>Nome</th><th>Tessera</th><th>Esito</th></tr></thead><tbody>${res.righe.map((r) => `<tr><td>${r.riga}</td><td>${esc(r.nome)}</td><td><code>${esc(r.tessera)}</code></td><td><span class="pill ${r.esito === "errore" ? "err" : r.esito === "saltata" ? "" : "ok"}">${esc(r.esito)}</span> <span class="small-text">${esc(r.dettaglio)}</span></td></tr>`).join("")}</tbody></table></div>`;
+  const go = await modal({title: "Anteprima importazione", wide: true, body: table(preview),
+    actions: [{label: "Annulla", value: false}, ...(preview.riepilogo.ok ? [{label: `Importa ${preview.riepilogo.ok}`, kind: "primary", value: true}] : [])]});
+  if (!go) return;
+  const result = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: true}}));
+  if (result) await modal({title: "Importazione completata", wide: true, body: table(result), actions: [{label: "Chiudi", kind: "primary", value: true}]});
+}
+
+// ---------- Avvio ----------
+async function start() {
+  paintIcons();
+  try {
+    store.me = await api("api/me");
+    document.body.classList.toggle("readonly", Boolean(store.me.readonly));
+    $("#nav-foot").textContent = store.me.readonly ? `${store.me.user} · sola lettura` : store.me.user;
+  } catch (err) { /* la pagina funziona anche senza */ }
+  await loadSummary();
+  await render();
   setInterval(loadSummary, 5000);
-  // Aggiorna da solo le schede che cambiano con gli eventi, ma non mentre è aperta una finestra
-  setInterval(() => {
-    if ($("dialog").open) return;
-    if (currentTab === "unknown") loadUnknown();
-    if (currentTab === "log" && !$("log-search").value) loadLog();
-    if (currentTab === "status") loadStatus();
-  }, 10000);
+  setInterval(refreshView, 15000);
+}
+start();
 </script>
 </body>
 </html>

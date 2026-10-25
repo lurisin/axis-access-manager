@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,6 +41,16 @@ class Settings:
     log_level: str = "info"
     access_profile: str = ""
     event_retention_days: int = 365
+    ha_integration: bool = True
+    ha_door_buttons: bool = True
+    ha_topic_prefix: str = "axis_access_manager"
+    snapshot_camera: str = ""
+    snapshot_on_granted: bool = False
+    readonly_users: tuple[str, ...] = ()
+    intercom_name: str = ""
+    intercom_open_door: bool = False
+    intercom_relay: int = 1
+    intercom_mqtt_prefix: str = "hmd"
 
 
 def normalize_host(value: str) -> str:
@@ -48,14 +59,29 @@ def normalize_host(value: str) -> str:
     return host.split("/", 1)[0]
 
 
-def supervisor_token(env_dir: Path = S6_ENV_DIR) -> str | None:
-    token = os.environ.get("SUPERVISOR_TOKEN")
-    if token:
-        return token
+def container_env(name: str, env_dir: Path = S6_ENV_DIR) -> str | None:
+    """Variabile del container, anche quando s6-overlay non la passa al processo."""
+    value = os.environ.get(name)
+    if value:
+        return value
     try:
-        return (env_dir / "SUPERVISOR_TOKEN").read_text().strip() or None
+        return (env_dir / name).read_text().strip() or None
     except OSError:
         return None
+
+
+def supervisor_token(env_dir: Path = S6_ENV_DIR) -> str | None:
+    return container_env("SUPERVISOR_TOKEN", env_dir)
+
+
+def apply_timezone(env_dir: Path = S6_ENV_DIR) -> str | None:
+    """Usa il fuso orario di Home Assistant per giornate, statistiche e file CSV."""
+    tz = container_env("TZ", env_dir)
+    if tz and os.environ.get("TZ") != tz:
+        os.environ["TZ"] = tz
+        if hasattr(time, "tzset"):
+            time.tzset()
+    return tz
 
 
 def parse_options(options: dict) -> Settings:
@@ -82,7 +108,23 @@ def parse_options(options: dict) -> Settings:
         log_level=options.get("log_level", "info"),
         access_profile=options.get("access_profile", "").strip(),
         event_retention_days=int(options.get("event_retention_days") or 365),
+        ha_integration=bool(options.get("ha_integration", True)),
+        ha_door_buttons=bool(options.get("ha_door_buttons", True)),
+        ha_topic_prefix=(options.get("ha_topic_prefix") or "axis_access_manager").strip().strip("/"),
+        snapshot_camera=(options.get("snapshot_camera") or "").strip(),
+        snapshot_on_granted=bool(options.get("snapshot_on_granted", False)),
+        readonly_users=tuple(u.lower() for u in _string_list(options.get("readonly_users"))),
+        intercom_name=(options.get("intercom_name") or "").strip(),
+        intercom_open_door=bool(options.get("intercom_open_door", False)),
+        intercom_relay=int(options.get("intercom_relay") or 1),
+        intercom_mqtt_prefix=(options.get("intercom_mqtt_prefix") or "hmd").strip().strip("/"),
     )
+
+
+def _string_list(value) -> tuple[str, ...]:
+    if isinstance(value, str):
+        value = value.split(",")
+    return tuple(item.strip() for item in value or [] if str(item).strip())
 
 
 def load_settings(path: Path = OPTIONS_PATH) -> Settings:
