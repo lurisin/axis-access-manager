@@ -274,6 +274,10 @@
   .rule-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; border: 1px solid var(--border);
               border-radius: 10px; margin-bottom: 8px; background: var(--surface-2); }
   .field .rule-row input[type=time] { width: 116px; }
+  /* Righe Dove e Quando delle tipologie: luogo, fascia e cestino sulla stessa riga */
+  .rule-row.access-row { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) auto; gap: 8px; padding: 6px; margin-bottom: 6px; }
+  .rule-row.access-row select { width: 100%; min-width: 0; }
+  @media (max-width: 640px) { .rule-row.access-row { grid-template-columns: minmax(0, 1fr) auto; } .rule-row.access-row select[data-k="place"] { grid-column: 1 / -1; } }
   /* L'icona dell'orologio copre le cifre (soprattutto con AM/PM): l'ora si scrive o si cambia con le frecce */
   input[type=time]::-webkit-calendar-picker-indicator { display: none; }
 
@@ -595,20 +599,35 @@ const categoryOf = (id) => store.categories.find((c) => c.id === id);
 const categoryPill = (c) => c ? `<span class="pill cat c-${esc(c.color)}"><span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}</span>` : "";
 const COLORS = {blue: "Blu", green: "Verde", orange: "Arancione", red: "Rosso", purple: "Viola", teal: "Turchese", pink: "Rosa", gray: "Grigio"};
 function categorySelect(selected = 0) {
-  return `<select name="category"><option value="0">Nessuna</option>${store.categories.map((c) => `<option value="${c.id}" ${c.id === selected ? "selected" : ""}>${esc(c.name)}</option>`).join("")}</select>`;
+  const chosen = selected || store.me.default_category || store.categories[0]?.id || 0;
+  const missing = selected && !categoryOf(selected) ? `<option value="0" selected>Nessuna</option>` : "";
+  return `<select name="category">${missing}${store.categories.map((c) => `<option value="${c.id}" ${c.id === chosen ? "selected" : ""}>${esc(c.name)}${c.default ? " (Predefinita)" : ""}</option>`).join("")}</select>`;
 }
-// La tipologia scelta nel modulo propone il suo gruppo e la sua durata
+// Accesso della persona diverso da quello della sua tipologia (deciso a mano o dalle versioni precedenti)
+const customAccess = (p) => { const c = categoryOf(p.category_id); return Boolean(c && p.cards.length && p.cards[0].access_profile !== c.group_token); };
+// Strutture, aree e porte per le righe Dove e Quando delle tipologie
+async function loadPlaces(force = false) {
+  if (!store.places || force) store.places = await api("api/locations").catch(() => []);
+  return store.places;
+}
+const realSites = () => (store.places || []).filter((x) => x.id);
+function placeLabel(r) {
+  if (r.target === "site") return realSites().find((x) => x.id === r.target_id)?.name || "struttura eliminata";
+  if (r.target === "area") {
+    for (const site of realSites()) { const area = site.areas.find((a) => a.id === r.target_id); if (area) return `${site.name} › ${area.name}`; }
+    return "area eliminata";
+  }
+  return allDoors().find((d) => d.id === r.target_id)?.name || "porta eliminata";
+}
+const scheduleLabel = (token) => (store.schedules || []).find((x) => x.token === token)?.name || token;
+const ruleLines = (c) => (c.rules || []).map((r) => `<div>${esc(placeLabel(r))} <span class="muted">· ${esc(scheduleLabel(r.schedule))}</span></div>`).join("") || '<span class="muted">nessuna</span>';
+// La tipologia scelta nel modulo propone la sua durata
 function bindCategory(dlg) {
   const select = $("[name=category]", dlg);
   if (!select) return;
   select.addEventListener("change", () => {
     const c = categoryOf(Number(select.value));
     if (!c) return;
-    if (c.group_token && $("[name=group]", dlg)) {
-      const group = $("[name=group]", dlg);
-      if (![...group.options].some((o) => o.value === c.group_token)) group.insertAdjacentHTML("beforeend", `<option value="${esc(c.group_token)}">${esc(groupName(c.group_token))}</option>`);
-      group.value = c.group_token;
-    }
     if (c.valid_days && $("#f-limited", dlg)) {
       $("#f-limited", dlg).checked = true;
       $("#f-validity", dlg).hidden = false;
@@ -891,8 +910,8 @@ async function viewDoorDetail(el, id, doors) {
       <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") && d.controller.id ? `<a class="small-text" href="#impianti/c${d.controller.id}">Configura</a>` : ""}</h2>
         <div class="list" style="margin-top:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div>
         <p class="hint" style="padding:0 18px 14px">L'apertura della porta resta nei pulsanti di Home Assistant.</p></div>
-      ${d.groups ? `<div class="card flush"><h2>Chi Può Entrare<span class="spacer"></span>${can("regole") ? '<a class="small-text" href="#regole/gruppi">Regole</a>' : ""}</h2>
-        <div class="list" style="margin-top:8px">${d.groups.length ? d.groups.map((g) => `<div class="item"><div class="grow"><div class="title">${esc(g.name)}${g.default ? ' <span class="pill accent">Predefinito</span>' : ""}${g.enabled ? "" : ' <span class="pill">Disattivato</span>'}</div><div class="meta">${esc(g.schedule_names.join(", ") || "sempre")}</div></div><div class="side">${plural(g.persons, "persona", "persone")}</div></div>`).join("") : '<div class="empty">nessun gruppo apre questa porta</div>'}</div></div>` : ""}
+      ${d.groups ? `<div class="card flush"><h2>Chi Può Entrare<span class="spacer"></span>${can("persone") ? '<a class="small-text" href="#persone/tipologie">Tipologie</a>' : ""}</h2>
+        <div class="list" style="margin-top:8px">${d.groups.length ? d.groups.map((g) => `<div class="item"><div class="grow"><div class="title"><span class="swatch c-${esc(g.color)}"></span> ${esc(g.name)}${g.default ? ' <span class="pill accent">Predefinita</span>' : ""}${g.enabled ? "" : ' <span class="pill">Disattivato</span>'}</div><div class="meta">${esc(g.schedule_names.join(", ") || "sempre")}</div></div><div class="side">${plural(g.persons, "persona", "persone")}</div></div>`).join("") : '<div class="empty">nessuna tipologia apre questa porta</div>'}</div></div>` : ""}
     </div>
     ${d.events ? `<div class="card flush"><h2>Eventi di Questa Porta<span class="spacer"></span><a class="small-text" href="#registro" id="d-log">Apri nel Registro</a></h2>
       <div class="list compact" style="margin-top:8px" id="d-events">${d.events.length ? logRows(d.events) : '<div class="empty">nessun evento registrato</div>'}</div></div>` : ""}`;
@@ -905,18 +924,18 @@ async function viewDoorDetail(el, id, doors) {
 }
 
 // ---------- Persone ----------
-const personFilters = {q: "", group: "", state: "", category: ""};
+const personFilters = {q: "", state: "", category: ""};
 async function loadPersons() {
   store.persons = await api("api/persons");
   return store.persons;
 }
+const personTabs = (tab) => `<div class="segmented">${[["", "Persone"], ["tipologie", "Tipologie"]].map(([k, label]) => `<a href="#persone${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`;
 async function viewPersons(el, sub) {
+  if (sub === "tipologie") return viewCategories(el);
   try { await Promise.all([loadPersons(), loadGroups()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
-  const groupOptions = (store.groups || []).filter((g) => !g.hidden || store.persons.some((p) => personAccess(p).group === g.token)).map((g) => `<option value="${esc(g.token)}">${esc(g.name)}</option>`).join("");
-  el.innerHTML = `
+  el.innerHTML = `${personTabs("")}
     <div class="toolbar">
       <input type="search" id="p-q" placeholder="Cerca nome, ditta o numero tessera" value="${esc(personFilters.q)}">
-      <select id="p-group"><option value="">Tutti i Gruppi</option>${groupOptions}</select>
       <select id="p-state">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
         <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
@@ -927,7 +946,6 @@ async function viewPersons(el, sub) {
     <div class="card flush"><h2 style="padding-bottom:12px"><span id="p-count" class="muted small-text"></span><span class="spacer"></span>
       <button type="button" class="small ghost w-persone" id="p-sync" title="Rilegge tessere e utenti dal controller">${icon("refresh")}Rileggi dal Controller</button></h2>
       <div class="list" id="p-list"></div></div>`;
-  $("#p-group").value = personFilters.group;
   $("#p-cats").addEventListener("click", (e) => {
     const b = e.target.closest("[data-cat]");
     if (!b) return;
@@ -936,7 +954,6 @@ async function viewPersons(el, sub) {
   });
   $("#p-state").value = personFilters.state;
   $("#p-q").addEventListener("input", (e) => { personFilters.q = e.target.value; renderPersonList(); });
-  $("#p-group").addEventListener("change", (e) => { personFilters.group = e.target.value; renderPersonList(); });
   $("#p-state").addEventListener("change", (e) => { personFilters.state = e.target.value; renderPersonList(); });
   $("#p-new").addEventListener("click", () => newPerson());
   $("#p-sync").addEventListener("click", async (e) => {
@@ -962,7 +979,6 @@ function renderPersonList() {
   const rows = store.persons.filter((p) => {
     const a = personAccess(p);
     if (q && !(p.name.toLowerCase().includes(q) || (p.company || "").toLowerCase().includes(q) || p.cards.some((c) => c.number.toLowerCase().includes(q)))) return false;
-    if (personFilters.group && a.group !== personFilters.group) return false;
     if (personFilters.category !== "" && (p.category_id || 0) !== Number(personFilters.category)) return false;
     const st = personFilters.state;
     if (st === "attive" && !p.cards.some((c) => c.enabled)) return false;
@@ -984,7 +1000,7 @@ function renderPersonList() {
     const a = personAccess(p);
     const vs = validityState(a.from, a.to);
     const suspended = p.cards.length && !p.cards.some((c) => c.enabled);
-    const flag = !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || "";
+    const flag = !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
     const c = categoryOf(p.category_id);
     const first = (p.name.trim()[0] || "#").toLocaleUpperCase("it");
     const head = sorted.length > 12 && first !== letter ? `<div class="day">${esc(first)}</div>` : "";
@@ -996,13 +1012,6 @@ function renderPersonList() {
   }).join("") : `<div class="empty">${store.persons.length ? "nessuna persona corrisponde ai filtri" : "nessuna persona registrata: passa una tessera sul lettore e registrala da \"Da registrare\""}</div>`;
 }
 
-function groupSelect(selected, name = "group") {
-  const groups = store.groups || [];
-  // I gruppi nascosti compaiono solo se sono già quelli della persona
-  const options = groups.filter((g) => !g.hidden || g.token === selected).map((g) => `<option value="${esc(g.token)}" ${g.token === selected ? "selected" : ""}>${esc(g.name)}${g.schedule_names.length && g.schedule_names.join(", ") !== g.name ? " · " + esc(g.schedule_names.join(", ")) : ""}${g.default ? " (Predefinito)" : ""}</option>`).join("");
-  const missing = selected && !groups.some((g) => g.token === selected) ? `<option value="${esc(selected)}" selected>${esc(selected)}</option>` : "";
-  return `<select name="${name}">${groups.length ? "" : `<option value="">Gruppo Predefinito</option>`}${missing}${options}</select>`;
-}
 function validityFields(from = "", to = "") {
   const limited = Boolean(from || to);
   return `<div class="field inline"><input type="checkbox" name="limited" id="f-limited" ${limited ? "checked" : ""}><label for="f-limited">Validità Limitata (ospiti, imprese, temporanei)</label></div>
@@ -1038,12 +1047,11 @@ async function newPerson(card = "") {
     body: `${field("Nome e Cognome", `<input name="name" autocomplete="off" maxlength="100" required>`)}
       ${field("Ditta o Reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
       ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="es. 04A1B2C3D4E5F6">`, card ? "" : "Più comodo: passa la tessera sul lettore e registrala da \"Da Registrare\".")}
-      ${store.categories.length ? field("Tipologia", categorySelect(), "La tipologia imposta da sola gruppo e durata: puoi comunque cambiarli qui sotto.") : ""}
-      ${field("Gruppo", groupSelect(store.me.default_group), "Il gruppo decide in quali orari la tessera apre la porta.")}
+      ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Persone → Tipologie.")}
       ${validityFields()}
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}`,
     actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
-      const body = {name: val(dlg, "name"), card: val(dlg, "card"), company: val(dlg, "company"), notes: val(dlg, "notes"), group: val(dlg, "group"), category_id: Number(val(dlg, "category") || 0), ...readValidity(dlg)};
+      const body = {name: val(dlg, "name"), card: val(dlg, "card"), company: val(dlg, "company"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0), ...readValidity(dlg)};
       if (!body.name || !body.card) { toast("Servono nome e numero tessera", true); return false; }
       const person = await run(() => api("api/persons", {method: "POST", body}), "Persona registrata: la tessera è attiva sul controller");
       return person || false;
@@ -1065,7 +1073,8 @@ async function openPerson(id) {
   await loadGroups();
   const a = personAccess(p);
   const vs = validityState(a.from, a.to);
-  const group = (store.groups || []).find((g) => g.token === a.group);
+  const category = categoryOf(p.category_id);
+  const custom = customAccess(p);
   sheet.innerHTML = `<div class="dlg">
     <div class="dlg-head"><div class="avatar big">${esc(initials(p.name))}</div>
       <div style="flex:1;min-width:0"><h2 style="margin:0">${esc(p.name)}</h2><div class="muted small-text">${esc(p.company || "")}${p.company ? " · " : ""}${p.last_access ? "ultimo accesso " + esc(relTime(p.last_access)) : "nessun accesso registrato"}</div></div>
@@ -1073,10 +1082,12 @@ async function openPerson(id) {
     <div class="dlg-body" tabindex="-1" autofocus>
       <div class="card"><h2>Accesso<span class="spacer"></span><button type="button" class="small w-persone" data-edit-access>${icon("edit")}Modifica</button></h2>
         <dl class="props">
-          <dt>Tipologia</dt><dd>${categoryPill(categoryOf(p.category_id)) || '<span class="muted">Nessuna</span>'}</dd>
-          <dt>Gruppo</dt><dd><span class="pill accent">${esc(groupName(a.group))}</span>${group && group.schedule_names.length && group.schedule_names.join(", ") !== group.name ? `<div class="muted small-text" style="margin-top:4px">${esc(group.schedule_names.join(", "))}</div>` : ""}</dd>
+          <dt>Tipologia</dt><dd>${categoryPill(category) || '<span class="muted">Nessuna</span>'}</dd>
+          ${category && !custom ? `<dt>Dove e Quando</dt><dd>${ruleLines(category)}</dd>` : ""}
           <dt>Validità</dt><dd>${esc(validityText(a.from, a.to))} ${VALIDITY_PILL[vs] || ""}</dd>
-        </dl></div>
+        </dl>
+        ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b>${esc(owner.name)}</b>` : `il profilo <code>${esc(groupName(a.group))}</code>`}, non come ${esc(category.name)}.`; })()}</div>
+          <button type="button" class="small w-persone" data-align>Allinea alla Tipologia</button></div>` : ""}</div>
       <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
           <div class="ev-icon ${c.enabled ? "k-accent" : "k-muted"}">${icon("card")}</div>
@@ -1099,15 +1110,17 @@ async function openPerson(id) {
   $("[data-edit-access]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Accesso di " + p.name,
-      body: `${store.categories.length ? field("Tipologia", categorySelect(p.category_id || 0)) : ""}${field("Gruppo", groupSelect(a.group))}${validityFields(a.from, a.to)}<p class="hint">Vale per tutte le tessere della persona.</p>`,
+      body: `${field("Tipologia", categorySelect(p.category_id || 0), "Dove e quando apre la tessera.")}${validityFields(a.from, a.to)}<p class="hint">Vale per tutte le tessere della persona.${custom ? " Salvando, l'accesso torna quello della tipologia." : ""}</p>`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
-        const body = {group: val(dlg, "group"), ...readValidity(dlg)};
-        if ($("[name=category]", dlg)) body.category_id = Number(val(dlg, "category"));
+        const body = {category_id: Number(val(dlg, "category")), ...readValidity(dlg)};
         return (await run(() => api(`api/persons/${id}/access`, {method: "PUT", body}), "Accesso aggiornato sul controller")) || false;
       }}],
       onOpen: (dlg) => { bindValidity(dlg); bindCategory(dlg); },
     });
     if (ok) reload();
+  };
+  if ($("[data-align]", sheet)) $("[data-align]", sheet).onclick = async () => {
+    if (await run(() => api(`api/persons/${id}/align`, {method: "POST"}), "Accesso riportato a quello della tipologia")) reload();
   };
   $("[data-edit-data]", sheet).onclick = async () => {
     const ok = await modal({
@@ -1123,7 +1136,7 @@ async function openPerson(id) {
   $("[data-add-card]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Aggiungi Tessera a " + p.name,
-      body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, "La nuova tessera avrà lo stesso gruppo e la stessa validità. Puoi anche passarla sul lettore e assegnarla da \"Da Registrare\".")}`,
+      body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, "La nuova tessera avrà lo stesso accesso e la stessa validità. Puoi anche passarla sul lettore e assegnarla da \"Da Registrare\".")}`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
         (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card")}}), "Tessera aggiunta")) || false}],
     });
@@ -1174,7 +1187,7 @@ async function viewUnknown(el) {
       const options = store.persons.map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
       const ok = await modal({
         title: "Assegna Tessera " + number,
-        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso gruppo e la stessa validità delle altre tessere della persona.") : '<p class="muted">Nessuna persona registrata.</p>',
+        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona.") : '<p class="muted">Nessuna persona registrata.</p>',
         actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
           (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number}}), "Tessera assegnata")) || false}] : [])],
       });
@@ -1384,8 +1397,10 @@ function weekPreview(rules) {
 }
 const showHidden = {group: false, schedule: false};
 async function viewRules(el, sub) {
-  const tabs = [["tipologie", "Tipologie"], ["gruppi", "Gruppi"], ["fasce", "Fasce Orarie"], ["festivita", "Festività"]];
-  const tab = tabs.some(([k]) => k === sub) ? sub : "tipologie";
+  // Le tipologie (con i vecchi gruppi) sono passate in Persone
+  if (sub === "tipologie" || sub === "gruppi") { location.replace("#persone/tipologie"); return; }
+  const tabs = [["fasce", "Fasce Orarie"], ["festivita", "Festività"]];
+  const tab = tabs.some(([k]) => k === sub) ? sub : "fasce";
   el.innerHTML = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#regole/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div><div id="r-body"><div class="loading"><span class="spinner"></span></div></div>`;
   const body = $("#r-body");
   if (tab === "festivita") return viewHolidays(body);
@@ -1396,9 +1411,7 @@ async function viewRules(el, sub) {
     return;
   }
   store.groupsError = "";
-  if (tab === "tipologie") viewCategories(body);
-  else if (tab === "gruppi") viewGroups(body);
-  else viewSchedules(body);
+  viewSchedules(body);
   paintIcons(body);
 }
 // Interruttore "Mostra Nascosti" in cima a gruppi e fasce
@@ -1413,91 +1426,97 @@ async function setHidden(kind, token, hidden) {
   return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosto: lo ritrovi con \"Mostra Nascosti\"" : "Di nuovo visibile");
 }
 
-function viewCategories(body) {
+// Tipologie: chi è la persona, dove e quando entra, quanto dura la tessera. L'app tiene il profilo sul controller.
+async function viewCategories(el) {
+  el.innerHTML = `${personTabs("tipologie")}<div id="c-body">${loadingBox()}</div>`;
+  const body = $("#c-body");
+  await Promise.all([loadGroups(true), loadPlaces(true)]);
+  if (!body.isConnected) return;
+  if (store.groupsError && !store.schedules.length) {
+    body.innerHTML = errorBox("Tipologie Non Leggibili dal Controller", {message: store.groupsError});
+    store.groupsError = "";
+    return;
+  }
+  store.groupsError = "";
   const cats = store.categories;
-  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">La tipologia dice che tipo di tessera ha una persona (manutentore, pulizie, dipendente, ospite…). Quando la scegli, la persona riceve in automatico il gruppo e la durata della tipologia.</p>
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">La tipologia dice chi è la persona (manutentore, pulizie, ospite…) e decide dove e quando apre la sua tessera, e per quanto tempo. Un'area o una struttura comprende tutte le sue porte, anche quelle aggiunte dopo.</p>
     <button type="button" class="primary w-regole" id="c-new">${icon("plus")}Nuova Tipologia</button></div>
     ${cats.length ? `<div class="grid cards">${cats.map((c) => `<div class="card" style="margin:0">
-      <h2><span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}</h2>
+      <h2><span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}<span class="spacer"></span>${c.default ? '<span class="pill accent">Predefinita</span>' : ""}</h2>
       ${c.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(c.description)}</p>` : ""}
-      <dl class="props"><dt>Gruppo</dt><dd>${c.group_token ? `<span class="pill accent">${esc(groupName(c.group_token))}</span>` : '<span class="muted">Predefinito</span>'}</dd>
-        <dt>Durata</dt><dd>${c.valid_days ? plural(c.valid_days, "giorno", "giorni") + " dalla registrazione" : "Illimitata"}</dd><dt>Persone</dt><dd>${c.persons}</dd></dl>
-      <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-c-edit="${c.id}">${icon("edit")}Modifica</button><button type="button" class="small danger" data-c-del="${c.id}">Elimina</button></div>
+      <dl class="props"><dt>Dove e Quando</dt><dd>${ruleLines(c)}</dd>
+        <dt>Durata</dt><dd>${c.valid_days ? plural(c.valid_days, "giorno", "giorni") + " dalla registrazione" : "Illimitata"}</dd>
+        <dt>Persone</dt><dd>${c.persons}${c.custom ? ` <span class="pill warn" title="Accesso diverso da quello della tipologia">${c.custom} Personalizzat${c.custom === 1 ? "o" : "i"}</span>` : ""}</dd></dl>
+      ${c.default ? '<p class="hint">Proposta per le nuove tessere.</p>' : ""}
+      <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-c-edit="${c.id}">${icon("edit")}Modifica</button>
+        ${c.default ? "" : `<button type="button" class="small" data-c-default="${c.id}">Rendi Predefinita</button><button type="button" class="small danger" data-c-del="${c.id}">Elimina</button>`}</div>
     </div>`).join("")}</div>`
-    : `<div class="card"><div class="empty">${icon("card")}<br>Nessuna tipologia.<br>Esempi: <b>Manutentore</b> con un gruppo sempre attivo, <b>Pulizie</b> con un gruppo serale, <b>Ospite</b> con durata di 1 giorno.</div></div>`}`;
-  const form = (c = {}) => `${field("Nome", `<input name="name" maxlength="40" value="${esc(c.name || "")}" placeholder="es. Manutentore, Pulizie, Ospite">`)}
-    <div class="field"><label>Colore</label><div class="colors">${Object.entries(COLORS).map(([k, label], i) => `<label title="${label}"><input type="radio" name="color" value="${k}" ${(c.color || "blue") === k ? "checked" : ""}><span class="swatch c-${k}"></span></label>`).join("")}</div></div>
-    ${field("Gruppo", groupSelect(c.group_token || store.me.default_group, "group_token"), "Gruppo assegnato a chi ha questa tipologia: decide in quali orari la tessera apre. I gruppi si creano nella scheda Gruppi.")}
-    ${field("Durata della Tessera", `<input type="number" name="valid_days" min="0" max="3650" value="${c.valid_days || 0}">`, "In giorni dalla registrazione. 0 = illimitata.")}
-    ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(c.description || "")}" placeholder="facoltativa">`)}
-    ${c.id && c.persons ? `<div class="field inline"><input type="checkbox" name="apply" id="f-apply" checked><label for="f-apply">Se cambi gruppo, applicalo subito alle ${plural(c.persons, "persona", "persone")} con questa tipologia</label></div>` : ""}`;
-  const save = (c) => async (dlg) => {
-    const payload = {name: val(dlg, "name"), color: $("[name=color]:checked", dlg)?.value || "blue", group_token: val(dlg, "group_token"),
-      valid_days: Number(val(dlg, "valid_days") || 0), description: val(dlg, "description"), apply: Boolean(val(dlg, "apply"))};
-    const r = await run(() => api(c ? `api/categories/${c.id}` : "api/categories", {method: c ? "PUT" : "POST", body: payload}));
-    if (!r) return false;
-    toast(r.updated ? `Tipologia salvata: gruppo aggiornato per ${plural(r.updated, "persona", "persone")}` : "Tipologia salvata");
-    return true;
+    : `<div class="card"><div class="empty">${icon("card")}<br>Nessuna tipologia.<br>Esempi: <b>Manutentore</b> ovunque sempre, <b>Pulizie</b> nelle camere 07–15, <b>Ospite</b> con durata di 1 giorno.</div></div>`}`;
+  paintIcons(body);
+  // Luoghi per le righe: strutture, aree e porte del controller in uso
+  const placeOptions = (selected) => {
+    const opt = (value, label) => `<option value="${value}" ${value === selected ? "selected" : ""}>${esc(label)}</option>`;
+    const sites = realSites();
+    const areas = sites.flatMap((x) => x.areas.map((a) => opt(`area:${a.id}`, `${x.name} › ${a.name}`)));
+    return `${sites.length ? `<optgroup label="Strutture">${sites.map((x) => opt(`site:${x.id}`, x.name)).join("")}</optgroup>` : ""}
+      ${areas.length ? `<optgroup label="Aree">${areas.join("")}</optgroup>` : ""}
+      <optgroup label="Porte">${allDoors().map((d) => opt(`door:${d.id}`, d.name + (placeOf(d) ? ` · ${placeOf(d)}` : ""))).join("")}</optgroup>`;
   };
-  $("#c-new").onclick = async () => {
-    if (await modal({title: "Nuova Tipologia", body: form(), actions: [{label: "Annulla", value: null}, {label: "Crea", kind: "primary", submit: true, onClick: save(null)}]})) render();
+  const scheduleOptions = (selected) => store.schedules.filter((x) => !x.hidden || x.token === selected)
+    .map((x) => `<option value="${esc(x.token)}" ${x.token === selected ? "selected" : ""}>${esc(x.name)}${x.summary ? " · " + esc(x.summary) : ""}</option>`).join("");
+  const editor = async (c) => {
+    let rows = c ? c.rules.map((r) => ({place: `${r.target}:${r.target_id}`, schedule: r.schedule}))
+      : [{place: allDoors()[0] ? `door:${allDoors()[0].id}` : "", schedule: "standard_always"}];
+    const paint = (dlg) => {
+      $("#c-rules", dlg).innerHTML = rows.map((r, i) => `<div class="rule-row access-row" data-i="${i}">
+        <select data-k="place" aria-label="Dove">${placeOptions(r.place)}</select>
+        <select data-k="schedule" aria-label="Quando">${scheduleOptions(r.schedule)}</select>
+        <button type="button" class="ghost icon-only danger" data-rm title="Togli la riga">${icon("trash")}</button></div>`).join("") || '<p class="muted">Nessuna riga: aggiungine almeno una.</p>';
+      paintIcons($("#c-rules", dlg));
+    };
+    const form = `${field("Nome", `<input name="name" maxlength="40" value="${esc(c?.name || "")}" placeholder="es. Manutentore, Pulizie, Ospite">`)}
+      <div class="field"><label>Colore</label><div class="colors">${Object.entries(COLORS).map(([k, label]) => `<label title="${label}"><input type="radio" name="color" value="${k}" ${(c?.color || "blue") === k ? "checked" : ""}><span class="swatch c-${k}"></span></label>`).join("")}</div></div>
+      <div class="field"><label>Dove e Quando</label><div id="c-rules"></div>
+        <button type="button" class="small" id="c-add" style="margin-top:8px">${icon("plus")}Aggiungi Riga</button>
+        <p class="hint">Ogni riga apre una porta, un'area o un'intera struttura nella fascia scelta. Una struttura comprende tutte le sue aree: per tenere fuori i locali tecnici, scegli le singole aree.</p></div>
+      ${field("Durata della Tessera", `<input type="number" name="valid_days" min="0" max="3650" value="${c?.valid_days || 0}">`, "In giorni dalla registrazione. 0 = illimitata.")}
+      ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(c?.description || "")}" placeholder="facoltativa">`)}
+      ${c && c.persons ? `<p class="hint">Le modifiche valgono subito per ${plural(c.persons, "la persona", "le persone")} con questa tipologia${c.custom ? ", tranne chi ha un accesso personalizzato" : ""}.</p>` : ""}`;
+    return modal({title: c ? "Modifica Tipologia" : "Nuova Tipologia", wide: true, body: form,
+      onOpen: (dlg) => {
+        paint(dlg);
+        $("#c-add", dlg).onclick = () => { rows.push({place: rows.at(-1)?.place || "", schedule: rows.at(-1)?.schedule || "standard_always"}); paint(dlg); };
+        $("#c-rules", dlg).addEventListener("change", (e) => {
+          const row = e.target.closest("[data-i]");
+          if (row) rows[Number(row.dataset.i)][e.target.dataset.k] = e.target.value;
+        });
+        $("#c-rules", dlg).addEventListener("click", (e) => {
+          const rm = e.target.closest("[data-rm]");
+          if (rm) { rows.splice(Number(rm.closest("[data-i]").dataset.i), 1); paint(dlg); }
+        });
+      },
+      actions: [{label: "Annulla", value: null}, {label: c ? "Salva" : "Crea", kind: "primary", submit: true, onClick: async (dlg) => {
+        const rules = rows.filter((r) => r.place).map((r) => { const [target, id] = r.place.split(":"); return {target, target_id: Number(id), schedule: r.schedule}; });
+        const payload = {name: val(dlg, "name"), color: $("[name=color]:checked", dlg)?.value || "blue", valid_days: Number(val(dlg, "valid_days") || 0), description: val(dlg, "description"), rules};
+        const r = await run(() => api(c ? `api/categories/${c.id}` : "api/categories", {method: c ? "PUT" : "POST", body: payload}));
+        if (!r) return false;
+        toast(r.updated ? `Tipologia salvata sul controller: ${plural(r.updated, "persona aggiornata", "persone aggiornate")}` : "Tipologia salvata sul controller");
+        return true;
+      }}]});
   };
+  $("#c-new").onclick = async () => { if (await editor(null)) render(); };
   body.onclick = async (e) => {
     const b = e.target.closest("button");
-    if (!b) return;
+    const c = b && cats.find((x) => x.id === Number(b.dataset.cEdit || b.dataset.cDel || b.dataset.cDefault));
+    if (!c) return;
     if (b.dataset.cEdit) {
-      const c = cats.find((x) => x.id === Number(b.dataset.cEdit));
-      if (await modal({title: "Modifica Tipologia", body: form(c), actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: save(c)}]})) render();
+      if (await editor(c)) render();
+    } else if (b.dataset.cDefault) {
+      if (await run(() => api("api/default-category", {method: "PUT", body: {category_id: c.id}}), `${c.name} è la nuova tipologia predefinita`)) { store.me.default_category = c.id; render(); }
     } else if (b.dataset.cDel) {
-      const c = cats.find((x) => x.id === Number(b.dataset.cDel));
-      if (await confirmBox("Elimina Tipologia", `Eliminare la tipologia <b>${esc(c.name)}</b>?` + (c.persons ? ` Le ${plural(c.persons, "persona", "persone")} restano registrate con il loro gruppo attuale, senza tipologia.` : ""), "Elimina", true) &&
+      if (c.persons) { toast(`${c.name} ha ${plural(c.persons, "persona", "persone")}: spostale prima in un'altra tipologia`, true); return; }
+      if (await confirmBox("Elimina Tipologia", `Eliminare la tipologia <b>${esc(c.name)}</b> e il suo profilo sul controller?`, "Elimina", true) &&
           await run(() => api(`api/categories/${c.id}`, {method: "DELETE"}), "Tipologia eliminata")) render();
-    }
-  };
-}
-
-function viewGroups(body) {
-  const hiddenCount = store.groups.filter((g) => g.hidden).length;
-  const groups = store.groups.filter((g) => showHidden.group || !g.hidden);
-  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Un gruppo stabilisce in quali fasce orarie le tessere dei suoi membri aprono la porta. Quelli che non ti servono puoi nasconderli.</p>
-    ${hiddenToggle("group", hiddenCount)}<button type="button" class="primary w-regole" id="g-new">${icon("plus")}Nuovo Gruppo</button></div>
-    <div class="grid cards">${groups.map((g) => `<div class="card ${g.hidden ? "is-hidden" : ""}" style="margin:0">
-      <h2>${esc(g.name)}<span class="spacer"></span>${g.default ? '<span class="pill accent">Predefinito</span>' : ""}${g.hidden ? '<span class="pill">Nascosto</span>' : ""}${g.enabled ? "" : '<span class="pill err">Disattivato</span>'}</h2>
-      ${g.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(g.description)}</p>` : ""}
-      <dl class="props"><dt>Fascia Oraria</dt><dd>${esc(g.schedule_names.join(", ") || "nessuna")}</dd><dt>Persone</dt><dd>${g.persons}</dd></dl>
-      ${g.default ? '<p class="hint">Assegnato alle nuove tessere quando non scegli altro.</p>' : ""}
-      <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-g-edit="${esc(g.token)}">${icon("edit")}Modifica</button>
-        ${g.default ? "" : `<button type="button" class="small" data-g-default="${esc(g.token)}">Rendi Predefinito</button>
-        <button type="button" class="small ghost" data-g-hide="${esc(g.token)}" data-hidden="${g.hidden ? 1 : 0}">${g.hidden ? "Mostra" : "Nascondi"}</button>
-        <button type="button" class="small danger" data-g-del="${esc(g.token)}">Elimina</button>`}</div>
-    </div>`).join("") || '<div class="empty">nessun gruppo da mostrare</div>'}</div>`;
-  bindHiddenToggle("group");
-  const scheduleSelect = (selected) => `<select name="schedule">${store.schedules.filter((s) => !s.hidden || s.token === selected).map((s) => `<option value="${esc(s.token)}" ${s.token === selected ? "selected" : ""}>${esc(s.name)}${s.summary ? " · " + esc(s.summary) : ""}</option>`).join("")}</select>`;
-  const groupForm = (g = {}) => `${field("Nome", `<input name="name" maxlength="100" value="${esc(g.name || "")}" placeholder="es. Pulizie, Dipendenti, Fornitori">`)}
-    ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(g.description || "")}" placeholder="facoltativa">`)}
-    ${field("Fascia Oraria", scheduleSelect((g.schedules || [])[0] || "standard_always"), 'Le fasce si creano nella scheda <a href="#regole/fasce">Fasce Orarie</a>.')}`;
-  const save = (token) => async (dlg) => {
-    const payload = {name: val(dlg, "name"), description: val(dlg, "description"), schedule: val(dlg, "schedule")};
-    const path = token ? `api/groups/${encodeURIComponent(token)}` : "api/groups";
-    return (await run(() => api(path, {method: token ? "PUT" : "POST", body: payload}), token ? "Gruppo aggiornato sul controller" : "Gruppo creato sul controller")) || false;
-  };
-  $("#g-new").onclick = async () => {
-    if (await modal({title: "Nuovo Gruppo", body: groupForm(), actions: [{label: "Annulla", value: null}, {label: "Crea", kind: "primary", submit: true, onClick: save("")}]})) render();
-  };
-  body.onclick = async (e) => {
-    const b = e.target.closest("button");
-    if (!b) return;
-    const g = store.groups.find((x) => x.token === (b.dataset.gEdit || b.dataset.gDel || b.dataset.gDefault || b.dataset.gHide));
-    if (!g) return;
-    if (b.dataset.gEdit) {
-      if (await modal({title: "Modifica Gruppo", body: groupForm(g) + `<p class="hint">Il cambio vale subito per ${plural(g.persons, "la persona", "tutte le persone")} del gruppo.</p>`, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: save(g.token)}]})) render();
-    } else if (b.dataset.gDefault) {
-      if (await run(() => api("api/default-group", {method: "PUT", body: {token: g.token}}), `${g.name} è il nuovo gruppo predefinito`)) { store.me.default_group = g.token; render(); }
-    } else if (b.dataset.gHide) {
-      if (await setHidden("group", g.token, b.dataset.hidden !== "1")) render();
-    } else if (b.dataset.gDel) {
-      if (await confirmBox("Elimina Gruppo", `Eliminare il gruppo <b>${esc(g.name)}</b> dal controller?`, "Elimina", true) &&
-          await run(() => api(`api/groups/${encodeURIComponent(g.token)}`, {method: "DELETE"}), "Gruppo eliminato")) render();
     }
   };
 }
@@ -1505,13 +1524,13 @@ function viewSchedules(body) {
   const hiddenCount = store.schedules.filter((s) => s.hidden).length;
   const list = store.schedules.filter((s) => showHidden.schedule || !s.hidden);
   const badge = (s) => s.managed ? '<span class="pill accent">Creata Qui</span>' : s.standard ? '<span class="pill">Predefinita del Controller</span>' : '<span class="pill">Esterna</span>';
-  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Le fasce orarie dicono quando un gruppo può entrare. Tutte si possono modificare; quelle che non ti servono puoi nasconderle.</p>
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Le fasce orarie dicono quando si entra: le usano le righe Dove e Quando delle tipologie. Tutte si possono modificare; quelle che non ti servono puoi nasconderle.</p>
     ${hiddenToggle("schedule", hiddenCount)}<button type="button" class="primary w-regole" id="s-new">${icon("plus")}Nuova Fascia</button></div>
     <div class="grid cards">${list.map((s) => `<div class="card ${s.hidden ? "is-hidden" : ""}" style="margin:0">
       <h2>${esc(s.name)}<span class="spacer"></span>${badge(s)}${s.hidden ? '<span class="pill">Nascosta</span>' : ""}</h2>
       ${s.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(s.description)}</p>` : ""}
       ${s.readable ? weekPreview(s.rules) + `<p class="small-text" style="margin:8px 0 0">${esc(s.summary)}</p>` : `<p class="muted small-text">Definita con regole che l'editor non sa mostrare: se la modifichi la riscrivi da capo.</p>`}
-      <p class="hint">${s.holidays ? "Non vale nei giorni festivi." : "Vale anche nei festivi."}${s.groups.length ? ` Usata da: ${esc(s.groups.join(", "))}.` : ""}</p>
+      <p class="hint">${s.holidays ? "Non vale nei giorni festivi." : "Vale anche nei festivi."}${s.groups.length ? ` Usata da: ${esc([...new Set(s.groups)].join(", "))}.` : ""}</p>
       <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-s-edit="${esc(s.token)}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost" data-s-hide="${esc(s.token)}" data-hidden="${s.hidden ? 1 : 0}">${s.hidden ? "Mostra" : "Nascondi"}</button>
         ${s.groups.length ? "" : `<button type="button" class="small danger" data-s-del="${esc(s.token)}">Elimina</button>`}</div>
@@ -2344,16 +2363,16 @@ async function viewSettings(el, sub) {
       <div>
         <div class="card"><h2>${icon("dashboard")}Home Assistant</h2>${haCard}</div>
         <div class="card"><h2>${icon("cog")}Opzioni dell'Add-on</h2>${props([
-          ["Gruppo Predefinito", esc(o.default_group ? (await loadGroups(), groupName(o.default_group)) : "—")],
+          ["Tipologia Predefinita", esc((await loadGroups(), categoryOf(store.me.default_category)?.name) || "—")],
           ["Conservazione Registro", `${o.event_retention_days} giorni`],
           ["Broker MQTT", o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
-        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti Aggiuntivi → Axis Access Manager → Configurazione. Il gruppo predefinito si sceglie in Regole → Gruppi.</p></div>
+        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti Aggiuntivi → Axis Access Manager → Configurazione. La tipologia predefinita si sceglie in Persone → Tipologie.</p></div>
       </div>
       <div>
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano gruppo, validità, ditta, note e tipologia della persona, se nel file sono diversi.</p></div>
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi.</p></div>
         ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Stato del controller, delle porte, degli eventi MQTT e dei citofoni: nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
       </div>
     </div>

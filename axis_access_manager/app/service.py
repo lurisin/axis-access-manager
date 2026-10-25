@@ -229,7 +229,7 @@ class AccessService:
         """Gruppo (vuoto = quello predefinito) e validità controllati."""
         profile = (group or "").strip() or self.default_group
         if not profile:
-            raise ServiceError("nessun gruppo scelto e nessun gruppo predefinito: impostalo in Regole → Gruppi")
+            raise ServiceError("nessuna tipologia scelta e nessuna predefinita: impostala in Persone → Tipologie")
         try:
             access = {
                 "access_profile": profile,
@@ -285,7 +285,8 @@ class AccessService:
         name, number = normalize_name(name), normalize_card(card)
         company = normalize_text(company, 100, "ditta o reparto")
         notes = normalize_text(notes, 1000, "testo delle note")
-        category = self._category(category_id)
+        # Senza una scelta vale la tipologia predefinita
+        category = self._category(category_id or int(self.db.get_setting("default_category") or 0))
         if category:
             # La tipologia decide gruppo e durata, se non sono stati scelti a mano
             group = group or category["group_token"]
