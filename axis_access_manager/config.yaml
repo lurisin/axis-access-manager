@@ -1,5 +1,5 @@
 name: Axis Access Manager
-version: "0.7.4"
+version: "0.8.0"
 slug: axis_access_manager
 description: Gestione tessere e controllo accessi per il controller Axis A1210
 url: https://github.com/lurisin/axis-access-manager
@@ -20,7 +20,6 @@ options:
   ha_topic_prefix: axis_access_manager
   log_level: info
 # Controller, porte, citofono e telecamere si configurano nell'app (pagina Impianti).
-# Le vecchie opzioni restano facoltative solo per importare la configurazione delle versioni precedenti.
 schema:
   event_retention_days: int(1,3650)
   ha_integration: bool
@@ -30,17 +29,3 @@ schema:
   mqtt_username: str?
   mqtt_password: password?
   log_level: list(debug|info|warning|error)
-  a1210_host: str?
-  a1210_username: str?
-  a1210_password: password?
-  a1210_verify_ssl: bool?
-  door_token: str?
-  access_profile: str?
-  mqtt_topic_prefix: str?
-  ha_door_buttons: bool?
-  snapshot_camera: str?
-  snapshot_on_granted: bool?
-  intercom_name: str?
-  intercom_open_door: bool?
-  intercom_relay: int(1,2)?
-  intercom_mqtt_prefix: str?

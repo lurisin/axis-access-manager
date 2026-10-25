@@ -6,10 +6,15 @@ Gestione delle tessere e degli accessi per il controller Axis A1210, dentro Home
 
 Dalla 0.5 controller, porte, citofono e telecamera si configurano **nell'app**, nella pagina **Impianti**, non più nella scheda Configurazione dell'add-on.
 Al primo avvio della 0.5 l'add-on importa da solo la configurazione che c'era nelle opzioni (indirizzo, utente e password del controller, porta, citofono, telecamera, gruppo predefinito): dopo l'aggiornamento non devi rifare niente.
-Le vecchie opzioni restano visibili come "Obsoleta" e non servono più.
+Dalla 0.8 le vecchie opzioni "Obsoleta" non ci sono più: chi aggiorna da una versione precedente alla 0.5 passi prima dalla 0.7.
 
 Il primo utente di Home Assistant che apre l'app diventa **amministratore**. Gli altri entrano con il ruolo "Solo Stato" finché un amministratore non dà loro altri permessi (Impostazioni → Utenti).
 Il pannello ora è visibile anche agli utenti di Home Assistant che non sono amministratori di Home Assistant: cosa possono fare lo decidono i permessi dell'app.
+
+### Novità della 0.8
+
+- In Home Assistant arrivano anche lo stato del controller (**Controller Online**, **Coperchio Controller Aperto**, **Ultimo Avvio Controller**), gli **ingressi I/O** del controller e, per ogni porta, **Allarme**, **Preallarme** e **Manomissione** come sensori acceso/spento: tutto quello che serviva il vecchio package YAML.
+- Le vecchie opzioni "Obsoleta" (indirizzo, utente e password dell'A1210, porta, citofono...) sono sparite dalla scheda Configurazione dell'add-on.
 
 ### Novità della 0.7
 
@@ -104,6 +109,8 @@ Permessi singoli: vedere persone, modificare persone e tessere, registro, vedere
 Con `ha_integration` attivo compare il dispositivo **Controllo Accessi** con queste entità:
 
 - sensori: Stato Porta, Ultimo Accesso (con persona, tessera ed esito negli attributi), Accessi Oggi, Accessi Negati Oggi, Tessere da Registrare, Persone Registrate;
+- per ogni porta, sensori acceso/spento **Allarme Porta** (porta forzata o aperta troppo a lungo), **Preallarme Porta** e **Manomissione Porta**, con negli attributi il tipo e l'ora dell'ultimo cambio;
+- controller: **Controller Online**, **Coperchio Controller Aperto**, **Ultimo Avvio Controller** e gli ingressi **Ingresso AUX 1**, **Ingresso AUX 2**, **Ingresso Manomissione**, **Ingresso Allarme** (porte I/O 0-3);
 - pulsanti **Apri Porta** e **Apri Porta a Lungo** per le porte che li hanno attivi in Impianti: aprono solo a serratura bloccata e solo con un'apertura a tempo;
 - per ogni porta oltre la prima: Stato, Apri e Apri a Lungo con il nome della porta (ad esempio "Apri Cantina");
 - evento **Eventi Accessi**, con tipi `accesso_concesso`, `accesso_negato`, `tessera_letta`, `tessera_sconosciuta`, `apertura_remota`, `allarme_porta`, `manomissione`, `citofono` e attributi `persona`, `tessera`, `dettaglio`, `origine`, `ora`.
@@ -139,7 +146,9 @@ File con separatore `;` o `,` e intestazione facoltativa: `nome; tessera; gruppo
 
 ## Eventi MQTT dell'A1210
 
-Per il registro servono gli eventi **AccessControl** (accesso concesso, negato, tessera sconosciuta). Se in Impostazioni la voce "Eventi AccessControl" resta gialla dopo il passaggio di una tessera, aggiungili al filtro eventi del client MQTT dell'A1210.
+Per il registro servono gli eventi **AccessControl** (accesso concesso, negato, tessera sconosciuta). Se nella scheda Stato del controller la voce "Eventi AccessControl" resta gialla dopo il passaggio di una tessera, aggiungili al filtro eventi del client MQTT dell'A1210.
+
+I sensori di Home Assistant usano anche **Door** (stato, allarmi, manomissione) e **Device** (coperchio, avvio, porte I/O). Un sensore resta "sconosciuto" finché il controller non manda il primo evento: se gli ingressi I/O restano sconosciuti anche cambiandoli, aggiungi `Device/IO/Port` al filtro eventi MQTT dell'A1210.
 
 ## Citofono Hikvision
 

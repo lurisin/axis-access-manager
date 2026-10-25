@@ -34,3 +34,27 @@ def test_monitor_tracks_categories_card_and_status():
     assert monitor.categories["IdPoint"].count == 1
     assert monitor.last_card["card"] == "04a1"
     assert "AccessControl" not in monitor.categories
+
+
+def test_monitor_tracks_door_conditions_and_controller():
+    monitor = EventMonitor(prefix=PREFIX, door_token="porta")
+    changes = []
+    monitor.on_status = lambda: changes.append(monitor.controller_online)
+    door = "$source/DoorToken/porta"
+    monitor.handle(f"{PREFIX}/stato", b"offline")
+    monitor.handle(f"{PREFIX}/eventi/Door/State/DoorAlarm/{door}", payload({"State": "DoorForcedOpen"}))
+    monitor.handle(f"{PREFIX}/eventi/Door/State/DoorWarning/{door}", payload({"State": "Normal"}))
+    monitor.handle(f"{PREFIX}/eventi/Door/State/DoorTamper/{door}", payload({"State": "TamperDetected"}))
+    monitor.handle(f"{PREFIX}/eventi/Device/Casing/Open/$source/Name/Casing", payload({"Open": "1"}))
+    monitor.handle(f"{PREFIX}/eventi/Device/Status/SystemReady", payload({"ready": "1"}))
+    monitor.handle(f"{PREFIX}/eventi/Device/IO/Port/$source/port/2", payload({"state": "1"}))
+    monitor.handle(f"{PREFIX}/eventi/Device/IO/Port/$source/port/0", payload({"state": "0"}))
+
+    assert changes == [False]
+    conditions = monitor.door_conditions["porta"]
+    assert conditions["allarme"]["active"] is True and conditions["allarme"]["state"] == "DoorForcedOpen"
+    assert conditions["preallarme"]["active"] is False
+    assert conditions["manomissione"]["active"] is True
+    assert monitor.casing_open is True
+    assert monitor.system_ready.startswith("2024-10-24")
+    assert monitor.io_ports == {"2": True, "0": False}

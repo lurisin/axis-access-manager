@@ -96,3 +96,28 @@ def test_second_door_gets_its_own_entities_and_commands(settings, db):
     assert parse_command("apri_lungo:porta2") == (True, "porta2")
     assert parse_command("apri") == (False, "")
     assert parse_command("sblocca") is None
+
+
+async def test_controller_and_door_condition_entities(bridge):
+    client = FakeClient()
+    monitor = bridge.monitor
+    monitor.controller_online = True
+    monitor.door_conditions["porta"] = {"allarme": {"active": True, "state": "DoorForcedOpen", "ts": "t"}}
+    monitor.io_ports["3"] = False
+    await bridge.on_connect(client)
+
+    def config(component, object_id):
+        return json.loads(client.published[f"homeassistant/{component}/axis_access_manager/{object_id}/config"])
+
+    assert config("binary_sensor", "controller_online")["device_class"] == "connectivity"
+    assert config("binary_sensor", "allarme_porta")["name"] == "Allarme Porta"
+    assert config("binary_sensor", "manomissione_porta")["device_class"] == "tamper"
+    assert config("binary_sensor", "ingresso_allarme")["name"] == "Ingresso Allarme"
+    assert config("sensor", "ultimo_avvio_controller")["device_class"] == "timestamp"
+
+    state = json.loads(client.published["axis_access_manager/stato"])
+    assert state["controller"] == {"online": "ON", "coperchio": "None", "avvio": "None"}
+    assert state["ingressi"] == {"0": "None", "1": "None", "2": "None", "3": "OFF"}
+    porta = state["condizioni"]["porta"]
+    assert porta["allarme"] == {"stato": "ON", "tipo": "Porta Forzata", "ultimo_cambio": "t"}
+    assert porta["preallarme"]["stato"] == "None"

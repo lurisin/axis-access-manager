@@ -1025,6 +1025,7 @@ def _wire(app: FastAPI) -> None:
     service: AccessService = state.service
     bridge: HaBridge = state.bridge
     monitor.on_event = service.record_event
+    monitor.on_status = service.notify_change
 
     doors = {d["door_token"]: d for d in state.doors}
 
