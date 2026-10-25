@@ -230,6 +230,74 @@ class ProgrammingService:
                 "access_point", token, before, after, f"punto di accesso {after.get('Name') or token}", user
             )
 
+    async def set_links(self, links: list[dict], user: str) -> int:
+        """Collegamenti lettore → porta dallo schema del controller, salvati tutti insieme.
+
+        Sull'Axis un collegamento è un lettore dentro un punto di accesso esistente della porta, con la sua
+        direzione: qui si spostano solo i lettori tra i punti di accesso, senza crearne o eliminarne.
+        Restituisce quanti punti di accesso sono cambiati.
+        """
+        self._check()
+        async with self.lock:
+            points = await self.controller.list_access_points()
+            readers = {r.get("token") for r in await self.controller.list_idpoints()}
+            doors = {d.get("token"): d.get("Name") or d.get("token") for d in await self.controller.door_info_list()}
+            points = [p for p in points if p.get("Entity") in doors]
+            devices: dict[str, dict] = {}
+            for point in points:
+                for device in point.get("IdPointDevice") or []:
+                    devices.setdefault(device.get("IdPoint"), device)
+            # Lettori mai collegati: stesso dispositivo degli altri (i lettori sono del controller stesso)
+            uuid = next((d.get("DeviceUUID") for d in devices.values() if d.get("DeviceUUID")), "")
+            wanted: dict[str, list[str]] = {p["token"]: [] for p in points}
+            enabled: dict[str, bool] = {}
+            for link in links:
+                reader, door = link.get("reader") or "", link.get("door") or ""
+                direction = link.get("direction") or ""
+                if reader not in readers:
+                    raise ServiceError(f"lettore non trovato sul controller: {reader}")
+                if door not in doors:
+                    raise ServiceError(f"porta non trovata sul controller: {door}")
+                if direction and direction not in DIRECTIONS:
+                    raise ServiceError("direzione non valida")
+                choices = [p for p in points if p.get("Entity") == door and _attribute(p, "Direction") == direction]
+                if not choices:
+                    where = DIRECTIONS.get(direction, "senza direzione").lower()
+                    raise ServiceError(
+                        f"sul controller la porta {doors[door]} non ha un punto di accesso in {where}: "
+                        "crealo dalla pagina web del controller"
+                    )
+                point = next((p for p in choices if reader in wanted[p["token"]]), None) or next(
+                    (p for p in choices if any(i.get("IdPoint") == reader for i in p.get("IdPointDevice") or [])),
+                    choices[0],
+                )
+                if reader not in wanted[point["token"]]:
+                    wanted[point["token"]].append(reader)
+                enabled[point["token"]] = enabled.get(point["token"], True) and link.get("enabled", True) is not False
+            updates = []
+            for point in points:
+                token = point["token"]
+                before_readers = [i.get("IdPoint") for i in point.get("IdPointDevice") or []]
+                after = copy.deepcopy(point)
+                if set(before_readers) != set(wanted[token]):
+                    after["IdPointDevice"] = [
+                        devices.get(r) or {"IdPoint": r, "DeviceUUID": uuid} for r in wanted[token]
+                    ]
+                if token in enabled and (point.get("Enabled", True) is not False) != enabled[token]:
+                    after["Enabled"] = enabled[token]
+                if after != point:
+                    gains = bool(set(wanted[token]) - set(before_readers))
+                    updates.append((not gains, token, point, after))
+            # Prima i punti che ricevono lettori, poi quelli che li perdono: un errore a metà non lascia
+            # un lettore scollegato da tutto
+            for _, token, before, after in sorted(updates, key=lambda u: u[0]):
+                names = ", ".join(i.get("IdPoint") for i in after.get("IdPointDevice") or []) or "nessun lettore"
+                door_name = doors.get(after.get("Entity"), after.get("Entity"))
+                await self._save(
+                    "access_point", token, before, after, f"collegamenti di {door_name} ({token}): {names}", user
+                )
+            return len(updates)
+
     async def undo(self, change_id: int, user: str) -> None:
         """Riporta l'oggetto com'era prima della modifica."""
         self._check()

@@ -10,10 +10,8 @@ from app.transfer import events_csv
 CONTROLLER = {"name": "A1210", "host": "10.0.0.5", "username": "root", "password": "x", "mqtt_topic_prefix": "a/b"}
 
 
-def test_existing_doors_get_a_default_site_once(db):
-    installation = InstallationService(db)
-    controller_id = installation.save_controller(None, CONTROLLER, "admin")["id"]
-    db.save_door(
+def _old_door(db, controller_id, area_id=0):
+    return db.save_door(
         None,
         controller_id,
         {
@@ -24,19 +22,42 @@ def test_existing_doors_get_a_default_site_once(db):
             "ha_buttons": 1,
             "intercom_open_door": 0,
             "intercom_relay": 1,
-            "area_id": 0,
+            "area_id": area_id,
         },
     )
+
+
+def test_existing_doors_get_a_default_site_once(db):
+    # Impianto della 0.5: controller e porta senza struttura
+    controller_id = db.save_controller(None, {**CONTROLLER, "verify_ssl": 0})
+    door_id = _old_door(db, controller_id)
+    installation = InstallationService(db)
     assert installation.ensure_default_site() is True
     assert installation.ensure_default_site() is False
     [site] = installation.locations()
-    assert site["name"] == DEFAULT_SITE and site["areas"][0]["name"] == DEFAULT_AREA
-    assert site["areas"][0]["doors"] == [db.list_doors()[0]["id"]]
+    area = site["areas"][0]
+    assert site["name"] == DEFAULT_SITE and area["name"] == DEFAULT_AREA
+    # L'area passa al controller e la porta la eredita
+    assert area["controllers"] == [controller_id] and area["doors"] == [door_id]
+    assert db.get_controller(controller_id)["area_id"] == area["id"] and db.get_door(door_id)["area_id"] == 0
+
+
+def test_door_area_moves_to_its_controller(db):
+    # Impianto della 0.6: l'area era sulla porta
+    installation = InstallationService(db)
+    teatro = installation.save_site(None, {"name": "Teatro Eliseo"}, "admin")["id"]
+    consulta = installation.save_area(None, teatro, {"name": "Via Consulta"}, "admin")["id"]
+    controller_id = db.save_controller(None, {**CONTROLLER, "verify_ssl": 0})
+    door_id = _old_door(db, controller_id, consulta)
+    assert installation.ensure_default_site() is True
+    assert db.get_controller(controller_id)["area_id"] == consulta
+    assert db.get_door(door_id)["area_id"] == 0
+    assert installation.door_places()[door_id]["area"] == "Via Consulta"
+    assert [s["name"] for s in db.list_sites()] == ["Teatro Eliseo"]
 
 
 def test_sites_areas_and_door_places(db):
     installation = InstallationService(db)
-    controller_id = installation.save_controller(None, CONTROLLER, "admin")["id"]
     teatro = installation.save_site(None, {"name": "Teatro"}, "admin")["id"]
     scala = installation.save_area(None, teatro, {"name": "Accesso Scala"}, "admin")["id"]
     with pytest.raises(ServiceError, match="esiste già una struttura"):
@@ -44,26 +65,43 @@ def test_sites_areas_and_door_places(db):
     with pytest.raises(ServiceError, match="esiste già l'area"):
         installation.save_area(None, teatro, {"name": "Accesso Scala"}, "admin")
 
-    # Una porta nuova senza area va nell'unica area che c'è
+    # Un controller nuovo senza area va nell'unica area che c'è, e le sue porte con lui
+    controller_id = installation.save_controller(None, CONTROLLER, "admin")["id"]
+    assert db.get_controller(controller_id)["area_id"] == scala
     door_id = installation.save_door(None, controller_id, {"door_token": "porta", "name": "scala"}, "admin")["id"]
-    assert db.get_door(door_id)["area_id"] == scala
+    assert db.get_door(door_id)["area_id"] == 0
     assert installation.door_places()[door_id] == {
         "site": "Teatro",
         "area": "Accesso Scala",
         "site_id": teatro,
         "area_id": scala,
     }
+    assert installation.controller_places()[controller_id]["area"] == "Accesso Scala"
+
+    # Spostando il controller si spostano le porte; una porta può avere un'area sua
+    hotel = installation.save_site(None, {"name": "Hotel Giulia"}, "admin")["id"]
+    piano = installation.save_area(None, hotel, {"name": "Primo Piano"}, "admin")["id"]
+    installation.save_controller(controller_id, {**CONTROLLER, "password": "", "area_id": piano}, "admin")
+    assert installation.door_places()[door_id]["site"] == "Hotel Giulia"
+    installation.save_door(door_id, controller_id, {"door_token": "porta", "name": "Scala", "area_id": scala}, "admin")
+    assert installation.door_places()[door_id]["area"] == "Accesso Scala"
     # Modificare la porta senza indicare l'area la lascia dov'è
     installation.save_door(door_id, controller_id, {"door_token": "porta", "name": "Scala", "area_id": None}, "admin")
     assert db.get_door(door_id)["area_id"] == scala
     with pytest.raises(ServiceError, match="area non trovata"):
         installation.save_door(door_id, controller_id, {"door_token": "porta", "name": "Scala", "area_id": 99}, "admin")
+    with pytest.raises(ServiceError, match="area non trovata"):
+        installation.save_controller(controller_id, {**CONTROLLER, "area_id": 99}, "admin")
 
-    # Eliminando l'area la porta resta, senza area
+    # Eliminando l'area la porta torna a quella del controller; eliminando la struttura restano senza area
     installation.delete_area(scala, "admin")
     assert db.get_door(door_id)["area_id"] == 0
+    assert installation.door_places()[door_id]["area"] == "Primo Piano"
+    installation.delete_site(hotel, "admin")
+    assert db.get_controller(controller_id)["area_id"] == 0
     loose = installation.locations()[-1]
     assert loose["id"] == 0 and loose["areas"][0]["doors"] == [door_id]
+    assert loose["areas"][0]["controllers"] == [controller_id]
     installation.delete_site(teatro, "admin")
     assert db.list_sites() == []
 

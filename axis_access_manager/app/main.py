@@ -23,6 +23,7 @@ from .ha import HomeAssistant
 from .ha_mqtt import HaBridge, parse_command
 from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
+from .notifications import NotificationService
 from .programming import ProgrammingService
 from .rules_service import RulesService
 from .service import AccessService, ServiceError
@@ -139,6 +140,8 @@ class ControllerIn(BaseModel):
     password: str = ""
     verify_ssl: bool = False
     mqtt_topic_prefix: str
+    area_id: int | None = None
+    description: str = ""
 
 
 class ControllerTestIn(BaseModel):
@@ -185,6 +188,21 @@ class HardwareDoorIn(BaseModel):
 class HardwareReaderIn(BaseModel):
     name: str
     description: str = ""
+
+
+class LinkIn(BaseModel):
+    reader: str
+    door: str
+    direction: str = ""
+    enabled: bool = True
+
+
+class LinksIn(BaseModel):
+    links: list[LinkIn]
+
+
+class SeenIn(BaseModel):
+    ids: list[str] | None = None
 
 
 class HardwareAccessPointIn(BaseModel):
@@ -254,6 +272,7 @@ def create_app(
         app.state.installation = InstallationService(app.state.db)
         app.state.installation.migrate_from_options(options)
         app.state.installation.ensure_default_site()
+        app.state.notifications = NotificationService(app.state.db)
         app.state.ha = home_assistant or HomeAssistant()
         app.state.reload_lock = asyncio.Lock()
         app.state.last_sync = {"ok": None, "error": "", "result": None, "at": None}
@@ -345,7 +364,26 @@ def create_app(
             "mqtt_connected": state.monitor.connected,
             "unknown_cards": len(state.db.list_unknown_cards()),
             "sync": state.last_sync,
+            "notifications": _notification_listing(request)["urgent"],
         }
+
+    @app.get("/api/notifications")
+    async def notifications(request: Request) -> dict:
+        return _notification_listing(request)
+
+    @app.post("/api/notifications/seen")
+    async def notifications_seen(body: SeenIn, request: Request) -> dict:
+        """Segna come viste le notifiche indicate, o tutte quelle che l'utente vede."""
+        listing = _notification_listing(request)
+        ids = body.ids if body.ids is not None else [i["id"] for i in listing["items"]]
+        state = request.app.state
+        state.notifications.mark_seen(ids, _current_notifications(state))
+        return {"urgent": _notification_listing(request)["urgent"]}
+
+    @app.put("/api/notifications/settings", dependencies=[need("utenti")])
+    async def notification_settings(body: dict[str, str], request: Request) -> dict:
+        request.app.state.notifications.set_levels(body, request_user(request))
+        return {"types": request.app.state.notifications.types()}
 
     @app.get("/api/dashboard")
     async def dashboard(request: Request) -> dict:
@@ -786,7 +824,13 @@ def create_app(
 
     @app.get("/api/installation", dependencies=[need("impianti")])
     async def installation(request: Request) -> dict:
-        return {"controllers": request.app.state.installation.controllers(), "max_controllers": MAX_CONTROLLERS}
+        service = request.app.state.installation
+        places = service.controller_places()
+        controllers = [
+            {**c, "place": places.get(c["id"], {"site": "", "area": "", "site_id": 0, "area_id": 0})}
+            for c in service.controllers()
+        ]
+        return {"controllers": controllers, "max_controllers": MAX_CONTROLLERS}
 
     @app.post("/api/controllers/test", dependencies=[need("impianti")])
     async def test_controller(body: ControllerTestIn, request: Request) -> dict:
@@ -884,6 +928,12 @@ def create_app(
         data = {k: v for k, v in body.model_dump().items() if v is not None}
         await request.app.state.programming.update_access_point(token, data, request_user(request))
         return {"ok": True}
+
+    @app.put("/api/programming/links", dependencies=[need("impianti")])
+    async def program_links(body: LinksIn, request: Request) -> dict:
+        links = [link.model_dump() for link in body.links]
+        changed = await request.app.state.programming.set_links(links, request_user(request))
+        return {"changed": changed}
 
     @app.post("/api/programming/changes/{change_id}/undo", dependencies=[need("impianti")])
     async def undo_change(change_id: int, request: Request) -> dict:
@@ -1053,6 +1103,23 @@ def _doors_status(state) -> list[dict]:
     ]
 
 
+def _current_notifications(state) -> list[dict]:
+    return state.notifications.collect(
+        mqtt_configured=bool(state.mqtt),
+        mqtt_connected=state.monitor.connected,
+        controller_configured=bool(state.settings.a1210_host),
+        controller_online=state.monitor.controller_online,
+        sync=state.last_sync,
+        door_names={d["door_token"]: d["name"] for d in state.doors},
+    )
+
+
+def _notification_listing(request: Request) -> dict:
+    user = current_user(request)
+    state = request.app.state
+    return state.notifications.listing(_current_notifications(state), None if user.can("utenti") else user.perms)
+
+
 def _intercom_status(intercom: IntercomBridge) -> dict:
     return {
         "configured": True,
@@ -1164,6 +1231,10 @@ async def _controller_status(controller: A1210Client, settings: Settings) -> dic
     except VapixError as err:
         return {"ok": False, "error": str(err)}
     tokens = [door.get("token") for door in doors]
+    try:
+        readers = len(await controller.list_idpoints())
+    except VapixError:
+        readers = None
     return {
         "ok": True,
         "model": info.get("ProdNbr") or info.get("ProdShortName", ""),
@@ -1172,6 +1243,7 @@ async def _controller_status(controller: A1210Client, settings: Settings) -> dic
         "doors": tokens,
         "door_found": settings.door_token in tokens,
         "credentials": len(credentials),
+        "readers": readers,
     }
 
 
