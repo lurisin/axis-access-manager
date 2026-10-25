@@ -645,6 +645,39 @@ function paintIcons(root = document) {
   $$("[data-icon]", root).forEach((el) => { el.innerHTML = icon(el.dataset.icon); el.removeAttribute("data-icon"); });
 }
 
+// Aggiornamento periodico senza ricostruire la pagina: si toccano solo i nodi cambiati, così foto, scroll,
+// focus e testo scritto restano. Le righe con data-key, data-event, data-id o data-w si riconoscono anche se si spostano.
+const nodeKey = (n) => n.nodeType === 1 ? n.dataset.key || n.dataset.event || n.dataset.id || n.dataset.w || "" : "";
+function morph(target, html) {
+  const next = document.createElement("template");
+  next.innerHTML = html;
+  paintIcons(next.content);
+  morphChildren(target, next.content);
+}
+function morphChildren(from, to) {
+  const keyed = new Map([...from.children].filter(nodeKey).map((c) => [nodeKey(c), c]));
+  let cur = from.firstChild;
+  [...to.childNodes].forEach((next) => {
+    const key = nodeKey(next);
+    const match = key ? keyed.get(key) : cur && !nodeKey(cur) ? cur : null;
+    if (key) keyed.delete(key);
+    if (!match) { from.insertBefore(next, cur); return; }
+    if (match === cur) cur = cur.nextSibling;
+    else from.insertBefore(match, cur);
+    morphNode(match, next);
+  });
+  while (cur) { const after = cur.nextSibling; cur.remove(); cur = after; }
+}
+function morphNode(cur, next) {
+  if (cur.nodeType !== next.nodeType || cur.nodeName !== next.nodeName) { cur.replaceWith(next); return; }
+  if (cur.nodeType !== 1) { if (cur.nodeValue !== next.nodeValue) cur.nodeValue = next.nodeValue; return; }
+  [...cur.attributes].forEach((a) => { if (!next.hasAttribute(a.name)) cur.removeAttribute(a.name); });
+  [...next.attributes].forEach((a) => { if (cur.getAttribute(a.name) !== a.value) cur.setAttribute(a.name, a.value); });
+  // Quello che l'utente sta scrivendo o scegliendo non si tocca
+  if (cur === document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(cur.tagName)) return;
+  morphChildren(cur, next);
+}
+
 const DOOR_MODES = {
   Locked: "Bloccata", Accessed: "Aperta a Tempo", Unlocked: "Sbloccata", LockedOpen: "Aperta",
   Blocked: "Bloccata da Regola", LockedDown: "In Blocco", DoubleLocked: "Doppia Chiusura",
@@ -1050,7 +1083,10 @@ window.addEventListener("beforeunload", (e) => { if (pageGuard?.dirty()) { e.pre
 async function refreshView() {
   if ($("#modal").open || $("#sheet").open || $("#retry").open) return;
   if (route.name === "cruscotto" && dash.editing) return;
-  if (["cruscotto", "da-registrare", "notifiche"].includes(route.name)) await render();
+  // Solo i dati, senza ridisegnare la pagina: prima ogni 15 secondi la pagina lampeggiava e perdeva scroll e focus
+  if (route.name === "cruscotto") await (dash.reload && $("#dash") ? dash.reload() : render());
+  if (route.name === "da-registrare") await refreshUnknown();
+  if (route.name === "notifiche") await refreshNotifications();
   if (route.name === "registro") await refreshLog();
 }
 
@@ -1178,23 +1214,37 @@ function kpi(label, value, sub, color = "") {
   return `<div class="dw-kpi"><div class="label">${label}</div><div class="value"${color ? ` style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
 }
 
+// Dati dei riquadri del cruscotto
+async function dashData() {
+  const [d, doors, notif, unknown] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => []),
+    api("api/notifications").catch(() => null), can("persone") ? api("api/unknown-cards").catch(() => []) : []]);
+  return {d, doors, notif, unknown};
+}
 async function viewDashboard(el) {
-  let d, doors, notif, saved;
+  let ctx, saved;
   try {
-    [d, doors, notif, saved] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => []),
-      api("api/notifications").catch(() => null), api("api/dashboard/layout").catch(() => ({widgets: null}))]);
+    [ctx, saved] = await Promise.all([dashData(), api("api/dashboard/layout").catch(() => ({widgets: null}))]);
   } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   // Si arriva qui aprendo la pagina: una modifica lasciata a metà altrove non resta aperta
   dash.layout = (saved.widgets || defaultDash()).filter((w) => WIDGETS[w.type]).map(fitWidget);
   dash.editing = false;
   dash.draft = null;
   const layout = () => dash.draft || dash.layout;
-  const unknown = can("persone") ? await api("api/unknown-cards").catch(() => []) : [];
-  const ctx = {d, doors, notif, unknown};
-  const now = new Date();
-  const day = now.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long"});
-  $("#page-sub").textContent = `${day[0].toUpperCase()}${day.slice(1)} · ${fmtTime(now.toISOString())}`;
-  $("#page-sub").hidden = false;
+  const stamp = () => {
+    const now = new Date();
+    const day = now.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long"});
+    $("#page-sub").textContent = `${day[0].toUpperCase()}${day.slice(1)} · ${fmtTime(now.toISOString())}`;
+    $("#page-sub").hidden = false;
+  };
+  stamp();
+  // Ogni 15 secondi: nuovi dati nei riquadri, senza ridisegnare la pagina
+  dash.reload = async () => {
+    const fresh = await dashData().catch(() => null);
+    if (!fresh || dash.editing || !$("#dash") || !el.isConnected) return;
+    Object.assign(ctx, fresh);
+    stamp();
+    $$(".dw[data-w]", el).forEach((w) => { const body = $(".dw-body", w); if (body) morph(body, WIDGET_BODY[w.dataset.w](ctx)); });
+  };
   const draw = () => {
     // Ridisegnando la pagina resta dov'era: in modifica i clic successivi cadono sul riquadro giusto
     const scroll = window.scrollY;
@@ -1223,7 +1273,8 @@ async function viewDashboard(el) {
     const events = $("[data-dash-events]", el);
     if (events) events.onclick = (e) => {
       const row = e.target.closest("[data-event]");
-      if (row && !dash.editing) showEvent(d.recent.find((x) => x.id === Number(row.dataset.event)));
+      const ev = row && ctx.d.recent.find((x) => x.id === Number(row.dataset.event));
+      if (ev && !dash.editing) showEvent(ev);
     };
     if (dash.editing) bindDashEdit(el, draw, missing);
     else $("#top-edit").onclick = () => {
@@ -1777,11 +1828,8 @@ async function openPerson(id) {
 }
 
 // ---------- Da registrare ----------
-async function viewUnknown(el) {
-  let data;
-  try { [data] = await Promise.all([api("api/unknown-cards"), loadPersons()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
-  el.innerHTML = `<p class="muted" style="margin-top:0">Tessere passate sul lettore che non sono registrate. Assegnale a una persona nuova o a una già presente: diventano subito attive sul controller.</p>
-    <div class="card flush"><div class="list">${data.length ? data.map((u) => `<div class="item">
+function unknownList(data) {
+  return data.length ? data.map((u) => `<div class="item" data-key="${esc(u.number)}">
       <div class="ev-icon k-warn">${icon("question")}</div>
       <div class="grow"><div class="title mono">${esc(u.number)}</div>
         <div class="meta"><span>ultima lettura ${esc(relTime(u.last_seen))}</span><span>${plural(u.count, "lettura", "letture")}</span>${u.first_seen !== u.last_seen ? `<span>prima ${esc(fmtDateTime(u.first_seen))}</span>` : ""}</div></div>
@@ -1789,7 +1837,18 @@ async function viewUnknown(el) {
         <button type="button" class="small primary" data-new="${esc(u.number)}">Nuova Persona</button>
         <button type="button" class="small" data-assign="${esc(u.number)}">A Persona Esistente</button>
         <button type="button" class="small ghost" data-ignore="${esc(u.number)}">Ignora</button></div></div>`).join("")
-    : `<div class="empty">${icon("check")}<br>Nessuna tessera da registrare.<br>Passa una tessera nuova sul lettore: comparirà qui in pochi secondi.</div>`}</div></div>`;
+    : `<div class="empty">${icon("check")}<br>Nessuna tessera da registrare.<br>Passa una tessera nuova sul lettore: comparirà qui in pochi secondi.</div>`;
+}
+async function refreshUnknown() {
+  if (!$("#unk-list")) return render();
+  const data = await api("api/unknown-cards").catch(() => null);
+  if (data && $("#unk-list")) morph($("#unk-list"), unknownList(data));
+}
+async function viewUnknown(el) {
+  let data;
+  try { [data] = await Promise.all([api("api/unknown-cards"), loadPersons()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  el.innerHTML = `<p class="muted" style="margin-top:0">Tessere passate sul lettore che non sono registrate. Assegnale a una persona nuova o a una già presente: diventano subito attive sul controller.</p>
+    <div class="card flush"><div class="list" id="unk-list">${unknownList(data)}</div></div>`;
   el.onclick = async (e) => {
     const b = e.target.closest("button");
     if (!b) return;
@@ -2280,7 +2339,7 @@ function notifCard(i) {
   const snap = i.snapshot && can("registro")
     ? `<img class="n-snap" loading="lazy" src="api/events/${i.snapshot}/snapshot" alt="istantanea" data-snap="${i.snapshot}" data-title="${esc(i.title + " · " + fmtFull(i.ts))}">`
     : i.snapshot_error ? `<div class="n-snap none" title="${esc(i.snapshot_error)}">${icon("camera")}<span>Foto non scattata</span></div>` : "";
-  return `<article class="n-card sev-${i.severity}">
+  return `<article class="n-card sev-${i.severity}" data-key="${esc(i.id)}">
     <div class="n-tile">${icon(ic)}</div>
     <div class="n-body"><div class="n-title"><b>${esc(i.title)}</b><span class="n-sev">${SEVERITY[i.severity]}</span></div>
       ${i.text ? `<div class="n-line">${esc(i.text)}</div>` : ""}${meta ? `<div class="n-meta">${meta}</div>` : ""}</div>
@@ -2298,9 +2357,8 @@ function renderNotifCards() {
   const shown = open.filter(notifMatches);
   $("#n-open").textContent = `· ${shown.length}`;
   $("#n-all").hidden = !open.length;
-  $("#n-cards").innerHTML = shown.length ? shown.map(notifCard).join("")
-    : `<div class="n-empty">${icon("check")}${open.length ? "Nessuna notifica da gestire con questi filtri." : "Nessun evento da gestire. Tutto sotto controllo."}</div>`;
-  paintIcons($("#n-cards"));
+  morph($("#n-cards"), shown.length ? shown.map(notifCard).join("")
+    : `<div class="n-empty">${icon("check")}${open.length ? "Nessuna notifica da gestire con questi filtri." : "Nessun evento da gestire. Tutto sotto controllo."}</div>`);
 }
 // Evento → notifica a cui appartiene, per la colonna Stato del registro
 function notifOfEvent(id) {
@@ -2323,10 +2381,9 @@ function notifRow(e) {
 }
 function renderNotifRows() {
   const rows = notifEvents.filter((e) => !notifFilters.onlyOpen || notifOfEvent(e.id)?.seen === false);
-  $("#n-rows").innerHTML = rows.map(notifRow).join("");
+  morph($("#n-rows"), rows.map(notifRow).join(""));
   $("#n-table").hidden = !rows.length;
   $("#n-norows").hidden = Boolean(rows.length);
-  paintIcons($("#n-rows"));
 }
 function notifParams(kinds) {
   const p = new URLSearchParams({since: notifSince()});
@@ -2354,6 +2411,17 @@ async function loadNotifLog(more = false) {
   }
   renderNotifRows();
   $("#n-more").hidden = data.length < NOTIF_PAGE;
+}
+// Ogni 15 secondi: notifiche e righe nuove senza ridisegnare la pagina (ricerca, scroll e foto restano)
+async function refreshNotifications() {
+  if (!$("#n-cards")) return render();
+  const fresh = await api("api/notifications").catch(() => null);
+  if (!fresh || !$("#n-cards")) return;
+  notifData = fresh;
+  renderNotifCards();
+  // Con "Carica Altri" l'elenco allungato resta com'è
+  if (notifEvents.length <= NOTIF_PAGE) await loadNotifLog();
+  else renderNotifRows();
 }
 async function viewNotifications(el) {
   try { notifData = await api("api/notifications"); } catch (err) { el.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }

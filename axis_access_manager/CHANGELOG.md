@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.19.4
+
+- **Pagine che non lampeggiano**: Notifiche, Cruscotto e Da Registrare si aggiornano ogni 15 secondi cambiando solo quello che è cambiato, invece di ridisegnare tutta la pagina. Il testo nella ricerca e il cursore restano, la pagina non torna in cima e le foto non si ricaricano.
+
 ## 0.19.3
 
 Ultime correzioni dal collaudo al banco della 0.19.
