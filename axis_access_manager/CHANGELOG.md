@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.0
+
+- **Telecamere e Videocitofoni** diventano due schede della pagina del controller, accanto a Porte e Lettori: si aggiungono, si spostano su un'altra porta e si tolgono da lì. Prima erano nascoste nelle impostazioni della porta.
+- Menu laterale come in Home Assistant: in fondo, separati dalle pagine dell'impianto, ci sono Notifiche, Impostazioni dell'app e l'utente collegato con il suo ruolo. Per l'amministratore l'utente apre la gestione degli utenti.
+
 ## 0.12.0
 
 - **Istantanee nella cartella Media di Home Assistant**: le foto stanno in Media → axis_access_manager (cartella `/media/axis_access_manager`, visibile anche da File editor e Samba). All'aggiornamento quelle già salvate vengono spostate lì. Non entrano più nel backup dell'add-on.
