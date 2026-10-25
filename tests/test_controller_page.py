@@ -167,3 +167,20 @@ def test_status_without_controller(client, controller):
     status = client.get("/api/status", params={"controller": "false"}).json()
     assert status["controller"] is None and "home_assistant" in status
     assert client.get("/api/status").json()["controller"]["ok"] is True
+
+
+async def test_relinked_reader_device_from_controller(db, controller):
+    """Senza storico: il dispositivo si legge dalla configurazione del lettore o dalla porta."""
+    point = controller.access_points[0]
+    point["DoorDeviceUUID"] = "uuid-porta"
+    point["IdPointDevice"] = [{"IdPoint": "lettore-1", "DeviceUUID": ""}]
+    service = ProgrammingService(db, controller, 1, asyncio.Lock())
+    assert await service.set_links([{"reader": "lettore-1", "door": "porta", "direction": "in"}], "admin") == 1
+    assert controller.access_points[0]["IdPointDevice"] == [{"IdPoint": "lettore-1", "DeviceUUID": "uuid-porta"}]
+
+    async def configs():
+        return [{"token": "lettore-2", "DeviceUUID": "uuid-lettore", "Configuration": []}]
+
+    controller.list_idpoint_configurations = configs
+    await service.set_links([{"reader": "lettore-2", "door": "porta", "direction": "in"}], "admin")
+    assert controller.access_points[0]["IdPointDevice"] == [{"IdPoint": "lettore-2", "DeviceUUID": "uuid-lettore"}]

@@ -360,7 +360,8 @@ class HaBridge:
             "modalita": mode,
             "porte": {d["door_token"]: door_label(self.monitor.door_modes.get(d["door_token"])) for d in self.doors},
             "accessi_oggi": counts.get("concesso", 0) + counts.get("apertura_remota", 0),
-            "negati_oggi": counts.get("negato", 0) + counts.get("sconosciuta", 0),
+            # Una tessera sconosciuta dà anche il diniego del controller: si conta quello
+            "negati_oggi": counts.get("negato", 0),
             "da_registrare": len(self.db.list_unknown_cards()),
             "persone": len(self.db.all_persons()),
             "controller": {

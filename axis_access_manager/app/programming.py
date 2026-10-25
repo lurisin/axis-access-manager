@@ -152,18 +152,25 @@ class ProgrammingService:
         self.db.add_controller_change(user, self.controller_id, kind, token, summary, before, after)
         self.db.add_audit(user, "programmazione controller", summary)
 
-    def _device_uuids(self, points: list[dict]) -> tuple[dict[str, str], str]:
-        """Dispositivo (DeviceUUID) di ogni lettore, preso dai punti di accesso o, se il lettore ora è
-        scollegato da tutto, dallo storico delle modifiche; il secondo valore è per i lettori mai visti.
+    async def _device_uuids(self, points: list[dict]) -> tuple[dict[str, str], str]:
+        """Dispositivo (DeviceUUID) di ogni lettore: dalla configurazione del lettore, dai punti di accesso
+        o, se il lettore ora è scollegato da tutto, dallo storico delle modifiche.
+        Il secondo valore è per i lettori senza nessuna di queste fonti: il dispositivo della porta.
         """
-        objects = points + self.db.list_controller_change_objects(self._check(), "access_point")
+        try:
+            configs = await self.controller.list_idpoint_configurations()
+        except VapixError:
+            configs = []
+        objects = [{"IdPointDevice": [{"IdPoint": c.get("token"), "DeviceUUID": c.get("DeviceUUID")}]} for c in configs]
+        objects += points + self.db.list_controller_change_objects(self._check(), "access_point")
         known: dict[str, str] = {}
         for item in objects:
             for device in item.get("IdPointDevice") or []:
                 if device.get("IdPoint") and device.get("DeviceUUID"):
                     known.setdefault(device["IdPoint"], device["DeviceUUID"])
-        # Lettori mai collegati: stesso dispositivo degli altri (i lettori sono del controller stesso)
-        return known, next(iter(known.values()), "")
+        # Lettori e porte sono del controller stesso: stesso dispositivo
+        doors = (p.get("DoorDeviceUUID") for p in points)
+        return known, next(iter(known.values()), "") or next((d for d in doors if d), "")
 
     @staticmethod
     def _devices(readers: list[str], current: list[dict], known: dict[str, str], fallback: str) -> list[dict]:
@@ -240,7 +247,7 @@ class ProgrammingService:
                 chosen = [r for r in data["readers"] if r]
                 if any(r not in readers for r in chosen):
                     raise ServiceError("lettore non trovato sul controller")
-                known, fallback = self._device_uuids(await self.controller.list_access_points())
+                known, fallback = await self._device_uuids(await self.controller.list_access_points())
                 after["IdPointDevice"] = self._devices(chosen, before.get("IdPointDevice") or [], known, fallback)
             if "direction" in data:
                 direction = data["direction"] or ""
@@ -267,7 +274,7 @@ class ProgrammingService:
             readers = {r.get("token") for r in await self.controller.list_idpoints()}
             doors = {d.get("token"): d.get("Name") or d.get("token") for d in await self.controller.door_info_list()}
             points = [p for p in points if p.get("Entity") in doors]
-            known, fallback = self._device_uuids(points)
+            known, fallback = await self._device_uuids(points)
             wanted: dict[str, list[str]] = {p["token"]: [] for p in points}
             enabled: dict[str, bool] = {}
             for link in links:
