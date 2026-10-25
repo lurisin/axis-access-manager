@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 from datetime import UTC, datetime
 
 import pytest
@@ -168,6 +169,10 @@ async def test_access_control_events(service, db):
     denied, granted = db.list_events()[:2]
     assert granted["kind"] == "concesso" and granted["person_name"] == "Mario Rossi"
     assert denied["kind"] == "negato" and denied["detail"] == "tessera scaduta"
+
+    late = event("AccessControl/Denied/Credential/y", {"CredentialToken": token, "Reason": "NotPermittedAtThisTime"})
+    service.record_event(dataclasses.replace(late, timestamp=datetime(2026, 10, 25, 23, tzinfo=UTC)))
+    assert db.list_events()[0]["detail"] == "fuori fascia oraria"
 
 
 async def test_same_denial_on_two_topics_is_logged_once(service, db):

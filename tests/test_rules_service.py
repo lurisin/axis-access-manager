@@ -73,6 +73,8 @@ async def test_create_group_copies_default_profile_with_new_schedule(rules, cont
     assert profile["Name"] == "Dipendenti"
     assert profile["AccessPolicy"][0]["AccessPoint"] == "ap-in"
     assert profile["AccessPolicy"][0]["Schedule"] == [schedule]
+    # L'A1210 valuta anche la fascia del profilo: se manca non entra nessuno
+    assert profile["Schedule"] == [schedule]
     # Il profilo predefinito non cambia
     assert controller.profiles["profilo_sempre"]["AccessPolicy"][0]["Schedule"] == ["standard_always"]
     with pytest.raises(ServiceError, match="usata dai gruppi Dipendenti"):
@@ -85,6 +87,34 @@ async def test_create_group_without_default_profile_uses_door_access_points(rule
     assert controller.profiles[token]["AccessPolicy"] == [
         {"AccessPoint": "ap-in", "AuthorizationProfile": [], "Attribute": [], "Schedule": ["standard_always"]}
     ]
+    assert controller.profiles[token]["Schedule"] == ["standard_always"]
+
+
+async def test_repair_group_schedules(rules, controller, db):
+    """Gruppi salvati dalle versioni precedenti, con la fascia solo nelle regole: si riparano all'avvio."""
+    policy = {"AccessPoint": "ap-in", "AuthorizationProfile": [], "Attribute": []}
+    controller.profiles["vecchio"] = {
+        "token": "vecchio",
+        "Name": "Ospiti",
+        "Schedule": [],
+        "AccessPolicy": [{**policy, "Schedule": ["standard_office_hours"]}],
+    }
+    # Fasce diverse nelle regole: non si indovina, si lascia com'è
+    controller.profiles["misto"] = {
+        "token": "misto",
+        "Name": "Misto",
+        "Schedule": [],
+        "AccessPolicy": [
+            {**policy, "Schedule": ["standard_always"]},
+            {**policy, "AccessPoint": "ap-out", "Schedule": ["standard_office_hours"]},
+        ],
+    }
+
+    assert await rules.repair_group_schedules() == 1
+    assert controller.profiles["vecchio"]["Schedule"] == ["standard_office_hours"]
+    assert controller.profiles["misto"]["Schedule"] == []
+    assert ("set_access_profile", "profilo_sempre") not in controller.calls
+    assert await rules.repair_group_schedules() == 0
 
 
 async def test_group_rules(rules, controller, db):
@@ -99,6 +129,7 @@ async def test_group_rules(rules, controller, db):
     await rules.update_group(token, "Visitatori", "", "standard_office_hours", "admin")
     assert controller.profiles[token]["Name"] == "Visitatori"
     assert controller.profiles[token]["AccessPolicy"][0]["Schedule"] == ["standard_office_hours"]
+    assert controller.profiles[token]["Schedule"] == ["standard_office_hours"]
 
     await rules.access.create_person("Anna", "04aa", "admin", group=token)
     groups = {g["token"]: g for g in (await rules.list_groups())["groups"]}

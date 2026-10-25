@@ -255,7 +255,7 @@ class RulesService:
             "Name": "",
             "Description": "",
             "Enabled": True,
-            "Schedule": [],
+            "Schedule": [schedule],
             "ValidFrom": "",
             "ValidTo": "",
             "AuthenticationProfile": [],
@@ -268,11 +268,34 @@ class RulesService:
 
     @staticmethod
     def _with_schedule(profile: dict, schedule: str) -> dict:
+        """La fascia va sia nel profilo sia in ogni regola: l'A1210 (fw 10.12) valuta anche quella del profilo,
+        e con quella vuota non fa mai entrare nessuno."""
         for policy in profile.get("AccessPolicy") or []:
             policy["Schedule"] = [schedule]
-        if profile.get("Schedule"):
-            profile["Schedule"] = [schedule]
+        profile["Schedule"] = [schedule]
         return profile
+
+    async def repair_group_schedules(self) -> int:
+        """Gruppi salvati dalle versioni precedenti con la fascia solo nelle regole: la copia anche nel profilo.
+
+        Tocca solo i profili senza fascia propria e con la stessa fascia in tutte le regole. Restituisce quanti.
+        """
+        repaired = 0
+        async with self.lock:
+            for profile in await self.controller.list_access_profiles():
+                if profile.get("Schedule"):
+                    continue
+                tokens = {t for p in profile.get("AccessPolicy") or [] for t in p.get("Schedule") or []}
+                if len(tokens) != 1:
+                    continue
+                fixed = copy.deepcopy(profile)
+                fixed["Schedule"] = [next(iter(tokens))]
+                await self.controller.set_access_profile(fixed)
+                self.db.add_audit(
+                    "sistema", "gruppo riparato", f"{profile.get('Name') or profile.get('token')}: fascia"
+                )
+                repaired += 1
+        return repaired
 
     async def _check_schedule(self, schedule: str) -> None:
         if not schedule:

@@ -88,7 +88,7 @@ La creazione da zero di porte e lettori (tipo di serratura, protocollo OSDP del 
 - Una **fascia oraria** è un insieme di intervalli settimanali (ad esempio lun-ven 8-18 e sab 9-12). Se è attiva l'opzione "Non Valida nei Giorni Festivi", nei giorni della scheda Festività la fascia non vale.
 - Un **gruppo** (profilo di accesso Axis) collega la porta a una fascia oraria. Ogni persona appartiene a un gruppo; tutte le sue tessere lo seguono.
 - Tutti i gruppi e tutte le fasce si possono modificare, anche quelli predefiniti del controller. Quelli che non servono si **nascondono**: spariscono dagli elenchi e si ritrovano con "Mostra Nascosti".
-- Il **gruppo predefinito** (per le nuove tessere senza tipologia) si sceglie in Regole → Gruppi con "Rendi Predefinito". I nuovi gruppi ne copiano la configurazione cambiando solo la fascia oraria, così valgono sulla stessa porta.
+- Il **gruppo predefinito** (per le nuove tessere senza tipologia) si sceglie in Regole → Gruppi con "Rendi Predefinito". I nuovi gruppi ne copiano la configurazione cambiando solo la fascia oraria, così valgono sulla stessa porta. La fascia viene scritta sia nel profilo sia in ogni sua regola, perché l'A1210 le controlla entrambe.
 - La **validità** (dal/al) limita una persona a un periodo: utile per ospiti e imprese. Le date sono scritte sul controller, che rifiuta la tessera fuori periodo.
 
 ## Utenti e permessi

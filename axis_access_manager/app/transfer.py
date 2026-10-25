@@ -94,16 +94,22 @@ def persons_csv(
     return _csv(rows)
 
 
-def parse_date(value: str) -> str:
-    """Data del CSV (gg/mm/aaaa, con ora facoltativa) in formato ISO locale; vuoto se assente."""
+def parse_date(value: str, end_of_day: bool = False) -> str:
+    """Data del CSV (gg/mm/aaaa, con ora facoltativa) in formato ISO locale; vuoto se assente.
+
+    Con end_of_day una data senza ora vale fino a fine giornata: "valida al 31/12" comprende il 31.
+    """
     value = (value or "").strip()
     if not value:
         return ""
     for fmt in DATE_FORMATS:
         try:
-            return datetime.strptime(value, fmt).isoformat()
+            parsed = datetime.strptime(value, fmt)
         except ValueError:
             continue
+        if end_of_day and "%H" not in fmt:
+            parsed = parsed.replace(hour=23, minute=59, second=59)
+        return parsed.isoformat()
     raise ServiceError(f"data non riconosciuta: {value} (usa gg/mm/aaaa)")
 
 
@@ -148,7 +154,7 @@ def _changes(item: dict, person: dict, card: dict, group: str, category: dict | 
         changes["gruppo"] = group
     for column, field in (("valida_dal", "valid_from"), ("valida_al", "valid_to")):
         if column in item:
-            value = _validity(parse_date(item[column]))
+            value = _validity(parse_date(item[column], end_of_day=column == "valida_al"))
             if value != (card.get(field) or ""):
                 changes[column] = value
     for column, field in (("ditta", "company"), ("note", "notes")):
@@ -217,7 +223,8 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
             category = categories.get(category_text.lower()) if category_text else None
             if category_text and category is None:
                 raise ServiceError(f"tipologia sconosciuta: {category_text}")
-            valid_from, valid_to = parse_date(item.get("valida_dal", "")), parse_date(item.get("valida_al", ""))
+            valid_from = parse_date(item.get("valida_dal", ""))
+            valid_to = parse_date(item.get("valida_al", ""), end_of_day=True)
             if number.lower() in seen_cards:
                 raise ServiceError("tessera ripetuta nel file")
             seen_cards.add(number.lower())
@@ -229,7 +236,10 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
                     group,
                     category["id"] if category else 0,
                     *(item.get(c) for c in ("ditta", "note")),
-                    *(_validity(parse_date(item[c])) if c in item else None for c in ("valida_dal", "valida_al")),
+                    *(
+                        _validity(parse_date(item[c], end_of_day=c == "valida_al")) if c in item else None
+                        for c in ("valida_dal", "valida_al")
+                    ),
                 )
                 if person["id"] in planned:
                     if wanted != planned[person["id"]]:

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.2
+
+- **Correzione importante:** i gruppi creati o modificati dall'add-on non facevano entrare nessuno, nemmeno con la fascia "Sempre" (il controller rispondeva "fuori fascia oraria"). L'A1210 controlla la fascia oraria sia nelle regole sia nel profilo, e l'add-on la scriveva solo nelle regole. Ora la scrive in entrambi; i gruppi già salvati si riparano da soli al primo avvio dopo l'aggiornamento (nel Registro Attività compare "gruppo riparato").
+- Registro: i motivi dei dinieghi in italiano anche per "fuori fascia oraria", "PIN errato", "passaggio ripetuto (antipassback)" e "rifiutata dal controller".
+- Importazione CSV: una data di fine validità senza ora vale fino a fine giornata ("valida al 31/12" comprende il 31).
+- Cruscotto più leggibile: gli avvisi sono raccolti in un solo riquadro **Da Gestire** (o "Tutto in Ordine"), il grafico mostra solo accessi concessi e negati, e c'è il nuovo numero **Allarmi Oggi**.
+
 ## 0.8.1
 
 - Importazione CSV: per le tessere già registrate aggiorna gruppo, validità, ditta, note e tipologia della persona se nel file sono diversi, con l'anteprima di cosa cambia ("da aggiornare"). Così si può esportare l'anagrafica, modificarla nel foglio di calcolo e reimportarla.

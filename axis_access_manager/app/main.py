@@ -1220,6 +1220,7 @@ async def _maintenance(app: FastAPI) -> None:
     """Importa periodicamente le tessere dal controller e cancella ogni giorno gli eventi vecchi."""
     state = app.state
     last_prune = 0.0
+    groups_checked = False
     loop = asyncio.get_running_loop()
     while True:
         delay = SYNC_INTERVAL
@@ -1228,6 +1229,11 @@ async def _maintenance(app: FastAPI) -> None:
                 result = await state.service.sync_from_controller()
                 state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
                 _LOGGER.debug("Tessere sincronizzate dal controller: %s", result)
+                if not groups_checked:
+                    # Una volta per avvio: gruppi delle versioni precedenti con la fascia solo nelle regole
+                    groups_checked = True
+                    if repaired := await state.rules.repair_group_schedules():
+                        _LOGGER.info("Fascia oraria aggiunta al profilo di %s gruppi", repaired)
             except VapixError as err:
                 state.last_sync = {"ok": False, "error": str(err), "result": None, "at": _now()}
                 _LOGGER.warning("Sincronizzazione non riuscita: %s", err)
