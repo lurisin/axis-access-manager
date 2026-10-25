@@ -489,6 +489,31 @@
   .colors input:checked + .swatch { border-color: var(--text); }
   .colors input:focus-visible + .swatch { outline: 2px solid var(--accent); outline-offset: 2px; }
   .card.is-hidden { opacity: .6; border-style: dashed; }
+  .bk-sum { font-size: 13px; margin-top: 2px; overflow-wrap: anywhere; }
+  h3.diff-part { font-size: 15px; margin: 16px 0 6px; }
+  .diff-sec { margin: 0 0 10px; }
+  .diff-title { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  ul.diff { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  ul.diff li { display: flex; gap: 8px; align-items: baseline; overflow-wrap: anywhere; }
+  ul.diff li > b { width: 14px; flex: none; text-align: center; }
+  ul.diff li.add > b { color: var(--ok); } ul.diff li.del > b { color: var(--err); } ul.diff li.chg > b { color: var(--info); }
+  .diff-fields { display: flex; flex-direction: column; gap: 2px; font-size: 13px; margin-top: 2px; }
+  .diff-fields s { color: var(--muted); }
+  .rs-list { display: grid; gap: 6px; }
+  .rs-item { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
+  .rs-item:hover { background: var(--surface-2); }
+  .rs-item input { margin-top: 9px; flex: none; }
+  .rs-item.blocked { cursor: default; opacity: .75; }
+  .rs-item .grow { flex: 1; min-width: 0; }
+  .rs-item .title { font-weight: 600; overflow-wrap: anywhere; }
+  .rs-note { display: flex; gap: 6px; align-items: flex-start; font-size: 13px; color: var(--warn); margin-top: 4px; }
+  .rs-note.err { color: var(--err); }
+  .rs-note svg { width: 15px; height: 15px; fill: currentColor; flex: none; margin-top: 2px; }
+  @media (max-width: 640px) {
+    .bk-row > .ev-icon { display: none; }
+    .list > .bk-row .item-actions { margin-left: 0; flex-wrap: nowrap; }
+    .segmented a { padding: 6px 10px; }
+  }
   .perm-list { display: grid; gap: 8px; margin-top: 4px; }
   .perm-list label { display: flex; gap: 10px; align-items: flex-start; color: var(--text); font-size: 14px; }
   .perm-list input { margin-top: 2px; }
@@ -611,6 +636,9 @@ const ICONS = {
   resize: "M22,22H20V20H22V22M22,18H20V16H22V18M18,22H16V20H18V22M18,18H16V16H18V18M14,22H12V20H14V22M22,14H20V12H22V14Z",
   wrench: "M22.7,19L13.6,9.9C14.5,7.6 14,4.9 12.1,3C10.1,1 7.1,0.6 4.7,1.7L9,6L6,9L1.6,4.7C0.4,7.1 0.9,10.1 2.9,12.1C4.8,14 7.5,14.5 9.8,13.6L18.9,22.7C19.3,23.1 19.9,23.1 20.3,22.7L22.6,20.4C23.1,20 23.1,19.3 22.7,19Z",
   user: "M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z",
+  lock: "M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z",
+  lockopen: "M18,1C15.24,1 13,3.24 13,6V8H4C2.9,8 2,8.89 2,10V20C2,21.11 2.9,22 4,22H16C17.11,22 18,21.11 18,20V10C18,8.9 17.11,8 16,8H15V6C15,4.34 16.34,3 18,3C19.66,3 21,4.34 21,6V8H23V6C23,3.24 20.76,1 18,1M10,13C11.1,13 12,13.89 12,15C12,16.1 11.1,17 10,17C8.9,17 8,16.11 8,15C8,13.9 8.9,13 10,13Z",
+  history: "M13.5,8H12V13L16.28,15.54L17,14.33L13.5,12.25V8M13,3A9,9 0 0,0 4,12H1L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3",
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ""}"/></svg>`;
 function paintIcons(root = document) {
@@ -778,7 +806,7 @@ function showImage(src, title) {
 // ---------- Stato condiviso ----------
 const store = {me: {perms: [], admin: false}, persons: [], groups: null, schedules: null, categories: [], summary: {}};
 const can = (perm) => Boolean(store.me.admin || store.me.perms.includes(perm));
-const ALL_PERMS = ["stato", "persone", "persone_modifica", "registro", "regole", "regole_modifica", "import_export", "impianti", "utenti"];
+const ALL_PERMS = ["stato", "persone", "persone_modifica", "registro", "regole", "regole_modifica", "import_export", "impianti", "backup", "utenti"];
 async function loadGroups(force = false) {
   if (store.groups && !force) return store.groups;
   try {
@@ -934,7 +962,7 @@ const ROUTES = {
   "da-registrare": ["Da Registrare", viewUnknown, "persone"],
   registro: ["Registro Accessi", viewLog, "registro"],
   regole: ["Regole di Accesso", viewRules, "regole"],
-  impianti: ["Impianti", viewInstallation, "impianti"],
+  impianti: ["Impianti", viewInstallation, ["impianti", "backup"]],
   notifiche: ["Notifiche", viewNotifications, "stato"],
   impostazioni: ["Impostazioni", viewSettings, ["import_export", "impianti", "utenti"]],
   "nessun-accesso": ["Controllo Accessi", viewNoAccess, ""],
@@ -2213,7 +2241,7 @@ async function viewHolidays(body) {
 }
 
 // ---------- Notifiche ----------
-const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", clock: "clock", missing_cards: "card"};
+const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", clock: "clock", missing_cards: "card", backup: "history"};
 const SEVERITY = {crit: "Critica", warn: "Media", low: "Bassa"};
 // Schede del registro delle notifiche: eventi che possono diventare una notifica
 const NOTIF_TABS = {tutte: ["Tutte", "negato,allarme,manomissione"], negati: ["Accessi Negati", "negato"], allarmi: ["Allarmi e Manomissioni", "allarme,manomissione"]};
@@ -2413,9 +2441,19 @@ const errorBox = (title, err) => `<div class="alert err">${icon("alert")}<div cl
 async function viewInstallation(el, sub) {
   const [first, tab = ""] = sub.split("/");
   const match = /^c(\d+)$/.exec(first);
+  const tabs = [...(can("impianti") ? [["controller", "Controller"], ["strutture", "Strutture e Aree"]] : []), ...(can("backup") ? [["backup", "Backup"]] : [])];
+  const pageTabs = (active) => tabs.length > 1 ? `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impianti/${k}" class="${active === k ? "active" : ""}">${label}</a>`).join("")}</div>` : "";
+  // Chi ha solo il permesso Backup vede solo la scheda Backup
+  if (first === "backup" || !can("impianti")) {
+    el.innerHTML = `${pageTabs("backup")}<div id="i-body">${loadingBox()}</div>`;
+    return viewBackups($("#i-body"));
+  }
   let data;
+  const hash = location.hash;
   el.innerHTML = loadingBox();
   try { data = await api("api/installation"); } catch (err) { el.innerHTML = errorBox("Impianti Non Leggibili", err); return; }
+  // Cambiata scheda mentre si leggeva (per esempio Backup): non scrive sopra la pagina nuova
+  if (location.hash !== hash) return;
   if (first === "programmazione" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}`); return; }
   if (first === "stato" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}/stato`); return; }
   if (match) {
@@ -2424,9 +2462,8 @@ async function viewInstallation(el, sub) {
     $("#page-title").textContent = ctrl.name;
     return tab === "connessione" ? viewConnection(el, ctrl) : viewController(el, ctrl, tab);
   }
-  const tabs = [["controller", "Controller"], ["strutture", "Strutture e Aree"]];
   const active = first === "strutture" ? "strutture" : "controller";
-  el.innerHTML = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impianti/${k}" class="${active === k ? "active" : ""}">${label}</a>`).join("")}</div><div id="i-body">${loadingBox()}</div>`;
+  el.innerHTML = `${pageTabs(active)}<div id="i-body">${loadingBox()}</div>`;
   const body = $("#i-body");
   if (active === "strutture") return viewSites(body, data);
   await viewControllers(body, data);
@@ -2567,7 +2604,7 @@ async function controllerEditor() {
 }
 
 function controllerHeader(ctrl, tab) {
-  const tabs = [["", "Schema"], ["porte", "Porte"], ["lettori", "Lettori"], ["telecamere", "Telecamere"], ["citofoni", "Videocitofoni"], ["stato", "Stato"], ["storico", "Storico Modifiche"]];
+  const tabs = [["", "Schema"], ["porte", "Porte"], ["lettori", "Lettori"], ["telecamere", "Telecamere"], ["citofoni", "Videocitofoni"], ["stato", "Stato"], ["storico", "Storico Modifiche"], ...(can("backup") ? [["backup", "Backup"]] : [])];
   const place = placeOf(ctrl.place);
   return `<div class="ctl-head">
       <div class="small-text muted"><a href="#impianti">Impianti</a>${place ? ` › ${esc(place)}` : ""}</div>
@@ -2618,12 +2655,14 @@ async function viewConnection(el, ctrl) {
 
 // Pagina del controller: schema lettori ↔ porte, porte, lettori e storico delle modifiche
 async function viewController(el, ctrl, tab) {
-  tab = ["porte", "lettori", "telecamere", "citofoni", "stato", "storico"].includes(tab) ? tab : "";
+  tab = ["porte", "lettori", "telecamere", "citofoni", "stato", "storico", "backup"].includes(tab) ? tab : "";
   el.innerHTML = `${controllerHeader(ctrl, tab)}<div id="c-body">${loadingBox()}</div>`;
   paintIcons(el);
   paintControllerState();
   bindIdentityAlert(el, ctrl);
   const body = $("#c-body");
+  // Lo storico dei backup vale per ogni controller, anche quando non risponde
+  if (tab === "backup") return viewBackups(body, `controller:${ctrl.id}`);
   const primary = (await api("api/installation")).controllers[0];
   // Nel frattempo si è cambiata pagina o scheda: questa risposta non serve più
   if (!body.isConnected) return;
@@ -3276,6 +3315,166 @@ async function doorEditor(ctrl, door, token = "", controllerName = "") {
 const props = (pairs) => `<dl class="props">${pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>`;
 const statusDot = (cls) => `<span class="dot ${cls}"></span>`;
 let auditRows = [];
+// ---------- Backup ----------
+// Dati Comuni e configurazione di ogni controller; ripristino selettivo con l'anteprima "Cosa Cambierà"
+const kb = (bytes) => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round((bytes || 0) / 1024))} kB`;
+const backupTitle = (b) => b.name || b.kind_label;
+const RESTORE_HINTS = {
+  tipologie: "Nome, colore, durata e regole di accesso.",
+  persone: "Dati della persona, tipologia e tessere con accesso e stato.",
+  porte: "Nomi e tempi delle porte, impostazioni dell'app sulle porte, nomi dei lettori.",
+};
+const RESTORE_ACTIONS = {ricrea: ["k-ok", "plus"], riporta: ["k-info", "refresh"], togli: ["k-err", "trash"]};
+function backupContents(b) {
+  const common = b.parts?.comuni?.counts;
+  const controllers = Object.keys(b.parts || {}).filter((k) => k !== "comuni").length;
+  return [common ? `${plural(common.persone, "persona", "persone")}, ${plural(common.tessere, "tessera", "tessere")}` : "", controllers ? plural(controllers, "controller", "controller") : ""].filter(Boolean).join(" · ");
+}
+function backupRow(b, data, part) {
+  const info = part ? b.parts[part] : null;
+  const summary = info ? (info.summary || (b.previous ? "Nessuna modifica" : "Primo backup")) : b.summary;
+  return `<div class="item bk-row" data-id="${esc(b.id)}">
+    <div class="ev-icon ${b.errors?.length ? "k-warn" : b.locked ? "k-accent" : "k-muted"}">${icon(b.locked ? "lock" : "history")}</div>
+    <div class="grow"><div class="title">${esc(backupTitle(b))}</div>
+      <div class="meta"><span>${esc(fmtDateTime(b.created_at))}</span>${b.name && !b.name.toLowerCase().startsWith(b.kind_label.toLowerCase()) ? `<span>${esc(b.kind_label)}</span>` : ""}<span>${esc(b.user || "sistema")}</span>${part ? "" : `<span>${esc(backupContents(b))}</span>`}${b.locked ? '<span class="pill accent">Bloccato</span>' : ""}${b.errors?.length ? `<span class="pill warn" title="${esc(b.errors.join("; "))}">Incompleto</span>` : ""}</div>
+      <div class="bk-sum">${esc(summary || "")}${info?.stale ? ' <span class="muted">· il controller non rispondeva: configurazione del backup precedente</span>' : ""}</div></div>
+    <div class="row item-actions">
+      <button type="button" class="small" data-cmp>Confronta</button>
+      ${data.can_restore ? '<button type="button" class="small" data-restore>Ripristina</button>' : ""}
+      <button type="button" class="small ghost icon-only" data-lock title="${b.locked ? "Sblocca" : "Blocca: resta finché non lo sblocchi"}" aria-label="${b.locked ? "Sblocca" : "Blocca"}">${icon(b.locked ? "lockopen" : "lock")}</button>
+      ${data.can_restore ? `<button type="button" class="small ghost icon-only" data-del title="${b.locked ? "Sbloccalo per eliminarlo" : "Elimina"}" aria-label="Elimina" ${b.locked ? "disabled" : ""}>${icon("trash")}</button>` : ""}
+    </div></div>`;
+}
+async function viewBackups(body, part = "") {
+  let data;
+  try { data = await api("api/backups"); } catch (err) { body.innerHTML = errorBox("Backup Non Leggibili", err); return; }
+  if (!body.isConnected) return;
+  const list = part ? data.backups.filter((b) => b.parts?.[part]) : data.backups;
+  const error = data.error;
+  const intro = part
+    ? "Storico della configurazione di questo controller: porte, lettori, punti di accesso, profili e ingressi. Ripristina riporta porte e lettori com'erano."
+    : "Ogni backup salva i Dati Comuni (persone, tessere, tipologie, fasce orarie, festività, strutture e utenti dell'app) e la configurazione di ogni controller. Le parti che non cambiano non occupano altro spazio.";
+  body.innerHTML = `${error ? `<div class="alert">${icon("alert")}<div class="grow"><b>${error.id ? "Ultimo Backup Incompleto" : "Ultimo Backup Non Riuscito"}</b>${esc(error.error)} · ${esc(relTime(error.at))}</div></div>` : ""}
+    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 320px">${intro}</p><button type="button" class="primary" id="bk-new">${icon("plus")}Crea Backup Ora</button></div>
+    <div class="card flush"><div class="list" id="bk-list">${list.length ? list.map((b) => backupRow(b, data, part)).join("") : `<div class="empty">${icon("history")}<br><b>Nessun Backup</b><br>Crea il primo con Crea Backup Ora: ci vogliono pochi secondi.</div>`}</div></div>
+    <p class="hint">${plural(data.backups.length, "backup", "backup")} · ${kb(data.size)} nella cartella dell'add-on. Entrano nei backup di Home Assistant: controlla che includano l'add-on e che vadano anche fuori sede (NAS o cloud). Le password dei controller non si salvano.</p>`;
+  paintIcons(body);
+  $("#bk-new").onclick = () => createBackup();
+  $("#bk-list").onclick = async (e) => {
+    const btn = e.target.closest("button"), row = e.target.closest("[data-id]");
+    if (!btn || !row) return;
+    const b = data.backups.find((x) => x.id === row.dataset.id);
+    if ("cmp" in btn.dataset) compareBackup(b, data.backups, part);
+    else if ("restore" in btn.dataset) restoreBackup(b, data, part);
+    else if ("lock" in btn.dataset) {
+      if (await run(() => api(`api/backups/${b.id}/lock`, {method: "PUT", body: {locked: !b.locked}}), b.locked ? "Backup sbloccato" : "Backup bloccato: non si elimina finché non lo sblocchi")) render();
+    } else if ("del" in btn.dataset) {
+      if (await confirmBox("Elimina Backup", `Eliminare il backup <b>${esc(backupTitle(b))}</b> del ${esc(fmtDateTime(b.created_at))}? Non si può annullare.`, "Elimina", true) &&
+          await run(() => api(`api/backups/${b.id}`, {method: "DELETE"}), "Backup eliminato")) render();
+    }
+  };
+}
+async function createBackup() {
+  const created = await modal({title: "Crea Backup Ora",
+    body: field("Nome", '<input name="name" maxlength="80" placeholder="Per esempio: Prima dei lavori al piano 2">', "Facoltativo. Il backup comprende Dati Comuni e configurazione di ogni controller."),
+    actions: [{label: "Annulla", value: null}, {label: "Crea Backup", kind: "primary", submit: true, onClick: async (dlg) => (await run(() => api("api/backups", {method: "POST", body: {name: val(dlg, "name")}}))) || false}]});
+  if (!created) return;
+  toast(created.errors?.length ? `Backup incompleto: ${created.errors[0]}` : `Backup creato · ${created.summary}`, Boolean(created.errors?.length));
+  render();
+}
+// Al massimo 40 righe per elenco: con centinaia di tessere cambiate basta il numero
+function capped(items, line) {
+  return items.slice(0, 40).map(line).join("") + (items.length > 40 ? `<li class="muted">e altri ${items.length - 40}</li>` : "");
+}
+function diffHtml(d) {
+  if (d.first) return '<p class="muted" style="margin:0">È il primo backup: prima non c\'è niente con cui confrontarlo.</p>';
+  const when = (x) => x.id === "attuale" ? "adesso" : `${fmtDateTime(x.created_at)} (${backupTitle(x)})`;
+  const head = `<p class="muted small-text" style="margin:0 0 4px">Cosa è cambiato dal ${esc(when(d.older))} ${d.newer.id === "attuale" ? "a" : "al"} ${esc(when(d.newer))}.</p>`;
+  if (!d.groups.length) return head + `<div class="empty">${icon("check")}<br>Nessuna differenza.</div>`;
+  return head + d.groups.map((g) => `<h3 class="diff-part">${esc(g.title)}${g.note ? ` <span class="muted small-text">· ${esc(g.note)}</span>` : ""}</h3>
+    ${g.sections.map((s) => `<div class="diff-sec"><div class="diff-title">${esc(s.title)}</div><ul class="diff">
+      ${capped(s.added, (i) => `<li class="add"><b>+</b>${esc(i.label)}</li>`)}
+      ${capped(s.removed, (i) => `<li class="del"><b>−</b>${esc(i.label)}</li>`)}
+      ${capped(s.changed, (i) => `<li class="chg"><b>~</b><span>${esc(i.label)}<span class="diff-fields">${i.fields.map((f) => `<span><span class="muted">${esc(f.label)}:</span> <s>${esc(f.old)}</s> → ${esc(f.new)}</span>`).join("")}</span></span></li>`)}
+    </ul></div>`).join("")}`).join("");
+}
+function compareBackup(b, backups, part = "") {
+  const others = backups.filter((x) => x.id !== b.id && (!part || x.parts?.[part]));
+  const options = `<option value="precedente">Backup precedente</option><option value="attuale">Stato attuale</option>${others.map((x) => `<option value="${esc(x.id)}">${esc(fmtDateTime(x.created_at))} · ${esc(backupTitle(x))}</option>`).join("")}`;
+  modal({title: `Confronta: ${backupTitle(b)}`, wide: true,
+    body: `<div class="field"><label>Confronta con</label><select name="other">${options}</select></div><div id="cmp-body">${loadingBox()}</div>`,
+    actions: [{label: "Chiudi", value: null}],
+    onOpen: (dlg) => {
+      const load = async () => {
+        const box = $("#cmp-body", dlg);
+        box.innerHTML = loadingBox();
+        try { box.innerHTML = diffHtml(await api(`api/backups/${b.id}/compare?other=${encodeURIComponent(val(dlg, "other"))}${part ? `&part=${encodeURIComponent(part)}` : ""}`)); }
+        catch (err) { box.innerHTML = errorBox("Confronto Non Riuscito", err); }
+        paintIcons(box);
+      };
+      $('[name="other"]', dlg).onchange = load;
+      load();
+    }});
+}
+function restoreItemHtml(i) {
+  const [cls, ic] = RESTORE_ACTIONS[i.action] || ["k-muted", "refresh"];
+  return `<label class="rs-item${i.blocked ? " blocked" : ""}">
+    <input type="checkbox" name="rs" value="${esc(i.key)}" ${i.default && !i.blocked ? "checked" : ""} ${i.blocked ? "disabled" : ""}>
+    <div class="ev-icon ${cls}">${icon(ic)}</div>
+    <div class="grow"><div class="title">${esc(i.label)} <span class="muted small-text">· ${esc(i.text)}</span></div>
+      ${i.changes.length ? `<div class="diff-fields">${i.changes.slice(0, 8).map((c) => `<span><span class="muted">${esc(c.label)}:</span> ${c.old === "—" ? "" : `<s>${esc(c.old)}</s> → `}${esc(c.new)}</span>`).join("")}${i.changes.length > 8 ? `<span class="muted">e altre ${i.changes.length - 8}</span>` : ""}</div>` : ""}
+      ${i.warnings.map((w) => `<div class="rs-note">${icon("alert")}<span>${esc(w[0].toUpperCase() + w.slice(1))}</span></div>`).join("")}
+      ${i.blocked ? `<div class="rs-note err">${icon("block")}<span>Non si può: ${esc(i.blocked)}</span></div>` : ""}
+    </div></label>`;
+}
+function restoreResultHtml(r) {
+  return `${r.applied.length ? `<p style="margin-top:0"><b>${plural(r.applied.length, "modifica fatta", "modifiche fatte")}</b></p><ul class="diff">${capped(r.applied, (a) => `<li class="add"><b>✓</b>${esc(a.label)} <span class="muted">· ${esc(a.text)}</span></li>`)}</ul>` : ""}
+    ${r.failed.length ? `<p${r.applied.length ? "" : ' style="margin-top:0"'}><b>${plural(r.failed.length, "non riuscita", "non riuscite")}</b></p><ul class="diff">${r.failed.map((f) => `<li class="del"><b>✕</b>${esc(f.label)} <span class="muted">· ${esc(f.error)}</span></li>`).join("")}</ul>` : ""}
+    ${r.unchanged ? `<p class="hint">${plural(r.unchanged, "riga era già", "righe erano già")} come nel backup.</p>` : ""}
+    <p class="hint">Prima del ripristino l'app ha creato il backup "Prima del Ripristino": per tornare indietro, ripristina quello.</p>`;
+}
+async function restoreBackup(b, data, part = "") {
+  const sectionsBody = part
+    ? `<p style="margin:0">Riporta porte e lettori di questo controller come erano nel backup del ${esc(fmtDateTime(b.created_at))}. Prima di cambiare qualcosa vedrai l'elenco delle modifiche.</p>`
+    : `<p style="margin-top:0">Backup del ${esc(fmtDateTime(b.created_at))}. Scegli cosa riportare com'era: prima di cambiare qualcosa vedrai l'elenco delle modifiche.</p>
+      <div class="perm-list">${Object.entries(data.sections).map(([k, label]) => `<label><input type="checkbox" name="sec" value="${k}" checked><span><b>${esc(label)}</b><br><span class="muted small-text">${esc(RESTORE_HINTS[k] || "")}</span></span></label>`).join("")}</div>`;
+  let sections = [];
+  const preview = await modal({title: `Ripristina: ${backupTitle(b)}`, body: sectionsBody,
+    actions: [{label: "Annulla", value: null}, {label: "Mostra Cosa Cambierà", kind: "primary", submit: true, onClick: async (dlg) => {
+      sections = part ? ["porte"] : $$('[name="sec"]:checked', dlg).map((x) => x.value);
+      if (!sections.length) { toast("Scegli almeno una voce", true); return false; }
+      return (await run(() => api(`api/backups/${b.id}/preview`, {method: "POST", body: {sections, part}}))) || false;
+    }}]});
+  if (!preview) return;
+  const items = preview.items;
+  if (!items.length) {
+    await modal({title: "Niente da Ripristinare", body: '<p style="margin:0">Quello che hai scelto è già come nel backup.</p>', actions: [{label: "Chiudi", value: null}]});
+    return;
+  }
+  const groups = Object.entries(preview.sections).filter(([k]) => items.some((i) => i.section === k));
+  const keys = await modal({title: "Cosa Cambierà", wide: true,
+    body: `${preview.paused ? `<div class="alert err">${icon("alert")}<div class="grow"><b>Scritture Sospese</b>${esc(preview.paused)}</div></div>` : ""}
+      <p class="muted small-text" style="margin-top:0">Spunta cosa riportare com'era. Togliere quello che è stato aggiunto dopo il backup non è spuntato: di solito è lavoro buono fatto nel frattempo. Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
+      ${groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map(restoreItemHtml).join("")}</div>`).join("")}`,
+    actions: [{label: "Annulla", value: null}, {label: "Ripristina Selezionati", kind: "primary", onClick: (dlg) => {
+      const chosen = $$('[name="rs"]:checked', dlg).map((x) => x.value);
+      if (!chosen.length) { toast("Spunta almeno una riga", true); return false; }
+      return chosen;
+    }}],
+    onOpen: (dlg) => {
+      const update = () => { const n = $$('[name="rs"]:checked', dlg).length; $(".dlg-foot .primary", dlg).textContent = `Ripristina Selezionati (${n})`; };
+      dlg.addEventListener("change", update);
+      update();
+    }});
+  if (!keys) return;
+  toast("Ripristino in corso…");
+  const result = await run(() => api(`api/backups/${b.id}/restore`, {method: "POST", body: {sections, part, keys}}));
+  if (!result) return;
+  await modal({title: result.failed.length ? "Ripristino Parziale" : "Ripristino Fatto", body: restoreResultHtml(result), actions: [{label: "Chiudi", value: null}]});
+  loadSummary();
+  render();
+}
+
 async function viewSettings(el, sub) {
   const tabs = [["generale", "Generale"], ...(store.me.admin ? [["notifiche", "Notifiche"], ["utenti", "Utenti"], ["attivita", "Attività"]] : [])];
   const tab = tabs.some(([k]) => k === sub) ? sub : "generale";

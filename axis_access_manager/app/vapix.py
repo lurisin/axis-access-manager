@@ -97,6 +97,14 @@ class A1210Client:
         """Server NTP configurati e in uso."""
         return await self._cgi("/axis-cgi/ntp.cgi", "getNTPInfo")
 
+    async def mqtt_client_config(self) -> dict:
+        """Broker MQTT configurato sul controller (per il backup): {"config": {...}, "status": {...}}."""
+        return await self._cgi("/axis-cgi/mqtt/client.cgi", "getClientStatus")
+
+    async def mqtt_event_config(self) -> dict:
+        """Eventi pubblicati su MQTT e prefisso dei topic (per il backup)."""
+        return await self._cgi("/axis-cgi/mqtt/event.cgi", "getEventPublicationConfig")
+
     async def certificate_fingerprint(self) -> str:
         """Impronta SHA-256 del certificato HTTPS, per riconoscere il controller (come fa un browser)."""
         host, _, port = self.host.rpartition(":") if self.host.count(":") == 1 else (self.host, "", "")

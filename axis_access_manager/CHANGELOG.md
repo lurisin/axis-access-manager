@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.19.0
+
+Backup dell'app, con confronto e ripristino selettivo. Il salvataggio automatico con la pulizia dei vecchi backup arriva nella 0.20.
+
+- **Impianti → Backup**: con **Crea Backup Ora** salvi, con un nome se vuoi, i **Dati Comuni** (persone, tessere, tipologie, fasce orarie, festività, strutture e aree, utenti dell'app, impostazioni) e la **configurazione di ogni controller** (porte con nomi e tempi, lettori, punti di accesso, schema, profili, ingressi, collegamento MQTT). Le password dei controller non si salvano mai.
+- **Spazio minimo**: ogni parte è un file compresso; se non è cambiata dal backup precedente non si scrive di nuovo. Ogni riga dell'elenco dice cosa è cambiato rispetto al precedente, per esempio "+1 persona, +1 tessera, Porta Scala Teatro modificata", oppure "Nessuna modifica".
+- **Confronta**: per ogni backup vedi le differenze con il precedente, con lo stato attuale o con un altro backup, divise per sezione (persone, tessere, tipologie, porte, lettori…) con il valore di prima barrato e quello nuovo.
+- **Ripristina**, solo per gli amministratori: scegli tra Tipologie, Persone e Tessere, Porte e Lettori; la finestra **Cosa Cambierà** elenca ogni modifica con una spunta, e decidi tu cosa riportare com'era. Le persone eliminate si ricreano con le loro tessere, quelle cambiate tornano com'erano; quello che è stato aggiunto dopo il backup si toglie solo se lo spunti. Una tessera che oggi è di un'altra persona non si tocca. Tempi della porta oltre i limiti della serratura non si riscrivono.
+- **Prima di ogni ripristino** l'app crea il backup "Prima del Ripristino": per tornare indietro basta ripristinare quello.
+- **Blocca** tiene un backup finché non lo sblocchi (non si può eliminare). Elimina è solo per gli amministratori.
+- **Scheda Backup del controller**: lo storico della sola configurazione di quel controller, con confronto e ripristino di porte e lettori.
+- **Controller che non risponde**: il backup prende la sua configurazione dal backup precedente, si segna "Incompleto" e compare la notifica "Backup Incompleto" tra i guasti.
+- Nuovo permesso **Backup** per vedere, creare e confrontare i backup senza essere amministratore.
+- Cambiando scheda in Impianti mentre la pagina carica, la scheda nuova non viene più coperta da quella vecchia.
+
 ## 0.18.1
 
 Correzioni dalla prova al banco della 0.18.0.

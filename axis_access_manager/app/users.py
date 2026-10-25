@@ -18,6 +18,7 @@ PERMISSIONS = {
     "regole_modifica": "Modificare tipologie, fasce orarie e festività",
     "import_export": "Esportare e importare file CSV",
     "impianti": "Configurare controller, porte, citofoni e telecamere e programmare il controller",
+    "backup": "Vedere, creare e confrontare i backup (ripristinare resta agli amministratori)",
     "utenti": "Gestire gli utenti dell'app e vedere le attività (amministratore)",
 }
 

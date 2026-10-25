@@ -42,6 +42,11 @@ TYPES = {
         "le fasce orarie scattano all'ora sbagliata.",
         "urgent",
     ),
+    "backup": (
+        "Backup Non Riuscito",
+        "L'ultimo backup non è riuscito o è incompleto, per esempio perché un controller non rispondeva.",
+        "urgent",
+    ),
     "missing_cards": (
         "Tessere Non Presenti Sul Controller",
         "Tessere che l'app conosce ma che sul controller non ci sono più: da riscrivere o togliere dall'app.",
@@ -49,7 +54,7 @@ TYPES = {
     ),
 }
 # Guasti dell'impianto: restano finché non si risolvono, anche dopo la presa visione
-FAULT_TYPES = ("controller", "mqtt", "camera", "controller_changed", "clock", "missing_cards")
+FAULT_TYPES = ("controller", "mqtt", "camera", "controller_changed", "clock", "missing_cards", "backup")
 # Tipi con nomi o eventi: permesso necessario per vederli
 VISIBILITY = {
     "door_alarm": "registro",
@@ -57,6 +62,7 @@ VISIBILITY = {
     "unknown_card": "persone",
     "expiring": "persone",
     "missing_cards": "persone",
+    "backup": "backup",
 }
 # Attiva: compare in Da Gestire e conta sulla campanella. "info" (fino alla 0.13) vale come attiva.
 LEVELS = {"urgent": "Attiva", "off": "Disattivata"}
@@ -127,6 +133,7 @@ class NotificationService:
         cameras: list[dict] | None = None,
         controllers: list[dict] | None = None,
         missing: dict | None = None,
+        backup: dict | None = None,
         now: datetime | None = None,
     ) -> list[dict]:
         """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente."""
@@ -292,6 +299,17 @@ class NotificationService:
                 ),
                 missing["since"],
                 link="#persone/mancanti",
+            )
+        if backup and backup.get("error"):
+            # Con l'indice il backup c'è ma è incompleto; senza, non è stato salvato
+            add(
+                "backup",
+                f"backup:{backup.get('at') or ''}",
+                "warn",
+                "Backup Incompleto" if backup.get("id") else "Backup Non Riuscito",
+                _capital(backup["error"]),
+                backup.get("at") or now.isoformat(timespec="seconds"),
+                link="#impianti/backup",
             )
         titles = {"allarme": "Allarme Porta", "manomissione": "Manomissione"}
         if levels["door_alarm"] != "off":

@@ -127,6 +127,10 @@ class HealthMonitor:
         self._clients[row["id"]] = (key, client)
         return client
 
+    def client_for(self, row: dict):
+        """Client di sola lettura per un controller (per esempio per il backup)."""
+        return self._client(row)
+
     async def aclose(self) -> None:
         for _, client in self._clients.values():
             await _close(client)

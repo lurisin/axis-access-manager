@@ -583,6 +583,125 @@ class AccessService:
             self.db.add_audit(user, "persona eliminata", f"{person['name']} ({numbers})")
             self._changed()
 
+    # Ripristino da backup
+
+    async def restore_person(self, saved: dict, cards: list[dict], category_id: int, user: str) -> dict:
+        """Riporta una persona com'era in un backup: nome, ditta, note, tipologia e tessere con accesso e stato.
+        Se non c'è più si ricrea, con lo stesso numero e la stessa data di creazione se il numero è libero.
+        cards: tessere del backup già controllate (numero libero o già della persona, profilo che esiste)."""
+        current = self.db.get_person(saved["id"])
+        if current is not None and current["created_at"] != saved["created_at"]:
+            current = None
+        if current is None:
+            return await self._recreate_person(saved, cards, category_id, user)
+        person_id = current["id"]
+        await self.update_person(
+            person_id, user, name=saved["name"], company=saved["company"] or "", notes=saved["notes"] or ""
+        )
+        if category_id != current["category_id"]:
+            self.db.set_person_category(person_id, category_id)
+        wanted = {c["number"].upper(): c for c in cards}
+        async with self.lock:
+            person = self._person(person_id)
+            user_token = await self._ensure_user(person)
+            have = {c["number"].upper(): c for c in person["cards"]}
+            for number, card in wanted.items():
+                access = {k: card[k] for k in ("access_profile", "valid_from", "valid_to")}
+                mine = have.get(number)
+                if mine is None:
+                    self._check_card_free(card["number"])
+                    token = await self.controller.set_credential(
+                        self._credential(user_token, person["name"], card["number"], access)
+                    )
+                    if not card["enabled"]:
+                        await self.controller.disable_credential(token)
+                    self.db.add_card(person_id, card["number"], token, card["enabled"], access)
+                    continue
+                if {k: mine[k] for k in access} != access:
+                    credentials = await self.controller.get_credentials([mine["axis_credential_token"]])
+                    if not credentials:
+                        raise ServiceError(
+                            f"la tessera {mine['number']} non è più sul controller: riscrivila prima da Persone"
+                        )
+                    await self.controller.set_credential(self._apply_access(credentials[0], access))
+                    self.db.set_card_access(mine["id"], access)
+                if bool(mine["enabled"]) != bool(card["enabled"]):
+                    if card["enabled"]:
+                        await self.controller.enable_credential(mine["axis_credential_token"])
+                    else:
+                        await self.controller.disable_credential(mine["axis_credential_token"])
+                    self.db.set_card_enabled(mine["id"], card["enabled"])
+            # Tessere aggiunte dopo il backup: le tessere del backup ci sono già, la persona non resta senza
+            for number, mine in have.items():
+                if number in wanted:
+                    continue
+                if not mine["missing_since"]:
+                    await self.controller.remove_credential(mine["axis_credential_token"])
+                self.db.delete_card(mine["id"])
+            self.db.add_audit(user, "persona ripristinata da backup", person["name"])
+            self._changed()
+            return self.db.get_person(person_id)
+
+    async def _ensure_user(self, person: dict) -> str:
+        """Utente del controller della persona; chi è stato letto da una tessera senza utente ne riceve uno."""
+        token = person["axis_user_token"] or ""
+        if token and not token.startswith("credenziale:"):
+            return token
+        token = user_token_for(person["name"])
+        await self.controller.set_user(
+            {
+                "token": token,
+                "Name": person["name"],
+                "Description": "Registrato da Axis Access Manager",
+                "Attribute": [],
+            }
+        )
+        self.db.set_person_user_token(person["id"], token)
+        return token
+
+    async def _recreate_person(self, saved: dict, cards: list[dict], category_id: int, user: str) -> dict:
+        name = normalize_name(saved["name"])
+        async with self.lock:
+            for card in cards:
+                self._check_card_free(card["number"])
+            user_token = user_token_for(name)
+            await self.controller.set_user(
+                {"token": user_token, "Name": name, "Description": "Registrato da Axis Access Manager", "Attribute": []}
+            )
+            written: list[tuple[dict, str, dict]] = []
+            try:
+                for card in cards:
+                    access = {k: card[k] for k in ("access_profile", "valid_from", "valid_to")}
+                    token = await self.controller.set_credential(
+                        self._credential(user_token, name, card["number"], access)
+                    )
+                    written.append((card, token, access))
+                    if not card["enabled"]:
+                        await self.controller.disable_credential(token)
+            except VapixError:
+                # Tutto o niente: sul controller non restano tessere o utenti a metà
+                for _, token, _ in written:
+                    try:
+                        await self.controller.remove_credential(token)
+                    except VapixError:
+                        _LOGGER.warning("Tessera %s rimasta sul controller dopo un errore", token)
+                await self._remove_axis_user({"axis_user_token": user_token})
+                raise
+            free = self.db.get_person(saved["id"]) is None
+            person_id = self.db.add_person(
+                name, user_token, person_id=saved["id"] if free else None, created_at=saved["created_at"]
+            )
+            if saved.get("company") or saved.get("notes"):
+                self.db.update_person_details(person_id, saved.get("company") or "", saved.get("notes") or "")
+            if category_id:
+                self.db.set_person_category(person_id, category_id)
+            for card, token, access in written:
+                self.db.add_card(person_id, card["number"], token, card["enabled"], access)
+            numbers = ", ".join(card["number"] for card, _, _ in written)
+            self.db.add_audit(user, "persona ricreata da backup", f"{name} ({numbers})")
+            self._changed()
+            return self.db.get_person(person_id)
+
     async def _remove_axis_user(self, person: dict) -> None:
         token = person["axis_user_token"] or ""
         if not token or token.startswith("credenziale:"):
