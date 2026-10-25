@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1
+
+- Scheda della persona: nel riquadro Accesso Personalizzato il nome della tipologia resta nella frase invece di andare a capo.
+- Registro Attività: creazione, modifica ed eliminazione degli utenti mostrano il nome visualizzato invece del nome utente.
+
 ## 0.11.0
 
 - **Ogni permesso mostra solo le sue sezioni.** Nuovo permesso **Stato** per Cruscotto, Porte e Notifiche: senza di esso le tre sezioni spariscono dal menu e il server non dà più i loro dati. Impostazioni compare solo a chi può esportare e importare, configurare gli impianti o gestire gli utenti.
