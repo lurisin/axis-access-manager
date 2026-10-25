@@ -686,3 +686,10 @@ def test_migration_detaches_events_of_deleted_persons(tmp_path):
     # Il numero 8 resta usato anche se nessun evento lo cita più
     assert db.add_person("Nuova", None) == 9
     db.close()
+
+
+def test_event_from_log_in_utc():
+    from app.events import event_from_log
+
+    entry = {"UtcTime": "2026-10-25T19:54:43+02:00", "KeyValues": [{"Key": "topic0", "Value": "AccessControl"}]}
+    assert event_from_log(entry).timestamp.isoformat(timespec="seconds") == "2026-10-25T17:54:43+00:00"

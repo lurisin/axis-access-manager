@@ -715,6 +715,7 @@ def create_app(
         kind: str = "",
         q: str = "",
         before_id: int | None = None,
+        before_ts: str = "",
         limit: int = 100,
         since: str = "",
         until: str = "",
@@ -725,6 +726,7 @@ def create_app(
             kind=kind,
             search=q,
             before_id=before_id,
+            before_ts=_utc(before_ts),
             limit=min(limit, 500),
             since=_utc(since),
             until=_utc(until),
@@ -741,6 +743,13 @@ def create_app(
             kind=kind, search=q, since=_utc(since), until=_utc(until), door=door
         )
         return {"count": count}
+
+    @app.get("/api/events/{event_id}", dependencies=[need("registro")])
+    async def event(event_id: int, request: Request) -> dict:
+        event = request.app.state.db.event_row(event_id)
+        if not event:
+            raise HTTPException(404, "evento non trovato")
+        return event
 
     @app.get("/api/events/{event_id}/snapshot", dependencies=[need("registro")])
     async def snapshot(event_id: int, request: Request) -> Response:
