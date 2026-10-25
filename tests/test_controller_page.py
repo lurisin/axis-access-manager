@@ -72,6 +72,26 @@ async def test_links_move_readers_between_access_points(db, controller):
     assert not any(c[0] == "access_door" for c in controller.calls)
 
 
+async def test_relinked_reader_keeps_its_device(db, controller):
+    """Scollegato l'unico lettore, il dispositivo non è più sul controller: si riprende dallo storico."""
+    controller.access_points[0]["IdPointDevice"] = [{"IdPoint": "lettore-1", "DeviceUUID": "uuid-a1210"}]
+    service = ProgrammingService(db, controller, 1, asyncio.Lock())
+    assert await service.set_links([], "admin") == 1
+    assert controller.access_points[0]["IdPointDevice"] == []
+    await service.set_links([{"reader": "lettore-1", "door": "porta", "direction": "in"}], "admin")
+    assert controller.access_points[0]["IdPointDevice"] == [{"IdPoint": "lettore-1", "DeviceUUID": "uuid-a1210"}]
+
+    # Ricollegato da una versione precedente senza dispositivo: il primo salvataggio lo ripara
+    controller.access_points[0]["IdPointDevice"] = [{"IdPoint": "lettore-1", "DeviceUUID": ""}]
+    assert await service.set_links([{"reader": "lettore-1", "door": "porta", "direction": "in"}], "admin") == 1
+    assert controller.access_points[0]["IdPointDevice"] == [{"IdPoint": "lettore-1", "DeviceUUID": "uuid-a1210"}]
+
+    # Stesso ripristino dalla scheda del punto di accesso
+    controller.access_points[0]["IdPointDevice"] = []
+    await service.update_access_point("ap-in", {"readers": ["lettore-1"]}, "admin")
+    assert controller.access_points[0]["IdPointDevice"] == [{"IdPoint": "lettore-1", "DeviceUUID": "uuid-a1210"}]
+
+
 def _collect(service, **overrides):
     values = {
         "mqtt_configured": True,
