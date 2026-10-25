@@ -2,6 +2,7 @@
 
 ## 0.8.1
 
+- Importazione CSV: per le tessere già registrate aggiorna gruppo, validità, ditta, note e tipologia della persona se nel file sono diversi, con l'anteprima di cosa cambia ("da aggiornare"). Così si può esportare l'anagrafica, modificarla nel foglio di calcolo e reimportarla.
 - Aperture dal citofono nel registro con etichette in Title Case, come quelle da Home Assistant: "App Hik-Connect (Citofono)" invece di "citofono · centrale", "Monitor Interno (Citofono)". Il tempo dalla chiamata passa nel dettaglio; le chiamate riportano il nome del citofono.
 
 ## 0.8.0

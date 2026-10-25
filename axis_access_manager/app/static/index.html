@@ -2329,10 +2329,10 @@ async function importCsv(e) {
   const text = await file.text();
   const preview = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: false}}));
   if (!preview) return;
-  const table = (res) => `<p>${res.riepilogo.righe} righe: <b>${res.riepilogo.ok}</b> ${res.applicato ? "importate" : "da importare"}, ${res.riepilogo.saltate} saltate, ${res.riepilogo.errori} con errori.</p>
-    <div class="table-wrap"><table class="table"><thead><tr><th>Riga</th><th>Nome</th><th>Tessera</th><th>Esito</th></tr></thead><tbody>${res.righe.map((r) => `<tr><td>${r.riga}</td><td>${esc(r.nome)}</td><td><code>${esc(r.tessera)}</code></td><td><span class="pill ${r.esito === "errore" ? "err" : r.esito === "saltata" ? "" : "ok"}">${esc(r.esito)}</span> <span class="small-text">${esc(r.dettaglio)}</span></td></tr>`).join("")}</tbody></table></div>`;
+  const table = (res) => `<p>${res.riepilogo.righe} righe: <b>${res.riepilogo.ok}</b> ${res.applicato ? "importate" : "da importare"}, <b>${res.riepilogo.aggiornate || 0}</b> ${res.applicato ? "aggiornate" : "da aggiornare"}, ${res.riepilogo.saltate} saltate, ${res.riepilogo.errori} con errori.</p>
+    <div class="table-wrap"><table class="table"><thead><tr><th>Riga</th><th>Nome</th><th>Tessera</th><th>Esito</th></tr></thead><tbody>${res.righe.map((r) => `<tr><td>${r.riga}</td><td>${esc(r.nome)}</td><td><code>${esc(r.tessera)}</code></td><td><span class="pill ${r.esito === "errore" ? "err" : r.esito === "saltata" ? "" : r.esito.includes("aggiorn") ? "warn" : "ok"}">${esc(r.esito)}</span> <span class="small-text">${esc(r.dettaglio)}</span></td></tr>`).join("")}</tbody></table></div>`;
   const go = await modal({title: "Anteprima importazione", wide: true, body: table(preview),
-    actions: [{label: "Annulla", value: false}, ...(preview.riepilogo.ok ? [{label: `Importa ${preview.riepilogo.ok}`, kind: "primary", value: true}] : [])]});
+    actions: [{label: "Annulla", value: false}, ...(preview.riepilogo.ok || preview.riepilogo.aggiornate ? [{label: [preview.riepilogo.ok ? `Importa ${preview.riepilogo.ok}` : "", preview.riepilogo.aggiornate ? `Aggiorna ${preview.riepilogo.aggiornate}` : ""].filter(Boolean).join(" e "), kind: "primary", value: true}] : [])]});
   if (!go) return;
   const result = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: true}}));
   if (result) await modal({title: "Importazione completata", wide: true, body: table(result), actions: [{label: "Chiudi", kind: "primary", value: true}]});
