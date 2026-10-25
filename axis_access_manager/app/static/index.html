@@ -6,80 +6,424 @@
 <title>Controllo accessi</title>
 <style>
   :root {
-    --bg: #f5f6f8; --card: #ffffff; --text: #1f2328; --muted: #5f6b7a;
-    --border: #d8dde3; --ok: #1a7f37; --warn: #9a6700; --err: #cf222e;
+    --bg: #f5f6f8; --card: #ffffff; --text: #1f2328; --muted: #5f6b7a; --border: #d8dde3;
+    --ok: #1a7f37; --warn: #9a6700; --err: #cf222e; --accent: #0969da; --accent-text: #ffffff;
+    --chip: #eef1f4;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #111418; --card: #1b1f24; --text: #e6e8eb; --muted: #9aa4af;
-      --border: #30363d; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+      --bg: #111418; --card: #1b1f24; --text: #e6e8eb; --muted: #9aa4af; --border: #30363d;
+      --ok: #3fb950; --warn: #d29922; --err: #f85149; --accent: #4493f8; --accent-text: #0d1117;
+      --chip: #262c33;
     }
   }
   * { box-sizing: border-box; }
   html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--text);
+  [hidden] { display: none !important; }
+  body { margin: 0; padding: 16px 16px 48px; background: var(--bg); color: var(--text);
          font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-  main { max-width: 860px; margin: 0 auto; }
-  header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
+  main { max-width: 900px; margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
   h1 { font-size: 22px; margin: 0; }
   h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
-  button { background: var(--card); color: var(--text); border: 1px solid var(--border);
-           border-radius: 8px; padding: 6px 14px; font: inherit; cursor: pointer; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-          padding: 16px 20px; margin-bottom: 16px; }
-  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+  button { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+           padding: 6px 12px; font: inherit; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); font-weight: 600; }
+  button.danger { color: var(--err); }
+  button.small { padding: 2px 8px; font-size: 13px; }
+  button:disabled { opacity: .5; cursor: default; }
+  input, select { font: inherit; color: var(--text); background: var(--card); border: 1px solid var(--border);
+                  border-radius: 8px; padding: 6px 10px; min-width: 0; }
+  .door { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; overflow-x: auto; }
+  .tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none;
+                 padding: 8px 12px; color: var(--muted); white-space: nowrap; }
+  .tabs button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  .badge { display: inline-block; min-width: 20px; padding: 0 6px; border-radius: 10px; background: var(--err);
+           color: #fff; font-size: 12px; text-align: center; margin-left: 4px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .toolbar input[type=search] { flex: 1 1 200px; }
+  .person { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 12px 0;
+            border-bottom: 1px solid var(--border); }
+  .person:last-child { border-bottom: none; }
+  .person .name { font-weight: 600; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; background: var(--chip); border-radius: 8px; padding: 2px 4px 2px 8px; }
+  .chip code { font-size: 13px; }
+  .chip.off code { text-decoration: line-through; color: var(--muted); }
+  .actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
   dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; table-layout: fixed; }
-  td code { word-break: break-all; }
-  .col-count { width: 72px; }
-  .col-when { width: 110px; }
-  @media (max-width: 600px) {
-    .col-when, td:nth-child(4) { display: none; }
-    .col-count { width: 64px; }
-  }
-  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { color: var(--muted); font-weight: 500; }
-  .hint { color: var(--warn); margin: 12px 0 0; }
-  .muted { color: var(--muted); }
+  td code { word-break: break-all; }
+  .col-count { width: 72px; } .col-when { width: 110px; }
+  .log-row { display: grid; grid-template-columns: 130px 1fr; gap: 2px 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .log-row .when { color: var(--muted); font-size: 13px; }
+  .kind { font-weight: 600; } .kind.concesso, .kind.lettura, .kind.apertura_remota { color: var(--ok); }
+  .kind.negato, .kind.sconosciuta { color: var(--warn); } .kind.allarme, .kind.manomissione { color: var(--err); }
+  .muted { color: var(--muted); } .hint { color: var(--warn); margin: 12px 0 0; }
+  .empty { color: var(--muted); padding: 12px 0; }
   code { font-size: 13px; }
+  dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--text);
+           padding: 20px; width: min(420px, calc(100vw - 32px)); }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); }
+  dialog label { display: block; margin: 12px 0 4px; color: var(--muted); font-size: 14px; }
+  dialog input { width: 100%; }
+  dialog .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+  dialog p { margin: 0; }
+  #toast { position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: calc(100vw - 32px);
+           background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 8px; display: none; z-index: 10; }
+  #toast.error { background: var(--err); color: #fff; }
+  @media (max-width: 600px) {
+    .col-when, #events td:nth-child(4) { display: none; }
+    .col-count { width: 64px; }
+    .log-row { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1>Controllo accessi</h1>
-    <button id="refresh" type="button">Aggiorna</button>
+    <div class="door">
+      <span class="dot" id="door-dot"></span><span id="door-state" class="muted">porta: …</span>
+      <button type="button" class="primary" data-open="0">Apri</button>
+      <button type="button" data-open="1">Apri a lungo</button>
+    </div>
   </header>
 
-  <section class="card">
-    <h2><span class="dot" id="ctrl-dot"></span>Controller A1210</h2>
-    <dl id="ctrl"><dt>Stato</dt><dd class="muted">verifica in corso…</dd></dl>
+  <nav class="tabs">
+    <button type="button" data-tab="persons" class="active">Persone</button>
+    <button type="button" data-tab="unknown">Da registrare<span class="badge" id="unknown-badge" hidden></span></button>
+    <button type="button" data-tab="log">Log</button>
+    <button type="button" data-tab="status">Stato</button>
+  </nav>
+
+  <section id="tab-persons">
+    <div class="toolbar">
+      <input type="search" id="person-search" placeholder="Cerca per nome o numero tessera">
+      <button type="button" class="primary" id="new-person">Nuova persona</button>
+      <button type="button" id="sync">Rileggi dal controller</button>
+    </div>
+    <div class="card" id="persons"><div class="empty">caricamento…</div></div>
   </section>
 
-  <section class="card">
-    <h2><span class="dot" id="mqtt-dot"></span>MQTT</h2>
-    <dl id="mqtt"><dt>Stato</dt><dd class="muted">verifica in corso…</dd></dl>
-    <p class="hint" id="mqtt-hint" hidden></p>
+  <section id="tab-unknown" hidden>
+    <p class="muted">Tessere passate sul lettore che non sono registrate. Assegnale a una persona nuova o esistente.</p>
+    <div class="card" id="unknown"><div class="empty">caricamento…</div></div>
   </section>
 
-  <section class="card">
-    <h2>Eventi ricevuti dall'avvio</h2>
-    <table>
-      <thead><tr><th>Categoria</th><th class="col-count">Numero</th><th>Ultimo topic</th><th class="col-when">Ultimo</th></tr></thead>
-      <tbody id="events"><tr><td colspan="4" class="muted">nessun evento</td></tr></tbody>
-    </table>
+  <section id="tab-log" hidden>
+    <div class="toolbar">
+      <input type="search" id="log-search" placeholder="Cerca per nome, tessera o dettaglio">
+      <select id="log-kind">
+        <option value="">Tutti gli eventi</option>
+        <option value="concesso">Accesso concesso</option>
+        <option value="negato">Accesso negato</option>
+        <option value="lettura">Tessera letta</option>
+        <option value="sconosciuta">Tessera sconosciuta</option>
+        <option value="apertura_remota">Apertura da app</option>
+        <option value="allarme">Allarme porta</option>
+        <option value="manomissione">Manomissione</option>
+      </select>
+    </div>
+    <div class="card"><div id="log"><div class="empty">caricamento…</div></div>
+      <button type="button" id="log-more" hidden>Carica altri</button>
+    </div>
+  </section>
+
+  <section id="tab-status" hidden>
+    <div class="card">
+      <h2><span class="dot" id="ctrl-dot"></span>Controller A1210</h2>
+      <dl id="ctrl"><dt>Stato</dt><dd class="muted">verifica in corso…</dd></dl>
+    </div>
+    <div class="card">
+      <h2><span class="dot" id="mqtt-dot"></span>MQTT</h2>
+      <dl id="mqtt"><dt>Stato</dt><dd class="muted">verifica in corso…</dd></dl>
+      <p class="hint" id="mqtt-hint" hidden></p>
+    </div>
+    <div class="card">
+      <h2>Eventi ricevuti dall'avvio</h2>
+      <table>
+        <thead><tr><th>Categoria</th><th class="col-count">Numero</th><th>Ultimo topic</th><th class="col-when">Ultimo</th></tr></thead>
+        <tbody id="events"><tr><td colspan="4" class="muted">nessun evento</td></tr></tbody>
+      </table>
+    </div>
   </section>
 </main>
+
+<dialog id="dialog">
+  <form method="dialog" id="dialog-form">
+    <h2 id="dialog-title"></h2>
+    <div id="dialog-body"></div>
+    <div class="buttons">
+      <button type="button" id="dialog-cancel">Annulla</button>
+      <button type="submit" class="primary" id="dialog-ok">OK</button>
+    </div>
+  </form>
+</dialog>
+<div id="toast"></div>
+
 <script>
   // Percorsi relativi: con Ingress la pagina è servita sotto un prefisso variabile
   const $ = (id) => document.getElementById(id);
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-  const when = (iso) => iso ? new Date(iso).toLocaleString("it-IT") : "";
+  const when = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {dateStyle: "short", timeStyle: "medium"}) : "";
   const rows = (pairs) => pairs.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("");
   const setDot = (id, cls) => { $(id).className = "dot " + cls; };
+  const KINDS = {
+    concesso: "Accesso concesso", negato: "Accesso negato", lettura: "Tessera letta",
+    sconosciuta: "Tessera sconosciuta", apertura_remota: "Apertura da app", allarme: "Allarme porta",
+    manomissione: "Manomissione",
+  };
+  const DOOR_MODES = {
+    Locked: "bloccata", Accessed: "aperta (tempo)", Unlocked: "sbloccata", LockedOpen: "aperta",
+    Blocked: "bloccata da regola", LockedDown: "in blocco", DoubleLocked: "doppia chiusura",
+  };
 
+  let toastTimer;
+  function toast(message, error = false) {
+    const el = $("toast");
+    el.textContent = message;
+    el.className = error ? "error" : "";
+    el.style.display = "block";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.style.display = "none"; }, error ? 6000 : 3000);
+  }
+
+  async function api(path, options = {}) {
+    const res = await fetch(path, {
+      ...options,
+      headers: options.body ? {"Content-Type": "application/json"} : {},
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || "errore " + res.status);
+    return data;
+  }
+
+  // Finestra di dialogo: fields = [{name, label, value, placeholder}], restituisce i valori o null
+  function ask({title, text = "", fields = [], ok = "OK", danger = false}) {
+    return new Promise((resolve) => {
+      const dialog = $("dialog");
+      $("dialog-title").textContent = title;
+      $("dialog-body").innerHTML = (text ? `<p>${esc(text)}</p>` : "") + fields.map((f) =>
+        `<label for="f-${f.name}">${esc(f.label)}</label>` +
+        `<input id="f-${f.name}" name="${f.name}" value="${esc(f.value || "")}" placeholder="${esc(f.placeholder || "")}" autocomplete="off">`
+      ).join("");
+      $("dialog-ok").textContent = ok;
+      $("dialog-ok").className = danger ? "primary danger" : "primary";
+      const finish = (value) => {
+        dialog.close();
+        $("dialog-form").onsubmit = null;
+        $("dialog-cancel").onclick = null;
+        resolve(value);
+      };
+      $("dialog-form").onsubmit = (e) => {
+        e.preventDefault();
+        const values = {};
+        fields.forEach((f) => { values[f.name] = $("f-" + f.name).value.trim(); });
+        finish(values);
+      };
+      $("dialog-cancel").onclick = () => finish(null);
+      dialog.oncancel = () => finish(null);
+      dialog.showModal();
+      const first = dialog.querySelector("input");
+      if (first) first.focus();
+    });
+  }
+
+  async function run(action, success) {
+    try {
+      const result = await action();
+      if (success) toast(success);
+      return result;
+    } catch (err) {
+      toast(err.message, true);
+      return undefined;
+    }
+  }
+
+  // Schede
+  let currentTab = "persons";
+  document.querySelectorAll(".tabs button").forEach((btn) => btn.addEventListener("click", () => showTab(btn.dataset.tab)));
+  function showTab(tab) {
+    currentTab = tab;
+    document.querySelectorAll(".tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+    document.querySelectorAll("main > section").forEach((s) => { s.hidden = s.id !== "tab-" + tab; });
+    refreshTab();
+  }
+  function refreshTab() {
+    if (currentTab === "persons") loadPersons();
+    if (currentTab === "unknown") loadUnknown();
+    if (currentTab === "log") loadLog();
+    if (currentTab === "status") loadStatus();
+  }
+
+  // Intestazione: stato porta e tessere da registrare
+  async function loadSummary() {
+    try {
+      const s = await api("api/summary");
+      const mode = s.door_mode;
+      setDot("door-dot", mode === "Locked" ? "ok" : mode ? "warn" : "");
+      $("door-state").textContent = "porta: " + (mode ? (DOOR_MODES[mode] || mode) : "stato non ricevuto");
+      const badge = $("unknown-badge");
+      badge.hidden = !s.unknown_cards;
+      badge.textContent = s.unknown_cards;
+    } catch (err) {
+      $("door-state").textContent = "add-on non raggiungibile";
+    }
+  }
+  document.querySelectorAll("[data-open]").forEach((btn) => btn.addEventListener("click", async () => {
+    const extended = btn.dataset.open === "1";
+    btn.disabled = true;
+    await run(() => api("api/door/open", {method: "POST", body: {extended}}), extended ? "Porta aperta a lungo" : "Porta aperta");
+    btn.disabled = false;
+    loadSummary();
+  }));
+
+  // Persone
+  let persons = [];
+  async function loadPersons() {
+    const data = await run(() => api("api/persons"));
+    if (data) { persons = data; renderPersons(); }
+  }
+  function renderPersons() {
+    const q = $("person-search").value.trim().toLowerCase();
+    const list = persons.filter((p) => !q || p.name.toLowerCase().includes(q) ||
+      p.cards.some((c) => c.number.toLowerCase().includes(q)));
+    $("persons").innerHTML = list.length ? list.map((p) => `
+      <div class="person">
+        <div>
+          <div class="name">${esc(p.name)}</div>
+          <div class="chips">${p.cards.map((c) => `
+            <span class="chip ${c.enabled ? "" : "off"}" title="${c.enabled ? "attiva" : "sospesa"}">
+              <code>${esc(c.number)}</code>${c.enabled ? "" : '<span class="muted">sospesa</span>'}
+              <button type="button" class="small" data-card-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>
+              <button type="button" class="small danger" data-card-delete="${c.id}">Elimina</button>
+            </span>`).join("")}
+          </div>
+        </div>
+        <div class="actions">
+          <button type="button" class="small" data-add-card="${p.id}">+ Tessera</button>
+          <button type="button" class="small" data-rename="${p.id}">Rinomina</button>
+          <button type="button" class="small danger" data-person-delete="${p.id}">Elimina</button>
+        </div>
+      </div>`).join("") : `<div class="empty">${persons.length ? "nessun risultato" : "nessuna persona registrata"}</div>`;
+  }
+  $("person-search").addEventListener("input", renderPersons);
+  const personById = (id) => persons.find((p) => p.id === Number(id));
+  const cardById = (id) => persons.flatMap((p) => p.cards.map((c) => ({...c, person: p}))).find((c) => c.id === Number(id));
+
+  $("persons").addEventListener("click", async (e) => {
+    const t = e.target.closest("button");
+    if (!t) return;
+    if (t.dataset.rename) {
+      const p = personById(t.dataset.rename);
+      const v = await ask({title: "Rinomina", fields: [{name: "name", label: "Nome e cognome", value: p.name}], ok: "Salva"});
+      if (v && v.name && v.name !== p.name && await run(() => api(`api/persons/${p.id}`, {method: "PATCH", body: {name: v.name}}), "Nome aggiornato")) loadPersons();
+    } else if (t.dataset.addCard) {
+      const p = personById(t.dataset.addCard);
+      const v = await ask({title: "Aggiungi tessera a " + p.name, text: "Più semplice: passa la tessera sul lettore e assegnala da \"Da registrare\".",
+        fields: [{name: "card", label: "Numero tessera (esadecimale)", placeholder: "04a1b2c3d4e5f6"}], ok: "Aggiungi"});
+      if (v && v.card && await run(() => api(`api/persons/${p.id}/cards`, {method: "POST", body: {card: v.card}}), "Tessera aggiunta")) loadPersons();
+    } else if (t.dataset.personDelete) {
+      const p = personById(t.dataset.personDelete);
+      const v = await ask({title: "Elimina persona", text: `Eliminare ${p.name} e le sue ${p.cards.length} tessere dal controller? Non apriranno più la porta.`, ok: "Elimina", danger: true});
+      if (v && await run(() => api(`api/persons/${p.id}`, {method: "DELETE"}), "Persona eliminata")) loadPersons();
+    } else if (t.dataset.cardToggle) {
+      const c = cardById(t.dataset.cardToggle);
+      const enable = t.dataset.enabled !== "1";
+      if (await run(() => api(`api/cards/${c.id}`, {method: "PATCH", body: {enabled: enable}}), enable ? "Tessera riattivata" : "Tessera sospesa")) loadPersons();
+    } else if (t.dataset.cardDelete) {
+      const c = cardById(t.dataset.cardDelete);
+      const last = c.person.cards.length === 1;
+      const v = await ask({title: "Elimina tessera", text: `Eliminare la tessera ${c.number} di ${c.person.name}?` + (last ? " È la sua unica tessera: verrà eliminata anche la persona." : ""), ok: "Elimina", danger: true});
+      if (v && await run(() => api(`api/cards/${c.id}`, {method: "DELETE"}), "Tessera eliminata")) loadPersons();
+    }
+  });
+
+  async function newPerson(card = "") {
+    const v = await ask({title: "Nuova persona", fields: [
+      {name: "name", label: "Nome e cognome"},
+      {name: "card", label: "Numero tessera (esadecimale)", value: card, placeholder: "04a1b2c3d4e5f6"},
+    ], ok: "Registra"});
+    if (!v || !v.name || !v.card) return false;
+    const ok = await run(() => api("api/persons", {method: "POST", body: v}), "Tessera registrata: apre subito la porta");
+    if (ok) { loadSummary(); refreshTab(); }
+    return Boolean(ok);
+  }
+  $("new-person").addEventListener("click", () => newPerson());
+  $("sync").addEventListener("click", async () => {
+    const r = await run(() => api("api/sync", {method: "POST"}));
+    if (r) { toast(`Riletto dal controller: ${r.cards} tessere`); loadPersons(); }
+  });
+
+  // Tessere da registrare
+  let unknown = [];
+  async function loadUnknown() {
+    const data = await run(() => api("api/unknown-cards"));
+    if (!data) return;
+    unknown = data;
+    $("unknown").innerHTML = data.length ? data.map((u) => `
+      <div class="person">
+        <div><code>${esc(u.number)}</code>
+          <div class="muted">ultima lettura ${esc(when(u.last_seen))} · ${esc(u.count)} ${u.count === 1 ? "volta" : "volte"}</div></div>
+        <div class="actions">
+          <button type="button" class="small primary" data-assign-new="${esc(u.number)}">Nuova persona</button>
+          <button type="button" class="small" data-assign-existing="${esc(u.number)}">A persona esistente</button>
+          <button type="button" class="small" data-ignore="${esc(u.number)}">Ignora</button>
+        </div>
+      </div>`).join("") : '<div class="empty">nessuna tessera da registrare: passane una sul lettore</div>';
+  }
+  $("unknown").addEventListener("click", async (e) => {
+    const t = e.target.closest("button");
+    if (!t) return;
+    if (t.dataset.assignNew) {
+      await newPerson(t.dataset.assignNew);
+    } else if (t.dataset.assignExisting) {
+      if (!persons.length) await loadPersons();
+      const v = await ask({title: "Assegna tessera " + t.dataset.assignExisting, fields: [{name: "name", label: "Nome della persona (come in elenco)"}], ok: "Assegna"});
+      if (!v || !v.name) return;
+      const matches = persons.filter((p) => p.name.toLowerCase() === v.name.toLowerCase());
+      if (matches.length !== 1) { toast(matches.length ? "Più persone con questo nome: usa + Tessera dall'elenco" : "Nessuna persona con questo nome", true); return; }
+      if (await run(() => api(`api/persons/${matches[0].id}/cards`, {method: "POST", body: {card: t.dataset.assignExisting}}), "Tessera assegnata a " + matches[0].name)) { loadUnknown(); loadSummary(); }
+    } else if (t.dataset.ignore) {
+      if (await run(() => api(`api/unknown-cards/${encodeURIComponent(t.dataset.ignore)}`, {method: "DELETE"}))) { loadUnknown(); loadSummary(); }
+    }
+  });
+
+  // Log
+  let logEvents = [];
+  async function loadLog(more = false) {
+    const params = new URLSearchParams({kind: $("log-kind").value, q: $("log-search").value.trim(), limit: "100"});
+    if (more && logEvents.length) params.set("before_id", logEvents[logEvents.length - 1].id);
+    const data = await run(() => api("api/events?" + params));
+    if (!data) return;
+    logEvents = more ? logEvents.concat(data) : data;
+    $("log").innerHTML = logEvents.length ? logEvents.map((e) => `
+      <div class="log-row">
+        <div class="when">${esc(when(e.ts))}</div>
+        <div><span class="kind ${esc(e.kind)}">${esc(KINDS[e.kind] || e.kind)}</span>
+          ${e.person_name ? " · " + esc(e.person_name) : ""}
+          ${e.card ? ` · <code>${esc(e.card)}</code>` : ""}
+          ${e.detail ? `<div class="muted">${esc(e.detail)}</div>` : ""}
+          ${e.kind === "apertura_remota" && e.source ? `<div class="muted">da ${esc(e.source)}</div>` : ""}
+        </div>
+      </div>`).join("") : '<div class="empty">nessun evento</div>';
+    $("log-more").hidden = data.length < 100;
+  }
+  let searchTimer;
+  $("log-search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => loadLog(), 300); });
+  $("log-kind").addEventListener("change", () => loadLog());
+  $("log-more").addEventListener("click", () => loadLog(true));
+
+  // Stato
   function renderController(c) {
     if (!c.ok) {
       setDot("ctrl-dot", "err");
@@ -97,7 +441,6 @@
       ["Tessere registrate", esc(c.credentials)],
     ]);
   }
-
   function renderMqtt(m) {
     const hint = $("mqtt-hint");
     hint.hidden = true;
@@ -123,12 +466,9 @@
       ? cats.map(([name, s]) => `<tr><td>${esc(name)}</td><td>${esc(s.count)}</td><td><code>${esc(s.last_topic)}</code></td><td>${esc(when(s.last_seen))}</td></tr>`).join("")
       : `<tr><td colspan="4" class="muted">nessun evento</td></tr>`;
   }
-
-  async function refresh() {
+  async function loadStatus() {
     try {
-      const res = await fetch("api/status");
-      if (!res.ok) throw new Error("errore " + res.status);
-      const data = await res.json();
+      const data = await api("api/status");
       renderController(data.controller);
       renderMqtt(data.mqtt);
     } catch (err) {
@@ -137,9 +477,16 @@
     }
   }
 
-  $("refresh").addEventListener("click", refresh);
-  refresh();
-  setInterval(refresh, 15000);
+  loadSummary();
+  loadPersons();
+  setInterval(loadSummary, 5000);
+  // Aggiorna da solo le schede che cambiano con gli eventi, ma non mentre è aperta una finestra
+  setInterval(() => {
+    if ($("dialog").open) return;
+    if (currentTab === "unknown") loadUnknown();
+    if (currentTab === "log" && !$("log-search").value) loadLog();
+    if (currentTab === "status") loadStatus();
+  }, 10000);
 </script>
 </body>
 </html>

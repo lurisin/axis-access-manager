@@ -4,7 +4,7 @@ Add-on di Home Assistant per gestire tessere, anagrafica e log di accesso di un 
 L'interfaccia compare nella barra laterale di Home Assistant tramite Ingress; il controller resta la fonte
 di verità per le aperture, quindi la porta funziona anche se Home Assistant è spento.
 
-Stato: **Fase 0**, scheletro dell'add-on con pagina di stato (controller, MQTT, eventi ricevuti).
+Stato: **Fase 1**: anagrafica persone e tessere sincronizzata con l'A1210, tessere da registrare, log degli accessi, apertura porta.
 
 ## Struttura
 
@@ -17,8 +17,10 @@ axis_access_manager/         l'add-on
     config.py                lettura di /data/options.json e broker MQTT dal Supervisor
     vapix.py                 client VAPIX per l'A1210 (HTTPS + digest)
     events.py                ascolto degli eventi pubblicati via MQTT dall'A1210
+    db.py                    database SQLite in /data (persone, tessere, eventi, audit)
+    service.py               logica: sincronizzazione, anagrafica, eventi, apertura porta
     main.py                  API e pagina servite tramite Ingress
-    static/index.html        pagina di stato
+    static/index.html        interfaccia a schede
 tests/                       test (pytest)
 ```
 
