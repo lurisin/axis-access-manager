@@ -465,9 +465,12 @@ def part_counts(key: str, part: dict) -> dict:
             "tipologie": len(part.get("categories", [])),
             "fasce": len(part.get("schedules", [])),
         }
+    # Pulsanti e relè sugli ingressi sono punti di identificazione come i lettori: si contano a parte
+    wired = {r.get("idpoint_token") for r in part.get("app_inputs", [])} - {"", None}
     return {
         "porte": len(part.get("doors", [])),
-        "lettori": len(part.get("idpoints", [])),
+        "lettori": sum(1 for p in part.get("idpoints", []) if p.get("token") not in wired),
+        "ingressi": sum(1 for r in part.get("app_inputs", []) if r.get("role")),
         "tessere": len(part.get("credentials", [])),
     }
 

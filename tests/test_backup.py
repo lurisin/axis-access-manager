@@ -332,6 +332,24 @@ def test_backup_api_permissions_and_restore(client, controller):
     assert client.get("/api/persons", headers=admin).json()[0]["cards"][0]["number"] == "04aa"
     backups = client.get("/api/backups", headers=admin).json()["backups"]
     assert backups[0]["id"] == result["backup_before"] and backups[0]["kind_label"] == "Prima del Ripristino"
-    assert backups[0]["name"] == "Prima del ripristino di Prima dei lavori"
+    # Con la data del backup di partenza: niente catene di nomi
+    assert backups[0]["name"].startswith("Prima del ripristino del backup del ")
+    assert "Prima dei lavori" not in backups[0]["name"]
     actions = [a["action"] for a in client.get("/api/audit", headers=admin).json()]
     assert "ripristino da backup" in actions and "persona ricreata da backup" in actions
+
+
+def test_controller_counts_readers_apart_from_inputs():
+    from app.backup import part_counts
+
+    # Collaudo 0.19: un lettore e due ingressi contavano "3 lettori"
+    part = {
+        "idpoints": [{"token": "lettore-1"}, {"token": "rex-1"}, {"token": "rele-1"}],
+        "app_inputs": [
+            {"io": "I0", "role": "uscita", "idpoint_token": "rex-1"},
+            {"io": "I1", "role": "citofono", "idpoint_token": "rele-1"},
+            {"io": "I2", "role": "", "idpoint_token": ""},
+        ],
+    }
+    counts = part_counts("controller:1", part)
+    assert counts["lettori"] == 1 and counts["ingressi"] == 2

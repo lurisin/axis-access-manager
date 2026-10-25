@@ -1280,9 +1280,9 @@ def create_app(
         if not body.keys:
             raise ServiceError("scegli almeno una riga da ripristinare")
         label = manifest.get("name") or _local_text(manifest["created_at"])
-        before = await state.backups.create(
-            "prima_ripristino", f"Prima del ripristino di {label}"[:80], user.label, _backup_clients(state)
-        )
+        # Con la data e non con il nome: "Prima del ripristino di Prima del ripristino di …" non si legge
+        name = f"Prima del ripristino del backup del {_local_text(manifest['created_at'])}"
+        before = await state.backups.create("prima_ripristino", name, user.label, _backup_clients(state))
         _, current = await asyncio.to_thread(state.backups.load, before["id"])
         stale = {k for k, info in before["parts"].items() if info.get("stale")}
         current = {k: v for k, v in current.items() if k not in stale}

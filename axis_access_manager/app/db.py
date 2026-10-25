@@ -210,9 +210,20 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
             "AND abs(julianday(live.ts) - julianday(events.ts)) * 86400 <= 1.5)",
         ],
     ),
+    (
+        4,
+        "eventi staccati dalle persone nuove che avevano preso il numero di una persona eliminata",
+        [
+            # Un evento più vecchio della persona non può essere suo: era della persona eliminata con lo stesso numero
+            "UPDATE events SET person_id = NULL WHERE person_id IS NOT NULL "
+            "AND ts < (SELECT created_at FROM persons WHERE persons.id = events.person_id)",
+        ],
+    ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 SETTING_APP_VERSION = "app_version"
+# Numero più alto mai dato a una persona: i numeri delle persone eliminate non si riusano
+SETTING_LAST_PERSON = "persons_last_id"
 
 
 def now_iso() -> str:
@@ -329,12 +340,34 @@ class Database:
     def add_person(
         self, name: str, axis_user_token: str | None, person_id: int | None = None, created_at: str | None = None
     ) -> int:
-        """person_id e created_at solo per rimettere una persona da un backup (stesso numero, se è libero)."""
+        """person_id e created_at solo per rimettere una persona da un backup (stesso numero, se è libero).
+
+        Il numero di una persona eliminata non si riusa: i suoi eventi lo citano ancora, e una persona nuova
+        con lo stesso numero ne erediterebbe passaggi e ultimo accesso.
+        """
         ts = now_iso()
-        return self._execute(
-            "INSERT INTO persons (id, name, axis_user_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (person_id, name, axis_user_token, created_at or ts, ts),
-        )
+        with self._lock:
+            if person_id is None:
+                person_id = (
+                    self._conn.execute(
+                        "SELECT MAX(m) FROM (SELECT MAX(id) AS m FROM persons "
+                        "UNION ALL SELECT MAX(person_id) FROM events "
+                        "UNION ALL SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = ?)",
+                        (SETTING_LAST_PERSON,),
+                    ).fetchone()[0]
+                    or 0
+                ) + 1
+            cursor = self._conn.execute(
+                "INSERT INTO persons (id, name, axis_user_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                (person_id, name, axis_user_token, created_at or ts, ts),
+            )
+            self._conn.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER), excluded.value)",
+                (SETTING_LAST_PERSON, str(cursor.lastrowid)),
+            )
+            self._conn.commit()
+            return cursor.lastrowid
 
     def rename_person(self, person_id: int, name: str) -> None:
         self._execute("UPDATE persons SET name = ?, updated_at = ? WHERE id = ?", (name, now_iso(), person_id))
@@ -919,6 +952,15 @@ class Database:
                 ref,
             ),
         )
+
+    def holder_name(self, holder: str) -> str:
+        """Nome registrato negli accessi di chi aveva questo token utente dell'A1210 (ora tolto dall'app)."""
+        rows = self._query(
+            "SELECT person_name FROM events WHERE kind = 'concesso' AND instr(raw, ?) > 0 AND person_name != '' "
+            "AND person_name != ? AND instr(person_name, ?) = 0 ORDER BY id DESC LIMIT 1",
+            (json.dumps({"CredentialHolderName": holder})[1:-1], holder, "(tolta dall'app)"),
+        )
+        return rows[0]["person_name"] if rows else ""
 
     def similar_event(self, *, ts: str, ref: str, only_recovered: bool = False) -> bool:
         """Stesso evento del controller (stessa impronta) già registrato entro un secondo;
