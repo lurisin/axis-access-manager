@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21.6
+
+- **"Più pressioni" solo per pressioni vere.** All'avvio l'app recupera dal controller gli eventi persi e rilegge anche gli ultimi già registrati: al banco un solo pulsante negato era stato segnato "più pressioni" perché la sua copia recuperata contava come una seconda pressione. Ora lo stesso evento arrivato due volte (via MQTT e dal registro del controller) non viene più contato. Vale anche per coperchio e inclinazione.
+
 ## 0.21.5
 
 Ritocchi dal collaudo a distanza della 0.21.4.

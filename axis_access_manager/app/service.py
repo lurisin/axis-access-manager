@@ -849,16 +849,9 @@ class AccessService:
                 # pulsante come Uscita, il relè come apertura a distanza dal citofono
                 logged = kind if not granted else "uscita" if pushed[2] == "rex" else "apertura_remota"
                 detail = pushed[1] if granted else f"{pushed[1]} · {DENIED_REASONS.get(reason, reason) or 'negato'}"
-                if not self._repeated(logged, pushed[0], door, ts, detail):
-                    self.log_event(
-                        ts=ts,
-                        kind=logged,
-                        source=pushed[0],
-                        detail=detail,
-                        raw=data,
-                        door=door,
-                        ref=event_ref(kind, door),
-                    )
+                ref = event_ref(kind, door)
+                if not self._repeated(logged, pushed[0], door, ts, detail, ref):
+                    self.log_event(ts=ts, kind=logged, source=pushed[0], detail=detail, raw=data, door=door, ref=ref)
                 return
             self.log_event(
                 ts=ts,
@@ -901,19 +894,17 @@ class AccessService:
             # Coperchio aperto o controller inclinato (staccato dal muro?): non riguarda una porta
             detail = CASING_OPEN if topic.startswith("Device/Casing") else TILTED
             source = self.controller_name()
-            if not self._repeated("manomissione", source, "", ts, detail):
-                self.log_event(
-                    ts=ts,
-                    kind="manomissione",
-                    detail=detail,
-                    source=source,
-                    ref=event_ref("manomissione", "", detail=detail),
-                )
+            ref = event_ref("manomissione", "", detail=detail)
+            if not self._repeated("manomissione", source, "", ts, detail, ref):
+                self.log_event(ts=ts, kind="manomissione", detail=detail, source=source, ref=ref)
 
-    def _repeated(self, kind: str, source: str, door: str, ts: str, detail: str) -> bool:
+    def _repeated(self, kind: str, source: str, door: str, ts: str, detail: str, ref: str) -> bool:
         """Stesso evento poco prima (rimbalzi, coperchio aperto e chiuso di continuo): non fa una riga nuova, segna
         quella già nel registro. Vale anche per gli eventi recuperati dal registro del controller, che così non
-        rifanno le righe accorpate."""
+        rifanno le righe accorpate. Lo stesso evento arrivato via MQTT e dal registro del controller non è una
+        ripetizione: al banco il recupero all'avvio aveva segnato "più pressioni" su una pressione sola."""
+        if self.db.similar_event(ts=ts, ref=ref, only_recovered=not self._recovering):
+            return True
         row = self.db.recent_event(kind, source, door, detail, ts, REPEAT_WINDOWS[kind])
         if row is None:
             return False

@@ -444,6 +444,37 @@ async def test_exit_button_from_mqtt_topic_is_logged_once_with_the_input_name(se
     assert len(db.list_events()) == 2
 
 
+async def test_same_press_from_mqtt_and_from_recovery_is_not_a_repeat(service, db):
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    db.save_controller_input(
+        controller_id, "REX", {"name": "Via Consulta - Videocitofono", "role": "intercom", "access_point_token": "ap"}
+    )
+    denied = {"AccessPointToken": "ap", "Reason": "NotPermittedAtThisTime"}
+    moment = datetime(2026, 10, 26, 12, 51, 41, tzinfo=UTC)
+
+    def press(recovering: bool, at: datetime) -> None:
+        service._recent_decisions.clear()
+        service._recovering = recovering
+        try:
+            service.record_event(Event("AccessControl", "AccessControl/Denied/Anonymous/", at, dict(denied)))
+        finally:
+            service._recovering = False
+
+    # Collaudo 0.21.5: un REX simulato, poi il recupero all'avvio lo rilegge e la riga diventava "più pressioni"
+    press(False, moment)
+    press(True, moment + timedelta(seconds=1))
+    [row] = db.list_events()
+    assert not row["detail"].endswith("più pressioni")
+    # Al contrario: recuperato prima, poi arriva in ritardo via MQTT
+    press(True, moment + timedelta(minutes=5))
+    press(False, moment + timedelta(minutes=5))
+    first, second = db.list_events()[:2]
+    assert not first["detail"].endswith("più pressioni") and not second["detail"].endswith("più pressioni")
+    # Una seconda pressione vera resta accorpata
+    press(False, moment + timedelta(minutes=5, seconds=4))
+    assert len(db.list_events()) == 2 and db.list_events()[0]["detail"].endswith("più pressioni")
+
+
 async def test_casing_and_tilt_are_merged_within_five_minutes(service, db):
     db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210 Banco", "verify_ssl": 0})
     start = datetime(2026, 10, 26, 12, 20, 59, tzinfo=UTC)
