@@ -1029,6 +1029,24 @@ class Database:
             )
         )
 
+    def recent_event(self, kind: str, source: str, door: str, detail: str, ts: str, window: int) -> dict | None:
+        """L'ultima riga dello stesso tipo, sorgente, porta e dettaglio (anche già segnata) nei window secondi
+        prima di ts."""
+        try:
+            moment = datetime.fromisoformat(ts)
+        except ValueError:
+            return None
+        low = (moment - timedelta(seconds=window)).isoformat(timespec="seconds")
+        rows = self._query(
+            "SELECT id, detail FROM events WHERE kind = ? AND source = ? AND door = ? AND instr(detail, ?) = 1 "
+            "AND ts BETWEEN ? AND ? ORDER BY ts DESC, id DESC LIMIT 1",
+            (kind, source, door, detail, low, ts),
+        )
+        return rows[0] if rows else None
+
+    def set_event_detail(self, event_id: int, detail: str) -> None:
+        self._execute("UPDATE events SET detail = ? WHERE id = ?", (detail, event_id))
+
     def last_controller_event(self, kinds: tuple[str, ...]) -> str:
         """Ora dell'ultimo evento arrivato dal controller: da lì si recuperano quelli persi."""
         marks = ", ".join("?" * len(kinds))

@@ -7,6 +7,7 @@ import logging
 
 from .db import Database
 from .installation import InstallationService
+from .programming import is_rex_profile
 from .rules import (
     STANDARD_PREFIX,
     RuleError,
@@ -232,6 +233,8 @@ class RulesService:
         default = self.access.default_group
         groups = []
         for profile in profiles:
+            if is_rex_profile(profile):
+                continue  # Il permesso di pulsanti e relè: si gestisce dagli ingressi, non è un gruppo di persone
             token = profile.get("token", "")
             schedule_tokens = profile_schedules(profile)
             groups.append(

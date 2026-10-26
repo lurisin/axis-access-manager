@@ -375,3 +375,36 @@ async def test_controller_back_online_wakes_the_card_sync(monitor, controller, c
     assert await round_with(True) is False  # non risponde
     assert await round_with(False) is True  # torna: rilettura subito
     assert await round_with(False) is False
+
+
+async def test_rex_inputs_without_permission_are_a_fault(monitor, controller, controller_row, db):
+    # Pulsante programmato fino alla 0.21.2: punto di accesso gestito, ma nessun profilo gli dà il permesso
+    controller.access_points.append({"token": "ap-rex", "Entity": "porta", "Name": "Pulsante Portineria"})
+    controller.access_controllers["Axis-x AccessController"]["AccessPoint"].append("ap-rex")
+    db.save_controller_input(
+        controller_row, "REX", {"name": "Pulsante Portineria", "role": "rex", "access_point_token": "ap-rex"}
+    )
+    await monitor.check_all()
+    state = monitor.states[controller_row]
+    assert state.rex_missing == ["Pulsante Portineria"] and state.unmanaged == []
+
+    items = NotificationService(db).collect(
+        mqtt_configured=True,
+        mqtt_connected=True,
+        controller_configured=True,
+        controller_online=True,
+        sync={"ok": True},
+        door_names={},
+        controllers=[{**state.as_dict(), "id": controller_row}],
+    )
+    assert [(i["title"], i["severity"]) for i in items] == [("Pulsanti Senza Permesso di Apertura", "crit")]
+    assert items[0]["text"].startswith("Quadro Teatro · Pulsante Portineria: il controller nega l'apertura")
+
+    # Con il profilo per le aperture senza tessera l'avviso sparisce al controllo successivo
+    controller.profiles["rex"] = {
+        "token": "rex",
+        "AuthenticationProfile": ["REXOnly"],
+        "AccessPolicy": [{"AccessPoint": "ap-rex", "Schedule": ["standard_always"]}],
+    }
+    await monitor.recheck_managed(db.get_controller(controller_row))
+    assert state.rex_missing == []

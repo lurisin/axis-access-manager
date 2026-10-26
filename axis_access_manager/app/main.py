@@ -31,7 +31,7 @@ from .health import HEALTH_INTERVAL, HealthMonitor, clock_fault, clock_problem, 
 from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
 from .notifications import FAULT_TYPES, NotificationService
-from .programming import INPUT_ROLES, ProgrammingService
+from .programming import CONTROLLER_INPUTS, INPUT_ROLES, REX_ROLES, ProgrammingService
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import RulesService
 from .service import (
@@ -70,6 +70,8 @@ RECOVER_OVERLAP = 10
 RECOVER_LIMIT = timedelta(days=7)
 
 SYNC_INTERVAL = 15 * 60
+# Pulsante o relè attivo da più di così: ingresso bloccato (il controller non vede nuove pressioni)
+STUCK_AFTER = 60
 SYNC_RETRY = 60
 PRUNE_INTERVAL = 24 * 3600
 # Ogni quanto si guarda se è ora di un backup pianificato o della verifica
@@ -1260,9 +1262,11 @@ def create_app(
 
     @app.put("/api/programming/inputs/{io}", dependencies=[need("impianti"), before_change()])
     async def program_input(io: str, body: ControllerInputIn, request: Request) -> dict:
-        saved = await request.app.state.programming.update_input(io, body.model_dump(), request_user(request))
+        state = request.app.state
+        saved = await state.programming.update_input(io, body.model_dump(), request_user(request))
         # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
-        await request.app.state.bridge.publish_input_names()
+        await state.bridge.publish_input_names()
+        await state.health.recheck_managed(state.installation.primary)
         return saved
 
     @app.put("/api/programming/access-points/{token:path}", dependencies=[need("impianti"), before_change()])
@@ -1275,8 +1279,9 @@ def create_app(
     async def program_manage(request: Request) -> dict:
         state = request.app.state
         managed = await state.programming.manage_access_points(request_user(request))
+        permitted = await state.programming.repair_rex_profile(request_user(request))
         await state.health.recheck_managed(state.installation.primary)
-        return {"managed": managed}
+        return {"managed": managed, "permitted": permitted}
 
     @app.put("/api/programming/links", dependencies=[need("impianti"), before_change()])
     async def program_links(body: LinksIn, request: Request) -> dict:
@@ -1288,6 +1293,7 @@ def create_app(
     async def undo_change(change_id: int, request: Request) -> dict:
         if await request.app.state.programming.undo(change_id, request_user(request)) == "input":
             await request.app.state.bridge.publish_input_names()
+            await request.app.state.health.recheck_managed(request.app.state.installation.primary)
         return {"ok": True}
 
     @app.get("/api/cameras", dependencies=[need("impianti")])
@@ -1391,6 +1397,11 @@ def create_app(
         if result.pop("reload"):
             await reload_runtime(request.app)
         if full:
+            # Backup di prima della 0.21.3: il permesso dei pulsanti non c'era, lo si rimette
+            try:
+                await state.programming.repair_rex_profile(user.label)
+            except (VapixError, ServiceError) as err:
+                _LOGGER.warning("Permesso dei pulsanti non rimesso dopo il ripristino: %s", err)
             await state.health.recheck_managed(state.installation.primary)
         return {**result, "backup_before": before["id"]}
 
@@ -1654,7 +1665,35 @@ def _current_notifications(state) -> list[dict]:
         missing=_missing_summary(state.db),
         backup=state.backups.last_error(),
         backup_verify=state.backups.last_verify(),
+        stuck_inputs=_stuck_inputs(state),
     )
+
+
+def _stuck_inputs(state, now: datetime | None = None) -> list[dict]:
+    """Pulsanti e relè del controller in uso attivi da più di STUCK_AFTER secondi (gli AUX dell'A1210 a volte
+    restano attivi dopo la prima pressione, fino al riavvio)."""
+    primary = state.installation.primary
+    if not primary:
+        return []
+    now = now or datetime.now(tz=UTC)
+    result = []
+    for io, row in state.db.controller_inputs(primary["id"]).items():
+        port = CONTROLLER_INPUTS.get(io, (None, None))[1]
+        since = state.monitor.io_since.get(port) if port is not None else None
+        if row["role"] not in REX_ROLES or not state.monitor.io_ports.get(port) or since is None:
+            continue
+        seconds = (now - since).total_seconds()
+        if seconds >= STUCK_AFTER:
+            result.append(
+                {
+                    "controller_id": primary["id"],
+                    "io": io,
+                    "name": row["name"],
+                    "since": since.isoformat(timespec="seconds"),
+                    "seconds": seconds,
+                }
+            )
+    return result
 
 
 def _notification_listing(request: Request) -> dict:
@@ -1978,6 +2017,13 @@ async def _maintenance(app: FastAPI) -> None:
                     # Dalla 0.10 i gruppi sono dentro le tipologie
                     if adopted := await state.rules.adopt_groups():
                         _LOGGER.info("Gruppi passati alle tipologie: %s modifiche", adopted)
+                    # Fino alla 0.21.2 pulsanti e relè non avevano il permesso di aprire: il controller li negava
+                    try:
+                        if permitted := await state.programming.repair_rex_profile():
+                            _LOGGER.info("Permesso di apertura dato a %s ingressi", permitted)
+                            await state.health.recheck_managed(state.installation.primary)
+                    except (VapixError, ServiceError) as err:
+                        _LOGGER.warning("Permesso dei pulsanti non controllato: %s", err)
             except (VapixError, ServiceError) as err:
                 state.last_sync = {"ok": False, "error": str(err), "result": None, "at": _now()}
                 _LOGGER.warning("Sincronizzazione non riuscita: %s", err)

@@ -2794,19 +2794,28 @@ async function viewController(el, ctrl, tab) {
   try { p = await api("api/programming"); } catch (err) { if (!body.isConnected) return; body.innerHTML = errorBox("Programmazione Non Leggibile", err) + '<p class="hint">Controlla il collegamento con l\'ingranaggio Connessione.</p>'; return; }
   if (!body.isConnected) return;
   // Punti di accesso che il controller non gestisce (dopo un reset): legge tessere e pulsanti ma non decide
-  const unmanaged = p.unmanaged?.length ? `<div class="alert err">${icon("alert")}<div class="grow"><b>${p.unmanaged.length === 1 ? "Punto di Accesso Non Gestito" : "Punti di Accesso Non Gestiti"}</b>${p.unmanaged.map((a) => esc(a.name)).join(", ")}: il controller legge tessere e pulsanti ma non decide, quindi la porta non si apre. Succede dopo un reset del controller.</div><button type="button" class="small primary" data-manage>Fai Gestire al Controller</button></div>` : "";
-  const errors = unmanaged + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "");
-  if (unmanaged) setTimeout(() => {
-    const button = body.querySelector("[data-manage]");
-    if (button) button.onclick = async () => {
+  const unmanaged = p.unmanaged?.length ? `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${p.unmanaged.length === 1 ? "Punto di Accesso Non Gestito" : "Punti di Accesso Non Gestiti"}</b>${p.unmanaged.map((a) => esc(a.name)).join(", ")}: il controller legge tessere e pulsanti ma non decide, quindi la porta non si apre. Succede dopo un reset del controller.</div><button type="button" class="small primary" data-manage>Fai Gestire al Controller</button></div>` : "";
+  // Pulsanti e relè senza il profilo che dà il permesso di aprire: il controller li nega
+  const rexMissing = p.rex_missing?.length ? `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${p.rex_missing.length === 1 ? "Pulsante Senza Permesso di Apertura" : "Pulsanti Senza Permesso di Apertura"}</b>${p.rex_missing.map((i) => esc(i.name)).join(", ")}: il controller nega l'apertura, quindi la porta non si apre. Succede con gli ingressi programmati prima della 0.21.3.</div><button type="button" class="small primary" data-manage>Dai il Permesso</button></div>` : "";
+  const errors = unmanaged + rexMissing + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "");
+  // Le due riparazioni passano dalla stessa richiesta: ogni pulsante le fa tutte e due
+  if (unmanaged || rexMissing) setTimeout(() => body.querySelectorAll("[data-manage]").forEach((button) => {
+    const label = button.textContent;
+    button.onclick = async () => {
       // Più letture e una scrittura sul controller: qualche secondo, e senza segno sembrava non succedere niente
-      button.disabled = true;
+      body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = true; });
       button.textContent = "Sto Scrivendo…";
       const r = await run(() => api("api/programming/manage", {method: "POST"}));
-      if (r) { toast(`${plural(r.managed, "punto di accesso gestito", "punti di accesso gestiti")} dal controller`); render(); }
-      else { button.disabled = false; button.textContent = "Fai Gestire al Controller"; }
+      if (r) {
+        const done = [r.managed && `${plural(r.managed, "punto di accesso gestito", "punti di accesso gestiti")} dal controller`, r.permitted && `permesso di apertura a ${plural(r.permitted, "ingresso", "ingressi")}`].filter(Boolean);
+        toast(done.length ? done.join(", ") : "Già tutto a posto");
+        render();
+      } else {
+        body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = false; });
+        button.textContent = label;
+      }
     };
-  });
+  }));
   const appDoor = (token) => ctrl.doors.find((d) => d.door_token === token);
   const doorName = (d) => appDoor(d.token)?.name || d.name || p.doors.find((x) => x.token === d.token)?.name || d.token;
   if (tab === "porte") return controllerDoors(body, ctrl, p, errors, appDoor);
@@ -2831,9 +2840,13 @@ const INPUT_ROLE_HINTS = {
   "": "L'ingresso non fa niente; resta solo lo stato in Home Assistant, se il controller lo manda.",
   rex: "Chiede l'apertura della porta, come un lettore in uscita: per il pulsante della portineria o di uscita.",
   intercom: "Il contatto del relè del citofono: apre la porta anche con Home Assistant spento. Nel registro compare come Relè Citofono.",
-  door_monitor: "Il contatto magnetico della porta: abilita gli allarmi di porta forzata e aperta troppo a lungo.",
+  door_monitor: "Il contatto magnetico della porta: in Home Assistant compare Contatto Porta (aperta o chiusa) e si attivano gli allarmi di porta forzata e aperta troppo a lungo.",
   alarm: "Nessuna azione sulla porta: lo stato arriva in Home Assistant con il nome scelto.",
 };
+// Al banco (firmware 10.12) gli AUX usati come pulsante sono rimasti attivi dopo la prima pressione fino al riavvio
+const AUX_OPENER_HINT = " Attenzione: sugli AUX il controller può restare bloccato dopo la prima pressione, finché non lo riavvii. Per i pulsanti è meglio l'ingresso REX della porta.";
+const inputRoleHint = (io, role) => (INPUT_ROLE_HINTS[role] || "") + (io.startsWith("IO") && (role === "rex" || role === "intercom") ? AUX_OPENER_HINT : "");
+const contactHint = (role) => role === "door_monitor" ? "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre." : "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.";
 
 function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   const saved = linksOf(p);
@@ -2974,10 +2987,10 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     const startName = role !== i.role && (i.name === i.default_name || Object.values(p.input_roles).includes(i.name)) ? p.input_roles[role] || i.default_name : i.name;
     const ok = await modal({title: i.name,
       body: `${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? " È anche il nome dell'entità in Home Assistant." : ""} Compare nel registro per le aperture da questo ingresso.`)}
-        ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(INPUT_ROLE_HINTS[role] || "")}</span>${i.io === "DPS" ? " Il ruolo Sensore Porta arriva dopo una prova al banco." : ""}`)}
+        ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(inputRoleHint(i.io, role))}</span>`)}
         <div data-door-field ${DOOR_INPUT_ROLES.includes(role) ? "" : "hidden"}>${field("Porta", `<select name="door">${doorOptions}</select>`)}</div>
-        ${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.")}
-        <div class="field inline"><input type="checkbox" name="supervised" id="f-sup" ${i.supervised ? "checked" : ""} ${i.can_supervise ? "" : "disabled"}><label for="f-sup">Linea Supervisionata</label></div>
+        ${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role))}</span>`)}
+        <div class="field inline"><input type="checkbox" name="supervised" id="f-sup" ${i.supervised ? "checked" : ""} ${i.can_supervise && role !== "door_monitor" ? "" : "disabled"}><label for="f-sup">Linea Supervisionata</label></div>
         <p class="hint" style="margin-top:-8px">${i.can_supervise ? "Con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. Attivala solo se le resistenze sono montate. Dopo averla tolta, l'ingresso può risultare attivo finché non riavvii il controller." : "Questo ingresso non supporta la linea supervisionata."}</p>`,
       onOpen: (dlg) => {
         const select = $('[name="role"]', dlg), name = $('[name="name"]', dlg);
@@ -2987,7 +3000,12 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
             name.value = select.value ? p.input_roles[select.value] : i.default_name;
           }
           $("[data-door-field]", dlg).hidden = !DOOR_INPUT_ROLES.includes(select.value);
-          $("[data-role-hint]", dlg).textContent = INPUT_ROLE_HINTS[select.value] || "";
+          $("[data-role-hint]", dlg).textContent = inputRoleHint(i.io, select.value);
+          $("[data-contact-hint]", dlg).textContent = contactHint(select.value);
+          // Il contatto porta con le resistenze non è ancora provato al banco
+          const supervised = $('[name="supervised"]', dlg);
+          supervised.disabled = !i.can_supervise || select.value === "door_monitor";
+          if (supervised.disabled) supervised.checked = false;
         };
       },
       actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>

@@ -45,8 +45,24 @@ def parse_event(prefix: str, topic: str, payload: bytes) -> Event | None:
     timestamp = (
         datetime.fromtimestamp(millis / 1000, tz=UTC) if isinstance(millis, int | float) else datetime.now(tz=UTC)
     )
-    data = body.get("message", {}).get("data", {})
+    message = body.get("message")
+    data: dict = {}
+    # Le sorgenti (porta, punto di accesso, numero dell'I/O) l'A1210 le mette nel topic e non nei dati
+    data.update(topic_sources(path))
+    for part in ("source", "key", "data"):
+        value = message.get(part) if isinstance(message, dict) else None
+        if isinstance(value, dict):
+            data.update(value)
     return Event(category=path.split("/", 1)[0], topic=path, timestamp=timestamp, data=data)
+
+
+def topic_sources(topic: str) -> dict[str, str]:
+    """Coppie nome/valore dopo $source nel topic: …/AccessGranted/Anonymous/$source/AccessPointToken/<token>."""
+    marker = "/$source/"
+    if marker not in topic:
+        return {}
+    parts = topic.split(marker, 1)[1].strip("/").split("/")
+    return {parts[i]: parts[i + 1] for i in range(0, len(parts) - 1, 2) if parts[i]}
 
 
 def event_from_log(entry: dict) -> Event | None:
@@ -111,6 +127,10 @@ class EventMonitor:
     casing_open: bool | None = None
     system_ready: str = ""
     io_ports: dict[str, bool] = field(default_factory=dict)
+    # Da quando ogni ingresso I/O è nello stato attuale: un pulsante attivo da minuti è un ingresso bloccato
+    io_since: dict[str, datetime] = field(default_factory=dict)
+    # Porta aperta o chiusa secondo il contatto porta (DoorPhysicalState: Open, Closed, Fault...), per token
+    door_physical: dict[str, str] = field(default_factory=dict)
     # Chiamata quando il controller va online o offline
     on_status: Callable[[], None] | None = None
     # Chiamata per ogni evento; retained=True per i messaggi conservati dal broker
@@ -216,7 +236,12 @@ class EventMonitor:
             self.system_ready = ts
         elif topic.startswith("Device/IO/Port") and IO_PORT_MARKER in topic and "state" in data:
             port = topic.rsplit(IO_PORT_MARKER, 1)[1].split("/", 1)[0]
-            self.io_ports[port] = str(data["state"]) == "1"
+            active = str(data["state"]) == "1"
+            if self.io_ports.get(port) != active:
+                self.io_since[port] = event.timestamp
+            self.io_ports[port] = active
+        elif topic.startswith("Door/State/DoorPhysicalState") and "State" in data:
+            self.door_physical[door_of_topic(topic) or self.door_token] = str(data["State"])
 
     async def run(self, settings: MqttSettings) -> None:
         """Resta collegato al broker, riconnettendosi in caso di errore."""

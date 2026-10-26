@@ -17,7 +17,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 
 from .db import Database, now_iso
-from .programming import unlinked_points
+from .programming import CONTROLLER_INPUTS, rex_policies, rex_uncovered, unlinked_points
 from .vapix import VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -52,6 +52,8 @@ class ControllerHealth:
     ntp: dict = field(default_factory=dict)
     # Punti di accesso per cui il controller non decide (dopo un reset): lì tessere e pulsanti non aprono
     unmanaged: list[str] = field(default_factory=list)
+    # Ingressi che aprono la porta senza il permesso di farlo: il controller li nega
+    rex_missing: list[str] = field(default_factory=list)
     # Controlli riusciti da quando risponde: decide quando rileggere ora e NTP
     answered: int = 0
 
@@ -234,6 +236,17 @@ class HealthMonitor:
             return
         state.unmanaged = [
             p.get("Name") or p["token"] for p in unlinked_points(points, controllers) if p.get("Enabled") is not False
+        ]
+        rows = self.db.controller_inputs(state.id)
+        existing = {p.get("token") for p in points}
+        wanted = [t for t in rex_policies(rows.values()) if t in existing]
+        try:
+            missing = set(rex_uncovered(await client.list_access_profiles(), wanted)) if wanted else set()
+        except VapixError as err:
+            _LOGGER.debug("Profili di accesso di %s non letti: %s", state.name, err)
+            return
+        state.rex_missing = [
+            rows[io]["name"] for io in CONTROLLER_INPUTS if io in rows and rows[io]["access_point_token"] in missing
         ]
 
     def check_identity(self, row: dict, state: ControllerHealth) -> None:

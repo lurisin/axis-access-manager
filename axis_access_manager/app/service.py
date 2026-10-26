@@ -25,6 +25,11 @@ CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
 # Ruoli degli ingressi del controller che aprono la porta: tipo di apertura per il registro
 INPUT_SOURCES = {"rex": "Pulsante Uscita", "intercom": "Relè Citofono"}
 CASING_OPEN = "coperchio del controller aperto"
+TILTED = "controller inclinato"
+# Eventi uguali e ravvicinati (rimbalzi di un contatto, coperchio aperto e chiuso più volte) in una riga sola:
+# finestra in secondi dalla riga già nel registro e parola aggiunta al dettaglio
+REPEAT_WINDOWS = {"apertura_remota": 10, "negato": 10, "manomissione": 300}
+REPEATED = {"apertura_remota": "più pressioni", "negato": "più pressioni", "manomissione": "ripetuta"}
 INPUT_TERMINALS = {"REX": "REX", "IO1": "Aux 1", "IO2": "Aux 2"}
 DENIED_REASONS = {
     "CredentialNotEnabled": "tessera sospesa",
@@ -54,6 +59,7 @@ RECOVER_TOPICS = (
     "Door/State/DoorAlarm/",
     "Door/State/DoorTamper/",
     "Device/Casing/Open",
+    "Device/Tampering/",
 )
 RECOVER_PAGE = 1000
 RECOVER_MAX = 30000
@@ -67,6 +73,7 @@ STATE_TOPICS = (
     "Device/Casing/Open",
     "Device/Status/SystemReady",
     "Device/IO/Port",
+    "Door/State/DoorPhysicalState",
 )
 
 
@@ -831,29 +838,21 @@ class AccessService:
                 return
             self._recent_decisions.append(key)
             kind = "concesso" if granted else "negato"
-            if pushed and not granted:
-                # Pulsante o relè del citofono che il controller non fa aprire: nel registro con il nome dell'ingresso
-                self.log_event(
-                    ts=ts,
-                    kind=kind,
-                    source=pushed[0],
-                    detail=f"{pushed[1]} · {DENIED_REASONS.get(reason, reason) or 'negato'}",
-                    raw=data,
-                    door=door,
-                    ref=event_ref(kind, door),
-                )
-                return
             if pushed:
-                # Pulsante di uscita o relè del citofono su un ingresso del controller: un'apertura senza tessera
-                self.log_event(
-                    ts=ts,
-                    kind="apertura_remota",
-                    source=pushed[0],
-                    detail=pushed[1],
-                    raw=data,
-                    door=door,
-                    ref=event_ref(kind, door),
-                )
+                # Pulsante di uscita o relè del citofono su un ingresso del controller: un'apertura senza tessera,
+                # o una pressione che il controller non fa aprire. Nel registro con il nome dell'ingresso
+                logged = "apertura_remota" if granted else kind
+                detail = pushed[1] if granted else f"{pushed[1]} · {DENIED_REASONS.get(reason, reason) or 'negato'}"
+                if not self._repeated(logged, pushed[0], door, ts, detail):
+                    self.log_event(
+                        ts=ts,
+                        kind=logged,
+                        source=pushed[0],
+                        detail=detail,
+                        raw=data,
+                        door=door,
+                        ref=event_ref(kind, door),
+                    )
                 return
             self.log_event(
                 ts=ts,
@@ -890,15 +889,33 @@ class AccessService:
                 door=door,
                 ref=event_ref("manomissione", door, detail=detail),
             )
-        elif topic.startswith("Device/Casing/Open") and str(data.get("Open")) == "1":
-            # Coperchio del controller: non riguarda una porta
-            self.log_event(
-                ts=ts,
-                kind="manomissione",
-                detail=CASING_OPEN,
-                source=self.controller_name(),
-                ref=event_ref("manomissione", "", detail=CASING_OPEN),
-            )
+        elif (topic.startswith("Device/Casing/Open") and str(data.get("Open")) == "1") or topic.startswith(
+            "Device/Tampering/TiltDetected"
+        ):
+            # Coperchio aperto o controller inclinato (staccato dal muro?): non riguarda una porta
+            detail = CASING_OPEN if topic.startswith("Device/Casing") else TILTED
+            source = self.controller_name()
+            if not self._repeated("manomissione", source, "", ts, detail):
+                self.log_event(
+                    ts=ts,
+                    kind="manomissione",
+                    detail=detail,
+                    source=source,
+                    ref=event_ref("manomissione", "", detail=detail),
+                )
+
+    def _repeated(self, kind: str, source: str, door: str, ts: str, detail: str) -> bool:
+        """Stesso evento poco prima (rimbalzi, coperchio aperto e chiuso di continuo): non fa una riga nuova, segna
+        quella già nel registro. Vale anche per gli eventi recuperati dal registro del controller, che così non
+        rifanno le righe accorpate."""
+        row = self.db.recent_event(kind, source, door, detail, ts, REPEAT_WINDOWS[kind])
+        if row is None:
+            return False
+        mark = f" · {REPEATED[kind]}"
+        if not row["detail"].endswith(mark):
+            self.db.set_event_detail(row["id"], row["detail"] + mark)
+            self._changed()
+        return True
 
     def _holder_name(self, data: dict) -> str:
         """Chi ha usato una tessera che l'app non ha più: l'A1210 manda il token dell'utente, non il nome.

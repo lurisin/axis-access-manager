@@ -96,6 +96,21 @@ async def test_summary_lists_what_changed(plant, controller):
     assert door["fields"] == [{"field": "AccessTime", "label": "Tempo di Apertura", "old": "7 s", "new": "9 s"}]
 
 
+async def test_compare_shows_the_door_contact(plant, controller):
+    # Collaudo 0.21.3: il confronto mostrava l'ingresso DPS ma non il DoorMonitor della porta
+    await plant.backup()
+    await plant.programming.update_input("DPS", {"role": "door_monitor", "door": "porta", "contact": "no"}, "admin")
+    manifest = await plant.backup()
+    diff = await plant.backups.compare(manifest["id"], "precedente", plant.clients)
+    sections = next(g for g in diff["groups"] if g["part"] != COMMON)["sections"]
+    door = next(c for s in sections for c in s["changed"] if c["label"] == "Porta Scala")
+    assert {f["label"]: (f["old"], f["new"]) for f in door["fields"]} == {
+        "DoorMonitor.Type": ("—", "Standard"),
+        "DoorMonitor.ValueWhenOpen": ("—", "Input Ground"),
+        "DoorMonitor.ValueWhenClosed": ("—", "Input Open"),
+    }
+
+
 async def test_password_and_volatile_fields_are_not_saved(plant, db):
     await plant.access.create_person("Anna", "04aa", "admin")
     db.touch_app_user("admin", "Admin")

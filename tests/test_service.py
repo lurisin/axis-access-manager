@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -406,6 +407,57 @@ async def test_exit_button_and_intercom_relay_are_logged_as_openings(service, db
     row = db.list_events()[0]
     assert row["kind"] == "negato" and row["source"] == "Relè Citofono" and row["card"] == ""
     assert row["detail"] == "Relè Citofono · Aux 1 · Boh"
+
+
+async def test_exit_button_from_mqtt_topic_is_logged_once_with_the_input_name(service, db):
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    token = "Axis-b8a44fe6a074:1792938186.362930000"
+    db.save_controller_input(
+        controller_id, "IO1", {"name": "Pulsante Portineria", "role": "rex", "access_point_token": token}
+    )
+    topic = f"accessi/x/eventi/AccessControl/AccessGranted/Anonymous/$source/AccessPointToken/{token}"
+    payload = json.dumps({"timestamp": 1761479926000, "message": {"source": {}, "key": {}, "data": {}}}).encode()
+    service.monitor.on_event = service.record_event
+    service.monitor.handle(topic, payload)
+    [row] = db.list_events()
+    assert row["kind"] == "apertura_remota" and row["source"] == "Pulsante Portineria"
+    assert row["detail"] == "Pulsante Uscita · Aux 1"
+
+    # Al banco un ponticello tenuto a mano ha dato 4 REX in 5 secondi: una riga sola, segnata
+    for millis in (1761479928000, 1761479930000, 1761479931000):
+        service.monitor.handle(topic, payload.replace(b"1761479926000", str(millis).encode()))
+    [row] = db.list_events()
+    assert row["detail"] == "Pulsante Uscita · Aux 1 · più pressioni"
+    # Il recupero dal registro del controller non rifà le pressioni accorpate
+    service._recovering = True
+    try:
+        moment = datetime.fromtimestamp(1761479930, tz=UTC)
+        service.record_event(
+            Event("AccessControl", "AccessControl/AccessGranted/Anonymous/", moment, {"AccessPointToken": token})
+        )
+    finally:
+        service._recovering = False
+    assert len(db.list_events()) == 1
+    # Una pressione più tardi è un'altra riga
+    service.monitor.handle(topic, payload.replace(b"1761479926000", b"1761479990000"))
+    assert len(db.list_events()) == 2
+
+
+async def test_casing_and_tilt_are_merged_within_five_minutes(service, db):
+    db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210 Banco", "verify_ssl": 0})
+    start = datetime(2026, 10, 26, 12, 20, 59, tzinfo=UTC)
+    for seconds in range(0, 125, 10):
+        moment = start + timedelta(seconds=seconds)
+        service.record_event(Event("Device", "Device/Casing/Open/$source/Name/Casing", moment, {"Open": "1"}))
+        service.record_event(Event("Device", "Device/Casing/Open/$source/Name/Casing", moment, {"Open": "0"}))
+    service.record_event(Event("Device", "Device/Tampering/TiltDetected", start, {}))
+    service.record_event(Event("Device", "Device/Tampering/TiltDetected", start + timedelta(seconds=40), {}))
+    rows = {e["detail"]: e for e in db.list_events()}
+    assert set(rows) == {"coperchio del controller aperto · ripetuta", "controller inclinato · ripetuta"}
+    assert all(e["kind"] == "manomissione" and e["source"] == "A1210 Banco" for e in rows.values())
+    # Dopo cinque minuti è un'altra manomissione
+    service.record_event(Event("Device", "Device/Tampering/TiltDetected", start + timedelta(minutes=6), {}))
+    assert [e["detail"] for e in db.list_events()][0] == "controller inclinato"
 
 
 async def test_controller_casing_tamper_names_the_controller_not_a_door(service, db):
