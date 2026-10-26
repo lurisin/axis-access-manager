@@ -127,6 +127,8 @@ class EventMonitor:
     casing_open: bool | None = None
     system_ready: str = ""
     io_ports: dict[str, bool] = field(default_factory=dict)
+    # Ingressi I/O cambiati dopo il primo valore ricevuto (dall'avvio dell'app o del controller)
+    io_changed: set[str] = field(default_factory=set)
     # Porta aperta o chiusa secondo il contatto porta (DoorPhysicalState: Open, Closed, Fault...), per token
     door_physical: dict[str, str] = field(default_factory=dict)
     # Chiamata quando il controller va online o offline
@@ -194,6 +196,10 @@ class EventMonitor:
             online = payload.decode(errors="replace") == "online"
             if not online and self.controller_online is not False:
                 self.outages += 1
+            if not online:
+                # Al riavvio il controller rimanda gli ingressi da capo, e il primo valore non conta come cambio
+                self.io_ports.clear()
+                self.io_changed.clear()
             self.controller_online = online
             if self.on_status:
                 self.on_status()
@@ -218,6 +224,15 @@ class EventMonitor:
             except Exception:
                 _LOGGER.exception("Errore nella gestione dell'evento %s", event.topic)
 
+    def input_active(self, port: str | None, pushbutton: bool = False) -> bool | None:
+        """Ingresso I/O attivo (None se non si sa). Gli AUX collegati come pulsante o relè (inout pu/gnd con un
+        utente REX) il controller li manda al contrario degli ingressi classici: al banco 1 a riposo, 0 alla
+        pressione (il REX scatta 40-50 ms dopo il passaggio a 0), e 0 dall'avvio fino alla prima pressione."""
+        value = self.io_ports.get(port) if port is not None else None
+        if value is None or not pushbutton:
+            return value
+        return port in self.io_changed and not value
+
     def _track_state(self, event: Event) -> None:
         """Stati che Home Assistant mostra come sensori acceso/spento."""
         data, topic = event.data, event.topic
@@ -235,6 +250,8 @@ class EventMonitor:
         elif topic.startswith("Device/IO/Port") and IO_PORT_MARKER in topic and "state" in data:
             port = topic.rsplit(IO_PORT_MARKER, 1)[1].split("/", 1)[0]
             active = str(data["state"]) == "1"
+            if port in self.io_ports and self.io_ports[port] != active:
+                self.io_changed.add(port)
             self.io_ports[port] = active
         elif topic.startswith("Door/State/DoorPhysicalState") and "State" in data:
             self.door_physical[door_of_topic(topic) or self.door_token] = str(data["State"])

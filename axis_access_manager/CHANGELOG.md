@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21.7
+
+- **Ingressi AUX dei pulsanti giusti in Home Assistant.** Dai tempi al millisecondo del banco: un AUX collegato come Pulsante Uscita o Relè Citofono il controller lo manda al contrario degli ingressi classici (1 a riposo, 0 mentre si preme: il REX scatta 40-50 ms dopo il passaggio a 0), e dopo l'avvio manda 0 fino alla prima pressione. Ora per questi ingressi l'app inverte la lettura e ignora il primo valore finché non vede un cambio; "Ingresso AUX 1" non resta più acceso a riposo. Gli ingressi classici (AUX non collegati, Manomissione, Allarme) restano come prima. Vale anche per lo stato in tempo reale nella pagina del controller.
+
 ## 0.21.6
 
 - **"Più pressioni" solo per pressioni vere.** All'avvio l'app recupera dal controller gli eventi persi e rilegge anche gli ultimi già registrati: al banco un solo pulsante negato era stato segnato "più pressioni" perché la sua copia recuperata contava come una seconda pressione. Ora lo stesso evento arrivato due volte (via MQTT e dal registro del controller) non viene più contato. Vale anche per coperchio e inclinazione.
