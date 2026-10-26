@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.21.4
+
+Correzioni dal collaudo sul posto del 26 ottobre, con pulsanti premuti davvero, contatto porta e coperchio.
+
+- **Pulsanti e relè nel Registro con il nome dell'ingresso.** Il controller manda il punto di accesso nel topic MQTT e non nei dati: l'app non riconosceva l'ingresso e registrava un "accesso concesso" dal controller, e Ultimo Accesso restava "nessuno". Ora le sorgenti del topic (punto di accesso, porta) fanno parte dei dati dell'evento.
+- **Pulsante negato non è più una "Tessera Sconosciuta"** nelle notifiche e nel Cruscotto: un negato senza tessera compare come Accesso Negato, con l'ingresso e il motivo.
+- **Pressioni ripetute accorpate.** Più pressioni dello stesso ingresso entro 10 secondi fanno una riga sola nel Registro ("più pressioni"); al banco un ponticello aveva dato 4 righe in 5 secondi. Coperchio aperto e chiuso di continuo e **controller inclinato** (nuovo) fanno una riga di Manomissione ogni 5 minuti.
+- **Sensore Porta**: il ruolo sul contatto porta è attivo. Scrive il DoorMonitor della porta e collega l'ingresso come provato al banco; un contatto impostato a mano viene riconosciuto.
+- **Contatto Porta** in Home Assistant, per ogni porta: aperta o chiusa secondo il contatto magnetico.
+- **Avviso "Ingresso Bloccato"** quando un pulsante o un relè resta attivo per più di un minuto (al banco un AUX è rimasto bloccato dopo la prima pressione fino al riavvio), e un consiglio in Impianti: per i pulsanti è meglio l'ingresso REX della porta.
+- **Confronto dei backup** con la configurazione delle porte (serratura, relè, contatto porta), una riga per voce cambiata, anche per i lettori.
+
 ## 0.21.3
 
 Correzione dall'analisi della documentazione Axis sul REX: il pulsante di uscita e il relè del citofono venivano negati.

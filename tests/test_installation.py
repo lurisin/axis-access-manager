@@ -259,6 +259,73 @@ async def test_inputs_from_before_get_the_permission_back(db, controller):
     assert await ProgrammingService(db, controller, None, asyncio.Lock()).repair_rex_profile() == 0
 
 
+async def test_door_contact_role_writes_the_door_monitor(db, controller):
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    with pytest.raises(ServiceError, match="linea supervisionata"):
+        await service.update_input("DPS", {"role": "door_monitor", "door": "porta", "supervised": True}, "admin")
+
+    # Come al banco: DoorMonitor Standard, contatto NA (porta chiusa = ingresso aperto), DPS ai due controlli
+    await service.update_input("DPS", {"name": "", "role": "door_monitor", "door": "porta", "contact": "no"}, "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config == {
+        "Lock.Type": "FailSecure",
+        "DoorMonitor.Type": "Standard",
+        "DoorMonitor.ValueWhenOpen": "Input Ground",
+        "DoorMonitor.ValueWhenClosed": "Input Open",
+    }
+    assert controller.io_assignments["DPS"] == {
+        "IoMode": "in:pu/gnd",
+        "IoUser": [
+            {"Type": "doorcontrol", "token": "porta", "Usage": "DoorOpenMonitor", "MultiIo": False},
+            {"Type": "doorcontrol", "token": "porta", "Usage": "DoorClosedMonitor", "MultiIo": False},
+        ],
+    }
+    inputs = {i["io"]: i for i in (await service.read())["inputs"]}
+    assert inputs["DPS"]["role"] == "door_monitor" and inputs["DPS"]["name"] == "Sensore Porta"
+    assert "door_monitor" in inputs["DPS"]["roles"]
+
+    # Contatto NC: valori invertiti
+    await service.update_input("DPS", {"role": "door_monitor", "door": "porta", "contact": "nc"}, "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.ValueWhenClosed"] == "Input Ground"
+
+    # Tolto: DoorMonitor spento e ingresso libero; serratura invariata
+    await service.update_input("DPS", {"role": ""}, "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "None" and config["Lock.Type"] == "FailSecure"
+    assert controller.io_assignments["DPS"]["IoUser"] == []
+
+
+async def test_door_contact_set_by_hand_is_recognised(db, controller):
+    # Al banco il contatto porta è stato impostato a mano: l'app lo mostra e lo può togliere
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    controller.door_configs["porta"]["Configuration"] += [
+        {"Name": "DoorMonitor.Type", "Value": "Standard"},
+        {"Name": "DoorMonitor.ValueWhenOpen", "Value": "Input Open"},
+        {"Name": "DoorMonitor.ValueWhenClosed", "Value": "Input Ground"},
+    ]
+    users = [
+        {"Type": "doorcontrol", "token": "porta", "Usage": u, "MultiIo": False}
+        for u in ("DoorOpenMonitor", "DoorClosedMonitor")
+    ]
+    await controller.set_io_assignment("DPS", "in:pu/gnd", users)
+    dps = {i["io"]: i for i in (await service.read())["inputs"]}["DPS"]
+    assert (dps["role"], dps["door"], dps["contact"]) == ("door_monitor", "porta", "nc")
+
+    await service.update_input("DPS", {"role": ""}, "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "None" and controller.io_assignments["DPS"]["IoUser"] == []
+    # Annullando la modifica torna com'era
+    change = db.list_controller_changes(controller_id)[0]
+    assert db.get_controller_change(change["id"])["before"]["role"] == "door_monitor"
+    await service.undo(change["id"], "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "Standard" and config["DoorMonitor.ValueWhenClosed"] == "Input Ground"
+    assert len(controller.io_assignments["DPS"]["IoUser"]) == 2
+
+
 async def test_unmanaged_access_points_are_shown_and_can_be_managed(db, controller):
     service = ProgrammingService(db, controller, 1, asyncio.Lock())
     controller.access_controllers["Axis-x AccessController"]["AccessPoint"] = []

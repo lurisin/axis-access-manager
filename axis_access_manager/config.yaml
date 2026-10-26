@@ -1,5 +1,5 @@
 name: Axis Access Manager
-version: "0.21.3"
+version: "0.21.4"
 slug: axis_access_manager
 description: Gestione tessere e controllo accessi per il controller Axis A1210
 url: https://github.com/lurisin/axis-access-manager

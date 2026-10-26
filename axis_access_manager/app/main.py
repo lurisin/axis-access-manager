@@ -31,7 +31,7 @@ from .health import HEALTH_INTERVAL, HealthMonitor, clock_fault, clock_problem, 
 from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
 from .notifications import FAULT_TYPES, NotificationService
-from .programming import INPUT_ROLES, ProgrammingService
+from .programming import CONTROLLER_INPUTS, INPUT_ROLES, REX_ROLES, ProgrammingService
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import RulesService
 from .service import (
@@ -70,6 +70,8 @@ RECOVER_OVERLAP = 10
 RECOVER_LIMIT = timedelta(days=7)
 
 SYNC_INTERVAL = 15 * 60
+# Pulsante o relè attivo da più di così: ingresso bloccato (il controller non vede nuove pressioni)
+STUCK_AFTER = 60
 SYNC_RETRY = 60
 PRUNE_INTERVAL = 24 * 3600
 # Ogni quanto si guarda se è ora di un backup pianificato o della verifica
@@ -1663,7 +1665,35 @@ def _current_notifications(state) -> list[dict]:
         missing=_missing_summary(state.db),
         backup=state.backups.last_error(),
         backup_verify=state.backups.last_verify(),
+        stuck_inputs=_stuck_inputs(state),
     )
+
+
+def _stuck_inputs(state, now: datetime | None = None) -> list[dict]:
+    """Pulsanti e relè del controller in uso attivi da più di STUCK_AFTER secondi (gli AUX dell'A1210 a volte
+    restano attivi dopo la prima pressione, fino al riavvio)."""
+    primary = state.installation.primary
+    if not primary:
+        return []
+    now = now or datetime.now(tz=UTC)
+    result = []
+    for io, row in state.db.controller_inputs(primary["id"]).items():
+        port = CONTROLLER_INPUTS.get(io, (None, None))[1]
+        since = state.monitor.io_since.get(port) if port is not None else None
+        if row["role"] not in REX_ROLES or not state.monitor.io_ports.get(port) or since is None:
+            continue
+        seconds = (now - since).total_seconds()
+        if seconds >= STUCK_AFTER:
+            result.append(
+                {
+                    "controller_id": primary["id"],
+                    "io": io,
+                    "name": row["name"],
+                    "since": since.isoformat(timespec="seconds"),
+                    "seconds": seconds,
+                }
+            )
+    return result
 
 
 def _notification_listing(request: Request) -> dict:

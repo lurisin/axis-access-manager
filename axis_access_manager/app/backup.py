@@ -726,10 +726,14 @@ def controller_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
         },
     )
     app_doors = {d["door_token"]: d for d in part.get("app_doors", [])}
+    door_configs = part.get("door_configurations", [])
     for door in part.get("doors", []):
         token = door.get("token", "")
         app = app_doors.get(token) or {}
         fields = {"Name": door.get("Name") or "", "Description": door.get("Description") or ""}
+        # Serratura, relè e contatto porta (DoorMonitor): senza, il confronto non mostrava il sensore porta
+        if door_configs:
+            fields["configuration"] = _configuration_text(door_configs, token)
         show = {}
         for field in DOOR_TIMES:
             if field in door:
@@ -868,11 +872,20 @@ def diff_views(old: dict, new: dict) -> list[dict]:
                 continue
             a, b = before[k], after[k]
             names = list(dict.fromkeys([*b["fields"], *a["fields"]]))
-            fields = [
-                {"field": f, "label": FIELD_LABELS.get(f, f), "old": _shown(a, f), "new": _shown(b, f)}
-                for f in names
-                if a["fields"].get(f) != b["fields"].get(f)
-            ]
+            fields = []
+            for f in names:
+                was, now = a["fields"].get(f), b["fields"].get(f)
+                if was == now:
+                    continue
+                if isinstance(was, dict) and isinstance(now, dict):
+                    # Configurazione di porte e lettori: una riga per voce cambiata, non tutto l'elenco
+                    fields += [
+                        {"field": f"{f}.{n}", "label": n, "old": _text(was.get(n)), "new": _text(now.get(n))}
+                        for n in dict.fromkeys([*now, *was])
+                        if was.get(n) != now.get(n)
+                    ]
+                    continue
+                fields.append({"field": f, "label": FIELD_LABELS.get(f, f), "old": _shown(a, f), "new": _shown(b, f)})
             if fields:
                 changed.append({"key": k, "label": b["label"], "fields": fields})
         if added or removed or changed:

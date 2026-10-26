@@ -129,6 +129,14 @@ async def test_controller_and_door_condition_entities(bridge):
     for mode, value in (("Locked", "OFF"), ("Accessed", "ON"), ("Unlocked", "ON"), ("LockedDown", "OFF")):
         monitor.door_modes["porta"] = mode
         assert bridge.state()["serrature"] == {"porta": value}
+    # Contatto porta (classe door): acceso = aperta, sconosciuto senza contatto o con un guasto
+    contact = config("binary_sensor", "contatto_porta")
+    assert contact["name"] == "Contatto Porta" and contact["device_class"] == "door"
+    assert contact["value_template"] == "{{ value_json.contatti['porta'] }}"
+    assert state["contatti"] == {"porta": "None"}
+    for physical, value in (("Open", "ON"), ("Closed", "OFF"), ("Fault", "None")):
+        monitor.door_physical["porta"] = physical
+        assert bridge.state()["contatti"] == {"porta": value}
     porta = state["condizioni"]["porta"]
     assert porta["allarme"] == {"stato": "ON", "tipo": "Porta Forzata", "ultimo_cambio": "t"}
     assert porta["preallarme"]["stato"] == "None"

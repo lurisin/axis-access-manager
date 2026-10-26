@@ -111,9 +111,10 @@ Il pallino accanto al nome mostra lo stato in tempo reale degli ingressi che lo 
 - **Ruolo**:
   - **Pulsante Uscita**: chiede l'apertura della porta e sblocca la serratura, ad esempio dal pulsante della portineria. Più pulsanti in parallelo sulla stessa linea vanno bene.
   - **Relè Citofono**: il contatto del relè del citofono. Apre la porta anche con Home Assistant spento.
+  - **Sensore Porta** (solo sull'ingresso contatto porta): il contatto magnetico della porta. L'app attiva il controllo della porta (DoorMonitor) e collega l'ingresso: in Home Assistant compare **Contatto Porta** e si attivano gli allarmi di porta forzata e aperta troppo a lungo. Normalmente Aperto vuol dire che con la porta chiusa il contatto è aperto. La linea supervisionata per questo ruolo non è ancora disponibile. Un contatto impostato a mano sul controller viene riconosciuto e si può togliere dall'app.
   - **Ingresso di Allarme**: solo stato in Home Assistant.
   - **Non Usato**.
-- **Porta**: per Pulsante Uscita e Relè Citofono.
+- **Porta**: per Pulsante Uscita, Relè Citofono e Sensore Porta.
 - **Contatto**: Normalmente Aperto o Normalmente Chiuso.
 - **Linea Supervisionata**: con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. È consigliata per il citofono esterno.
 
@@ -127,12 +128,12 @@ Senza quella regola il controller riceve la pressione ma la nega (profilo di acc
 
 Togliendo il ruolo, l'app li rimuove. Ogni modifica compare nello Storico Modifiche e si può annullare. Lo schema dei lettori non mostra questi punti e non li tocca.
 
-Nel registro l'apertura compare con il nome dato all'ingresso, ad esempio "Pulsante Portineria", e nel dettaglio il ruolo e il morsetto, ad esempio "Pulsante Uscita · Aux 1". Il nome resta quello che aveva al momento dell'apertura, anche se poi lo cambi.
+Nel registro l'apertura compare con il nome dato all'ingresso, ad esempio "Pulsante Portineria", e nel dettaglio il ruolo e il morsetto, ad esempio "Pulsante Uscita · Aux 1". Il nome resta quello che aveva al momento dell'apertura, anche se poi lo cambi. Più pressioni dello stesso ingresso entro 10 secondi (un contatto che rimbalza, un pulsante tenuto) fanno una riga sola, con "più pressioni" nel dettaglio.
 
 Da sapere:
 - Sull'A1210 un ingresso, una volta assegnato, non torna mai "mai usato": togliendo il ruolo resta un ingresso semplice libero.
 - Dopo aver tolto la linea supervisionata, l'ingresso può risultare attivo finché non riavvii il controller.
-- Il ruolo **Sensore Porta** sul contatto porta arriverà dopo una prova al banco.
+- Al banco (firmware 10.12) gli **AUX usati come pulsante** sono rimasti attivi dopo la prima pressione, finché non si è riavviato il controller: nel frattempo il pulsante non apre più. Per i pulsanti è meglio l'ingresso REX della porta. Se un pulsante o un relè resta attivo per più di un minuto compare l'avviso **Ingresso Bloccato**.
 
 ### Porte, lettori e storico
 
@@ -182,6 +183,7 @@ Con `ha_integration` attivo compare il dispositivo **Controllo Accessi** con que
 
 - sensori: Stato Porta, Ultimo Accesso (con persona, tessera ed esito negli attributi), Accessi Oggi, Accessi Negati Oggi, Tessere da Registrare, Persone Registrate;
 - per ogni porta, il sensore acceso/spento **Elettroserratura Porta** (classe lock: spento bloccata, acceso sbloccata, anche quando è aperta a tempo da una tessera), che nelle dashboard mostra il lucchetto;
+- per ogni porta, il sensore acceso/spento **Contatto Porta** (classe door: acceso aperta, spento chiusa) dal contatto magnetico della porta; senza contatto porta resta sconosciuto;
 - per ogni porta, sensori acceso/spento **Allarme Porta** (porta forzata o aperta troppo a lungo), **Preallarme Porta** e **Manomissione Porta**, con negli attributi il tipo e l'ora dell'ultimo cambio;
 - controller: **Controller Online**, **Coperchio Controller Aperto**, **Ultimo Avvio Controller** e gli ingressi **Ingresso AUX 1**, **Ingresso AUX 2**, **Ingresso Manomissione**, **Ingresso Allarme** (porte I/O 0-3);
 - pulsanti **Apri Porta** e **Apri Porta a Lungo** per le porte che li hanno attivi in Impianti: aprono solo a serratura bloccata e solo con un'apertura a tempo;
@@ -223,7 +225,7 @@ Per le tessere **già registrate** il file aggiorna la persona: gruppo, validit�
 
 Per il registro servono gli eventi **AccessControl** (accesso concesso, negato, tessera sconosciuta). Se nella scheda Stato del controller la voce "Eventi AccessControl" resta gialla dopo il passaggio di una tessera, aggiungili al filtro eventi del client MQTT dell'A1210.
 
-I sensori di Home Assistant usano anche **Door** (stato, allarmi, manomissione) e **Device** (coperchio, avvio, porte I/O). Un sensore resta "sconosciuto" finché il controller non manda il primo evento: se gli ingressi I/O restano sconosciuti anche cambiandoli, aggiungi `Device/IO/Port` al filtro eventi MQTT dell'A1210.
+I sensori di Home Assistant usano anche **Door** (stato, contatto porta, allarmi, manomissione) e **Device** (coperchio, inclinazione, avvio, porte I/O). Un sensore resta "sconosciuto" finché il controller non manda il primo evento: se gli ingressi I/O restano sconosciuti anche cambiandoli, aggiungi `Device/IO/Port` al filtro eventi MQTT dell'A1210.
 
 ## Citofono Hikvision
 

@@ -13,8 +13,39 @@ def test_parse_event_strips_prefix():
     event = parse_event(PREFIX, f"{PREFIX}/eventi/IdPoint/Request/IdData/$source/IdPoint/x", payload({"Card": "04a1"}))
     assert event.category == "IdPoint"
     assert event.topic == "IdPoint/Request/IdData/$source/IdPoint/x"
-    assert event.data == {"Card": "04a1"}
+    # Le sorgenti nel topic diventano dati come gli altri
+    assert event.data == {"Card": "04a1", "IdPoint": "x"}
     assert event.timestamp.year == 2024
+
+
+def test_parse_event_takes_access_point_and_sources_from_topic_and_message():
+    # Come al banco: l'AccessGranted del pulsante ha il punto di accesso solo nel topic, senza dati
+    token = "Axis-b8a44fe6a074:1792938186.362930000"
+    topic = f"{PREFIX}/eventi/AccessControl/AccessGranted/Anonymous/$source/AccessPointToken/{token}"
+    assert parse_event(PREFIX, topic, payload({})).data == {"AccessPointToken": token}
+    # Con la sorgente anche nel messaggio, e i dati che vincono sui doppioni
+    body = {"message": {"source": {"DoorToken": "porta"}, "key": {}, "data": {"State": "Open"}}}
+    event = parse_event(PREFIX, f"{PREFIX}/eventi/Door/State/DoorPhysicalState", json.dumps(body).encode())
+    assert event.data == {"DoorToken": "porta", "State": "Open"}
+    tilt = parse_event(PREFIX, f"{PREFIX}/eventi/Device/Tampering/TiltDetected", b'{"message": {}}')
+    assert tilt.data == {} and tilt.category == "Device"
+
+
+def test_monitor_tracks_door_contact_and_how_long_an_input_is_active():
+    monitor = EventMonitor(prefix=PREFIX, door_token="porta")
+    topic = f"{PREFIX}/eventi/Door/State/DoorPhysicalState/$source/DoorToken/porta"
+    monitor.handle(topic, payload({"State": "Open"}))
+    assert monitor.door_physical == {"porta": "Open"}
+    monitor.handle(topic, payload({"State": "Closed"}))
+    assert monitor.door_physical == {"porta": "Closed"}
+
+    port = f"{PREFIX}/eventi/Device/IO/Port/$source/port/0"
+    monitor.handle(port, payload({"state": "1"}, timestamp=1729800000000))
+    monitor.handle(port, payload({"state": "1"}, timestamp=1729800060000))
+    # Lo stesso stato ripetuto non sposta l'inizio
+    assert monitor.io_ports["0"] is True and monitor.io_since["0"].timestamp() == 1729800000
+    monitor.handle(port, payload({"state": "0"}, timestamp=1729800090000))
+    assert monitor.io_ports["0"] is False and monitor.io_since["0"].timestamp() == 1729800090
 
 
 def test_parse_event_ignores_other_topics_and_bad_payloads():

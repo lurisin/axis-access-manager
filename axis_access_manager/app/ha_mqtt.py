@@ -32,6 +32,9 @@ DOOR_MODES = {
 UNLOCKED_MODES = {"Accessed", "Unlocked", "LockedOpen"}
 LOCKED_MODES = {"Locked", "Blocked", "LockedDown", "DoubleLocked"}
 
+# Contatto porta (DoorPhysicalState): acceso = aperta. Senza contatto porta, o con un guasto, è sconosciuto
+DOOR_PHYSICAL = {"Open": True, "Closed": False}
+
 # Tipo di evento del log → tipo di evento in Home Assistant
 EVENT_TYPES = {
     "concesso": "accesso_concesso",
@@ -309,6 +312,19 @@ class HaBridge:
                     },
                 )
             )
+            # Aperta o chiusa secondo il contatto porta: la serratura può essere bloccata con la porta aperta
+            entities.append(
+                (
+                    "binary_sensor",
+                    f"contatto_porta{suffix}",
+                    {
+                        **state,
+                        "name": f"Contatto {label}",
+                        "device_class": "door",
+                        "value_template": f"{{{{ value_json.contatti['{door['door_token']}'] }}}}",
+                    },
+                )
+            )
             for key, (name, device_class, icon) in DOOR_CONDITIONS.items():
                 path = f"value_json.condizioni['{door['door_token']}'].{key}"
                 entities.append(
@@ -402,6 +418,10 @@ class HaBridge:
             "porte": {d["door_token"]: door_label(self.monitor.door_modes.get(d["door_token"])) for d in self.doors},
             "serrature": {
                 d["door_token"]: lock_state(self.monitor.door_modes.get(d["door_token"])) for d in self.doors
+            },
+            "contatti": {
+                d["door_token"]: on_off(DOOR_PHYSICAL.get(self.monitor.door_physical.get(d["door_token"], "")))
+                for d in self.doors
             },
             "accessi_oggi": counts.get("concesso", 0) + counts.get("apertura_remota", 0),
             # Una tessera sconosciuta dà anche il diniego del controller: si conta quello

@@ -49,8 +49,7 @@ INPUT_ROLES = {
 DOOR_ROLES = {"rex", "intercom", "door_monitor"}
 # Ruoli possibili per ogni ingresso: il contatto porta e il REX sono del connettore Door, gli AUX sono liberi
 ALLOWED_ROLES = {
-    # Sensore Porta: da provare al banco prima di scriverlo sul controller
-    "DPS": {""},
+    "DPS": {"", "door_monitor"},
     "REX": {"", "rex", "intercom"},
     "IO1": {"", "rex", "intercom", "alarm"},
     "IO2": {"", "rex", "intercom", "alarm"},
@@ -58,6 +57,18 @@ ALLOWED_ROLES = {
     "ALARM": {"", "alarm"},
 }
 CONTACTS = {"no": "Normalmente Aperto", "nc": "Normalmente Chiuso"}
+# Sensore Porta (DoorMonitor della porta, provato al banco): stato del contatto con la porta aperta e chiusa.
+# Normalmente Aperto: con la porta chiusa il contatto è aperto, aprendo la porta si chiude verso massa
+DOOR_MONITOR_VALUES = {
+    "no": {"DoorMonitor.ValueWhenOpen": "Input Ground", "DoorMonitor.ValueWhenClosed": "Input Open"},
+    "nc": {"DoorMonitor.ValueWhenOpen": "Input Open", "DoorMonitor.ValueWhenClosed": "Input Ground"},
+}
+DOOR_MONITOR_OFF = {
+    "DoorMonitor.Type": "None",
+    "DoorMonitor.ValueWhenOpen": "None",
+    "DoorMonitor.ValueWhenClosed": "None",
+}
+DOOR_MONITOR_USAGES = ("DoorOpenMonitor", "DoorClosedMonitor")
 # Ruoli che il controller gestisce come richiesta di apertura (REX): un punto di identificazione senza lettore
 # con l'ingresso assegnato e un punto di accesso in uscita con il profilo REXOnly di fabbrica
 REX_ROLES = {"rex", "intercom"}
@@ -110,7 +121,24 @@ def _terminals(pins: list[dict]) -> list[str]:
     return [f"{name}:{'+'.join(numbers)}" if name else "+".join(numbers) for name, numbers in grouped.items()]
 
 
-def _inputs(info: list[dict], assigned: list[dict], saved: dict[str, dict] | None = None) -> list[dict]:
+def door_monitor_of(io: str, assigned: list[dict], door_configs: list[dict]) -> dict | None:
+    """Sensore Porta impostato sul controller senza l'app (a mano o da un ripristino): porta e tipo di contatto."""
+    users = next((a.get("IoUser") or [] for a in assigned if a.get("IoName") == io), [])
+    door = next((u.get("token") for u in users if u.get("Usage") == DOOR_MONITOR_USAGES[0]), "")
+    if not door:
+        return None
+    config = {c.get("Name"): c.get("Value") for c in _door_config(door_configs, door).get("Configuration") or []}
+    contact = next((k for k, v in DOOR_MONITOR_VALUES.items() if all(config.get(n) == x for n, x in v.items())), "no")
+    return {"role": "door_monitor", "door_token": door, "contact": contact, "supervised": False}
+
+
+def _door_config(configs: list[dict], door: str) -> dict:
+    return next((c for c in configs if c.get("token") == door), {})
+
+
+def _inputs(
+    info: list[dict], assigned: list[dict], saved: dict[str, dict] | None = None, door_configs: list[dict] | None = None
+) -> list[dict]:
     """Ingressi fisici del controller: morsetti, supervisione, a chi sono assegnati ora e cosa ne fa l'app."""
     saved = saved or {}
     users = {a.get("IoName"): a.get("IoUser") or [] for a in assigned}
@@ -121,6 +149,8 @@ def _inputs(info: list[dict], assigned: list[dict], saved: dict[str, dict] | Non
         if item is None:
             continue
         mine = saved.get(io, {})
+        if not mine.get("role"):
+            mine = {**mine, **(door_monitor_of(io, assigned, door_configs or []) or {})}
         result.append(
             {
                 "io": io,
@@ -349,7 +379,7 @@ class ProgrammingService:
             "unmanaged": [{"token": a["token"], "name": a.get("Name") or a["token"]} for a in unmanaged],
             # Pulsanti e relè senza il permesso di aprire: il controller li nega (InvalidAccessProfile)
             "rex_missing": rex_missing,
-            "inputs": _inputs(io_info, io_assigned, self.db.controller_inputs(self.controller_id)),
+            "inputs": _inputs(io_info, io_assigned, self.db.controller_inputs(self.controller_id), door_configs),
             "input_roles": INPUT_ROLES,
             "contacts": CONTACTS,
             "directions": DIRECTIONS,
@@ -503,6 +533,8 @@ class ProgrammingService:
         contact = data.get("contact") or "no"
         if contact not in CONTACTS:
             raise ServiceError("tipo di contatto non valido")
+        if role == "door_monitor" and data.get("supervised"):
+            raise ServiceError("Sensore Porta: la linea supervisionata non è ancora disponibile")
         name = " ".join(normalize_text(data.get("name"), 64, "nome").split())
         values = {
             "name": name or (INPUT_ROLES[role] if role else CONTROLLER_INPUTS[io][0]),
@@ -520,6 +552,8 @@ class ProgrammingService:
                 "contact": "no",
                 "supervised": False,
                 "schedule": "",
+                # Contatto porta impostato a mano sul controller: l'app lo riconosce e lo può togliere
+                **(await self._door_monitor_on_controller(io) or {}),
             }
             before = {k: current.get(k) for k in INPUT_SETTINGS}
             if before == values:
@@ -539,6 +573,9 @@ class ProgrammingService:
         }
         wanted = values["role"] in REX_ROLES
         try:
+            monitor = current.get("role") == "door_monitor"
+            if monitor and (values["role"] != "door_monitor" or values["door_token"] != current.get("door_token")):
+                await self._clear_door_monitor(io, current.get("door_token") or "")
             point = tokens["access_point_token"]
             if point and (not wanted or values["door_token"] != current.get("door_token")):
                 # Prima la regola che lo nomina, poi il punto di accesso
@@ -554,10 +591,50 @@ class ProgrammingService:
             else:
                 await self._write_rex(io, values, tokens)
                 await self._sync_rex(io, {**values, **tokens})
+            if values["role"] == "door_monitor":
+                await self._write_door_monitor(io, values)
         except VapixError as err:
             self.db.save_controller_input(controller_id, io, {**current, **tokens})
             raise ServiceError(f"il controller ha rifiutato la configurazione dell'ingresso: {err}") from err
         self.db.save_controller_input(controller_id, io, {**values, **tokens})
+
+    async def _door_monitor_on_controller(self, io: str) -> dict | None:
+        if io != "DPS":
+            return None
+        try:
+            _, assigned = await self.controller.list_io()
+            return door_monitor_of(io, assigned, await self.controller.list_door_configurations())
+        except VapixError:
+            return None
+
+    async def _set_door_monitor(self, door: str, changes: dict[str, str]) -> None:
+        """Cambia solo le voci DoorMonitor della configurazione della porta; il resto (serratura, relè) resta."""
+        current = _door_config(await self.controller.list_door_configurations(), door)
+        if not current:
+            raise VapixError("configurazione della porta non trovata")
+        items = [dict(c) for c in current.get("Configuration") or []]
+        for item in items:
+            if item.get("Name") in changes:
+                item["Value"] = changes[item["Name"]]
+        names = {item.get("Name") for item in items}
+        items += [{"Name": k, "Value": v} for k, v in changes.items() if k not in names]
+        await self.controller.set_door_configuration(
+            {"token": door, "DeviceUUID": current.get("DeviceUUID") or "", "Configuration": items}
+        )
+
+    async def _write_door_monitor(self, io: str, values: dict) -> None:
+        """Contatto porta come al banco: DoorMonitor Standard sulla porta e l'ingresso ai due controlli della porta."""
+        door = values["door_token"]
+        await self._set_door_monitor(door, {"DoorMonitor.Type": "Standard", **DOOR_MONITOR_VALUES[values["contact"]]})
+        users = [
+            {"Type": "doorcontrol", "token": door, "Usage": usage, "MultiIo": False} for usage in DOOR_MONITOR_USAGES
+        ]
+        await self.controller.set_io_assignment(io, "in:pu/gnd", users)
+
+    async def _clear_door_monitor(self, io: str, door: str) -> None:
+        if door:
+            await self._set_door_monitor(door, DOOR_MONITOR_OFF)
+        await self.controller.set_io_assignment(io, "in:pu/gnd", [])
 
     async def _release_io(self, io: str, idpoint: str, current: dict) -> None:
         """Libera l'I/O tornando al modo semplice. Senza utenti il firmware accetta il cambio di modo ma lo ignora:
