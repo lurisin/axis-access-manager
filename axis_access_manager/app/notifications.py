@@ -355,17 +355,34 @@ class NotificationService:
                 link="#impianti/backup",
             )
         for item in stuck_inputs or []:
+            key = f"stuck:{item['controller_id']}:{item['io']}:{item['since']}"
+            pressed = f"{item['name']} risulta premuto da {_minutes(item['seconds'])}"
+            link = f"#impianti/c{item['controller_id']}"
+            if item["io"].startswith("IO"):
+                # AUX al banco (firmware 10.12): dopo la prima pressione resta a 1 e a ogni pressione fa un breve
+                # 1→0→1; il pulsante apre ancora, ma lo stato dell'ingresso in Home Assistant è al contrario
+                add(
+                    "controller",
+                    key,
+                    "low",
+                    "Stato Ingresso Non Affidabile",
+                    f"{pressed}. Se non c'è niente premuto, il controller legge l'ingresso al contrario, un difetto "
+                    "del firmware sugli AUX: il pulsante apre comunque, ma lo stato in Home Assistant è invertito. "
+                    "Il riavvio del controller lo sistema fino alla pressione successiva: per i pulsanti usa "
+                    "l'ingresso REX della porta",
+                    item["since"],
+                    link=link,
+                )
+                continue
             # Pulsante o relè attivo da minuti: il controller aspetta il rilascio e non vede le nuove pressioni
             add(
                 "controller",
-                f"stuck:{item['controller_id']}:{item['io']}:{item['since']}",
+                key,
                 "warn",
                 "Ingresso Bloccato",
-                f"{item['name']} risulta premuto da {_minutes(item['seconds'])}: il controller non vede le nuove "
-                "pressioni. Se non c'è niente premuto, riavvia il controller"
-                + ("; per i pulsanti usa l'ingresso REX della porta" if item["io"].startswith("IO") else ""),
+                f"{pressed}: il controller non vede le nuove pressioni. Controlla il pulsante e i cavi",
                 item["since"],
-                link=f"#impianti/c{item['controller_id']}",
+                link=link,
             )
         titles = {"allarme": "Allarme Porta", "manomissione": "Manomissione"}
         if levels["door_alarm"] != "off":

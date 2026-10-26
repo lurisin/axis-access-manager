@@ -163,11 +163,16 @@ def test_denied_without_card_is_not_an_unknown_card(db):
 def test_stuck_input_is_a_fault(db):
     service = NotificationService(db)
     stuck = {"controller_id": 1, "io": "IO1", "name": "Pulsante Portineria", "since": "2026-10-26T12:18:30+00:00"}
+    # AUX: al banco resta a 1 dopo la prima pressione ma il pulsante apre ancora; è lo stato a non essere affidabile
     [item] = _collect(service, stuck_inputs=[{**stuck, "seconds": 600}])
-    assert item["title"] == "Ingresso Bloccato" and item["severity"] == "warn" and item["link"] == "#impianti/c1"
+    assert item["title"] == "Stato Ingresso Non Affidabile" and item["severity"] == "low"
+    assert item["link"] == "#impianti/c1"
     assert item["text"].startswith("Pulsante Portineria risulta premuto da 10 minuti")
+    assert "il pulsante apre comunque" in item["text"]
     assert item["text"].endswith("per i pulsanti usa l'ingresso REX della porta")
+    # Ingresso REX sempre chiuso: pulsante tenuto o cavi in corto, le nuove pressioni non arrivano
     [item] = _collect(service, stuck_inputs=[{**stuck, "io": "REX", "seconds": 7300}])
+    assert item["title"] == "Ingresso Bloccato" and item["severity"] == "warn"
     assert "da 2 ore" in item["text"] and "ingresso REX" not in item["text"]
 
 
