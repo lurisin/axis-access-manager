@@ -370,10 +370,15 @@ class A1210Client:
     async def set_access_point(self, access_point: dict) -> None:
         await self._post("/vapix/pacs", {"pacsaxis:SetAccessPoint": {"AccessPoint": [access_point]}})
 
+    async def door_state(self, door_token: str) -> dict:
+        """Stato attuale della porta: modalità (DoorMode: Locked, Accessed...), contatto porta (DoorPhysicalState:
+        Open, Closed, Unknown senza contatto), allarmi."""
+        data = await self._post("/vapix/doorcontrol", {"tdc:GetDoorState": {"Token": door_token}})
+        return data.get("DoorState") or {}
+
     async def door_mode(self, door_token: str) -> str | None:
         """Modalità attuale della porta (Locked, Accessed, Unlocked...)."""
-        data = await self._post("/vapix/doorcontrol", {"tdc:GetDoorState": {"Token": door_token}})
-        return (data.get("DoorState") or {}).get("DoorMode")
+        return (await self.door_state(door_token)).get("DoorMode")
 
     async def access_door(self, door_token: str, extended: bool = False) -> None:
         """Sblocco temporaneo. Mai UnlockDoor: la serratura non regge l'alimentazione continua."""

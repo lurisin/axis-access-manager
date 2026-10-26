@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.21.5
+
+Ritocchi dal collaudo a distanza della 0.21.4.
+
+- **Contatto Porta subito giusto.** Il controller manda lo stato del contatto porta solo quando cambia: dopo l'aggiornamento al banco l'entità restava "sconosciuto" fino alla prima apertura. Ora l'app lo legge dal controller all'avvio, dopo ogni interruzione e dopo aver programmato un ingresso.
+- **Uscita nel Registro.** L'apertura da un Pulsante Uscita compare come "Uscita" (nuovo tipo, anche nell'evento di Home Assistant come `uscita`), non più come Apertura Remota. Il Relè Citofono resta Apertura Remota, perché apre a distanza dal citofono. Le aperture dai pulsanti già registrate con la 0.21.4 diventano Uscita. Accessi Oggi conta anche le uscite.
+- **Pulsante negato con il nome dell'ingresso** nella riga del Registro e nel Cruscotto: prima si vedeva solo "Accesso Negato".
+
 ## 0.21.4
 
 Correzioni dal collaudo sul posto del 26 ottobre, con pulsanti premuti davvero, contatto porta e coperchio.

@@ -336,3 +336,43 @@ def test_stuck_inputs_are_buttons_active_for_over_a_minute(db):
     }
     monitor.io_ports["0"] = False
     assert _stuck_inputs(state, pressed + timedelta(minutes=5)) == []
+
+
+async def test_door_contact_is_read_from_the_controller_after_each_connection(controller):
+    from types import SimpleNamespace
+
+    from app.events import EventMonitor
+    from app.main import _read_door_states
+
+    monitor = EventMonitor(prefix="x")
+    monitor.connected, monitor.controller_online = True, True
+    changes = []
+    state = SimpleNamespace(
+        installation=SimpleNamespace(primary={"id": 1}, doors=lambda: [{"door_token": "porta"}]),
+        health=SimpleNamespace(states={1: SimpleNamespace(online=True)}),
+        controller=SimpleNamespace(paused="", door_state=controller.door_state),
+        mqtt=object(),
+        monitor=monitor,
+        service=SimpleNamespace(notify_change=lambda: changes.append(1)),
+        door_states_key=None,
+    )
+
+    # Al banco Contatto Porta restava sconosciuto: il contatto arriva via MQTT solo quando cambia
+    await _read_door_states(state)
+    assert monitor.door_physical == {"porta": "Closed"}
+    assert monitor.door_modes == {"porta": "Locked"}
+    assert changes == [1]
+
+    # Una volta per connessione; dopo un'interruzione si rilegge, e la modalità arrivata via MQTT resta
+    controller.door_physical, controller.door = "Open", "Accessed"
+    await _read_door_states(state)
+    assert monitor.door_physical == {"porta": "Closed"}
+    monitor.outages += 1
+    await _read_door_states(state)
+    assert monitor.door_physical == {"porta": "Open"}
+    assert monitor.door_modes == {"porta": "Locked"}
+
+    # Contatto tolto: il controller risponde Unknown, l'entità torna sconosciuta
+    controller.door_physical = "Unknown"
+    await _read_door_states(state, force=True)
+    assert monitor.door_physical == {"porta": "Unknown"}

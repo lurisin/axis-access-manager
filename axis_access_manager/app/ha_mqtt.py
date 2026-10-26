@@ -42,6 +42,7 @@ EVENT_TYPES = {
     "lettura": "tessera_letta",
     "sconosciuta": "tessera_sconosciuta",
     "apertura_remota": "apertura_remota",
+    "uscita": "uscita",
     "allarme": "allarme_porta",
     "manomissione": "manomissione",
     "citofono": "citofono",
@@ -70,12 +71,12 @@ DOOR_ALARM_TYPES = {
 
 COMMANDS = {"apri": False, "apri_lungo": True}
 # Eventi che aggiornano il sensore Ultimo Accesso
-ACCESS_KINDS = ("concesso", "negato", "sconosciuta", "lettura", "apertura_remota")
+ACCESS_KINDS = ("concesso", "negato", "sconosciuta", "lettura", "apertura_remota", "uscita")
 
 
 def access_payload(row: dict) -> dict:
     """Stato del sensore Ultimo Accesso per un evento del registro."""
-    remote = row.get("kind") == "apertura_remota"
+    remote = row.get("kind") in ("apertura_remota", "uscita")
     return {
         "persona": row.get("person_name") or ((row.get("source") or "Apertura Remota") if remote else ""),
         "tessera": row.get("card") or "",
@@ -423,7 +424,7 @@ class HaBridge:
                 d["door_token"]: on_off(DOOR_PHYSICAL.get(self.monitor.door_physical.get(d["door_token"], "")))
                 for d in self.doors
             },
-            "accessi_oggi": counts.get("concesso", 0) + counts.get("apertura_remota", 0),
+            "accessi_oggi": counts.get("concesso", 0) + counts.get("apertura_remota", 0) + counts.get("uscita", 0),
             # Una tessera sconosciuta dà anche il diniego del controller: si conta quello
             "negati_oggi": counts.get("negato", 0),
             "da_registrare": len(self.db.list_unknown_cards()),

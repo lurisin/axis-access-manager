@@ -128,7 +128,7 @@ Senza quella regola il controller riceve la pressione ma la nega (profilo di acc
 
 Togliendo il ruolo, l'app li rimuove. Ogni modifica compare nello Storico Modifiche e si può annullare. Lo schema dei lettori non mostra questi punti e non li tocca.
 
-Nel registro l'apertura compare con il nome dato all'ingresso, ad esempio "Pulsante Portineria", e nel dettaglio il ruolo e il morsetto, ad esempio "Pulsante Uscita · Aux 1". Il nome resta quello che aveva al momento dell'apertura, anche se poi lo cambi. Più pressioni dello stesso ingresso entro 10 secondi (un contatto che rimbalza, un pulsante tenuto) fanno una riga sola, con "più pressioni" nel dettaglio.
+Nel registro l'apertura compare con il nome dato all'ingresso, ad esempio "Pulsante Portineria", e nel dettaglio il ruolo e il morsetto, ad esempio "Pulsante Uscita · Aux 1". Un Pulsante Uscita compare come **Uscita**, un Relè Citofono come **Apertura Remota** (la porta aperta a distanza dal citofono). Una pressione che il controller non fa aprire compare come Accesso Negato, con il nome dell'ingresso e il motivo. Il nome resta quello che aveva al momento dell'apertura, anche se poi lo cambi. Più pressioni dello stesso ingresso entro 10 secondi (un contatto che rimbalza, un pulsante tenuto) fanno una riga sola, con "più pressioni" nel dettaglio.
 
 Da sapere:
 - Sull'A1210 un ingresso, una volta assegnato, non torna mai "mai usato": togliendo il ruolo resta un ingresso semplice libero.
@@ -183,12 +183,12 @@ Con `ha_integration` attivo compare il dispositivo **Controllo Accessi** con que
 
 - sensori: Stato Porta, Ultimo Accesso (con persona, tessera ed esito negli attributi), Accessi Oggi, Accessi Negati Oggi, Tessere da Registrare, Persone Registrate;
 - per ogni porta, il sensore acceso/spento **Elettroserratura Porta** (classe lock: spento bloccata, acceso sbloccata, anche quando è aperta a tempo da una tessera), che nelle dashboard mostra il lucchetto;
-- per ogni porta, il sensore acceso/spento **Contatto Porta** (classe door: acceso aperta, spento chiusa) dal contatto magnetico della porta; senza contatto porta resta sconosciuto;
+- per ogni porta, il sensore acceso/spento **Contatto Porta** (classe door: acceso aperta, spento chiusa) dal contatto magnetico della porta, letto dal controller all'avvio e poi aggiornato a ogni apertura; senza contatto porta resta sconosciuto;
 - per ogni porta, sensori acceso/spento **Allarme Porta** (porta forzata o aperta troppo a lungo), **Preallarme Porta** e **Manomissione Porta**, con negli attributi il tipo e l'ora dell'ultimo cambio;
 - controller: **Controller Online**, **Coperchio Controller Aperto**, **Ultimo Avvio Controller** e gli ingressi **Ingresso AUX 1**, **Ingresso AUX 2**, **Ingresso Manomissione**, **Ingresso Allarme** (porte I/O 0-3);
 - pulsanti **Apri Porta** e **Apri Porta a Lungo** per le porte che li hanno attivi in Impianti: aprono solo a serratura bloccata e solo con un'apertura a tempo;
 - per ogni porta oltre la prima: Stato, Apri e Apri a Lungo con il nome della porta (ad esempio "Apri Cantina");
-- evento **Eventi Accessi**, con tipi `accesso_concesso`, `accesso_negato`, `tessera_letta`, `tessera_sconosciuta`, `apertura_remota`, `allarme_porta`, `manomissione`, `citofono` e attributi `persona`, `tessera`, `dettaglio`, `origine`, `ora`.
+- evento **Eventi Accessi**, con tipi `accesso_concesso`, `accesso_negato`, `tessera_letta`, `tessera_sconosciuta`, `apertura_remota`, `uscita`, `allarme_porta`, `manomissione`, `citofono` e attributi `persona`, `tessera`, `dettaglio`, `origine`, `ora`.
 
 Esempio di automazione: notifica quando una tessera sconosciuta viene passata sul lettore.
 

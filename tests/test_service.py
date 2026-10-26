@@ -384,7 +384,7 @@ async def test_diagnostic_events_update_home_assistant(service, db):
     assert db.list_events() == []
 
 
-async def test_exit_button_and_intercom_relay_are_logged_as_openings(service, db):
+async def test_exit_button_is_an_exit_and_intercom_relay_a_remote_opening(service, db):
     controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
     db.save_controller_input(
         controller_id, "REX", {"name": "Pulsante Portineria", "role": "rex", "access_point_token": "ap-rex"}
@@ -396,7 +396,8 @@ async def test_exit_button_and_intercom_relay_are_logged_as_openings(service, db
     later = event("AccessControl/AccessGranted/Anonymous/y", {"AccessPointToken": "ap-relay"})
     service.record_event(dataclasses.replace(later, timestamp=datetime(2026, 10, 25, 9, tzinfo=UTC)))
     relay, button = db.list_events()[:2]
-    assert button["kind"] == "apertura_remota" and button["source"] == "Pulsante Portineria"
+    # Collaudo 0.21.4: il pulsante era un'apertura remota; è un'uscita. Il relè apre a distanza dal citofono
+    assert button["kind"] == "uscita" and button["source"] == "Pulsante Portineria"
     assert button["detail"] == "Pulsante Uscita · REX"
     assert relay["kind"] == "apertura_remota" and relay["source"] == "Relè Citofono"
     assert relay["detail"] == "Relè Citofono · Aux 1"
@@ -420,7 +421,7 @@ async def test_exit_button_from_mqtt_topic_is_logged_once_with_the_input_name(se
     service.monitor.on_event = service.record_event
     service.monitor.handle(topic, payload)
     [row] = db.list_events()
-    assert row["kind"] == "apertura_remota" and row["source"] == "Pulsante Portineria"
+    assert row["kind"] == "uscita" and row["source"] == "Pulsante Portineria"
     assert row["detail"] == "Pulsante Uscita · Aux 1"
 
     # Al banco un ponticello tenuto a mano ha dato 4 REX in 5 secondi: una riga sola, segnata

@@ -28,8 +28,13 @@ CASING_OPEN = "coperchio del controller aperto"
 TILTED = "controller inclinato"
 # Eventi uguali e ravvicinati (rimbalzi di un contatto, coperchio aperto e chiuso più volte) in una riga sola:
 # finestra in secondi dalla riga già nel registro e parola aggiunta al dettaglio
-REPEAT_WINDOWS = {"apertura_remota": 10, "negato": 10, "manomissione": 300}
-REPEATED = {"apertura_remota": "più pressioni", "negato": "più pressioni", "manomissione": "ripetuta"}
+REPEAT_WINDOWS = {"uscita": 10, "apertura_remota": 10, "negato": 10, "manomissione": 300}
+REPEATED = {
+    "uscita": "più pressioni",
+    "apertura_remota": "più pressioni",
+    "negato": "più pressioni",
+    "manomissione": "ripetuta",
+}
 INPUT_TERMINALS = {"REX": "REX", "IO1": "Aux 1", "IO2": "Aux 2"}
 DENIED_REASONS = {
     "CredentialNotEnabled": "tessera sospesa",
@@ -51,7 +56,7 @@ DOOR_ALARMS = {
 
 
 # Eventi registrati dal controller: non si registrano due volte (MQTT e recupero dal registro interno)
-CONTROLLER_KINDS = ("lettura", "sconosciuta", "concesso", "negato", "allarme", "manomissione")
+CONTROLLER_KINDS = ("lettura", "sconosciuta", "concesso", "negato", "uscita", "allarme", "manomissione")
 # Eventi del registro interno del controller che finiscono nel Registro dell'app
 RECOVER_TOPICS = (
     "IdPoint/Request/IdData",
@@ -840,8 +845,9 @@ class AccessService:
             kind = "concesso" if granted else "negato"
             if pushed:
                 # Pulsante di uscita o relè del citofono su un ingresso del controller: un'apertura senza tessera,
-                # o una pressione che il controller non fa aprire. Nel registro con il nome dell'ingresso
-                logged = "apertura_remota" if granted else kind
+                # o una pressione che il controller non fa aprire. Nel registro con il nome dell'ingresso: il
+                # pulsante come Uscita, il relè come apertura a distanza dal citofono
+                logged = kind if not granted else "uscita" if pushed[2] == "rex" else "apertura_remota"
                 detail = pushed[1] if granted else f"{pushed[1]} · {DENIED_REASONS.get(reason, reason) or 'negato'}"
                 if not self._repeated(logged, pushed[0], door, ts, detail):
                     self.log_event(
@@ -958,9 +964,9 @@ class AccessService:
         controllers = self.db.list_controllers()
         return (controllers[0]["name"] if controllers else "") or "Controller"
 
-    def _input_source(self, access_point: str) -> tuple[str, str] | None:
-        """Sorgente e dettaglio per il registro dell'ingresso del controller che usa questo punto di accesso:
-        il nome scelto nelle impostazioni ("Pulsante Portineria") e ruolo e morsetto ("Pulsante Uscita · Aux 1")."""
+    def _input_source(self, access_point: str) -> tuple[str, str, str] | None:
+        """Sorgente, dettaglio e ruolo per il registro dell'ingresso del controller che usa questo punto di accesso:
+        il nome scelto nelle impostazioni ("Pulsante Portineria"), ruolo e morsetto ("Pulsante Uscita · Aux 1")."""
         if not access_point:
             return None
         for row in self.db.all_controller_inputs():
@@ -970,7 +976,7 @@ class AccessService:
             if not role:
                 return None
             terminal = INPUT_TERMINALS.get(row["io"], row["io"])
-            return row["name"] or role, f"{role} · {terminal}"
+            return row["name"] or role, f"{role} · {terminal}", row["role"]
         return None
 
     def _door_of(self, event: Event) -> str:

@@ -408,3 +408,25 @@ async def test_rex_inputs_without_permission_are_a_fault(monitor, controller, co
     }
     await monitor.recheck_managed(db.get_controller(controller_row))
     assert state.rex_missing == []
+
+
+def test_exit_button_openings_of_0_21_4_become_exits(tmp_path):
+    path = tmp_path / "v5.db"
+    db = Database(path)
+    for detail, source in (
+        ("Pulsante Uscita · Aux 1 · più pressioni", "Pulsante Portineria"),
+        ("Relè Citofono · REX", "Via Consulta - Videocitofono"),
+        ("tempo esteso", "Mario (HA)"),
+    ):
+        db.add_event(ts="2026-10-26T12:00:00+00:00", kind="apertura_remota", detail=detail, source=source)
+    db._conn.execute("PRAGMA user_version = 5")
+    db.close()
+
+    db = Database(path)
+    kinds = {e["source"]: e["kind"] for e in db.list_events()}
+    assert kinds == {
+        "Pulsante Portineria": "uscita",
+        "Via Consulta - Videocitofono": "apertura_remota",
+        "Mario (HA)": "apertura_remota",
+    }
+    db.close()

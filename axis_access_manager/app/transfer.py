@@ -17,6 +17,7 @@ EVENT_LABELS = {
     "lettura": "Tessera Letta",
     "sconosciuta": "Tessera Sconosciuta",
     "apertura_remota": "Apertura Remota",
+    "uscita": "Uscita",
     "allarme": "Allarme Porta",
     "manomissione": "Manomissione",
     "citofono": "Citofono",
