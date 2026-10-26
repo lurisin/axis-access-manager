@@ -133,7 +133,7 @@ Nel registro l'apertura compare con il nome dato all'ingresso, ad esempio "Pulsa
 Da sapere:
 - Sull'A1210 un ingresso, una volta assegnato, non torna mai "mai usato": togliendo il ruolo resta un ingresso semplice libero.
 - Dopo aver tolto la linea supervisionata, l'ingresso può risultare attivo finché non riavvii il controller.
-- Al banco (firmware 10.12) gli **AUX usati come pulsante** sono rimasti attivi dopo la prima pressione, finché non si è riavviato il controller: nel frattempo il pulsante non apre più. Per i pulsanti è meglio l'ingresso REX della porta. Se un pulsante o un relè resta attivo per più di un minuto compare l'avviso **Ingresso Bloccato**.
+- Gli **AUX usati come pulsante** funzionano come l'ingresso REX: al banco il controller apre circa 50 millisecondi dopo la pressione.
 
 ### Porte, lettori e storico
 

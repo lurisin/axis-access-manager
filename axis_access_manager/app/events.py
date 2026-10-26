@@ -127,8 +127,6 @@ class EventMonitor:
     casing_open: bool | None = None
     system_ready: str = ""
     io_ports: dict[str, bool] = field(default_factory=dict)
-    # Da quando ogni ingresso I/O è nello stato attuale: un pulsante attivo da minuti è un ingresso bloccato
-    io_since: dict[str, datetime] = field(default_factory=dict)
     # Porta aperta o chiusa secondo il contatto porta (DoorPhysicalState: Open, Closed, Fault...), per token
     door_physical: dict[str, str] = field(default_factory=dict)
     # Chiamata quando il controller va online o offline
@@ -237,8 +235,6 @@ class EventMonitor:
         elif topic.startswith("Device/IO/Port") and IO_PORT_MARKER in topic and "state" in data:
             port = topic.rsplit(IO_PORT_MARKER, 1)[1].split("/", 1)[0]
             active = str(data["state"]) == "1"
-            if self.io_ports.get(port) != active:
-                self.io_since[port] = event.timestamp
             self.io_ports[port] = active
         elif topic.startswith("Door/State/DoorPhysicalState") and "State" in data:
             self.door_physical[door_of_topic(topic) or self.door_token] = str(data["State"])

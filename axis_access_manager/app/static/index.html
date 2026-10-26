@@ -2851,8 +2851,7 @@ const INPUT_ROLE_HINTS = {
   alarm: "Nessuna azione sulla porta: lo stato arriva in Home Assistant con il nome scelto.",
 };
 // Al banco (firmware 10.12) gli AUX usati come pulsante sono rimasti attivi dopo la prima pressione fino al riavvio
-const AUX_OPENER_HINT = " Attenzione: sugli AUX il controller può restare bloccato dopo la prima pressione, finché non lo riavvii. Per i pulsanti è meglio l'ingresso REX della porta.";
-const inputRoleHint = (io, role) => (INPUT_ROLE_HINTS[role] || "") + (io.startsWith("IO") && (role === "rex" || role === "intercom") ? AUX_OPENER_HINT : "");
+const inputRoleHint = (io, role) => INPUT_ROLE_HINTS[role] || "";
 const contactHint = (role) => role === "door_monitor" ? "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre." : "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.";
 
 function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {

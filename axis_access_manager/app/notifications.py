@@ -136,7 +136,6 @@ class NotificationService:
         missing: dict | None = None,
         backup: dict | None = None,
         backup_verify: dict | None = None,
-        stuck_inputs: list[dict] | None = None,
         now: datetime | None = None,
     ) -> list[dict]:
         """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente."""
@@ -354,19 +353,6 @@ class NotificationService:
                 backup_verify.get("at") or now.isoformat(timespec="seconds"),
                 link="#impianti/backup",
             )
-        for item in stuck_inputs or []:
-            # Pulsante o relè attivo da minuti: il controller aspetta il rilascio e non vede le nuove pressioni
-            add(
-                "controller",
-                f"stuck:{item['controller_id']}:{item['io']}:{item['since']}",
-                "warn",
-                "Ingresso Bloccato",
-                f"{item['name']} risulta premuto da {_minutes(item['seconds'])}: il controller non vede le nuove "
-                "pressioni. Se non c'è niente premuto, riavvia il controller"
-                + ("; per i pulsanti usa l'ingresso REX della porta" if item["io"].startswith("IO") else ""),
-                item["since"],
-                link=f"#impianti/c{item['controller_id']}",
-            )
         titles = {"allarme": "Allarme Porta", "manomissione": "Manomissione"}
         if levels["door_alarm"] != "off":
             alarms = self.db.list_events(kind="allarme,manomissione", since=since, limit=MAX_EVENTS)
@@ -489,11 +475,3 @@ def _groups(events: list[dict], key) -> list[list[dict]]:
             open_groups[k] = group
             groups.append(group)
     return groups
-
-
-def _minutes(seconds: float) -> str:
-    minutes = max(1, int(seconds // 60))
-    if minutes < 60:
-        return "1 minuto" if minutes == 1 else f"{minutes} minuti"
-    hours = minutes // 60
-    return "1 ora" if hours == 1 else f"{hours} ore"

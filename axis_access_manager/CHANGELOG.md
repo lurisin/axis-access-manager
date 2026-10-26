@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.21.6
+
+- **"Più pressioni" solo per pressioni vere.** All'avvio l'app recupera dal controller gli eventi persi e rilegge anche gli ultimi già registrati: al banco un solo pulsante negato era stato segnato "più pressioni" perché la sua copia recuperata contava come una seconda pressione. Ora lo stesso evento arrivato due volte (via MQTT e dal registro del controller) non viene più contato. Vale anche per coperchio e inclinazione.
+- **Niente più avvisi sugli AUX usati come pulsante.** Con i tempi al millisecondo il banco ha visto che l'AUX non si blocca: il controller apre 40-50 ms dopo ogni pressione, prima e dopo il presunto blocco. Era la lettura dello stato dell'ingresso a essere al contrario (a riposo 1, premuto 0). Tolti l'avviso "Ingresso Bloccato" e il consiglio di non usare gli AUX per i pulsanti, arrivati con la 0.21.4.
+
 ## 0.21.5
 
 Ritocchi dal collaudo a distanza della 0.21.4.
