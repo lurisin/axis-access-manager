@@ -625,6 +625,7 @@ const pad = (n) => String(n).padStart(2, "0");
 const ICONS = {
   door: "M8,3C6.89,3 6,3.89 6,5V21H18V5C18,3.89 17.11,3 16,3H8M8,5H16V19H8V5M13,11V13H15V11H13Z",
   dooropen: "M12,3C10.89,3 10,3.89 10,5H3V19H2V21H22V19H21V5C21,3.89 20.11,3 19,3H12M12,5H19V19H12V5M5,11H7V13H5V11Z",
+  exit: "M17,7L15.59,8.41L18.17,11H8V13H18.17L15.59,15.58L17,17L22,12M4,5H12V3H4C2.9,3 2,3.9 2,5V19C2,20.1 2.9,21 4,21H12V19H4V5Z",
   dashboard: "M13,3V9H21V3M13,21H21V11H13M3,21H11V15H3M3,13H11V3H3V13Z",
   people: "M16,13C15.71,13 15.38,13 15.03,13.05C16.19,13.89 17,15 17,16.5V19H23V16.5C23,14.17 18.33,13 16,13M8,13C5.67,13 1,14.17 1,16.5V19H15V16.5C15,14.17 10.33,13 8,13M8,11A3,3 0 0,0 11,8A3,3 0 0,0 8,5A3,3 0 0,0 5,8A3,3 0 0,0 8,11M16,11A3,3 0 0,0 19,8A3,3 0 0,0 16,5A3,3 0 0,0 13,8A3,3 0 0,0 16,11Z",
   cardplus: "M21,8V7L18,9L15,7V8L18,10M22,3H2A2,2 0 0,0 0,5V19A2,2 0 0,0 2,21H22A2,2 0 0,0 24,19V5A2,2 0 0,0 22,3M8,6A3,3 0 0,1 11,9A3,3 0 0,1 8,12A3,3 0 0,1 5,9A3,3 0 0,1 8,6M14,18H2V17C2,15 6,13.9 8,13.9C10,13.9 14,15 14,17M22,12H14V6H22",
@@ -721,10 +722,13 @@ const KINDS = {
   lettura: ["Tessera Letta", "k-accent", "card"],
   sconosciuta: ["Tessera Sconosciuta", "k-warn", "question"],
   apertura_remota: ["Apertura Remota", "k-ok", "dooropen"],
+  uscita: ["Uscita", "k-ok", "exit"],
   allarme: ["Allarme Porta", "k-err", "alert"],
   manomissione: ["Manomissione", "k-err", "shield"],
   citofono: ["Citofono", "k-info", "phone"],
 };
+// Pressione di un pulsante o del relè del citofono che il controller non fa aprire: l'origine è il nome dell'ingresso
+const inputDenied = (e) => e.kind === "negato" && !e.card && !e.person_name && !!e.source && e.source !== "controller";
 const DAYS = [["MO", "L", "lun"], ["TU", "M", "mar"], ["WE", "M", "mer"], ["TH", "G", "gio"], ["FR", "V", "ven"], ["SA", "S", "sab"], ["SU", "D", "dom"]];
 
 const fmtDateTime = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"}) : "";
@@ -1112,7 +1116,7 @@ async function refreshView() {
 // ---------- Cruscotto ----------
 function eventItem(e, {showSnapshot = true} = {}) {
   const [label, cls, ic] = KINDS[e.kind] || [e.kind, "k-muted", "list"];
-  const source = ["apertura_remota", "citofono"].includes(e.kind) && e.source ? `da ${esc(e.source)}` : "";
+  const source = (["apertura_remota", "uscita", "citofono"].includes(e.kind) || inputDenied(e)) && e.source ? `da ${esc(e.source)}` : "";
   return `<div class="item">
     <div class="ev-icon ${cls}">${icon(ic)}</div>
     <div class="grow">
@@ -1191,7 +1195,10 @@ const WIDGET_BODY = {
     if (!rows.length) return `<h2>Da Gestire</h2><div class="all-ok" style="margin:0">${icon("check")}<span><b>Tutto in Ordine</b> · nessun evento da gestire</span></div>`;
     return `<h2>Da Gestire <span class="muted">· ${open.length}</span><span class="spacer"></span><a class="small-text" href="#notifiche">${open.length > 5 ? `Tutte le Notifiche (${open.length})` : "Notifiche"}</a></h2><div class="list">${rows.join("")}</div>`;
   },
-  accessi_oggi: ({d: {today: t}}) => kpi("Accessi Oggi", t.granted + t.remote, `${t.remote ? `di cui ${plural(t.remote, "apertura remota", "aperture remote")}` : "con tessera"}${!t.granted && t.reads ? ` · ${plural(t.reads, "lettura", "letture")}` : ""}`),
+  accessi_oggi: ({d: {today: t}}) => {
+    const others = [t.remote ? plural(t.remote, "apertura remota", "aperture remote") : "", t.exits ? plural(t.exits, "uscita", "uscite") : ""].filter(Boolean).join(" e ");
+    return kpi("Accessi Oggi", t.granted + t.remote + (t.exits || 0), `${others ? `di cui ${others}` : "con tessera"}${!t.granted && t.reads ? ` · ${plural(t.reads, "lettura", "letture")}` : ""}`);
+  },
   negati_oggi: ({d: {today: t}}) => kpi("Negati Oggi", t.denied, t.unknown ? plural(t.unknown, "tessera sconosciuta", "tessere sconosciute") : "nessuna tessera sconosciuta", t.denied ? "var(--warn)" : ""),
   allarmi_oggi: ({d: {today: t}}) => kpi("Allarmi Oggi", t.alarms, t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme", t.alarms ? "var(--err)" : ""),
   persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">anagrafica</a>' : ""}`),
@@ -1210,7 +1217,7 @@ const WIDGET_BODY = {
     }).join("");
     // Il diniego del controller conta già la tessera sconosciuta: nel grafico solo concessi e negati
     return `<h2>Ultimi 7 Giorni</h2><div class="chart">${chart}</div>
-      <div class="legend"><span><i style="background:var(--ok)"></i>concessi e aperture remote</span><span><i style="background:var(--warn)"></i>negati</span></div>`;
+      <div class="legend"><span><i style="background:var(--ok)"></i>concessi, aperture remote e uscite</span><span><i style="background:var(--warn)"></i>negati</span></div>`;
   },
   ultimi_eventi: ({d}) => `<h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro Completo</a></h2>
     <div class="list compact" data-dash-events>${d.recent.length ? logRows(d.recent) : '<div class="empty">nessun evento registrato</div>'}</div>`,
@@ -1544,7 +1551,7 @@ async function viewDoorDetail(el, id, doors) {
     </div>
     ${d.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${d.errors.map(esc).join("<br>")}</div></div>` : ""}
     <div class="grid kpi" style="margin-bottom:16px">
-      ${kpi("Accessi Oggi", d.today.granted, "concessi e aperture remote, come nel cruscotto")}
+      ${kpi("Accessi Oggi", d.today.granted, "concessi, aperture remote e uscite, come nel cruscotto")}
       ${kpi("Negati Oggi", d.today.denied, "comprese le tessere sconosciute", d.today.denied ? "var(--warn)" : "")}
       ${kpi("Allarmi Oggi", d.today.alarms, "forzature e aperture troppo lunghe", d.today.alarms ? "var(--err)" : "")}
       ${kpi("Ultimo Passaggio", d.last ? esc(d.last.person || "—") : "—", d.last ? esc(relTime(d.last.ts)) : can("registro") ? "nessuno" : "serve il permesso Registro")}
@@ -1908,11 +1915,11 @@ async function viewUnknown(el) {
 const LOG_VIEWS = {
   controllo: ["Da Controllare", "negato,sconosciuta,allarme,manomissione"],
   negati: ["Solo Negati", "negato,sconosciuta"],
-  accessi: ["Solo Accessi", "concesso,apertura_remota,citofono"],
+  accessi: ["Solo Accessi", "concesso,apertura_remota,uscita,citofono"],
   allarmi: ["Allarmi", "allarme,manomissione"],
   tutto: ["Tutto", ""],
 };
-const ACCESS_KINDS = "concesso,apertura_remota,citofono,lettura";
+const ACCESS_KINDS = "concesso,apertura_remota,uscita,citofono,lettura";
 const savedView = () => { try { return localStorage.getItem("aam-log-view") || "controllo"; } catch (err) { return "controllo"; } };
 const logFilters = {q: "", view: savedView(), door: "", from: "", to: ""};
 let logEvents = [];
@@ -1932,7 +1939,7 @@ const KIND_DOT = {"k-ok": "ok", "k-warn": "warn", "k-err": "err", "k-info": "inf
 // Riga compatta: ora, colore dell'esito, chi, cosa, dove
 function logRow(e) {
   const [label, cls] = KINDS[e.kind] || [e.kind, "k-muted"];
-  const who = e.person_name || (e.card ? `Tessera ${e.card}` : e.kind === "citofono" ? e.source || "Citofono" : e.kind === "apertura_remota" ? e.source || "Home Assistant" : "");
+  const who = e.person_name || (e.card ? `Tessera ${e.card}` : e.kind === "citofono" ? e.source || "Citofono" : e.kind === "apertura_remota" ? e.source || "Home Assistant" : e.kind === "uscita" ? e.source || "Pulsante" : inputDenied(e) ? e.source : "");
   let what = who ? label.replace(/^Accesso /, "").replace(/^Tessera /, "") : label;
   if (what.toLowerCase() === who.toLowerCase()) what = "";
   return `<div class="ev ${e.id === logSelected ? "sel" : ""}" data-event="${e.id}" role="button" tabindex="0" title="${esc(fmtFull(e.ts))}">
@@ -3750,7 +3757,7 @@ async function viewSettings(el, sub) {
     ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} Attive, dispositivo "Controllo Accessi"` : `${statusDot("")} Disattivate nelle opzioni`],
     ...(ha.integration ? [["Entità", esc(ha.entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
     ["API di Home Assistant", ha.api ? `${statusDot("ok")} Disponibile` : `${statusDot("warn")} Non Disponibile`],
-  ]) + `<p class="hint">L'evento "Eventi Accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni. I pulsanti di apertura si attivano per ogni porta nella pagina del controller.</p>`;
+  ]) + `<p class="hint">L'evento "Eventi Accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, uscita, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni. I pulsanti di apertura si attivano per ogni porta nella pagina del controller.</p>`;
   body.innerHTML = `
     ${store.summary.configured === false && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b>Controller, porte, citofono e telecamera si impostano nella pagina Impianti.</div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
     <div class="grid two">

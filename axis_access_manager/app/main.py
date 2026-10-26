@@ -56,13 +56,13 @@ STATIC_DIR = Path(__file__).parent / "static"
 INGRESS_PROXY = "172.30.32.2"
 
 # Eventi per cui salvare un'istantanea della telecamera
-# Istantanea sempre: rifiuti, citofono, allarmi e aperture a distanza (chi entra senza tessera).
+# Istantanea sempre: rifiuti, citofono, allarmi, aperture a distanza e dai pulsanti (chi passa senza tessera).
 # Per una tessera una sola foto, sull'esito: la lettura e la tessera sconosciuta arrivano insieme al negato.
-SNAPSHOT_KINDS = {"negato", "citofono", "allarme", "manomissione", "apertura_remota"}
+SNAPSHOT_KINDS = {"negato", "citofono", "allarme", "manomissione", "apertura_remota", "uscita"}
 GRANTED_KINDS = {"concesso"}
 # Passaggi contati come accessi nei numeri del giorno: la lettura della tessera precede il concesso (sarebbe doppia)
 # e le chiamate al citofono non sono accessi; le aperture dal citofono arrivano come apertura remota.
-ACCESS_COUNT_KINDS = ("concesso", "apertura_remota")
+ACCESS_COUNT_KINDS = ("concesso", "apertura_remota", "uscita")
 EXPORT_LIMIT = 50000
 
 # Recupero degli eventi persi: da poco prima dell'ultimo registrato, al massimo degli ultimi 7 giorni
@@ -606,6 +606,7 @@ def create_app(
                 "denied": today.get("negato", 0),
                 "unknown": today.get("sconosciuta", 0),
                 "remote": today.get("apertura_remota", 0),
+                "exits": today.get("uscita", 0),
                 "alarms": today.get("allarme", 0) + today.get("manomissione", 0),
                 "intercom": today.get("citofono", 0),
                 "reads": today.get("lettura", 0),
@@ -976,7 +977,7 @@ def create_app(
         state = request.app.state
         user = current_user(request)
         counts = state.db.door_event_counts(local_day_start())
-        last = state.db.last_door_events(("concesso", "negato", "sconosciuta", "apertura_remota", "citofono"))
+        last = state.db.last_door_events(("concesso", "negato", "sconosciuta", "apertura_remota", "uscita", "citofono"))
         result = []
         for door in _doors_status(state):
             today = counts.get(door["token"], {})
@@ -1267,6 +1268,8 @@ def create_app(
         # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
         await state.bridge.publish_input_names()
         await state.health.recheck_managed(state.installation.primary)
+        # Contatto porta appena collegato o tolto: Contatto Porta subito giusto in Home Assistant
+        await _read_door_states(state, force=True)
         return saved
 
     @app.put("/api/programming/access-points/{token:path}", dependencies=[need("impianti"), before_change()])
@@ -1446,6 +1449,8 @@ async def _start_runtime(app: FastAPI) -> None:
     # Eventi persi da recuperare dal registro del controller: all'avvio e dopo ogni interruzione
     state.recover_pending = True
     state.recover_outages = 0
+    # Stato delle porte letto dal controller: interruzioni del broker e porte di quella lettura
+    state.door_states_key = None
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
     state.service.clock_offset = lambda: _controller_clock_offset(state)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
@@ -1804,6 +1809,7 @@ async def _health_loop(app: FastAPI) -> None:
             if before != state.controller.paused:
                 state.service.notify_change()
             await _recover_if_needed(state)
+            await _read_door_states(state)
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo dei controller non riuscito")
         state.health_ready.set()
@@ -1842,6 +1848,44 @@ async def _recover_if_needed(state) -> None:
             "eventi recuperati dal controller",
             f"{plural(recovered, 'evento', 'eventi')} dal {since:%d/%m %H:%M}",
         )
+
+
+async def _read_door_states(state, force: bool = False) -> None:
+    """Contatto porta (e modalità, se manca) letti dal controller all'avvio, dopo ogni interruzione e dopo la
+    programmazione di un ingresso. Via MQTT arrivano solo ai cambi: senza un messaggio conservato dal broker,
+    al banco Contatto Porta restava sconosciuto fino alla prima apertura."""
+    monitor = state.monitor
+    doors = [d["door_token"] for d in state.installation.doors()]
+    key = (monitor.outages, tuple(doors))
+    if not doors or (key == state.door_states_key and not force):
+        return
+    primary = state.installation.primary
+    health = state.health.states.get(primary["id"]) if primary else None
+    if not health or not health.online or state.controller.paused:
+        return
+    if state.mqtt and (not monitor.connected or monitor.controller_online is False):
+        return
+    changed = False
+    for token in doors:
+        try:
+            door = await state.controller.door_state(token)
+        except VapixError as err:
+            _LOGGER.warning("Stato della porta %s non leggibile: %s", token, err)
+            return
+        physical = str(door.get("DoorPhysicalState") or "")
+        if monitor.door_physical.get(token, "") != physical:
+            if physical:
+                monitor.door_physical[token] = physical
+            else:
+                monitor.door_physical.pop(token, None)
+            changed = True
+        # La modalità arriva anche dal broker; quella di MQTT, più recente, resta
+        if door.get("DoorMode") and token not in monitor.door_modes:
+            monitor.door_modes[token] = str(door["DoorMode"])
+            changed = True
+    state.door_states_key = key
+    if changed:
+        state.service.notify_change()
 
 
 def _controllers_health(state) -> list[dict]:

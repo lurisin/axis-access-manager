@@ -17,6 +17,7 @@ class FakeController:
         self.credentials: dict[str, dict] = {}
         self.calls: list[tuple] = []
         self.door = "Locked"
+        self.door_physical = "Closed"
         self.fail_set_credential = False
         self.fail_io_assignment = False
         self.idpoint_configs: dict[str, dict] = {}
@@ -369,6 +370,9 @@ class FakeController:
 
     async def door_mode(self, door_token):
         return self.door
+
+    async def door_state(self, door_token):
+        return {"DoorMode": self.door, "DoorPhysicalState": self.door_physical}
 
     async def access_door(self, door_token, extended=False):
         self.calls.append(("access_door", door_token, extended))

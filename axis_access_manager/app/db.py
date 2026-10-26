@@ -235,6 +235,12 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
             "AND ts < (SELECT created_at FROM persons WHERE persons.id = events.person_id)",
         ],
     ),
+    (
+        6,
+        "aperture dai pulsanti di uscita come Uscita",
+        # Con la 0.21.4 erano aperture remote, con ruolo e morsetto nel dettaglio
+        ["UPDATE events SET kind = 'uscita' WHERE kind = 'apertura_remota' AND detail LIKE 'Pulsante Uscita · %'"],
+    ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 SETTING_APP_VERSION = "app_version"
