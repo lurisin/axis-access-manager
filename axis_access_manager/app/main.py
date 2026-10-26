@@ -31,7 +31,7 @@ from .health import HEALTH_INTERVAL, HealthMonitor, clock_fault, clock_problem, 
 from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
 from .notifications import FAULT_TYPES, NotificationService
-from .programming import INPUT_ROLES, ProgrammingService
+from .programming import INPUT_ROLES, REX_ROLES, ProgrammingService
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import RulesService
 from .service import (
@@ -1244,9 +1244,9 @@ def create_app(
     async def programming(request: Request) -> dict:
         data = await request.app.state.programming.read()
         # Stato in tempo reale degli ingressi che mandano gli eventi Device/IO/Port
-        ports = request.app.state.monitor.io_ports
+        monitor = request.app.state.monitor
         for item in data.get("inputs", []):
-            item["active"] = ports.get(item["port"]) if item["port"] is not None else None
+            item["active"] = monitor.input_active(item["port"], item["role"] in REX_ROLES)
         return data
 
     @app.put("/api/programming/doors/{token:path}", dependencies=[need("impianti"), before_change()])

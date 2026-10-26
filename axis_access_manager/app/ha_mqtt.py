@@ -11,7 +11,7 @@ import aiomqtt
 from .config import Settings
 from .db import Database, local_day_start
 from .events import EventMonitor
-from .programming import CONTROLLER_INPUTS
+from .programming import CONTROLLER_INPUTS, REX_ROLES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -159,6 +159,15 @@ class HaBridge:
         """Nome scelto nell'app per gli ingressi che danno gli eventi Device/IO/Port, per numero di porta."""
         ports = {io: port for io, (_, port) in CONTROLLER_INPUTS.items() if port is not None}
         return {ports[row["io"]]: row["name"] for row in self.db.all_controller_inputs() if row["io"] in ports}
+
+    def _pushbutton_ports(self) -> set[str]:
+        """Porte I/O collegate come pulsante o relè del citofono: il loro stato arriva al contrario."""
+        ports = {io: port for io, (_, port) in CONTROLLER_INPUTS.items() if port is not None}
+        return {
+            ports[row["io"]]
+            for row in self.db.all_controller_inputs()
+            if row["io"] in ports and row["role"] in REX_ROLES
+        }
 
     def _entities(self) -> list[tuple[str, str, dict]]:
         """(componente, id oggetto, configurazione) di ogni entità."""
@@ -434,7 +443,9 @@ class HaBridge:
                 "coperchio": on_off(self.monitor.casing_open),
                 "avvio": self.monitor.system_ready or "None",
             },
-            "ingressi": {port: on_off(self.monitor.io_ports.get(port)) for port in IO_INPUTS},
+            "ingressi": {
+                port: on_off(self.monitor.input_active(port, port in self._pushbutton_ports())) for port in IO_INPUTS
+            },
             "condizioni": {d["door_token"]: self._conditions(d["door_token"]) for d in self.doors},
         }
 

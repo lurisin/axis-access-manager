@@ -124,6 +124,16 @@ async def test_controller_and_door_condition_entities(bridge):
     state = json.loads(client.published["axis_access_manager/stato"])
     assert state["controller"] == {"online": "ON", "coperchio": "None", "avvio": "None"}
     assert state["ingressi"] == {"0": "None", "1": "None", "2": "None", "3": "OFF"}
+    # Un AUX collegato come pulsante arriva al contrario: 1 a riposo, 0 premuto (dopo il primo cambio)
+    controller_id = bridge.db.save_controller(
+        None, {f: "" for f in bridge.db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0}
+    )
+    bridge.db.save_controller_input(controller_id, "IO1", {"name": "Pulsante Portineria", "role": "rex"})
+    monitor.io_ports["0"] = True
+    assert bridge.state()["ingressi"]["0"] == "OFF"
+    monitor.io_changed.add("0")
+    monitor.io_ports["0"] = False
+    assert bridge.state()["ingressi"]["0"] == "ON"
     # Classe lock: acceso = sbloccata, spento = bloccata, sconosciuta senza dati
     assert state["serrature"] == {"porta": "None"}
     for mode, value in (("Locked", "OFF"), ("Accessed", "ON"), ("Unlocked", "ON"), ("LockedDown", "OFF")):
