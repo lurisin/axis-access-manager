@@ -430,6 +430,8 @@ def create_app(
         app.state.health = HealthMonitor(app.state.db, lambda row: _health_client(app, row))
         # La prima sincronizzazione aspetta il primo controllo: un controller cambiato non va letto
         app.state.health_ready = asyncio.Event()
+        # Controller tornato raggiungibile (riavvio, reset): le tessere si rileggono subito, non al giro dei 15 minuti
+        app.state.sync_wake = asyncio.Event()
         app.state.last_recovery = None
         await _start_runtime(app)
         maintenance = asyncio.create_task(_maintenance(app))
@@ -1751,7 +1753,14 @@ async def _health_loop(app: FastAPI) -> None:
     while True:
         try:
             before = state.controller.paused
+            primary = state.installation.primary
+            was = state.health.states.get(primary["id"]) if primary else None
+            was_down = bool(was and was.failures)
             await state.health.check_all()
+            now = state.health.states.get(primary["id"]) if primary else None
+            if was_down and now is not None and now.online:
+                _LOGGER.info("Controller di nuovo raggiungibile: rilettura delle tessere")
+                state.sync_wake.set()
             _apply_pause(state)
             if before != state.controller.paused:
                 state.service.notify_change()
@@ -1976,7 +1985,9 @@ async def _maintenance(app: FastAPI) -> None:
         if loop.time() - last_prune >= PRUNE_INTERVAL or last_prune == 0.0:
             state.ha.delete_snapshots(state.db.prune_events(state.settings.event_retention_days))
             last_prune = loop.time()
-        await asyncio.sleep(delay)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(state.sync_wake.wait(), delay)
+        state.sync_wake.clear()
 
 
 async def _controller_status(controller: A1210Client, settings: Settings, inputs: list[dict]) -> dict:

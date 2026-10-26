@@ -117,10 +117,18 @@ async def test_controller_and_door_condition_entities(bridge):
     assert config("binary_sensor", "manomissione_porta")["device_class"] == "tamper"
     assert config("binary_sensor", "ingresso_allarme")["name"] == "Ingresso Allarme"
     assert config("sensor", "ultimo_avvio_controller")["device_class"] == "timestamp"
+    lock = config("binary_sensor", "elettroserratura_porta")
+    assert lock["name"] == "Elettroserratura Porta" and lock["device_class"] == "lock"
+    assert lock["value_template"] == "{{ value_json.serrature['porta'] }}"
 
     state = json.loads(client.published["axis_access_manager/stato"])
     assert state["controller"] == {"online": "ON", "coperchio": "None", "avvio": "None"}
     assert state["ingressi"] == {"0": "None", "1": "None", "2": "None", "3": "OFF"}
+    # Classe lock: acceso = sbloccata, spento = bloccata, sconosciuta senza dati
+    assert state["serrature"] == {"porta": "None"}
+    for mode, value in (("Locked", "OFF"), ("Accessed", "ON"), ("Unlocked", "ON"), ("LockedDown", "OFF")):
+        monitor.door_modes["porta"] = mode
+        assert bridge.state()["serrature"] == {"porta": value}
     porta = state["condizioni"]["porta"]
     assert porta["allarme"] == {"stato": "ON", "tipo": "Porta Forzata", "ultimo_cambio": "t"}
     assert porta["preallarme"]["stato"] == "None"

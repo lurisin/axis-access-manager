@@ -28,6 +28,10 @@ DOOR_MODES = {
     "DoubleLocked": "Doppia Chiusura",
 }
 
+# Sensore dell'elettroserratura (classe lock: acceso = sbloccata). Gli altri modi, o nessun dato, danno sconosciuto
+UNLOCKED_MODES = {"Accessed", "Unlocked", "LockedOpen"}
+LOCKED_MODES = {"Locked", "Blocked", "LockedDown", "DoubleLocked"}
+
 # Tipo di evento del log → tipo di evento in Home Assistant
 EVENT_TYPES = {
     "concesso": "accesso_concesso",
@@ -92,6 +96,10 @@ def parse_command(command: str) -> tuple[bool, str] | None:
 
 def door_label(mode: str | None) -> str:
     return DOOR_MODES.get(mode, mode) if mode else "Sconosciuto"
+
+
+def lock_state(mode: str | None) -> str:
+    return on_off(True if mode in UNLOCKED_MODES else False if mode in LOCKED_MODES else None)
 
 
 def on_off(value: bool | None) -> str:
@@ -288,6 +296,19 @@ class HaBridge:
                         },
                     )
                 )
+            # Bloccata (spento) o sbloccata (acceso): nelle dashboard prende il lucchetto
+            entities.append(
+                (
+                    "binary_sensor",
+                    f"elettroserratura_porta{suffix}",
+                    {
+                        **state,
+                        "name": f"Elettroserratura {label}",
+                        "device_class": "lock",
+                        "value_template": f"{{{{ value_json.serrature['{door['door_token']}'] }}}}",
+                    },
+                )
+            )
             for key, (name, device_class, icon) in DOOR_CONDITIONS.items():
                 path = f"value_json.condizioni['{door['door_token']}'].{key}"
                 entities.append(
@@ -379,6 +400,9 @@ class HaBridge:
             "porta": door_label(mode),
             "modalita": mode,
             "porte": {d["door_token"]: door_label(self.monitor.door_modes.get(d["door_token"])) for d in self.doors},
+            "serrature": {
+                d["door_token"]: lock_state(self.monitor.door_modes.get(d["door_token"])) for d in self.doors
+            },
             "accessi_oggi": counts.get("concesso", 0) + counts.get("apertura_remota", 0),
             # Una tessera sconosciuta dà anche il diniego del controller: si conta quello
             "negati_oggi": counts.get("negato", 0),
