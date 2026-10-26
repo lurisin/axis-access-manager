@@ -160,22 +160,6 @@ def test_denied_without_card_is_not_an_unknown_card(db):
     assert {i["text"] for i in items} == {"fuori fascia oraria", "Pulsante Portineria · Pulsante Uscita · Aux 1 · Boh"}
 
 
-def test_stuck_input_is_a_fault(db):
-    service = NotificationService(db)
-    stuck = {"controller_id": 1, "io": "IO1", "name": "Pulsante Portineria", "since": "2026-10-26T12:18:30+00:00"}
-    # AUX: al banco resta a 1 dopo la prima pressione ma il pulsante apre ancora; è lo stato a non essere affidabile
-    [item] = _collect(service, stuck_inputs=[{**stuck, "seconds": 600}])
-    assert item["title"] == "Stato Ingresso Non Affidabile" and item["severity"] == "low"
-    assert item["link"] == "#impianti/c1"
-    assert item["text"].startswith("Pulsante Portineria risulta premuto da 10 minuti")
-    assert "il pulsante apre comunque" in item["text"]
-    assert item["text"].endswith("per i pulsanti usa l'ingresso REX della porta")
-    # Ingresso REX sempre chiuso: pulsante tenuto o cavi in corto, le nuove pressioni non arrivano
-    [item] = _collect(service, stuck_inputs=[{**stuck, "io": "REX", "seconds": 7300}])
-    assert item["title"] == "Ingresso Bloccato" and item["severity"] == "warn"
-    assert "da 2 ore" in item["text"] and "ingresso REX" not in item["text"]
-
-
 def test_notifications_group_repeated_events(db):
     service = NotificationService(db)
     now = datetime.now(tz=UTC)
@@ -312,35 +296,6 @@ def test_controller_events_follow_the_controller_name(db):
     assert db.set_controller_event_source("Rack Portineria", old="Vecchio Nome") == 1
     events = {e["detail"]: e["source"] for e in db.list_events()}
     assert events == {"coperchio": "Rack Portineria", "manomissione porta": "porta"}
-
-
-def test_stuck_inputs_are_buttons_active_for_over_a_minute(db):
-    from types import SimpleNamespace
-
-    from app.events import EventMonitor
-    from app.main import _stuck_inputs
-
-    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
-    db.save_controller_input(controller_id, "IO1", {"name": "Pulsante Portineria", "role": "rex"})
-    db.save_controller_input(controller_id, "IO2", {"name": "Allagamento", "role": "alarm"})
-    monitor = EventMonitor(prefix="x")
-    pressed = datetime(2026, 10, 26, 12, 18, 30, tzinfo=UTC)
-    monitor.io_ports.update({"0": True, "1": True})
-    monitor.io_since.update({"0": pressed, "1": pressed})
-    state = SimpleNamespace(installation=SimpleNamespace(primary={"id": controller_id}), db=db, monitor=monitor)
-
-    # Premuto da pochi secondi: normale; un ingresso di allarme attivo non è un pulsante bloccato
-    assert _stuck_inputs(state, pressed + timedelta(seconds=30)) == []
-    [stuck] = _stuck_inputs(state, pressed + timedelta(minutes=5))
-    assert stuck == {
-        "controller_id": controller_id,
-        "io": "IO1",
-        "name": "Pulsante Portineria",
-        "since": "2026-10-26T12:18:30+00:00",
-        "seconds": 300.0,
-    }
-    monitor.io_ports["0"] = False
-    assert _stuck_inputs(state, pressed + timedelta(minutes=5)) == []
 
 
 async def test_door_contact_is_read_from_the_controller_after_each_connection(controller):

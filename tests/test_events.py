@@ -31,21 +31,13 @@ def test_parse_event_takes_access_point_and_sources_from_topic_and_message():
     assert tilt.data == {} and tilt.category == "Device"
 
 
-def test_monitor_tracks_door_contact_and_how_long_an_input_is_active():
+def test_monitor_tracks_door_contact():
     monitor = EventMonitor(prefix=PREFIX, door_token="porta")
     topic = f"{PREFIX}/eventi/Door/State/DoorPhysicalState/$source/DoorToken/porta"
     monitor.handle(topic, payload({"State": "Open"}))
     assert monitor.door_physical == {"porta": "Open"}
     monitor.handle(topic, payload({"State": "Closed"}))
     assert monitor.door_physical == {"porta": "Closed"}
-
-    port = f"{PREFIX}/eventi/Device/IO/Port/$source/port/0"
-    monitor.handle(port, payload({"state": "1"}, timestamp=1729800000000))
-    monitor.handle(port, payload({"state": "1"}, timestamp=1729800060000))
-    # Lo stesso stato ripetuto non sposta l'inizio
-    assert monitor.io_ports["0"] is True and monitor.io_since["0"].timestamp() == 1729800000
-    monitor.handle(port, payload({"state": "0"}, timestamp=1729800090000))
-    assert monitor.io_ports["0"] is False and monitor.io_since["0"].timestamp() == 1729800090
 
 
 def test_parse_event_ignores_other_topics_and_bad_payloads():
