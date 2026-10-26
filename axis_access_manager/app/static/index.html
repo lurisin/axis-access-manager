@@ -2794,19 +2794,28 @@ async function viewController(el, ctrl, tab) {
   try { p = await api("api/programming"); } catch (err) { if (!body.isConnected) return; body.innerHTML = errorBox("Programmazione Non Leggibile", err) + '<p class="hint">Controlla il collegamento con l\'ingranaggio Connessione.</p>'; return; }
   if (!body.isConnected) return;
   // Punti di accesso che il controller non gestisce (dopo un reset): legge tessere e pulsanti ma non decide
-  const unmanaged = p.unmanaged?.length ? `<div class="alert err">${icon("alert")}<div class="grow"><b>${p.unmanaged.length === 1 ? "Punto di Accesso Non Gestito" : "Punti di Accesso Non Gestiti"}</b>${p.unmanaged.map((a) => esc(a.name)).join(", ")}: il controller legge tessere e pulsanti ma non decide, quindi la porta non si apre. Succede dopo un reset del controller.</div><button type="button" class="small primary" data-manage>Fai Gestire al Controller</button></div>` : "";
-  const errors = unmanaged + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "");
-  if (unmanaged) setTimeout(() => {
-    const button = body.querySelector("[data-manage]");
-    if (button) button.onclick = async () => {
+  const unmanaged = p.unmanaged?.length ? `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${p.unmanaged.length === 1 ? "Punto di Accesso Non Gestito" : "Punti di Accesso Non Gestiti"}</b>${p.unmanaged.map((a) => esc(a.name)).join(", ")}: il controller legge tessere e pulsanti ma non decide, quindi la porta non si apre. Succede dopo un reset del controller.</div><button type="button" class="small primary" data-manage>Fai Gestire al Controller</button></div>` : "";
+  // Pulsanti e relè senza il profilo che dà il permesso di aprire: il controller li nega
+  const rexMissing = p.rex_missing?.length ? `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${p.rex_missing.length === 1 ? "Pulsante Senza Permesso di Apertura" : "Pulsanti Senza Permesso di Apertura"}</b>${p.rex_missing.map((i) => esc(i.name)).join(", ")}: il controller nega l'apertura, quindi la porta non si apre. Succede con gli ingressi programmati prima della 0.21.3.</div><button type="button" class="small primary" data-manage>Dai il Permesso</button></div>` : "";
+  const errors = unmanaged + rexMissing + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "");
+  // Le due riparazioni passano dalla stessa richiesta: ogni pulsante le fa tutte e due
+  if (unmanaged || rexMissing) setTimeout(() => body.querySelectorAll("[data-manage]").forEach((button) => {
+    const label = button.textContent;
+    button.onclick = async () => {
       // Più letture e una scrittura sul controller: qualche secondo, e senza segno sembrava non succedere niente
-      button.disabled = true;
+      body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = true; });
       button.textContent = "Sto Scrivendo…";
       const r = await run(() => api("api/programming/manage", {method: "POST"}));
-      if (r) { toast(`${plural(r.managed, "punto di accesso gestito", "punti di accesso gestiti")} dal controller`); render(); }
-      else { button.disabled = false; button.textContent = "Fai Gestire al Controller"; }
+      if (r) {
+        const done = [r.managed && `${plural(r.managed, "punto di accesso gestito", "punti di accesso gestiti")} dal controller`, r.permitted && `permesso di apertura a ${plural(r.permitted, "ingresso", "ingressi")}`].filter(Boolean);
+        toast(done.length ? done.join(", ") : "Già tutto a posto");
+        render();
+      } else {
+        body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = false; });
+        button.textContent = label;
+      }
     };
-  });
+  }));
   const appDoor = (token) => ctrl.doors.find((d) => d.door_token === token);
   const doorName = (d) => appDoor(d.token)?.name || d.name || p.doors.find((x) => x.token === d.token)?.name || d.token;
   if (tab === "porte") return controllerDoors(body, ctrl, p, errors, appDoor);

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.3
+
+Correzione dall'analisi della documentazione Axis sul REX: il pulsante di uscita e il relè del citofono venivano negati.
+
+- **Permesso di apertura per pulsanti e relè**. Per l'A1210 una pressione è una richiesta di accesso senza tessera, e il controller apre solo se un profilo di accesso con il modo REXOnly ha una regola sul punto di accesso dell'ingresso (come nell'esempio Axis). L'app non lo creava, così il controller rispondeva "profilo di accesso non valido" e la porta non si apriva. Ora l'app crea e mantiene il profilo **Uscite e Citofono**, con fascia Sempre e una regola per ogni ingresso con ruolo Pulsante Uscita o Relè Citofono.
+- **Ingressi già programmati riparati all'avvio** e dopo un Ripristino Completo, con una voce nel Registro Attività.
+- **Avviso "Pulsanti Senza Permesso di Apertura"** se un ingresso resta senza regola, con il pulsante **Dai il Permesso** nella pagina del controller. I pulsanti di riparazione della pagina sistemano insieme punti di accesso non gestiti e permessi.
+- Il profilo non compare tra i gruppi e non si assegna alle tessere.
+- Su telefono gli avvisi della pagina del controller mettono il pulsante sotto il testo.
+
 ## 0.21.2
 
 Rifiniture dopo la seconda prova di reset al banco e richieste dell'utente.

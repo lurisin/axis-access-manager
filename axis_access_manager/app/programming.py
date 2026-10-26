@@ -62,6 +62,12 @@ CONTACTS = {"no": "Normalmente Aperto", "nc": "Normalmente Chiuso"}
 # con l'ingresso assegnato e un punto di accesso in uscita con il profilo REXOnly di fabbrica
 REX_ROLES = {"rex", "intercom"}
 INPUT_SETTINGS = ("name", "role", "door_token", "contact", "supervised", "schedule")
+# Il permesso di aprire senza tessera viene da un profilo di accesso con il modo REXOnly e una regola per il punto
+# di accesso del pulsante (esempio Axis con REX): senza, il controller nega con InvalidAccessProfile
+REX_AUTHENTICATION = "REXOnly"
+REX_PROFILE_NAME = "Uscite e Citofono"
+REX_PROFILE_DESCRIPTION = "Pulsanti di uscita e relè del citofono (Axis Access Manager)"
+ALWAYS = "standard_always"
 
 
 def _plain_mode(io: str) -> str:
@@ -168,6 +174,84 @@ async def link_access_points(controller, add=(), remove=()) -> int:
     return written
 
 
+def is_rex_profile(profile: dict) -> bool:
+    """Profilo per le aperture senza tessera (pulsanti, relè): non è un gruppo di persone."""
+    return REX_AUTHENTICATION in (profile.get("AuthenticationProfile") or [])
+
+
+def rex_policies(rows) -> dict[str, str]:
+    """Punto di accesso → fascia oraria per ogni ingresso che apre la porta. Senza fascia scelta: sempre."""
+    return {
+        r["access_point_token"]: r.get("schedule") or ALWAYS
+        for r in rows
+        if r.get("role") in REX_ROLES and r.get("access_point_token")
+    }
+
+
+def rex_uncovered(profiles: list[dict], points: list[str]) -> list[str]:
+    """Punti di accesso di pulsanti e relè su cui nessun profilo per le aperture senza tessera dà il permesso."""
+    covered = {
+        policy.get("AccessPoint")
+        for profile in profiles
+        if is_rex_profile(profile) and profile.get("Enabled") is not False
+        for policy in profile.get("AccessPolicy") or []
+    }
+    return [t for t in points if t not in covered]
+
+
+def _own_rex_profile(profiles: list[dict]) -> dict | None:
+    """Il profilo dei pulsanti scritto dall'app: dalla descrizione, o dal nome se l'hanno cambiata dal controller."""
+    rex = [p for p in profiles if is_rex_profile(p)]
+    return next((p for p in rex if p.get("Description") == REX_PROFILE_DESCRIPTION), None) or next(
+        (p for p in rex if p.get("Name") == REX_PROFILE_NAME), None
+    )
+
+
+def _rex_sig(profile: dict) -> tuple:
+    return (
+        profile.get("Name"),
+        profile.get("Description"),
+        profile.get("Enabled") is not False,
+        tuple(profile.get("Schedule") or []),
+        tuple(profile.get("AuthenticationProfile") or []),
+        tuple(
+            sorted((p.get("AccessPoint"), tuple(p.get("Schedule") or [])) for p in profile.get("AccessPolicy") or [])
+        ),
+    )
+
+
+async def sync_rex_profile(controller, wanted: dict[str, str]) -> str:
+    """Porta il profilo dei pulsanti alle regole volute (punto di accesso → fascia), solo sui punti che ci sono.
+    Restituisce "creato", "aggiornato" o "tolto", oppure "" se era già a posto."""
+    existing = {p.get("token") for p in await controller.list_access_points()}
+    wanted = {t: s for t, s in wanted.items() if t in existing}
+    mine = _own_rex_profile(await controller.list_access_profiles())
+    if not wanted:
+        if mine is None:
+            return ""
+        await controller.remove_access_profile(mine["token"])
+        return "tolto"
+    profile = copy.deepcopy(mine) if mine else {"token": "", "ValidFrom": "", "ValidTo": "", "Attribute": []}
+    profile.update(
+        {
+            "Name": REX_PROFILE_NAME,
+            "Description": REX_PROFILE_DESCRIPTION,
+            "Enabled": True,
+            # L'A1210 valuta la fascia del profilo insieme a quella della regola: decide quella di ogni ingresso
+            "Schedule": [ALWAYS],
+            "AuthenticationProfile": [REX_AUTHENTICATION],
+            "AccessPolicy": [
+                {"AccessPoint": point, "AuthorizationProfile": [], "Attribute": [], "Schedule": [schedule]}
+                for point, schedule in wanted.items()
+            ],
+        }
+    )
+    if mine is not None and _rex_sig(mine) == _rex_sig(profile):
+        return ""
+    await controller.set_access_profile(profile)
+    return "aggiornato" if mine else "creato"
+
+
 async def _own_access_controller(controller, controllers: list[dict]) -> dict:
     """Il controllo accessi di questo controller: quello di fabbrica ha il numero di serie nel token."""
     if len(controllers) == 1:
@@ -213,6 +297,7 @@ class ProgrammingService:
         points = await safe("punti di accesso", self.controller.list_access_points)
         access_controllers = await safe("controllo accessi", self.controller.list_access_controllers)
         unmanaged = unlinked_points(points, access_controllers) if access_controllers else []
+        rex_missing = await self._rex_missing(points, errors)
         owned_points, owned_idpoints = self._input_tokens()
         readers = [r for r in readers if r.get("token") not in owned_idpoints]
         points = [p for p in points if p.get("token") not in owned_points]
@@ -262,6 +347,8 @@ class ProgrammingService:
             ],
             # Punti di accesso per cui il controller non decide (dopo un reset): tessere e pulsanti non aprono
             "unmanaged": [{"token": a["token"], "name": a.get("Name") or a["token"]} for a in unmanaged],
+            # Pulsanti e relè senza il permesso di aprire: il controller li nega (InvalidAccessProfile)
+            "rex_missing": rex_missing,
             "inputs": _inputs(io_info, io_assigned, self.db.controller_inputs(self.controller_id)),
             "input_roles": INPUT_ROLES,
             "contacts": CONTACTS,
@@ -269,6 +356,43 @@ class ProgrammingService:
             "changes": self.db.list_controller_changes(self.controller_id),
             "errors": errors,
         }
+
+    async def _rex_missing(self, points: list[dict], errors: list[str]) -> list[dict]:
+        """Ingressi che aprono la porta ma su cui nessun profilo dà il permesso."""
+        rows = self.db.controller_inputs(self.controller_id)
+        existing = {p.get("token") for p in points}
+        wanted = [t for t in rex_policies(rows.values()) if t in existing]
+        if not wanted:
+            return []
+        try:
+            missing = set(rex_uncovered(await self.controller.list_access_profiles(), wanted))
+        except VapixError as err:
+            errors.append(f"profili di accesso: {err}")
+            return []
+        return [
+            {"io": io, "name": rows[io]["name"]}
+            for io in CONTROLLER_INPUTS
+            if io in rows and rows[io]["access_point_token"] in missing
+        ]
+
+    async def _sync_rex(self, io: str, row: dict) -> str:
+        """Profilo dei pulsanti con l'ingresso io nello stato row (non ancora salvato) e gli altri come sono."""
+        rows = {**self.db.controller_inputs(self._check()), io: row}
+        return await sync_rex_profile(self.controller, rex_policies(rows.values()))
+
+    async def repair_rex_profile(self, user: str = "sistema") -> int:
+        """Ingressi programmati prima della 0.21.3, o profilo tolto dal sito del controller: rimette il permesso
+        di aprire. Restituisce quanti ingressi ne erano senza."""
+        if not self.controller_id:
+            return 0
+        async with self.lock:
+            rows = self.db.controller_inputs(self.controller_id)
+            missing = {i["io"] for i in await self._rex_missing(await self.controller.list_access_points(), [])}
+            done = await sync_rex_profile(self.controller, rex_policies(rows.values()))
+            if done and missing:
+                names = ", ".join(rows[io]["name"] for io in CONTROLLER_INPUTS if io in missing)
+                self.db.add_audit(user, "programmazione controller", f"permesso di apertura senza tessera: {names}")
+        return len(missing) if done else 0
 
     async def _save(self, kind: str, token: str, before: dict, after: dict, summary: str, user: str) -> None:
         if before == after:
@@ -417,6 +541,8 @@ class ProgrammingService:
         try:
             point = tokens["access_point_token"]
             if point and (not wanted or values["door_token"] != current.get("door_token")):
+                # Prima la regola che lo nomina, poi il punto di accesso
+                await self._sync_rex(io, {**current, "access_point_token": ""})
                 await link_access_points(self.controller, remove={point})
                 await self.controller.remove_access_point(point)
                 tokens["access_point_token"] = ""
@@ -427,6 +553,7 @@ class ProgrammingService:
                     tokens["idpoint_token"] = ""
             else:
                 await self._write_rex(io, values, tokens)
+                await self._sync_rex(io, {**values, **tokens})
         except VapixError as err:
             self.db.save_controller_input(controller_id, io, {**current, **tokens})
             raise ServiceError(f"il controller ha rifiutato la configurazione dell'ingresso: {err}") from err

@@ -362,4 +362,4 @@ def test_full_restore_api(client, controller):
     assert "ripristino completo del controller da backup" in actions
     # Il ripristino li ha già fatti gestire: dalla programmazione non resta niente da fare
     assert client.get("/api/programming", headers=admin).json()["unmanaged"] == []
-    assert client.post("/api/programming/manage", headers=admin).json() == {"managed": 0}
+    assert client.post("/api/programming/manage", headers=admin).json() == {"managed": 0, "permitted": 0}

@@ -272,6 +272,18 @@ class NotificationService:
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link=f"#impianti/c{c['id']}",
                     )
+                if c.get("rex_missing") and not c.get("unreachable"):
+                    names = c["rex_missing"]
+                    add(
+                        "controller",
+                        f"rex:{c['id']}",
+                        "crit",
+                        "Pulsanti Senza Permesso di Apertura",
+                        f"{c['name']} · {', '.join(names[:3])}{' e altri' if len(names) > 3 else ''}: il controller "
+                        "nega l'apertura, la porta non si apre. Rimedia dalla programmazione",
+                        c.get("checked_at") or now.isoformat(timespec="seconds"),
+                        link=f"#impianti/c{c['id']}",
+                    )
                 offset = c.get("clock_offset")
                 if c.get("clock_fault") == "controller":
                     add(

@@ -120,7 +120,10 @@ Il pallino accanto al nome mostra lo stato in tempo reale degli ingressi che lo 
 Con **Scrivi sul Controller**, per Pulsante Uscita e Relè Citofono l'app crea sul controller:
 - un punto di identificazione senza lettore, con il tipo di contatto scelto;
 - l'assegnazione dell'ingresso fisico a quel punto;
-- un punto di accesso in uscita sulla porta, con il profilo REXOnly di fabbrica.
+- un punto di accesso in uscita sulla porta, con il profilo REXOnly di fabbrica, gestito dal controller;
+- una regola nel profilo di accesso **Uscite e Citofono**, che dà il permesso di aprire senza tessera. Il profilo è uno solo per tutti gli ingressi, con una regola ciascuno; l'app lo crea con il primo ingresso e lo toglie con l'ultimo. Non compare tra i gruppi e non si assegna alle tessere.
+
+Senza quella regola il controller riceve la pressione ma la nega (profilo di accesso non valido) e la porta non si apre. Gli ingressi programmati prima della 0.21.3 non l'avevano: l'app la aggiunge da sola all'avvio. Se manca, compare l'avviso **Pulsanti Senza Permesso di Apertura** e nella pagina del controller il pulsante **Dai il Permesso** la rimette.
 
 Togliendo il ruolo, l'app li rimuove. Ogni modifica compare nello Storico Modifiche e si può annullare. Lo schema dei lettori non mostra questi punti e non li tocca.
 

@@ -1260,9 +1260,11 @@ def create_app(
 
     @app.put("/api/programming/inputs/{io}", dependencies=[need("impianti"), before_change()])
     async def program_input(io: str, body: ControllerInputIn, request: Request) -> dict:
-        saved = await request.app.state.programming.update_input(io, body.model_dump(), request_user(request))
+        state = request.app.state
+        saved = await state.programming.update_input(io, body.model_dump(), request_user(request))
         # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
-        await request.app.state.bridge.publish_input_names()
+        await state.bridge.publish_input_names()
+        await state.health.recheck_managed(state.installation.primary)
         return saved
 
     @app.put("/api/programming/access-points/{token:path}", dependencies=[need("impianti"), before_change()])
@@ -1275,8 +1277,9 @@ def create_app(
     async def program_manage(request: Request) -> dict:
         state = request.app.state
         managed = await state.programming.manage_access_points(request_user(request))
+        permitted = await state.programming.repair_rex_profile(request_user(request))
         await state.health.recheck_managed(state.installation.primary)
-        return {"managed": managed}
+        return {"managed": managed, "permitted": permitted}
 
     @app.put("/api/programming/links", dependencies=[need("impianti"), before_change()])
     async def program_links(body: LinksIn, request: Request) -> dict:
@@ -1288,6 +1291,7 @@ def create_app(
     async def undo_change(change_id: int, request: Request) -> dict:
         if await request.app.state.programming.undo(change_id, request_user(request)) == "input":
             await request.app.state.bridge.publish_input_names()
+            await request.app.state.health.recheck_managed(request.app.state.installation.primary)
         return {"ok": True}
 
     @app.get("/api/cameras", dependencies=[need("impianti")])
@@ -1391,6 +1395,11 @@ def create_app(
         if result.pop("reload"):
             await reload_runtime(request.app)
         if full:
+            # Backup di prima della 0.21.3: il permesso dei pulsanti non c'era, lo si rimette
+            try:
+                await state.programming.repair_rex_profile(user.label)
+            except (VapixError, ServiceError) as err:
+                _LOGGER.warning("Permesso dei pulsanti non rimesso dopo il ripristino: %s", err)
             await state.health.recheck_managed(state.installation.primary)
         return {**result, "backup_before": before["id"]}
 
@@ -1978,6 +1987,13 @@ async def _maintenance(app: FastAPI) -> None:
                     # Dalla 0.10 i gruppi sono dentro le tipologie
                     if adopted := await state.rules.adopt_groups():
                         _LOGGER.info("Gruppi passati alle tipologie: %s modifiche", adopted)
+                    # Fino alla 0.21.2 pulsanti e relè non avevano il permesso di aprire: il controller li negava
+                    try:
+                        if permitted := await state.programming.repair_rex_profile():
+                            _LOGGER.info("Permesso di apertura dato a %s ingressi", permitted)
+                            await state.health.recheck_managed(state.installation.primary)
+                    except (VapixError, ServiceError) as err:
+                        _LOGGER.warning("Permesso dei pulsanti non controllato: %s", err)
             except (VapixError, ServiceError) as err:
                 state.last_sync = {"ok": False, "error": str(err), "result": None, "at": _now()}
                 _LOGGER.warning("Sincronizzazione non riuscita: %s", err)

@@ -6,8 +6,9 @@ from fastapi.testclient import TestClient
 from app.config import parse_options
 from app.installation import InstallationService
 from app.main import create_app
-from app.programming import ProgrammingService, format_duration, parse_duration
-from app.service import ServiceError
+from app.programming import ProgrammingService, format_duration, is_rex_profile, parse_duration
+from app.rules_service import RulesService
+from app.service import AccessService, ServiceError
 
 LEGACY = {
     "a1210_host": "https://172.27.0.1/",
@@ -170,6 +171,92 @@ async def test_rex_input_is_written_to_the_controller_and_can_be_undone(db, cont
         await service.update_input("IO2", {"role": "rex", "door": "porta"}, "admin")
     assert db.controller_inputs(controller_id)["IO2"]["idpoint_token"].startswith("idpoint-")
     assert db.controller_inputs(controller_id)["IO2"]["role"] == ""
+
+
+def rex_profiles(controller) -> list[dict]:
+    return [p for p in controller.profiles.values() if is_rex_profile(p)]
+
+
+async def test_rex_inputs_get_the_permission_to_open(db, controller):
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+
+    # Come nell'esempio Axis con REX: profilo con il modo REXOnly, fascia sempre e una regola sul punto del pulsante
+    await service.update_input("REX", {"name": "Pulsante Portineria", "role": "rex", "door": "porta"}, "admin")
+    point = db.controller_inputs(controller_id)["REX"]["access_point_token"]
+    [profile] = rex_profiles(controller)
+    assert profile["Name"] == "Uscite e Citofono" and profile["Enabled"] is True
+    assert profile["Schedule"] == ["standard_always"] and profile["AuthenticationProfile"] == ["REXOnly"]
+    assert profile["AccessPolicy"] == [
+        {"AccessPoint": point, "AuthorizationProfile": [], "Attribute": [], "Schedule": ["standard_always"]}
+    ]
+    assert (await service.read())["rex_missing"] == []
+
+    # Il relè del citofono entra nello stesso profilo con una regola sua
+    await service.update_input("IO1", {"name": "Citofono", "role": "intercom", "door": "porta"}, "admin")
+    relay = db.controller_inputs(controller_id)["IO1"]["access_point_token"]
+    [profile] = rex_profiles(controller)
+    assert {p["AccessPoint"] for p in profile["AccessPolicy"]} == {point, relay}
+
+    # Cambiare il nome non tocca il profilo
+    controller.calls.clear()
+    await service.update_input("IO1", {"name": "Citofono Ingresso", "role": "intercom", "door": "porta"}, "admin")
+    assert not [c for c in controller.calls if c[0] == "set_access_profile"]
+
+    # Altra porta: prima si toglie la regola che nomina il vecchio punto di accesso, poi il punto
+    controller.calls.clear()
+    await service.update_input("IO1", {"name": "Citofono Ingresso", "role": "intercom", "door": "porta2"}, "admin")
+    moved = db.controller_inputs(controller_id)["IO1"]["access_point_token"]
+    names = [c[0] for c in controller.calls]
+    assert names.index("set_access_profile") < names.index("remove_access_point")
+    [profile] = rex_profiles(controller)
+    assert {p["AccessPoint"] for p in profile["AccessPolicy"]} == {point, moved}
+
+    # Il profilo non è un gruppo di persone: non si vede tra i gruppi
+    rules = RulesService(AccessService(db, controller, parse_options(LEGACY)))
+    assert profile["token"] not in {g["token"] for g in (await rules.list_groups())["groups"]}
+
+    # Senza più ingressi che aprono, il profilo sparisce
+    await service.update_input("IO1", {"role": ""}, "admin")
+    [profile] = rex_profiles(controller)
+    assert [p["AccessPoint"] for p in profile["AccessPolicy"]] == [point]
+    await service.update_input("REX", {"role": ""}, "admin")
+    assert rex_profiles(controller) == []
+    assert not any(c[0] == "access_door" for c in controller.calls)
+
+
+async def test_inputs_from_before_get_the_permission_back(db, controller):
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    await service.update_input("REX", {"name": "Pulsante Portineria", "role": "rex", "door": "porta"}, "admin")
+    # Come un ingresso programmato fino alla 0.21.2: nessun profilo, il controller nega con InvalidAccessProfile
+    controller.profiles.pop(rex_profiles(controller)[0]["token"])
+    assert (await service.read())["rex_missing"] == [{"io": "REX", "name": "Pulsante Portineria"}]
+
+    assert await service.repair_rex_profile() == 1
+    assert (await service.read())["rex_missing"] == []
+    assert db.list_audit()[0]["detail"] == "permesso di apertura senza tessera: Pulsante Portineria"
+    # Già a posto: niente da scrivere
+    controller.calls.clear()
+    assert await service.repair_rex_profile() == 0
+    assert not [c for c in controller.calls if c[0] == "set_access_profile"]
+
+    # Un profilo disattivato dal sito del controller non dà il permesso: lo si riattiva
+    [profile] = rex_profiles(controller)
+    profile["Enabled"] = False
+    assert (await service.read())["rex_missing"] == [{"io": "REX", "name": "Pulsante Portineria"}]
+    assert await service.repair_rex_profile() == 1
+    assert rex_profiles(controller)[0]["Enabled"] is True
+
+    # Punto di accesso tolto dal controller: nessuna regola che lo nomini, nessun errore
+    row = db.controller_inputs(controller_id)["REX"]
+    controller.access_points = [a for a in controller.access_points if a["token"] != row["access_point_token"]]
+    assert (await service.read())["rex_missing"] == []
+    assert await service.repair_rex_profile() == 0
+    assert rex_profiles(controller) == []
+
+    # Senza controller configurato non c'è niente da riparare
+    assert await ProgrammingService(db, controller, None, asyncio.Lock()).repair_rex_profile() == 0
 
 
 async def test_unmanaged_access_points_are_shown_and_can_be_managed(db, controller):
