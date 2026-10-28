@@ -34,7 +34,7 @@ Correzioni dal collaudo sul posto del 26 ottobre, con pulsanti premuti davvero, 
 Correzione dall'analisi della documentazione Axis sul REX: il pulsante di uscita e il relè del citofono venivano negati.
 
 - **Permesso di apertura per pulsanti e relè**. Per l'A1210 una pressione è una richiesta di accesso senza tessera, e il controller apre solo se un profilo di accesso con il modo REXOnly ha una regola sul punto di accesso dell'ingresso (come nell'esempio Axis). L'app non lo creava, così il controller rispondeva "profilo di accesso non valido" e la porta non si apriva. Ora l'app crea e mantiene il profilo **Uscite e Citofono**, con fascia Sempre e una regola per ogni ingresso con ruolo Pulsante Uscita o Relè Citofono.
-- **Ingressi già programmati riparati all'avvio** e dopo un Ripristino Completo, con una voce nel Registro Attività.
+- **Ingressi già programmati riparati all'avvio** e dopo un Ripristino Completo, con una voce in Impostazioni → Attività.
 - **Avviso "Pulsanti Senza Permesso di Apertura"** se un ingresso resta senza regola, con il pulsante **Dai il Permesso** nella pagina del controller. I pulsanti di riparazione della pagina sistemano insieme punti di accesso non gestiti e permessi.
 - Il profilo non compare tra i gruppi e non si assegna alle tessere.
 - Su telefono gli avvisi della pagina del controller mettono il pulsante sotto il testo.
@@ -44,7 +44,7 @@ Correzione dall'analisi della documentazione Axis sul REX: il pulsante di uscita
 Rifiniture dopo la seconda prova di reset al banco e richieste dell'utente.
 
 - **Sensore Elettroserratura Porta** in Home Assistant, uno per porta: acceso/spento con classe lock (spento bloccata, acceso sbloccata, anche quando è aperta a tempo da una tessera). Nelle dashboard mostra il lucchetto.
-- **Tessere rilette appena il controller torna raggiungibile** dopo un riavvio o un reset: l'avviso delle tessere non presenti e il Ripristino Completo compaiono subito, senza premere Rileggi né aspettare il giro dei 15 minuti.
+- **Tessere rilette appena il controller torna raggiungibile** dopo un riavvio o un reset: l'avviso delle tessere non presenti e il Ripristino Completo compaiono subito, senza premere Rileggi dal Controller né aspettare il giro dei 15 minuti.
 - **Pallino verde** accanto a "Collegato" nella pagina del controller (era grigio).
 - **Dettaglio dell'evento nel Registro** che segue lo scorrimento: aprendo un evento in fondo all'elenco il riquadro resta visibile invece di restare in cima alla pagina.
 - **Fai Gestire al Controller** mostra "Sto Scrivendo…" mentre scrive.
@@ -216,7 +216,7 @@ Stabilità: l'app non perde dati se il controller viene resettato o sostituito, 
   - cambiando la larghezza o togliendo un riquadro la pagina resta dov'era, non torna in cima;
   - il titolo non compare più due volte e la × resta sulla stessa riga anche nei riquadri da ¼;
   - i riquadri di una riga non si allungano più fino all'altezza del più alto.
-- Presa Visione e Segna Tutte Come Viste finiscono nel Registro Attività, con l'utente e le notifiche viste.
+- Presa Visione e Segna Tutte Come Viste finiscono in Impostazioni → Attività, con l'utente e le notifiche viste.
 - Gli eventi del coperchio del controller mostrano il nome attuale del controller. Quelli già registrati vengono aggiornati all'avvio, e di nuovo quando rinomini il controller.
 
 ## 0.15.1
@@ -288,7 +288,7 @@ Stabilità: l'app non perde dati se il controller viene resettato o sostituito, 
 ## 0.11.1
 
 - Scheda della persona: nel riquadro Accesso Personalizzato il nome della tipologia resta nella frase invece di andare a capo.
-- Registro Attività: creazione, modifica ed eliminazione degli utenti mostrano il nome visualizzato invece del nome utente.
+- Impostazioni → Attività: creazione, modifica ed eliminazione degli utenti mostrano il nome visualizzato invece del nome utente.
 
 ## 0.11.0
 
@@ -351,7 +351,7 @@ Stabilità: l'app non perde dati se il controller viene resettato o sostituito, 
 
 ## 0.8.2
 
-- **Correzione importante:** i gruppi creati o modificati dall'add-on non facevano entrare nessuno, nemmeno con la fascia "Sempre" (il controller rispondeva "fuori fascia oraria"). L'A1210 controlla la fascia oraria sia nelle regole sia nel profilo, e l'add-on la scriveva solo nelle regole. Ora la scrive in entrambi; i gruppi già salvati si riparano da soli al primo avvio dopo l'aggiornamento (nel Registro Attività compare "gruppo riparato").
+- **Correzione importante:** i gruppi creati o modificati dall'add-on non facevano entrare nessuno, nemmeno con la fascia "Sempre" (il controller rispondeva "fuori fascia oraria"). L'A1210 controlla la fascia oraria sia nelle regole sia nel profilo, e l'add-on la scriveva solo nelle regole. Ora la scrive in entrambi; i gruppi già salvati si riparano da soli al primo avvio dopo l'aggiornamento (in Impostazioni → Attività compare "gruppo riparato").
 - **Correzione importante:** con le festività inserite non si potevano creare né modificare fasce orarie con "Non Valida nei Giorni Festivi" (attiva di serie): il controller rifiutava la regola annuale. Ora le festività ricorrenti si scrivono in una forma che l'A1210 accetta, e al primo avvio l'add-on riscrive quelle che prima non era riuscito a salvare.
 - Tempi della porta: **Tempo di Apertura** al massimo 30 secondi e **Apertura Estesa** al massimo 60, per non tenere alimentata a lungo la serratura. Un valore più alto già presente sul controller non impedisce di salvare le altre modifiche. I messaggi d'errore usano i nomi dell'interfaccia ("Tempo di Apertura: tra 1 e 30 secondi").
 - Registro: i motivi dei dinieghi in italiano anche per "fuori fascia oraria", "PIN errato", "passaggio ripetuto (antipassback)" e "rifiutata dal controller".
