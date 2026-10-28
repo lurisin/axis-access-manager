@@ -382,7 +382,7 @@ def test_missing_cards_through_api(client, controller):
     [card] = client.get("/api/missing-cards").json()
     assert card["person_name"] == "Anna"
     titles = [i["title"] for i in client.get("/api/notifications").json()["items"]]
-    assert "Tessere Non Presenti Sul Controller" in titles
+    assert "Tessere Non Presenti sul Controller" in titles
 
     assert client.post("/api/missing-cards/restore", json={}).json() == {"restored": 1, "failed": []}
     assert client.get("/api/missing-cards").json() == []

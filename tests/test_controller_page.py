@@ -105,7 +105,8 @@ def _collect(service, **overrides):
 
 
 def test_notifications(db):
-    service = NotificationService(db)
+    # Come dopo i primi minuti dall'avvio: le viste che non ci sono più si dimenticano subito
+    service = NotificationService(db, settle=timedelta(0))
     now = datetime.now(tz=UTC)
     assert _collect(service) == []
 
@@ -126,8 +127,10 @@ def test_notifications(db):
 
     listing = service.listing(items)
     assert listing["open"] == 5
-    # Chi non vede il registro né le persone vede solo i collegamenti
-    assert {i["type"] for i in service.listing(items, set())["items"]} == {"mqtt", "controller"}
+    # Chi non vede il registro né le persone vede i collegamenti e gli allarmi, senza eventi e istantanee
+    status_only = service.listing(items, set())["items"]
+    assert {i["type"] for i in status_only} == {"mqtt", "controller", "door_alarm"}
+    assert next(i for i in status_only if i["type"] == "door_alarm")["events"] == []
 
     service.mark_seen(["mqtt", alarm["id"]], items)
     assert service.listing(items)["open"] == 3
