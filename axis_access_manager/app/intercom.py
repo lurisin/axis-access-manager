@@ -32,10 +32,19 @@ ANSWERED_STATES = {"oncall"}
 IDLE_STATES = {"idle", "dismissed"}
 
 # Aperture con credenziali salvate sul citofono: non si inoltrano, l'unico elenco
-# di chi può entrare è quello dell'A1210
-LOCAL_CREDENTIALS = {"PASSWORD", "HIJACKING", "CARD", "BLUETOOTH", "QR_CODE", "FACE", "FINGERPRINT"}
+# di chi può entrare è quello dell'A1210. Il nome è quello a metà frase nel dettaglio del registro
+LOCAL_CREDENTIALS = {
+    "PASSWORD": "PIN",
+    "HIJACKING": "PIN antirapina",
+    "CARD": "tessera",
+    "BLUETOOTH": "Bluetooth",
+    "QR_CODE": "codice QR",
+    "FACE": "volto",
+    "FINGERPRINT": "impronta",
+}
+# Origine dell'apertura nel registro ("App Hik-Connect (Citofono)")
 UNLOCK_SOURCES = {
-    "HOUSEHOLDER": "App O Monitor",
+    "HOUSEHOLDER": "App o Monitor",
     # Al banco l'apertura dall'app Hik-Connect arriva così (sorgente "00"); l'account che apre non c'è
     "CENTER_PLATFORM": "App Hik-Connect",
     "PASSWORD": "PIN",
@@ -159,18 +168,22 @@ class IntercomBridge:
             return
         self._last_open = now
         if unlock_type in LOCAL_CREDENTIALS:
-            self._event(f"apertura con {how} del citofono non inoltrata all'A1210", attributes)
+            # Il visitatore entra da solo: se ha suonato, nessuno ha risposto
+            self._event(
+                f"apertura con {LOCAL_CREDENTIALS[unlock_type]} del citofono non inoltrata all'A1210", attributes
+            )
             return
-        if not self.settings.open_door:
-            self._event(f"apertura da {how} (inoltro all'A1210 disattivato)", attributes)
-            return
-        # Nel registro come le aperture da Home Assistant: chi o cosa, e da dove ("App Hik-Connect (Citofono)")
-        source = f"{how} (Citofono)"
         note = ""
         if self._ring_at is not None:
             note = f"{self._since_ring()} s dopo la chiamata"
-            # Chi apre ha risposto: alla fine della chiamata non serve "nessuna risposta"
+            # Chi apre ha risposto, anche senza inoltro: alla fine della chiamata non serve "nessuna risposta"
             self._answered = True
+        if not self.settings.open_door:
+            detail = ", ".join(x for x in (f"apertura da {how} (inoltro all'A1210 disattivato)", note) if x)
+            self._event(detail, attributes)
+            return
+        # Nel registro come le aperture da Home Assistant: chi o cosa, e da dove ("App Hik-Connect (Citofono)")
+        source = f"{how} (Citofono)"
         task = asyncio.get_running_loop().create_task(self._forward(source, note))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)

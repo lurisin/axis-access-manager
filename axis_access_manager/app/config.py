@@ -17,6 +17,9 @@ SUPERVISOR_MQTT_URL = "http://supervisor/services/mqtt"
 # Con s6-overlay il processo principale non eredita le variabili del container:
 # il Supervisor token si trova anche qui
 S6_ENV_DIR = Path("/run/s6/container_environment")
+# Prefissi MQTT: senza caratteri jolly (# +) né spazi, come quelli di controller e citofono in Impianti
+TOPIC_PATTERN = re.compile(r"^[A-Za-z0-9_\-/]+$")
+DEFAULT_HA_TOPIC_PREFIX = "axis_access_manager"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,7 +46,7 @@ class Settings:
     event_retention_days: int = 365
     ha_integration: bool = True
     ha_door_buttons: bool = True
-    ha_topic_prefix: str = "axis_access_manager"
+    ha_topic_prefix: str = DEFAULT_HA_TOPIC_PREFIX
     snapshot_camera: str = ""
     snapshot_on_granted: bool = False
     readonly_users: tuple[str, ...] = ()
@@ -110,7 +113,7 @@ def parse_options(options: dict) -> Settings:
         event_retention_days=int(options.get("event_retention_days") or 365),
         ha_integration=bool(options.get("ha_integration", True)),
         ha_door_buttons=bool(options.get("ha_door_buttons", True)),
-        ha_topic_prefix=(options.get("ha_topic_prefix") or "axis_access_manager").strip().strip("/"),
+        ha_topic_prefix=ha_topic_prefix(options.get("ha_topic_prefix")),
         snapshot_camera=(options.get("snapshot_camera") or "").strip(),
         snapshot_on_granted=bool(options.get("snapshot_on_granted", False)),
         readonly_users=tuple(u.lower() for u in _string_list(options.get("readonly_users"))),
@@ -119,6 +122,23 @@ def parse_options(options: dict) -> Settings:
         intercom_relay=int(options.get("intercom_relay") or 1),
         intercom_mqtt_prefix=(options.get("intercom_mqtt_prefix") or "hmd").strip().strip("/"),
     )
+
+
+def ha_topic_prefix(value) -> str:
+    """Prefisso delle entità di Home Assistant; uno non valido (vuoto, con # o +) torna al predefinito.
+
+    Con # o + l'iscrizione al topic dei comandi fallirebbe e si fermerebbe l'ascolto degli eventi.
+    """
+    prefix = str(value or "").strip().strip("/")
+    if TOPIC_PATTERN.match(prefix):
+        return prefix
+    if prefix:
+        _LOGGER.warning(
+            "Prefisso MQTT di Home Assistant non valido (%s): usa lettere, numeri, _ - e /. Uso %s",
+            prefix,
+            DEFAULT_HA_TOPIC_PREFIX,
+        )
+    return DEFAULT_HA_TOPIC_PREFIX
 
 
 def _string_list(value) -> tuple[str, ...]:
