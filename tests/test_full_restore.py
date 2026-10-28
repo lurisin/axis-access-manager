@@ -1,9 +1,12 @@
 import pytest
 from fastapi.testclient import TestClient
 from test_backup import Plant
+from test_rules_service import OFFICE
 
+from app.full_restore import renamed_tokens
 from app.main import create_app
 from app.restore import Runtime, apply, plan
+from app.vapix import VapixError
 
 FULL = ["dispositivo", "controller", "tessere"]
 OLD_UUID = "e6689c2d-4eca-4637-9a0e-b8a44fe6a074"
@@ -80,7 +83,8 @@ def plant(db, controller, settings, tmp_path):
 async def full_restore(plant, backup_id, keys=None, password="", known=None):
     _, saved = plant.backups.load(backup_id)
     current, _ = await plant.backups.snapshot(plant.clients)
-    items = plan(saved, current, FULL, plant.controller_id, set(known or {}))
+    # Come l'app: con i token già cambiati dai ripristini precedenti
+    items = plan(saved, current, FULL, plant.controller_id, set(known or {}), renamed_tokens(plant.db))
     chosen = [i["key"] for i in items if i["default"] and not i["blocked"]] if keys is None else keys
     runtime = Runtime(
         plant.db,
@@ -247,6 +251,105 @@ async def test_tokens_refused_by_the_new_controller_are_renamed_everywhere(plant
     point = next(p for p in controller.access_points if p["token"] == mine["access_point_token"])
     assert point["IdPointDevice"][0]["IdPoint"] == mine["idpoint_token"]
     assert controller.io_assignments["REX"]["IoUser"][0]["token"] == mine["idpoint_token"]
+
+
+async def test_second_restore_after_renamed_tokens_makes_no_duplicates(plant, controller):
+    backup = await plant.backup()
+    controller.factory_reset()
+    controller.refuse_axis_tokens = True
+    _, result = await full_restore(plant, backup["id"], password="segreta")
+    assert not result["failed"], result["failed"]
+    points, readers = {p["token"] for p in controller.access_points}, set(controller.idpoints)
+
+    # Di nuovo dallo stesso backup (per esempio dopo una riga non riuscita): gli oggetti ci sono già
+    items, result = await full_restore(plant, backup["id"], password="segreta")
+
+    assert [i["key"] for i in items if i["action"] == "ricrea"] == []
+    assert {p["token"] for p in controller.access_points} == points and set(controller.idpoints) == readers
+
+
+async def test_timeout_after_a_write_makes_no_duplicate(plant, controller, db):
+    backup = await plant.backup()
+    controller.factory_reset()
+    original = controller.create_access_point
+
+    async def slow(point):
+        token = await original(point)
+        if point.get("token", "").startswith("Axis-"):
+            # Il controller scrive, ma la risposta non arriva
+            raise VapixError("il controller non risponde (ReadTimeout)")
+        return token
+
+    controller.create_access_point = slow
+    _, result = await full_restore(plant, backup["id"], password="segreta")
+
+    assert not result["failed"], result["failed"]
+    assert "renamed" not in result and not renamed_tokens(db)
+    assert sorted(p["token"] for p in controller.access_points) == ["Axis-b8a44fe6a074:1.2", "ap-in"]
+
+
+async def test_schedule_rules_come_back_with_the_schedule(plant, controller, db):
+    """Fasce fatte con l'app: dopo un reset tornano anche le regole nell'app, con le festività di adesso."""
+    await plant.access.create_person("Anna", "04aa", "admin")
+    await plant.rules.add_holidays([{"day": "2026-12-25", "name": "Natale"}], "admin")
+    token = (await plant.rules.create_schedule("Uffici", "", OFFICE, True, "admin"))["token"]
+    rules = db.schedule_rules()[token]
+    backup = await plant.backup()
+    await plant.rules.add_holidays([{"day": "2027-01-01", "name": "Capodanno"}], "admin")
+    controller.factory_reset()
+    # Le versioni precedenti le cancellavano alla prima lettura delle fasce
+    db.delete_schedule_rules(token)
+
+    items, result = await full_restore(plant, backup["id"], password="segreta")
+
+    assert next(i for i in items if i["key"] == f"prog-fascia:{token}")["label"] == "Fascia Oraria Uffici"
+    assert not result["failed"], result["failed"]
+    assert db.schedule_rules()[token] == rules
+    assert "20270101" in controller.schedules[token]["ExceptionScheduleDefinition"]
+    items, _ = await full_restore(plant, backup["id"], password="segreta")
+    assert items == []
+
+    # Fascia uguale sul controller, regole perse nell'app: si rimettono solo quelle
+    db.delete_schedule_rules(token)
+    controller.calls.clear()
+    items, result = await full_restore(plant, backup["id"], keys=[f"prog-fascia:{token}"])
+    assert items[0]["text"] == "Riporta le regole della fascia nell'app" and not result["failed"]
+    assert db.schedule_rules()[token] == rules and not written(controller, "set_schedule")
+
+
+async def test_controller_gone_at_restore_time_is_not_unchanged(plant, controller):
+    backup = await plant.backup()
+    controller.factory_reset()
+    _, saved = plant.backups.load(backup["id"])
+    current, _ = await plant.backups.snapshot(plant.clients)
+    keys = [i["key"] for i in plan(saved, current, FULL, plant.controller_id, set()) if i["default"]]
+    # Tra l'anteprima e la conferma il controller smette di rispondere
+    controller.offline = True
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, FULL, plant.controller_id, set())
+    runtime = Runtime(plant.db, plant.access, plant.rules, plant.programming, plant.controller_id)
+
+    result = await apply(items, keys, runtime, "admin")
+
+    assert result["applied"] == [] and result["unchanged"] == 0
+    assert [f["label"] for f in result["failed"]] == ["Ripristino Completo"]
+    assert "non risponde" in result["failed"][0]["error"]
+
+
+async def test_unreadable_cards_do_not_look_like_a_reset(plant, controller):
+    await plant.access.create_person("Anna", "04aa", "admin")
+    backup = await plant.backup()
+    controller.doors["Door9"] = {"token": "Door9", "Name": "Porta Retro"}
+
+    async def broken():
+        raise VapixError("il controller non risponde (ReadTimeout)")
+
+    controller.list_credentials = broken
+    items, _ = await full_restore(plant, backup["id"], keys=[])
+
+    extra = next(i for i in items if i["key"] == "prog-porta-togli:Door9")
+    assert extra["default"] is False
+    assert (extra["label"], extra["text"]) == ("Porta Retro", "Togli: non c'era nel backup")
 
 
 async def test_door_times_are_capped_and_extra_objects_removed_after_reset(plant, controller):

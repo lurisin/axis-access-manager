@@ -212,15 +212,18 @@ async def test_restore_changed_person_and_leave_new_ones(plant, controller, db):
 
     items, result = await plant.restore(backup["id"], ["persone"])
 
-    by_label = {i["label"]: i for i in items}
+    by_label = {i["label"]: i for i in items if i["key"].startswith("persona")}
     assert by_label["Anna"]["action"] == "riporta" and by_label["Anna"]["default"] is True
     labels = [c["label"] for c in by_label["Anna"]["changes"]]
-    assert labels == ["Nome", "Ditta o Reparto", "Tessera 04aa: stato", "Tessera 04bb"]
+    assert labels == ["Nome", "Ditta o Reparto", "Tessera 04aa: stato"]
+    # La tessera aggiunta dopo il backup ha la sua riga, non spuntata
+    new_card = next(i for i in items if i["key"] == "tessera-nuova:04bb")
+    assert new_card["action"] == "togli" and new_card["default"] is False
     assert by_label["Bruno"]["action"] == "togli" and by_label["Bruno"]["default"] is False
     assert not result["failed"]
     restored = db.get_person(anna["id"])
     assert restored["name"] == "Anna" and restored["company"] == ""
-    assert [(c["number"], c["enabled"]) for c in restored["cards"]] == [("04aa", True)]
+    assert [(c["number"], c["enabled"]) for c in restored["cards"]] == [("04aa", True), ("04bb", True)]
     assert controller.users[restored["axis_user_token"]]["Name"] == "Anna"
     assert db.get_person(bruno["id"]) is not None
 
