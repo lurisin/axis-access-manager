@@ -176,6 +176,9 @@
     .list.compact > .ev { grid-template-columns: 40px 10px minmax(0, 1fr); gap: 0 8px; padding: 9px 12px; }
     .list.compact > .ev > span:last-child:empty { display: none; }
     .ev .where { grid-column: 3; max-width: none; text-align: left; font-size: 12px; }
+    /* Nome ed esito vanno a capo invece di finire nei puntini: con «Tessera 04ff… acc…» negato o concesso non si leggeva.
+       Senza un limite di righe: nei riquadri stretti del cruscotto tessera ed esito ne occupano tre */
+    .list.compact > .ev .what { white-space: normal; overflow-wrap: anywhere; }
   }
   .ev .dot.info { background: var(--info); } .ev .dot.accent { background: var(--accent); }
   .list.compact > .day { padding: 5px 16px; background: var(--surface-2); border-top: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--muted); }
@@ -819,15 +822,16 @@ async function api(path, options = {}) {
     });
   } catch (err) {
     // Rete o add-on caduti a metà richiesta: il browser direbbe solo "Failed to fetch", e una modifica può essere arrivata
-    throw new Error(method === "GET" ? "Collegamento con l'add-on non riuscito: controlla la rete e riprova tra qualche secondo"
-      : "Collegamento con l'add-on interrotto: la modifica potrebbe essere stata fatta lo stesso, controlla prima di riprovare");
+    throw new Error(method === "GET" ? "collegamento con l'add-on non riuscito: controlla la rete e riprova tra qualche secondo"
+      : "collegamento con l'add-on interrotto: la modifica potrebbe essere stata fatta lo stesso, controlla prima di riprovare");
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     // Senza un messaggio dell'app l'errore viene da Home Assistant: l'add-on si sta riavviando o non risponde
     const fromApp = typeof data?.detail === "string";
-    const message = cap(fromApp ? data.detail : res.status >= 502 && res.status <= 504
-      ? `l'add-on non risponde (errore ${res.status}): riprova tra qualche secondo` : `richiesta non riuscita (errore ${res.status})`);
+    // Il messaggio resta com'è: la maiuscola la mette chi lo mostra da solo, non chi lo mette dentro una frase
+    const message = fromApp ? data.detail : res.status >= 502 && res.status <= 504
+      ? `l'add-on non risponde (errore ${res.status}): riprova tra qualche secondo` : `richiesta non riuscita (errore ${res.status})`;
     // Il controller non ha risposto a una modifica: si può riprovare senza rifare tutto da capo. Gli altri errori del
     // controller (credenziali, richiesta rifiutata, scritture sospese) riprovando tornerebbero uguali
     const unreachable = data?.unreachable ?? (fromApp && data.detail.startsWith("il controller non risponde"));
@@ -925,19 +929,24 @@ const store = {me: {perms: [], admin: false}, persons: [], groups: null, schedul
 const can = (perm) => Boolean(store.me.admin || store.me.perms.includes(perm));
 const ALL_PERMS = ["stato", "persone", "persone_modifica", "registro", "regole", "regole_modifica", "import_export", "impianti", "backup", "utenti"];
 // Profili e fasce stanno sul controller, le tipologie nell'app. Se il controller non risponde restano i profili di
-// prima (store.groupsError dice perché) e la chiamata successiva riprova; le tipologie si leggono lo stesso dall'app
+// prima (store.groupsError dice perché, store.groupsLoaded resta falso) e le tipologie si leggono lo stesso dall'app.
+// Le pagine rileggono sempre (force); la scheda persona riprova solo dopo GROUPS_RETRY, per non aspettare il
+// controller spento a ogni apertura
+const GROUPS_RETRY = 30000;
 async function loadGroups(force = false) {
-  if (store.groupsLoaded && !force) return store.groups;
+  if (!force && (store.groupsLoaded || Date.now() - (store.groupsFailedAt || 0) < GROUPS_RETRY)) return store.groups || [];
   try {
     const data = await api("api/groups");
     Object.assign(store, {groups: data.groups, schedules: data.schedules, categories: data.categories || [], categoriesLoaded: true});
     store.groupsLoaded = true;
     store.groupsError = "";
+    store.groupsFailedAt = 0;
   } catch (err) {
     store.groups = store.groups || [];
     store.schedules = store.schedules || [];
     store.groupsLoaded = false;
     store.groupsError = err.message;
+    store.groupsFailedAt = Date.now();
     await loadCategories();
   }
   return store.groups;
@@ -1339,7 +1348,7 @@ const WIDGET_BODY = {
   },
   negati_oggi: ({d: {today: t}}) => kpi("Negati Oggi", t.denied, t.unknown ? plural(t.unknown, "tessera sconosciuta", "tessere sconosciute") : "nessuna tessera sconosciuta", t.denied ? "var(--warn)" : ""),
   allarmi_oggi: ({d: {today: t}}) => kpi("Allarmi Oggi", t.alarms, t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme", t.alarms ? "var(--err)" : ""),
-  persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">anagrafica</a>' : ""}`),
+  persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">Persone</a>' : ""}`),
   porte: ({doors}) => `<h2>${doors.length > 1 ? "Porte" : "Porta"}<span class="spacer"></span>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</h2>
     ${doors.length ? doorGroups(doors) : `<div class="empty">Nessuna porta configurata.</div>`}`,
   settimana({d}) {
@@ -1389,7 +1398,7 @@ const WIDGET_BODY = {
   },
 };
 function kpi(label, value, sub, color = "") {
-  // Il dettaglio resta su una riga: per intero nel suggerimento, senza il link (anagrafica)
+  // Il dettaglio resta su una riga: per intero nel suggerimento, senza il link (Persone)
   return `<div class="dw-kpi"><div class="label">${label}</div><div class="value"${color ? ` style="color:${color}"` : ""}>${value}</div><div class="sub" title="${esc(String(sub).replace(/<[^>]*>/g, ""))}">${sub}</div></div>`;
 }
 
@@ -1403,7 +1412,7 @@ async function viewDashboard(el) {
   let ctx, saved;
   try {
     [ctx, saved] = await Promise.all([dashData(), api("api/dashboard/layout").catch(() => ({widgets: null}))]);
-  } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   // Nel frattempo si è aperta un'altra pagina: titolo, data e matita sono suoi
   if (!el.isConnected) return;
   // Registro Completo: senza il filtro su una persona lasciato dalla sua scheda
@@ -1639,7 +1648,7 @@ function doorGroups(doors) {
 }
 async function viewDoorsPage(el, sub) {
   let doors;
-  try { doors = await api("api/door-overview"); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  try { doors = await api("api/door-overview"); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   if (!doors.length) {
     el.innerHTML = `<div class="card"><div class="empty">${icon("door")}<br><b>Nessuna Porta Configurata</b><br>${can("impianti") ? 'Aggiungi il controller e le porte nella pagina <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare l'impianto."}</div></div>`;
     return;
@@ -1674,7 +1683,7 @@ function doorList(doors) {
 }
 async function viewDoorDetail(el, id, doors) {
   let d;
-  try { d = await api(`api/door-detail/${id}`); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  try { d = await api(`api/door-detail/${id}`); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   // Nel frattempo si è aperta un'altra pagina: il titolo è suo
   if (!el.isConnected) return;
   $("#page-title").textContent = d.name;
@@ -1737,7 +1746,9 @@ async function viewPersons(el, sub) {
   if (sub === "tipologie") return viewCategories(el);
   if (sub === "mancanti") { personFilters.state = "mancanti"; sub = ""; history.replaceState(null, "", "#persone"); }
   // Le tipologie dal database dell'app: l'elenco non aspetta il controller
-  try { await Promise.all([loadPersons(), loadCategories()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  try { await Promise.all([loadPersons(), loadCategories()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
+  // Nel frattempo si è aperta un'altra pagina: niente elenco né scheda sopra di lei
+  if (!el.isConnected) return;
   el.innerHTML = `${personTabs("")}
     <div class="toolbar">
       <input type="search" id="p-q" placeholder="Cerca nome, ditta o numero tessera" value="${esc(personFilters.q)}">
@@ -1812,13 +1823,14 @@ function renderPersonList() {
   $("#p-count").textContent = `${plural(store.persons.length, "persona", "persone")} · ${plural(cards, "tessera", "tessere")}` + (rows.length !== store.persons.length ? ` · ${plural(rows.length, "mostrata", "mostrate")}` : "");
   // Tipologie come filtri rapidi, con il numero di persone di ognuna
   const count = (id) => store.persons.filter((p) => (p.category_id || 0) === id).length;
-  const chip = (value, label, n, color = "") => `<button type="button" class="chip-btn ${personFilters.category === value ? "on" : ""}" data-cat="${value}">${color ? `<span class="swatch c-${esc(color)}"></span>` : ""}${esc(label)} <span class="muted">${n}</span></button>`;
+  const chip = (value, label, n, color = "") => `<button type="button" class="chip-btn ${personFilters.category === value ? "on" : ""}" data-cat="${value}" data-key="cat${value}">${color ? `<span class="swatch c-${esc(color)}"></span>` : ""}${esc(label)} <span class="muted">${n}</span></button>`;
   const none = count(0);
-  $("#p-cats").innerHTML = store.categories.length ? chip("", "Tutte", store.persons.length) + store.categories.map((c) => chip(String(c.id), c.name, count(c.id), c.color)).join("") + (none ? chip("0", "Senza Tipologia", none) : "") : "";
+  // Con morph e non innerHTML: l'aggiornamento ogni 15 secondi (refreshPersons) lascia il fuoco sulla riga o sul filtro
+  morph($("#p-cats"), store.categories.length ? chip("", "Tutte", store.persons.length) + store.categories.map((c) => chip(String(c.id), c.name, count(c.id), c.color)).join("") + (none ? chip("0", "Senza Tipologia", none) : "") : "");
   // Elenco essenziale: nome e tipologia, un'etichetta solo se c'è qualcosa da sistemare; il resto è nella scheda
   const sorted = [...rows].sort((a, b) => a.name.localeCompare(b.name, "it", {sensitivity: "base"}));
   let letter = "";
-  list.innerHTML = sorted.length ? sorted.map((p) => {
+  morph(list, sorted.length ? sorted.map((p) => {
     const a = personAccess(p);
     const vs = validityState(a.from, a.to);
     const suspended = p.cards.length && !p.cards.some((c) => c.enabled);
@@ -1828,11 +1840,11 @@ function renderPersonList() {
     const first = (p.name.trim()[0] || "#").toLocaleUpperCase("it");
     const head = sorted.length > 12 && first !== letter ? `<div class="day">${esc(first)}</div>` : "";
     letter = first;
-    return `${head}<div class="person-row" data-person="${p.id}" role="button" tabindex="0">
+    return `${head}<div class="person-row" data-person="${p.id}" data-key="p${p.id}" role="button" tabindex="0">
       <span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span>
       <span class="name">${esc(p.name)}</span>${flag}
     </div>`;
-  }).join("") : `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : "Nessuna persona registrata: passa una tessera sul lettore e registrala dalla pagina Da Registrare."}</div>`;
+  }).join("") : `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : "Nessuna persona registrata: passa una tessera sul lettore e registrala dalla pagina Da Registrare."}</div>`);
 }
 
 // Tessere sparite dal controller (reset, sostituzione, cancellate a mano): l'app non le cancella da sola
@@ -1840,19 +1852,18 @@ function renderMissingBanner() {
   const box = $("#p-missing");
   if (!box) return;
   const cards = missingCards();
-  if (!cards.length) { box.innerHTML = ""; return; }
+  if (!cards.length) { morph(box, ""); return; }
   const persons = store.persons.filter((p) => p.cards.some((c) => c.missing_since)).length;
   // Quasi tutte sparite: di solito il controller è stato resettato o sostituito e manca anche la programmazione
   const total = store.persons.reduce((n, p) => n + p.cards.length, 0);
   const reset = cards.length * 2 > total && can("backup") && store.me.admin;
   // Rosso come la notifica di gravità Critica (service.mass_missing: tutte, o almeno 3 e più del 10%), altrimenti giallo
   const mass = cards.length === total || (cards.length >= 3 && cards.length > total * 0.1);
-  box.innerHTML = `<div class="alert ${mass ? "err " : ""}stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} sul Controller</b>
+  morph(box, `<div class="alert ${mass ? "err " : ""}stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} sul Controller</b>
       ${plural(persons, "persona ha", "persone hanno")} tessere che l'app conosce ma che sul controller non ci sono più, per esempio dopo un reset o una sostituzione. L'app non le cancella da sola: riscrivile sul controller con il profilo di accesso e la validità salvati, oppure toglile dall'app.
       ${reset ? "<br>Controller resettato o sostituito? Il Ripristino Completo rimette anche porte, lettori, ingressi e profili, poi le tessere." : ""}
       ${personFilters.state === "mancanti" ? "" : ' <a href="#persone/mancanti">Mostra Solo Queste</a>'}</div>
-    <div class="row w-persone">${reset ? '<a class="btn small primary" href="#impianti/ripristino">Ripristino Completo</a>' : ""}<button type="button" class="small${reset ? "" : " primary"}" id="m-restore">Riscrivi sul Controller</button><button type="button" class="small danger" id="m-forget">Togli dall'App</button></div></div>`;
-  paintIcons(box);
+    <div class="row w-persone">${reset ? '<a class="btn small primary" href="#impianti/ripristino">Ripristino Completo</a>' : ""}<button type="button" class="small${reset ? "" : " primary"}" id="m-restore">Riscrivi sul Controller</button><button type="button" class="small danger" id="m-forget">Togli dall'App</button></div></div>`);
   // Solo le tessere contate nell'avviso, non anche quelle segnate dopo (reset con la pagina aperta)
   $("#m-restore").onclick = () => restoreMissing(cards.map((c) => c.id));
   $("#m-forget").onclick = () => forgetMissing();
@@ -1951,8 +1962,13 @@ async function openPerson(id) {
   const a = personAccess(p);
   // Strutture e aree per le righe Dove e Quando della tipologia
   await Promise.all([loadGroups(), loadPlaces()]);
-  // Profilo o tipologia creati dopo l'ultimo caricamento (altra scheda, importazione), o tipologie non lette: rilegge
-  if ((a.group && !(store.groups || []).some((g) => g.token === a.group)) || (p.category_id && !categoryOf(p.category_id))) await loadGroups(true);
+  // Profilo creato dopo l'ultimo caricamento (altra scheda, importazione): rilegge, ma non dopo una lettura dei profili
+  // non riuscita, che farebbe aspettare di nuovo il controller. Una tipologia nuova si cerca nell'app
+  if (store.groupsLoaded && a.group && !store.groups.some((g) => g.token === a.group)) await loadGroups(true);
+  if (p.category_id && !categoryOf(p.category_id)) await loadCategories();
+  // Nel frattempo si è aperta un'altra pagina o un'altra persona (con il controller spento la lettura dei profili
+  // aspetta), o la scheda è stata chiusa: niente scheda
+  if (location.hash !== `#persone/${id}`) return;
   const vs = validityState(a.from, a.to);
   const category = categoryOf(p.category_id);
   const custom = customAccess(p);
@@ -1973,7 +1989,7 @@ async function openPerson(id) {
           ${category && !custom ? `<dt>Dove e Quando</dt><dd>${ruleLines(category)}</dd>` : ""}
           <dt>Validità</dt><dd>${esc(validityText(a.from, a.to))} ${VALIDITY_PILL[vs] || ""}</dd>
         </dl>
-        ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b class="inline">${esc(owner.name)}</b>` : ((store.groups || []).some((g) => g.token === a.group) ? `il profilo <b class="inline">${esc(groupName(a.group))}</b>` : "un profilo che non è più sul controller")}, non come ${esc(category.name)}.`; })()}</div>
+        ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b class="inline">${esc(owner.name)}</b>` : ((store.groups || []).some((g) => g.token === a.group) ? `il profilo <b class="inline">${esc(groupName(a.group))}</b>` : store.groupsLoaded ? "un profilo che non è più sul controller" : "un profilo che ora non si riesce a leggere dal controller")}, non come ${esc(category.name)}.`; })()}</div>
           <button type="button" class="small w-persone" data-align>Allinea alla Tipologia</button></div>` : ""}</div>
       <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
@@ -1995,8 +2011,9 @@ async function openPerson(id) {
   sheet.oncancel = (e) => { e.preventDefault(); close(); };
   $("[data-close]", sheet).onclick = close;
   const reload = async () => { await loadPersons(); renderPersonList(); await openPerson(id); };
-  // Per numero di persona, non per nome: anche gli eventi di prima di un cambio di nome, e non quelli di un omonimo
-  if ($("[data-person-log]", sheet)) $("[data-person-log]", sheet).onclick = (e) => { e.preventDefault(); close(); Object.assign(logFilters, {person_id: p.id, person_name: p.name, q: "", view: "tutto"}); location.hash = "#registro"; };
+  // Per numero di persona, non per nome: anche gli eventi di prima di un cambio di nome, e non quelli di un omonimo.
+  // Senza la porta e le date scelte prima nel Registro, come Apri nel Registro della porta: i passaggi della scheda ci sono tutti
+  if ($("[data-person-log]", sheet)) $("[data-person-log]", sheet).onclick = (e) => { e.preventDefault(); close(); Object.assign(logFilters, {person_id: p.id, person_name: p.name, q: "", view: "tutto", door: "", from: "", to: ""}); location.hash = "#registro"; };
   $("[data-edit-access]", sheet).onclick = async () => {
     // Tipologia della persona non letta: salvando la si perderebbe insieme al suo accesso
     if (p.category_id && !category) { toast("Le tipologie non sono state lette: riprova tra qualche secondo", true); return; }
@@ -2087,7 +2104,7 @@ async function refreshUnknown() {
 }
 async function viewUnknown(el) {
   let data;
-  try { [data] = await Promise.all([api("api/unknown-cards"), loadPersons()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  try { [data] = await Promise.all([api("api/unknown-cards"), loadPersons()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   el.innerHTML = `<p class="muted" style="margin-top:0">Tessere passate sul lettore che non sono registrate. Assegnale a una persona nuova o a una già presente: diventano subito attive sul controller.</p>
     <div class="card flush"><div class="list" id="unk-list">${unknownList(data)}</div></div>`;
   el.onclick = async (e) => {
@@ -2203,7 +2220,7 @@ function showEvent(e) {
     if (same) same.onclick = () => {
       close();
       const id = Number(same.dataset.sameId) || 0;
-      Object.assign(logFilters, {person_id: id, person_name: id ? same.dataset.same : "", q: id ? "" : same.dataset.same, view: "tutto"});
+      Object.assign(logFilters, {person_id: id, person_name: id ? same.dataset.same : "", q: id ? "" : same.dataset.same, view: "tutto", door: "", from: "", to: ""});
       if (route.name === "registro") render(); else location.hash = "#registro";
     };
   };
@@ -2399,15 +2416,17 @@ async function viewRules(el, sub) {
   await loadGroups(true);
   const stale = store.groupsError;
   store.groupsError = "";
+  if (!body.isConnected) return;
   if (stale && !store.groups.length) {
-    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Regole Non Leggibili dal Controller</b>${esc(stale)}</div></div>`;
+    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Regole Non Leggibili dal Controller</b>${esc(cap(stale))}</div></div>`;
     return;
   }
   viewSchedules(body, stale);
   paintIcons(body);
 }
-// Lettura non riuscita con i dati della lettura precedente: si mostrano, ma non come se fossero aggiornati
-const rulesStaleBox = (message) => message ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Non Aggiornati</b>Qui sotto vedi l'ultima lettura riuscita, che potrebbe non essere più attuale (${esc(message)}).</div></div>` : "";
+// Lettura non riuscita con i dati della lettura precedente: si mostrano, ma non come se fossero aggiornati. Il motivo
+// arriva da api() in minuscolo e chiude la frase
+const rulesStaleBox = (message) => message ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Non Aggiornati</b>Qui sotto vedi l'ultima lettura riuscita, che potrebbe non essere più attuale: ${esc(message)}.</div></div>` : "";
 // Interruttore "Mostra Nascoste" in cima alle fasce
 function hiddenToggle(kind, count) {
   return count ? `<label class="row small-text muted" style="cursor:pointer"><input type="checkbox" id="show-hidden" ${showHidden[kind] ? "checked" : ""}>Mostra Nascoste (${count})</label>` : "";
@@ -2436,7 +2455,7 @@ async function viewCategories(el) {
     return;
   }
   const cats = store.categories;
-  body.innerHTML = `${rulesStaleBox([groupsError, placesError].filter(Boolean).join("; "))}<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">La tipologia dice chi è la persona (manutentore, pulizie, ospite…) e decide dove e quando apre la sua tessera, e per quanto tempo. Un'area o una struttura comprende tutte le sue porte, anche quelle aggiunte dopo.</p>
+  body.innerHTML = `${rulesStaleBox([...new Set([groupsError, placesError].filter(Boolean))].join("; "))}<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">La tipologia dice chi è la persona (manutentore, pulizie, ospite…) e decide dove e quando apre la sua tessera, e per quanto tempo. Un'area o una struttura comprende tutte le sue porte, anche quelle aggiunte dopo.</p>
     <button type="button" class="primary w-regole" id="c-new">${icon("plus")}Nuova Tipologia</button></div>
     ${cats.length ? `<div class="grid cards">${cats.map((c) => `<div class="card" style="margin:0">
       <h2><span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}<span class="spacer"></span>${c.default ? '<span class="pill accent">Predefinita</span>' : ""}</h2>
@@ -2628,7 +2647,8 @@ async function scheduleEditor(s) {
 }
 async function viewHolidays(body) {
   let list;
-  try { list = await api("api/holidays"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  try { list = await api("api/holidays"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
+  if (!body.isConnected) return;
   const year = new Date().getFullYear();
   body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie gestite dall'app con l'opzione Non Valida nei Giorni Festivi. Le fasce mai modificate qui non cambiano.</p>
     <div class="card w-regole"><h2>Aggiungi Festività</h2>
@@ -2849,7 +2869,7 @@ async function viewNotifications(el) {
       return loadNotifLog();
     }
     if (e.target.closest("#n-more")) return loadNotifLog(true);
-    if (e.target.closest("#n-older")) { Object.assign(logFilters, {view: "controllo", q: notifFilters.q, door: notifFilters.door, person_id: 0, person_name: ""}); return; }
+    if (e.target.closest("#n-older")) { Object.assign(logFilters, {view: "controllo", q: notifFilters.q, door: notifFilters.door, person_id: 0, person_name: "", from: "", to: ""}); return; }
     const row = e.target.closest("tr[data-event]");
     if (row && !e.target.closest("a, img")) openEvent(Number(row.dataset.event));
   };
@@ -2882,7 +2902,7 @@ const secs = (v) => v === null || v === undefined ? "—" : `${v} s`;
 // Direzione del passaggio dalla porta: "ingresso" è solo un morsetto del controller
 const DIRECTION_LABELS = {in: "Entrata", out: "Uscita", "": "Senza Direzione"};
 const loadingBox = () => '<div class="loading"><span class="spinner"></span></div>';
-const errorBox = (title, err) => `<div class="alert err">${icon("alert")}<div class="grow"><b>${esc(title)}</b>${esc(err.message || err)}</div></div>`;
+const errorBox = (title, err) => `<div class="alert err">${icon("alert")}<div class="grow"><b>${esc(title)}</b>${esc(cap(err.message || err))}</div></div>`;
 
 async function viewInstallation(el, sub) {
   const [first, tab = ""] = sub.split("/");
@@ -3043,7 +3063,7 @@ function controllerFields(ctrl, sites) {
       ctrl?.has_password ? "Scrivi di nuovo la password se cambi indirizzo o utente." : "")}</div>
     ${field("Prefisso MQTT", `<input name="mqtt_topic_prefix" class="mono" value="${esc(ctrl?.mqtt_topic_prefix || "")}" placeholder="es. accessi/controller_ingresso">`, "Lo stesso impostato nel client MQTT del controller: eventi sotto &lt;prefisso&gt;/eventi/…, stato del controller su &lt;prefisso&gt;/stato (online o offline).")}
     <div class="field inline"><input type="checkbox" name="verify_ssl" id="f-ssl" ${ctrl?.verify_ssl ? "checked" : ""}><label for="f-ssl">Verifica Certificato HTTPS</label></div>
-    <p class="hint" style="margin-top:-8px">Lascialo spento se il controller usa il certificato di fabbrica.</p>
+    <p class="hint" style="margin-top:-8px">Lasciala disattivata se il controller usa il certificato di fabbrica.</p>
     <div class="row"><button type="button" class="small" id="ctrl-test">${icon("refresh")}Prova Collegamento</button><span id="ctrl-test-result" class="small-text"></span></div>`;
 }
 
@@ -3061,7 +3081,7 @@ function bindControllerFields(root, ctrl) {
     try {
       const r = await api("api/controllers/test", {method: "POST", body: {host: f.host, username: f.username, password: f.password, verify_ssl: f.verify_ssl, controller_id: ctrl?.id || null}});
       out.innerHTML = `<span class="pill ok">${esc(r.model)} · Firmware ${esc(r.firmware)}</span> ${plural(r.doors.length, "porta", "porte")}: ${r.doors.map((d) => esc(d.name)).join(", ")}`;
-    } catch (err) { out.innerHTML = `<span class="pill err">${esc(err.message)}</span>`; }
+    } catch (err) { out.innerHTML = `<span class="pill err">${esc(cap(err.message))}</span>`; }
   };
   return read;
 }
@@ -3368,7 +3388,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
       body: `${field("Direzione", `<select name="direction">${dirs.map((k) => `<option value="${esc(k)}" ${k === l.direction ? "selected" : ""}>${DIRECTION_LABELS[k] ?? esc(k)}</option>`).join("")}</select>`,
         "Entrata o uscita dalla porta: i profili di accesso possono valere solo per una direzione.")}
         <div class="field inline"><input type="checkbox" name="enabled" id="f-le" ${l.enabled ? "checked" : ""}><label for="f-le">Collegamento Attivo</label></div>
-        <p class="hint" style="margin-top:-8px">Spento: il lettore resta collegato ma non apre la porta.<span data-shared>${esc(shared(l.direction))}</span></p>`,
+        <p class="hint" style="margin-top:-8px">Disattivato: il lettore resta collegato ma non apre la porta.<span data-shared>${esc(shared(l.direction))}</span></p>`,
       // Un'altra direzione è un altro punto di accesso: la spunta e gli altri lettori diventano quelli del punto di arrivo
       onOpen: (dlg) => {
         const select = $('[name="direction"]', dlg);
@@ -3873,7 +3893,7 @@ async function intercomEditor(ctrl, door) {
     body: `<div class="fields-2">${field("Nome del Videocitofono", `<input name="intercom_name" value="${esc(d.intercom_name || "")}" required>`, "Lo stesso nome dato al videocitofono nell'add-on Hikvision Doorbell.")}
       ${field("Porta", doorSelect, "Se la porta ha già un videocitofono, viene sostituito.")}</div>
       <div class="field inline"><input type="checkbox" name="intercom_open_door" id="f-iod" ${d.intercom_open_door ? "checked" : ""}><label for="f-iod">"Apri" dal Videocitofono Apre Questa Porta</label></div>
-      <p class="hint" style="margin-top:-8px">"Apri" dal monitor o da Hik-Connect: l'app manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Spento = le chiamate finiscono solo nel registro.</p>
+      <p class="hint" style="margin-top:-8px">"Apri" dal monitor o da Hik-Connect: l'app manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Disattivata: le chiamate finiscono solo nel registro.</p>
       <div class="fields-2">${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}
       ${field("Prefisso MQTT del Videocitofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}</div>`,
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
@@ -4280,8 +4300,8 @@ async function viewSettings(el, sub) {
       </div>
       <div>
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
-          <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
-          <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
+          <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
+          <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
           <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo nome e tessera obbligatori, date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>
         <div class="card"><h2>${icon("history")}Database dell'Add-on</h2>${dbRecovered ? `<div class="alert err">${icon("alert")}<div class="grow"><b>${dbRecovered.text.includes("ripristinata la copia") ? "Database Ripristinato dalla Copia" : "Database Non Ripristinato"}</b>${esc(capFirst(dbRecovered.text))} · ${esc(relTime(dbRecovered.at))}</div></div>` : ""}${props([
           ["Versione dello Schema", esc(s.database.schema)],
@@ -4309,7 +4329,8 @@ async function viewAudit(body) {
 
 async function viewUsers(body) {
   let data;
-  try { data = await api("api/users"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  try { data = await api("api/users"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
+  if (!body.isConnected) return;
   const roleLabel = (u) => data.roles[u.role]?.label || "Personalizzato";
   body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Gli utenti sono quelli di Home Assistant: chi apre l'app per la prima volta viene aggiunto con "Solo Stato" e qui gli dai i permessi. Puoi anche aggiungerli prima, con il loro nome utente.</p>
     <button type="button" class="primary" id="u-new">${icon("plus")}Nuovo Utente</button></div>
