@@ -21,7 +21,7 @@ EVENT_LABELS = {
     "uscita": "Uscita",
     "allarme": "Allarme Porta",
     "manomissione": "Manomissione",
-    "citofono": "Citofono",
+    "citofono": "Chiamata Citofono",
 }
 
 IMPORT_COLUMNS = ["nome", "tessera", "gruppo", "valida_dal", "valida_al", "ditta", "note", "tipologia", "stato"]
@@ -51,6 +51,8 @@ OUTCOME_LABELS = {
 FORMULA_START = ("=", "+", "-", "@")
 # Tessere che un foglio di calcolo convertirebbe in numero: perdono gli zeri iniziali o le ultime cifre
 NUMERIC_CARD = re.compile(r"\d+(?:[eE]\d+)?")
+# Carattere che sostituisce i byte non leggibili: file in un'altra codifica (per esempio Excel in ANSI) letto come UTF-8
+UNREADABLE = "\ufffd"
 
 
 def _local(ts: str) -> str:
@@ -327,6 +329,9 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
     for item in read_import(text):
         outcome = {"riga": item["riga"], "nome": item.get("nome", ""), "tessera": item.get("tessera", "")}
         try:
+            # Lettere accentate perse: nomi, ditta e note andrebbero storpiati nell'app e sul controller
+            if any(UNREADABLE in value for value in item.values() if isinstance(value, str)):
+                raise ServiceError("caratteri non leggibili: salva il file come CSV UTF-8 e riprova")
             name = normalize_name(item.get("nome", ""))
             number = _card_number(item.get("tessera", ""))
             group_text = item.get("gruppo", "")

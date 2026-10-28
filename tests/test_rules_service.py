@@ -19,7 +19,7 @@ async def test_create_schedule_writes_calendar_and_remembers_rules(rules, contro
     assert schedule["ExceptionScheduleDefinition"] is None
     listed = {s["token"]: s for s in await rules.list_schedules()}
     assert listed[token]["managed"] is True
-    assert listed[token]["summary"] == "lun-ven 08:00-18:00"
+    assert listed[token]["summary"] == "lun-ven 08:00–18:00"
     assert listed["standard_always"]["name"] == "Sempre"
     assert listed["standard_always"]["groups"] == ["Sempre"]
 
@@ -56,7 +56,7 @@ async def test_standard_and_external_schedules_can_be_edited_and_hidden(rules, c
     }
     listed = {s["token"]: s for s in await rules.list_schedules()}
     assert listed["altra"]["managed"] is False
-    assert listed["altra"]["summary"] == "lun 20:00-23:00"
+    assert listed["altra"]["summary"] == "lun 20:00–23:00"
 
     await rules.update_schedule("standard_office_hours", "Ufficio", "", OFFICE, False, "admin")
     listed = {s["token"]: s for s in await rules.list_schedules()}

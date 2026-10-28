@@ -549,7 +549,7 @@ class NotificationService:
                         f"x{person['id']}:{end.isoformat()}",
                         "low",
                         "Tessera in Scadenza",
-                        f"{person['name']} · scade il {end.astimezone():%d/%m %H:%M}",
+                        f"{person['name']} · scade il {end.astimezone():%d/%m/%Y %H:%M}",
                         (end - EXPIRING).isoformat(timespec="seconds"),
                         person_id=person["id"],
                         link=f"#persone/{person['id']}",
