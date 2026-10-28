@@ -8,9 +8,10 @@
 <style>
   :root {
     --bg: #f3f5f8; --surface: #ffffff; --surface-2: #f7f8fa; --text: #1b1f24; --muted: #5f6b7a;
-    --border: #dde2e8; --border-strong: #c5ccd5;
+    /* --border-input: bordo dei campi, che su una scheda dello stesso colore è l'unico segno del campo */
+    --border: #dde2e8; --border-strong: #c5ccd5; --border-input: #7d8794;
     --accent: #0b6bcb; --accent-soft: #e3effc; --accent-text: #ffffff;
-    --ok: #1a7f37; --ok-soft: #e4f4e8; --warn: #9a6700; --warn-soft: #fbf0d9; --err: #c62828; --err-soft: #fde7e7;
+    --ok: #17702f; --ok-soft: #e4f4e8; --warn: #875a00; --warn-soft: #fbf0d9; --err: #c62828; --err-soft: #fde7e7; --err-text: #ffffff;
     --info: #6639ba; --info-soft: #efe9fb;
     --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
     --radius: 12px; --nav-w: 232px;
@@ -18,9 +19,9 @@
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0f1216; --surface: #181c22; --surface-2: #1f242b; --text: #e7eaee; --muted: #9aa5b1;
-      --border: #2b323b; --border-strong: #3a434e;
+      --border: #2b323b; --border-strong: #3a434e; --border-input: #66717e;
       --accent: #4c9cf0; --accent-soft: #15283d; --accent-text: #0b1118;
-      --ok: #4ac26b; --ok-soft: #13291b; --warn: #e3b341; --warn-soft: #2e2511; --err: #ff6b6b; --err-soft: #331617;
+      --ok: #4ac26b; --ok-soft: #13291b; --warn: #e3b341; --warn-soft: #2e2511; --err: #ff6b6b; --err-soft: #331617; --err-text: #1b0a0a;
       --info: #b093f5; --info-soft: #241c3a;
       --shadow: 0 1px 2px rgba(0, 0, 0, .4);
     }
@@ -42,21 +43,18 @@
          position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 10px 10px 12px; gap: 2px;
          transition: width .18s ease; z-index: 30; }
   body.nav-open .nav { width: var(--nav-w); }
-  .nav .lbl, .brand .name, .nav .foot { opacity: 0; pointer-events: none; transition: opacity .12s; white-space: nowrap; }
-  body.nav-open .nav .lbl, body.nav-open .brand .name, body.nav-open .nav .foot { opacity: 1; pointer-events: auto; }
+  .nav .lbl { opacity: 0; pointer-events: none; transition: opacity .12s; white-space: nowrap; }
+  body.nav-open .nav .lbl { opacity: 1; pointer-events: auto; }
   .nav-toggle { display: flex; align-items: center; gap: 12px; width: 100%; justify-content: flex-start; padding: 9px 12px;
                 border: none; background: none; color: var(--text); border-radius: 10px; margin-bottom: 4px; }
   .nav-toggle:hover { background: var(--surface-2); }
   .nav-toggle .lbl { font-weight: 700; font-size: 16px; }
   .nav-backdrop { display: none; }
-  .brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px 12px; font-weight: 700; font-size: 16px; }
-  .brand .logo { width: 32px; height: 32px; border-radius: 9px; background: var(--accent); color: var(--accent-text);
-                 display: grid; place-items: center; }
   .nav a { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 10px; color: var(--muted);
            font-weight: 500; position: relative; white-space: nowrap; }
   .nav a:hover { background: var(--surface-2); text-decoration: none; color: var(--text); }
   .nav a.active { background: var(--accent-soft); color: var(--accent); }
-  .nav .count { position: absolute; top: 3px; left: 28px; background: var(--err); color: #fff; border-radius: 10px; font-size: 11px;
+  .nav .count { position: absolute; top: 3px; left: 28px; background: var(--err); color: var(--err-text); border-radius: 10px; font-size: 11px;
                 min-width: 18px; padding: 0 5px; text-align: center; line-height: 18px; }
   body.nav-open .nav .count { position: static; margin-left: auto; font-size: 12px; min-width: 20px; line-height: 20px; }
   .nav { overflow-y: auto; }
@@ -76,40 +74,41 @@
   .top-space { flex: 1; }
   /* Matita del cruscotto: solo l'icona, la scritta si apre passandoci sopra */
   .top-edit { display: inline-flex; align-items: center; gap: 0; height: 30px; padding: 0 7px; border-radius: 999px; color: var(--muted); font-size: 13px; }
-  .top-edit[hidden] { display: none; }
   .top-edit svg.icon { width: 17px; height: 17px; flex: none; }
   .top-edit .lbl { max-width: 0; overflow: hidden; white-space: nowrap; transition: max-width .2s ease, margin .2s ease; }
   .top-edit:hover, .top-edit:focus-visible { color: var(--text); background: var(--surface-2); }
   .top-edit:hover .lbl, .top-edit:focus-visible .lbl { max-width: 160px; margin-left: 6px; }
   .top-chips { display: flex; gap: 8px; align-items: center; }
-  .chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px; font-size: 14px; font-weight: 500;
-          border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); white-space: nowrap; cursor: pointer; }
-  a.chip:hover, button.chip:hover { text-decoration: none; background: var(--surface-2); }
-  .chip svg.icon { width: 17px; height: 17px; }
-  .chip b { font-variant-numeric: tabular-nums; }
-  .chip.muted-chip { color: var(--muted); }
-  .chip.warn { background: var(--warn-soft); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
-  .chip.err { background: var(--err-soft); color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
-  .chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; cursor: default; }
-  .chip.ok .dot { background: var(--ok); width: 8px; height: 8px; }
-  .top-pop { position: absolute; right: 16px; top: calc(100% + 6px); width: min(420px, calc(100% - 16px)); margin: 0; padding: 0; z-index: 40;
-             border-color: var(--border-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .22), 0 2px 6px rgba(0, 0, 0, .12); overflow: hidden; }
+  /* Bollini Guasti, Allarmi e Sistema OK della barra in alto */
+  .top-chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 999px; font-size: 14px; font-weight: 500;
+              border: 1px solid var(--border-strong); background: var(--surface); color: var(--text); white-space: nowrap; cursor: pointer; }
+  button.top-chip:hover { text-decoration: none; background: var(--surface-2); }
+  .top-chip svg.icon { width: 17px; height: 17px; }
+  .top-chip b { font-variant-numeric: tabular-nums; }
+  .top-chip.warn { background: var(--warn-soft); color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
+  .top-chip.err { background: var(--err-soft); color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
+  .top-chip.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; cursor: default; }
+  .top-chip.ok .dot { background: var(--ok); width: 8px; height: 8px; }
+  .top-pop { position: absolute; right: 16px; top: calc(100% + 6px); width: min(420px, calc(100% - 16px)); z-index: 40; overflow: hidden; }
+  /* .card viene dopo: margine, spazio interno, bordo e ombra della tendina hanno bisogno di più peso (righe da bordo a bordo) */
+  .top-pop.card { margin: 0; padding: 0; border-color: var(--border-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .22), 0 2px 6px rgba(0, 0, 0, .12); }
   /* Sul tema scuro la tendina deve staccarsi dai riquadri sotto, che hanno lo stesso colore */
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .top-pop { background: var(--surface-2); box-shadow: 0 12px 32px rgba(0, 0, 0, .6); } }
-  :root[data-theme="dark"] .top-pop { background: var(--surface-2); box-shadow: 0 12px 32px rgba(0, 0, 0, .6); }
-  .chip[aria-expanded=true] { box-shadow: 0 0 0 2px currentColor; }
+  @media (prefers-color-scheme: dark) { .top-pop.card { background: var(--surface-2); box-shadow: 0 12px 32px rgba(0, 0, 0, .6); } }
+  .top-chip[aria-expanded=true] { box-shadow: 0 0 0 2px currentColor; }
   .top-pop .pop-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--border); }
   .top-pop .pop-head b { flex: 1; font-size: 15px; }
   .top-pop .pop-row { display: flex; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); color: var(--text); }
-  .top-pop .pop-row:hover { background: var(--surface-2); text-decoration: none; }
+  /* Velo del colore del testo: si vede anche sul tema scuro, dove la tendina è già surface-2 */
+  .top-pop .pop-row:hover, .top-pop button.ghost:hover { background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .top-pop .pop-row:hover { text-decoration: none; }
   .top-pop .pop-row .dot { margin-top: 7px; }
   .top-pop .pop-row .t { font-weight: 600; font-size: 14px; }
   .top-pop .pop-row .m { color: var(--muted); font-size: 13px; }
   .top-pop .pop-row time { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .top-pop .pop-foot { display: block; text-align: center; padding: 10px; font-size: 14px; }
   @media (max-width: 640px) {
-    .chip .lbl, .page-sub { display: none; }
-    .chip { padding: 0 10px; height: 32px; }
+    .top-chip .lbl, .page-sub { display: none; }
+    .top-chip { padding: 0 10px; height: 32px; }
   }
   .content { padding: 20px 24px 48px; width: 100%; }
 
@@ -119,17 +118,27 @@
                  font: inherit; font-weight: 500; cursor: pointer; white-space: nowrap; text-decoration: none; }
   button:hover, .btn:hover { background: var(--surface-2); text-decoration: none; }
   button.primary, .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
-  button.primary:hover { filter: brightness(1.06); }
+  button.primary:hover, .btn.primary:hover { filter: brightness(1.06); }
   button.danger { color: var(--err); }
-  button.danger.primary { background: var(--err); border-color: var(--err); color: #fff; }
-  button.ghost { border-color: transparent; background: transparent; }
-  button.ghost:hover { background: var(--surface-2); }
+  button.danger.primary { background: var(--err); border-color: var(--err); color: var(--err-text); }
+  /* Varianti valide anche per i link con l'aspetto di un pulsante (a.btn) */
+  button.ghost, .btn.ghost { border-color: transparent; background: transparent; }
+  button.ghost:hover, .btn.ghost:hover { background: var(--surface-2); }
   button.small, .btn.small { padding: 4px 10px; font-size: 13px; border-radius: 8px; }
-  button.icon-only { padding: 6px; }
+  button.icon-only, .btn.icon-only { padding: 6px; }
   button:disabled { opacity: .5; cursor: default; }
-  input, select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong);
+  input, select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border-input);
                             border-radius: 9px; padding: 7px 10px; min-width: 0; }
-  input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  ::placeholder { color: var(--muted); opacity: 1; }
+  /* Numeri e indirizzi: carattere a spaziatura fissa, ma alto come gli altri campi */
+  input.mono { font-size: 14px; line-height: 1.6; }
+  input:disabled, select:disabled, textarea:disabled { background: var(--surface-2); color: var(--muted); }
+  input:focus, select:focus, textarea:focus, :is(a, button, summary, [tabindex]):focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* Righe a tutta larghezza: l'anello sta dentro la riga, altrimenti i riquadri che scorrono lo tagliano ai lati */
+  .list > .item:focus-visible, .person-row:focus-visible, .list.compact > .ev:focus-visible, .n-table tr:focus-visible,
+  .top-pop .pop-row:focus-visible, .ctl-main:focus-visible { outline-offset: -2px; }
+  /* Focus spostato dal codice su un contenitore (corpo della scheda persona): nessun anello */
+  [tabindex="-1"]:focus { outline: none; }
   textarea { resize: vertical; min-height: 70px; }
   input[type=checkbox], .perm-list input[type=radio] { width: 18px; height: 18px; accent-color: var(--accent); vertical-align: middle; flex: none; padding: 0; }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
@@ -161,8 +170,10 @@
   .ev .what { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ev .where { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; text-align: right; }
   @media (max-width: 600px) {
-    .list.compact > .ev { grid-template-columns: 40px 10px minmax(0, 1fr) auto; gap: 8px; padding: 9px 12px; }
-    .ev .where { max-width: 96px; font-size: 12px; }
+    /* Sul telefono la porta va sotto il nome: accanto toglierebbe spazio all'esito (concesso, negato…) */
+    .list.compact > .ev { grid-template-columns: 40px 10px minmax(0, 1fr); gap: 0 8px; padding: 9px 12px; }
+    .list.compact > .ev > span:last-child:empty { display: none; }
+    .ev .where { grid-column: 3; max-width: none; text-align: left; font-size: 12px; }
   }
   .ev .dot.info { background: var(--info); } .ev .dot.accent { background: var(--accent); }
   .list.compact > .day { padding: 5px 16px; background: var(--surface-2); border-top: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--muted); }
@@ -180,7 +191,6 @@
   .ctl-name { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; }
   .ctl-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; font-size: 13px; color: var(--muted); }
   .ctl-stats b { color: var(--text); font-size: 15px; }
-  .ctl-stats .pill { margin-left: auto; }
   .ctl-gear { position: absolute; top: 12px; right: 12px; }
   .ctl-head { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
   .schema { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(56px, 200px) minmax(0, 1fr); align-items: start; }
@@ -205,9 +215,11 @@
   .sch-gear.new { border-color: var(--warn); } .sch-gear.off { border-color: var(--muted); }
   .sch-gear svg.icon { width: 16px; height: 16px; }
   .save-bar { position: sticky; bottom: 12px; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; margin-top: 12px;
-    border-radius: 12px; background: #1b1f24; color: #fff; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+    border-radius: var(--radius); background: var(--text); color: var(--bg); box-shadow: 0 8px 24px rgba(0,0,0,.25); }
+  /* Colori invertiti come il #toast: la barra si stacca dalla pagina in entrambi i temi */
   .save-bar .grow { flex: 1 1 200px; min-width: 0; }
-  .save-bar button:not(.primary) { background: transparent; color: #fff; border-color: #5f6b7a; }
+  .save-bar button:not(.primary) { background: transparent; color: inherit; border-color: color-mix(in srgb, var(--bg) 45%, transparent); }
+  .save-bar button:not(.primary):hover { background: color-mix(in srgb, var(--bg) 12%, transparent); }
   a.item.door-row { color: var(--text); }
   a.item.door-row:hover { text-decoration: none; background: var(--surface-2); }
   .door-group .card { margin-bottom: 18px; }
@@ -215,7 +227,8 @@
     .schema { grid-template-columns: minmax(0, 1fr) 46px minmax(0, 1fr); }
     .sch-node { padding: 8px; min-height: 66px; }
     .sch-node .ev-icon { display: none; }
-    .sch-node b { white-space: normal; overflow-wrap: anywhere; font-size: 13px; line-height: 1.25; }
+    /* Nomi lunghi a capo con il trattino in italiano ("Allaga-mento"), non spezzati a una lettera dalla fine */
+    .sch-node b { white-space: normal; overflow-wrap: anywhere; -webkit-hyphens: auto; hyphens: auto; font-size: 13px; line-height: 1.25; }
     .sch-meta { white-space: normal; font-size: 11px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   }
   /* Cruscotto a griglia: larghezza in quarti di riga, altezza in righe da 64px; i riquadri piccoli riempiono i buchi */
@@ -274,6 +287,10 @@
     /* Sul telefono a metà riga restano solo i riquadri con un numero: gli elenchi non ci stanno */
     .dw.w-1:not(.kpi) { grid-column: span 4; }
     .dw-kpi .value { font-size: 22px; }
+    /* Riquadri con un numero a metà riga: l'etichetta va a capo (al massimo due righe) invece di diventare "Accessi ..." */
+    .dw.kpi { padding: 8px 12px; }
+    .dw-kpi { column-gap: 8px; }
+    .dw-kpi .label { white-space: normal; line-height: 1.25; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
     .dash-bar button { flex: 1 1 auto; }
   }
   /* Notifiche: il colore dice solo la gravità (riquadro dell'icona, etichetta, pallino); righe e sfondi neutri */
@@ -281,7 +298,7 @@
   .n-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; flex: 1 1 320px; }
   .n-tools input[type=search] { flex: 0 1 280px; min-width: 0; }
   .n-sec-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 10px; }
-  .n-sec-head h2 { font-size: 17px; font-weight: 600; }
+  .n-sec-head h2 { font-size: 15px; }
   .n-section { margin-bottom: 20px; }
   .n-cards { display: flex; flex-direction: column; gap: 10px; }
   .n-card { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 14px 16px; background: var(--surface);
@@ -332,16 +349,23 @@
     .n-tile { width: 36px; height: 36px; align-self: flex-start; }
     .n-body { flex: 1 1 0; }
   }
+  @media (max-width: 640px) {
+    /* Sul telefono la ricerca ha una riga tutta per sé; porta e pulsanti vanno sotto */
+    .n-tools { flex-wrap: wrap; }
+    .n-tools input[type=search] { flex: 1 1 100%; }
+    .n-tools select { flex: 1 1 120px; }
+  }
   .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; align-items: center; }
   .toolbar input[type=search] { flex: 1 1 220px; }
   .muted { color: var(--muted); }
   .small-text { font-size: 13px; }
   .empty { color: var(--muted); padding: 28px 12px; text-align: center; }
   .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
-  .kpi .card { margin: 0; padding: 16px; }
-  .kpi .label { color: var(--muted); font-size: 13px; font-weight: 500; }
-  .kpi .value { font-size: 28px; font-weight: 700; line-height: 1.2; margin-top: 4px; }
-  .kpi .sub { color: var(--muted); font-size: 12px; }
+  /* Numeri del dettaglio porta; quelli del cruscotto (.dw.kpi) seguono solo le regole .dw-kpi */
+  .grid.kpi .card { margin: 0; padding: 16px; }
+  .grid.kpi .label { color: var(--muted); font-size: 13px; font-weight: 500; }
+  .grid.kpi .value { font-size: 28px; font-weight: 700; line-height: 1.2; margin-top: 4px; }
+  .grid.kpi .sub { color: var(--muted); font-size: 12px; }
   .pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 2px 10px; font-size: 13px;
           font-weight: 500; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); white-space: nowrap; }
   .pill.ok { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
@@ -356,20 +380,24 @@
   .alert { display: flex; gap: 12px; align-items: flex-start; border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
            background: var(--warn-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
   .alert.err { background: var(--err-soft); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
-  .alert.info { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
+  .alert.info { background: var(--info-soft); border-color: color-mix(in srgb, var(--info) 30%, transparent); }
   .alert b { display: block; }
   .alert b.inline { display: inline; }
   .alert .grow { flex: 1; min-width: 0; }
   /* Avvisi con pulsanti: sul telefono i pulsanti vanno sotto il testo */
   @media (max-width: 640px) { .alert.stack { flex-wrap: wrap; } .alert.stack > .grow { flex-basis: calc(100% - 40px); } .alert.stack > :last-child { margin-left: 36px; flex-wrap: wrap; } }
-  .todo { margin-bottom: 16px; }
-  .todo .list .item .meta a { color: inherit; }
   .all-ok { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; padding: 10px 16px; border-radius: var(--radius);
             background: var(--ok-soft); color: var(--text); font-size: 14px; }
   .all-ok svg.icon { width: 18px; height: 18px; fill: var(--ok); flex: none; }
-  dl.props { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 0; }
+  /* Le etichette prendono al massimo il 40% della riga: al valore resta sempre lo spazio per leggerlo */
+  dl.props { display: grid; grid-template-columns: fit-content(40%) minmax(0, 1fr); gap: 6px 18px; margin: 0; }
   dl.props dt { color: var(--muted); }
   dl.props dd { margin: 0; overflow-wrap: anywhere; }
+  /* Sul telefono l'etichetta va sopra il valore */
+  @media (max-width: 640px) {
+    dl.props { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+    dl.props dt:not(:first-child) { margin-top: 8px; }
+  }
   .list > .item { display: flex; gap: 12px; align-items: center; padding: 12px 18px; border-top: 1px solid var(--border); }
   .list > .item:first-child { border-top: none; }
   .list > .item.click { cursor: pointer; }
@@ -384,12 +412,14 @@
   .avatar.big { width: 52px; height: 52px; font-size: 18px; }
   .avatar.off { background: var(--surface-2); color: var(--muted); }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* Etichette piccole (controller e porte di un'area); i bollini della barra in alto sono .top-chip */
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--surface-2); border: 1px solid var(--border);
-          border-radius: 7px; padding: 1px 8px; font-size: 13px; }
-  .chip.off { text-decoration: line-through; color: var(--muted); }
+          border-radius: 7px; padding: 1px 8px; font-size: 13px; color: var(--text); }
+  a.chip:hover { background: var(--border); text-decoration: none; }
   .chip-btn { border-radius: 999px; padding: 4px 12px; font-size: 13px; gap: 6px; }
-  .chip-btn.on { background: var(--text); color: var(--bg); border-color: var(--text); }
-  .chip-btn.on .muted { color: inherit; opacity: .7; }
+  /* Filtro scelto: come le schede delle Notifiche */
+  .chip-btn.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+  .chip-btn.on .muted { color: inherit; }
   #p-list > .day { padding: 4px 18px; background: var(--surface-2); border-top: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--muted); }
   #p-list > .day:first-child { border-top: none; }
   .person-row { display: flex; align-items: center; gap: 12px; padding: 10px 18px; border-top: 1px solid var(--border); cursor: pointer; min-height: 44px; box-sizing: border-box; }
@@ -423,7 +453,7 @@
   .chart .col { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; height: 100%; min-width: 0; }
   .chart .bars { flex: 1; width: 100%; max-width: 44px; display: flex; flex-direction: column-reverse; border-radius: 6px; overflow: hidden;
                  background: var(--surface-2); }
-  .chart .bar.g { background: var(--ok); } .chart .bar.d { background: var(--warn); } .chart .bar.u { background: var(--err); }
+  .chart .bar.g { background: var(--ok); } .chart .bar.d { background: var(--warn); }
   .chart .lbl { font-size: 12px; color: var(--muted); }
   .chart .num { font-size: 12px; font-weight: 600; }
   .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 10px; flex-wrap: wrap; }
@@ -473,19 +503,19 @@
   #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: calc(100vw - 32px); z-index: 50;
            background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 10px; display: none;
            box-shadow: 0 8px 24px rgba(0, 0, 0, .25); font-weight: 500; }
-  #toast.error { background: var(--err); color: #fff; }
+  #toast.error { background: var(--err); color: var(--err-text); }
   .spinner { width: 18px; height: 18px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%;
              animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .loading { padding: 40px; text-align: center; color: var(--muted); }
   /* Pulsanti e sezioni visibili solo con il permesso giusto */
-  body.no-persone_modifica .w-persone, body.no-regole_modifica .w-regole, body.no-import_export .w-io,
-  body.no-utenti .w-admin { display: none !important; }
+  body.no-persone_modifica .w-persone, body.no-regole_modifica .w-regole, body.no-import_export .w-io { display: none !important; }
   .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex: none; background: var(--muted); }
   .c-blue { --c: #2f7de1; } .c-green { --c: #2ea44f; } .c-orange { --c: #e8871e; } .c-red { --c: #d93f3f; }
   .c-purple { --c: #8a5cd6; } .c-teal { --c: #1f9e9e; } .c-pink { --c: #d6519b; } .c-gray { --c: #7d8894; }
   .swatch[class*="c-"] { background: var(--c); }
-  .pill.cat { background: color-mix(in srgb, var(--c) 14%, transparent); color: var(--c); border-color: transparent; }
+  /* Testo del colore della tipologia scurito (o schiarito sul tema scuro) verso quello normale: resta leggibile */
+  .pill.cat { background: color-mix(in srgb, var(--c) 14%, transparent); color: color-mix(in srgb, var(--c) 60%, var(--text)); border-color: transparent; }
   .colors { display: flex; gap: 8px; flex-wrap: wrap; }
   .colors label { cursor: pointer; }
   .colors input { position: absolute; opacity: 0; pointer-events: none; }
@@ -569,7 +599,7 @@
   }
   @media (max-width: 480px) {
     .topbar h1 { font-size: 17px; }
-    .kpi .value { font-size: 24px; }
+    .grid.kpi .value { font-size: 24px; }
   }
 </style>
 </head>
@@ -703,7 +733,10 @@ const DOOR_MODES = {
   Blocked: "Bloccata da Regola", LockedDown: "In Blocco", DoubleLocked: "Doppia Chiusura",
 };
 const doorModeLabel = (mode) => mode ? DOOR_MODES[mode] || mode : "Sconosciuto";
-const doorModeClass = (mode) => mode === "Locked" ? "ok" : mode ? "warn" : "";
+// Verde quando la porta è chiusa, come il sensore della serratura in Home Assistant (ha_mqtt.LOCKED_MODES);
+// In Blocco resta gialla: è chiusa, ma per un'emergenza che va notata
+const LOCKED_MODES = ["Locked", "Blocked", "DoubleLocked"];
+const doorModeClass = (mode) => LOCKED_MODES.includes(mode) ? "ok" : mode ? "warn" : "";
 // Porte dell'impianto dall'intestazione: nomi e luoghi per registro e cruscotto
 const allDoors = () => store.summary.doors || [];
 const multiDoor = () => allDoors().length > 1;
@@ -725,7 +758,7 @@ const KINDS = {
   uscita: ["Uscita", "k-ok", "exit"],
   allarme: ["Allarme Porta", "k-err", "alert"],
   manomissione: ["Manomissione", "k-err", "shield"],
-  citofono: ["Citofono", "k-info", "phone"],
+  citofono: ["Chiamata Citofono", "k-info", "phone"],
 };
 // Pressione di un pulsante o del relè del citofono che il controller non fa aprire: l'origine è il nome dell'ingresso
 const inputDenied = (e) => e.kind === "negato" && !e.card && !e.person_name && !!e.source && e.source !== "controller";
@@ -739,11 +772,14 @@ function relTime(iso) {
   if (!iso) return "";
   const d = new Date(iso), now = new Date();
   const diff = (now - d) / 1000;
+  const day = (offset) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
+  // Più avanti di adesso (orologio del controller avanti): l'ora vera, non "adesso"
+  if (diff <= -60) return d < day(1) ? `oggi ${fmtTime(iso)}` : fmtDateTime(iso);
   if (diff < 60) return "adesso";
   if (diff < 3600) return `${Math.floor(diff / 60)} min fa`;
-  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  if (d >= startToday) return `oggi ${fmtTime(iso)}`;
-  if (d >= new Date(startToday - 86400000)) return `ieri ${fmtTime(iso)}`;
+  if (d >= day(0)) return `oggi ${fmtTime(iso)}`;
+  // Ieri dal calendario, non 24 ore prima: il giorno del cambio d'ora ne ha 23 o 25
+  if (d >= day(-1)) return `ieri ${fmtTime(iso)}`;
   if (diff < 6 * 86400) return d.toLocaleDateString("it-IT", {weekday: "long"}) + " " + fmtTime(iso);
   return fmtDate(iso);
 }
@@ -757,28 +793,45 @@ function toLocalInput(iso) {
 const fromLocalInput = (v) => v ? new Date(v).toISOString() : "";
 const initials = (name) => (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+// Maiuscola iniziale: i messaggi del server arrivano in minuscolo perché altrove si compongono dopo un prefisso
+const cap = (text) => text ? String(text)[0].toUpperCase() + String(text).slice(1) : text;
 
 let toastTimer;
 function toast(message, error = false) {
   const el = $("#toast");
-  el.textContent = message;
+  el.textContent = cap(message);
   el.className = error ? "error" : "";
   el.style.display = "block";
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.style.display = "none"; }, error ? 7000 : 3000);
 }
 
+// Prova del collegamento e rilettura dal controller: POST che non modificano niente, quindi senza Riprova
+const NO_RETRY = ["api/controllers/test", "api/sync"];
 async function api(path, options = {}) {
-  const res = await fetch(path, {
-    method: options.method || "GET",
-    headers: options.body !== undefined ? {"Content-Type": "application/json"} : {},
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
+  const method = options.method || "GET";
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: options.body !== undefined ? {"Content-Type": "application/json"} : {},
+      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    });
+  } catch (err) {
+    // Rete o add-on caduti a metà richiesta: il browser direbbe solo "Failed to fetch", e una modifica può essere arrivata
+    throw new Error(method === "GET" ? "Collegamento con l'add-on non riuscito: controlla la rete e riprova tra qualche secondo"
+      : "Collegamento con l'add-on interrotto: la modifica potrebbe essere stata fatta lo stesso, controlla prima di riprovare");
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const message = typeof data.detail === "string" ? data.detail : "errore " + res.status;
-    // Il controller non ha risposto a una modifica: si può riprovare senza rifare tutto da capo
-    if (res.status === 502 && (options.method || "GET") !== "GET" && !message.includes("scritture sospese") && await retryBox(message)) return api(path, options);
+    // Senza un messaggio dell'app l'errore viene da Home Assistant: l'add-on si sta riavviando o non risponde
+    const fromApp = typeof data?.detail === "string";
+    const message = cap(fromApp ? data.detail : res.status >= 502 && res.status <= 504
+      ? `l'add-on non risponde (errore ${res.status}): riprova tra qualche secondo` : `richiesta non riuscita (errore ${res.status})`);
+    // Il controller non ha risposto a una modifica: si può riprovare senza rifare tutto da capo. Gli altri errori del
+    // controller (credenziali, richiesta rifiutata, scritture sospese) riprovando tornerebbero uguali
+    const unreachable = data?.unreachable ?? (fromApp && data.detail.startsWith("il controller non risponde"));
+    if (res.status === 502 && unreachable && method !== "GET" && !NO_RETRY.includes(path) && await retryBox(message)) return api(path, options);
     throw new Error(message);
   }
   return data;
@@ -789,7 +842,7 @@ function retryBox(message) {
   return new Promise((resolve) => {
     const dlg = $("#retry");
     dlg.innerHTML = `<div class="dlg"><div class="dlg-head"><h2>Il Controller Non Ha Risposto</h2></div>
-      <div class="dlg-body"><p style="margin:0 0 8px">La modifica non è stata completata.</p><p class="muted small-text" style="margin:0">${esc(message)}</p>
+      <div class="dlg-body"><p style="margin:0 0 8px">La modifica non è stata completata.</p><p class="muted small-text" style="margin:0">${esc(cap(message))}</p>
         <p class="hint">Controlla che il controller sia acceso e in rete, poi riprova. Riprovare non crea doppioni.</p></div>
       <div class="dlg-foot"><button type="button" data-r="0">Annulla</button><button type="button" class="primary" data-r="1">Riprova</button></div></div>`;
     const finish = (value) => { dlg.close(); resolve(value); };
@@ -812,6 +865,8 @@ async function run(action, success) {
 }
 
 // ---------- Finestre ----------
+// Chiude la finestra aperta come la ×, se non sta salvando: serve al cambio di pagina
+let cancelModal = () => {};
 // Apre una finestra: body è HTML, actions [{label, kind, onClick(dialogEl) → false per lasciarla aperta}]
 function modal({title, body = "", actions = [], wide = false, cls = "", onOpen}) {
   return new Promise((resolve) => {
@@ -822,19 +877,25 @@ function modal({title, body = "", actions = [], wide = false, cls = "", onOpen})
       <div class="dlg-body">${body}</div>
       ${actions.length ? `<div class="dlg-foot">${actions.map((a, i) => `<button type="${a.submit ? "submit" : "button"}" class="${a.kind || ""}" data-a="${i}">${esc(a.label)}</button>`).join("")}</div>` : ""}
     </form>`;
-    let done = false;
+    let done = false, busy = false;
     const finish = (value) => { if (done) return; done = true; dlg.close(); resolve(value); };
-    $("[data-x]", dlg).onclick = () => finish(null);
-    dlg.oncancel = (e) => { e.preventDefault(); finish(null); };
+    // Mentre l'azione è in corso × ed Esc non chiudono: il chiamante la crederebbe annullata e non aggiornerebbe la pagina
+    const cancel = () => { if (!busy) finish(null); };
+    cancelModal = cancel;
+    $("[data-x]", dlg).onclick = cancel;
+    dlg.oncancel = (e) => { e.preventDefault(); cancel(); };
     const invoke = async (i) => {
       const action = actions[i];
+      if (busy) return;
       if (!action.onClick) return finish("value" in action ? action.value : i);
-      const btns = $$(".dlg-foot button", dlg);
+      const btns = $$(".dlg-foot button, [data-x]", dlg);
+      busy = true;
       btns.forEach((b) => { b.disabled = true; });
       try {
         const result = await action.onClick(dlg);
         if (result !== false) finish(result ?? true);
       } finally {
+        busy = false;
         btns.forEach((b) => { b.disabled = false; });
       }
     };
@@ -863,28 +924,47 @@ function showImage(src, title) {
 const store = {me: {perms: [], admin: false}, persons: [], groups: null, schedules: null, categories: [], summary: {}};
 const can = (perm) => Boolean(store.me.admin || store.me.perms.includes(perm));
 const ALL_PERMS = ["stato", "persone", "persone_modifica", "registro", "regole", "regole_modifica", "import_export", "impianti", "backup", "utenti"];
+// Profili e fasce stanno sul controller, le tipologie nell'app. Se il controller non risponde restano i profili di
+// prima (store.groupsError dice perché) e la chiamata successiva riprova; le tipologie si leggono lo stesso dall'app
 async function loadGroups(force = false) {
-  if (store.groups && !force) return store.groups;
+  if (store.groupsLoaded && !force) return store.groups;
   try {
     const data = await api("api/groups");
-    store.groups = data.groups;
-    store.schedules = data.schedules;
-    store.categories = data.categories || [];
+    Object.assign(store, {groups: data.groups, schedules: data.schedules, categories: data.categories || [], categoriesLoaded: true});
+    store.groupsLoaded = true;
+    store.groupsError = "";
   } catch (err) {
     store.groups = store.groups || [];
     store.schedules = store.schedules || [];
+    store.groupsLoaded = false;
     store.groupsError = err.message;
+    await loadCategories();
   }
   return store.groups;
+}
+// Solo le tipologie, dal database dell'app: per le pagine che non hanno bisogno del controller
+async function loadCategories() {
+  try {
+    store.categories = await api("api/categories");
+    store.categoriesLoaded = true;
+  } catch (err) { /* restano quelle già lette */ }
+  return store.categories;
 }
 const groupName = (token) => (store.groups || []).find((g) => g.token === token)?.name || token || "—";
 const categoryOf = (id) => store.categories.find((c) => c.id === id);
 const categoryPill = (c) => c ? `<span class="pill cat c-${esc(c.color)}"><span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}</span>` : "";
 const COLORS = {blue: "Blu", green: "Verde", orange: "Arancione", red: "Rosso", purple: "Viola", teal: "Turchese", pink: "Rosa", gray: "Grigio"};
-function categorySelect(selected = 0) {
-  const chosen = selected || store.me.default_category || store.categories[0]?.id || 0;
-  const missing = selected && !categoryOf(selected) ? `<option value="0" selected>Nessuna</option>` : "";
-  return `<select name="category">${missing}${store.categories.map((c) => `<option value="${c.id}" ${c.id === chosen ? "selected" : ""}>${esc(c.name)}${c.default ? " (Predefinita)" : ""}</option>`).join("")}</select>`;
+// Senza argomento (nuova persona) propone la predefinita. Con la tipologia di una persona esistente (0 = nessuna)
+// la lascia scelta: «Nessuna» solo se non ne ha o se è stata eliminata; tipologie non lette → «Tipologia Attuale»,
+// così salvando non cambia
+function categorySelect(selected) {
+  const person = selected !== undefined;
+  const id = Number(selected) || 0;
+  const chosen = person ? id : store.me.default_category || store.categories[0]?.id || 0;
+  const keep = person && id && !categoryOf(id) && !store.categoriesLoaded;
+  const none = person && !keep && !categoryOf(id);
+  const extra = keep ? `<option value="${id}" selected>Tipologia Attuale</option>` : none ? `<option value="0" selected>Nessuna</option>` : "";
+  return `<select name="category">${extra}${store.categories.map((c) => `<option value="${c.id}" ${c.id === chosen ? "selected" : ""}>${esc(c.name)}${c.default ? " (Predefinita)" : ""}</option>`).join("")}</select>`;
 }
 // Accesso della persona diverso da quello della sua tipologia (deciso a mano o dalle versioni precedenti)
 const customAccess = (p) => { const c = categoryOf(p.category_id); return Boolean(c && p.cards.length && p.cards[0].access_profile !== c.group_token); };
@@ -903,21 +983,33 @@ function placeLabel(r) {
   return allDoors().find((d) => d.id === r.target_id)?.name || "porta eliminata";
 }
 const scheduleLabel = (token) => (store.schedules || []).find((x) => x.token === token)?.name || token;
-const ruleLines = (c) => (c.rules || []).map((r) => `<div>${esc(placeLabel(r))} <span class="muted">· ${esc(scheduleLabel(r.schedule))}</span></div>`).join("") || '<span class="muted">nessuna</span>';
-// La tipologia scelta nel modulo propone la sua durata
+const ruleLines = (c) => (c.rules || []).map((r) => `<div>${esc(placeLabel(r))} <span class="muted">· ${esc(scheduleLabel(r.schedule))}</span></div>`).join("") || '<span class="muted">Nessuna</span>';
+// La tipologia scelta nel modulo propone la sua durata. Se poi se ne sceglie una senza durata, torna la validità di
+// prima, purché la proposta non sia stata cambiata a mano
 function bindCategory(dlg) {
-  const select = $("[name=category]", dlg);
-  if (!select) return;
+  const select = $("[name=category]", dlg), limited = $("#f-limited", dlg);
+  if (!select || !limited) return;
+  const box = $("#f-validity", dlg), from = $("[name=valid_from]", dlg), to = $("[name=valid_to]", dlg);
+  const read = () => [limited.checked, from.value, to.value].join("|");
+  let before = null, proposed = "";
   select.addEventListener("change", () => {
     const c = categoryOf(Number(select.value));
-    if (!c) return;
-    if (c.valid_days && $("#f-limited", dlg)) {
-      $("#f-limited", dlg).checked = true;
-      $("#f-validity", dlg).hidden = false;
+    const pending = before && read() === proposed;
+    if (c?.valid_days) {
+      if (!pending) before = {checked: limited.checked, from: from.value, to: to.value};
       const now = new Date();
       now.setSeconds(0, 0);
-      $("[name=valid_from]", dlg).value = toLocalInput(now.toISOString());
-      $("[name=valid_to]", dlg).value = toLocalInput(new Date(now.getTime() + c.valid_days * 86400000).toISOString());
+      limited.checked = true;
+      box.hidden = false;
+      from.value = toLocalInput(now.toISOString());
+      to.value = toLocalInput(new Date(now.getTime() + c.valid_days * 86400000).toISOString());
+      proposed = read();
+    } else if (pending) {
+      limited.checked = before.checked;
+      box.hidden = !before.checked;
+      from.value = before.from;
+      to.value = before.to;
+      before = null;
     }
   });
 }
@@ -971,17 +1063,18 @@ function reloadIfUpdated(version) {
   location.reload();
 }
 
-// Barra in alto: guasti e allarmi solo quando ci sono, altrimenti "Sistema OK"
+// Barra in alto: guasti e allarmi solo quando ci sono, altrimenti "Sistema OK". Si aggiorna ogni 5 secondi con morph:
+// bollini e righe restano gli stessi elementi, così il focus da tastiera e un clic in corso non si perdono
 function renderTopStatus() {
   const box = $("#top-status"), s = store.summary;
   if (!can("stato") || s.configured === false) { box.innerHTML = ""; return; }
   const faults = s.faults || [], alarms = s.alarms || [];
-  box.innerHTML = faults.length || alarms.length
-    ? `${faults.length ? `<button type="button" class="chip warn" data-pop="faults" title="Guasti dell'impianto">${icon("wrench")}<span class="lbl">Guasti</span><b>${faults.length}</b></button>` : ""}
-       ${alarms.length ? `<button type="button" class="chip err" data-pop="alarms" title="Allarmi da gestire: quelli non ancora visti">${icon("alert")}<span class="lbl">Allarmi</span><b>${alarms.length}</b></button>` : ""}`
-    : `<span class="chip ok" title="Nessun guasto né allarme"><span class="dot"></span><span class="lbl">Sistema OK</span></span>`;
-  const pop = $("#top-pop");
-  if (!pop.hidden) showTopPop(pop.dataset.kind);
+  const pop = $("#top-pop"), open = pop.hidden ? "" : pop.dataset.kind;
+  morph(box, faults.length || alarms.length
+    ? `${faults.length ? `<button type="button" class="top-chip warn" data-pop="faults" aria-expanded="${open === "faults"}" title="Guasti dell'impianto">${icon("wrench")}<span class="lbl">Guasti</span><b>${faults.length}</b></button>` : ""}
+       ${alarms.length ? `<button type="button" class="top-chip err" data-pop="alarms" aria-expanded="${open === "alarms"}" title="Allarmi da gestire: quelli non ancora visti">${icon("alert")}<span class="lbl">Allarmi</span><b>${alarms.length}</b></button>` : ""}`
+    : `<span class="top-chip ok" title="Nessun guasto né allarme"><span class="dot"></span><span class="lbl">Sistema OK</span></span>`);
+  if (open) showTopPop(open);
   else markTopChips();
 }
 // Il bollino della tendina aperta resta evidenziato
@@ -994,12 +1087,14 @@ function showTopPop(kind) {
   const items = (kind === "faults" ? store.summary.faults : store.summary.alarms) || [];
   if (!items.length) { pop.hidden = true; markTopChips(); return; }
   pop.dataset.kind = kind;
-  pop.innerHTML = `<div class="pop-head"><b>${kind === "faults" ? "Guasti" : "Allarmi da Gestire"}</b>
-      ${kind === "alarms" ? '<button type="button" class="ghost small" data-pop-seen>Segna Tutti Come Visti</button>' : ""}</div>
-    ${items.map((i) => `<a class="pop-row" href="#notifiche"><span class="dot ${i.severity === "crit" ? "err" : "warn"}"></span>
+  // Pallino del colore della gravità, come in Notifiche: rosso Alta, giallo Media, grigio Bassa
+  const dot = {crit: "err", warn: "warn"};
+  morph(pop, `<div class="pop-head"><b>${kind === "faults" ? "Guasti" : "Allarmi da Gestire"}</b>
+      ${kind === "alarms" ? '<button type="button" class="ghost small" data-pop-seen>Segna Tutti come Visti</button>' : ""}</div>
+    ${items.map((i) => `<a class="pop-row" href="#notifiche" data-key="n${esc(i.id)}"><span class="dot ${dot[i.severity] || ""}"></span>
       <div style="min-width:0"><div class="t">${esc(i.title)}</div><div class="m">${esc([i.text, i.door].filter(Boolean).join(" · "))}</div></div>
       <time title="${esc(fmtFull(i.ts))}">${esc(dayTime(i.ts))}</time></a>`).join("")}
-    <a class="pop-foot" href="#notifiche">Tutte le Notifiche</a>`;
+    <a class="pop-foot" href="#notifiche">Tutte le Notifiche</a>`);
   pop.hidden = false;
   markTopChips();
 }
@@ -1009,7 +1104,13 @@ document.addEventListener("click", async (e) => {
   if (chip) { if (!pop.hidden && pop.dataset.kind === chip.dataset.pop) { pop.hidden = true; markTopChips(); } else showTopPop(chip.dataset.pop); return; }
   if (e.target.closest("[data-pop-seen]")) {
     const ids = (store.summary.alarms || []).map((i) => i.id);
-    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids}}))) { pop.hidden = true; await loadSummary(); if (route.name === "notifiche" || route.name === "cruscotto") render(); }
+    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids}}))) {
+      pop.hidden = true;
+      await loadSummary();
+      // Solo i dati, senza ridisegnare: una modifica del cruscotto in corso non si perde
+      if (route.name === "notifiche") await refreshNotifications();
+      if (route.name === "cruscotto" && !dash.editing && dash.reload && $("#dash")) await dash.reload();
+    }
     return;
   }
   if (!pop.hidden && (!e.target.closest("#top-pop") || e.target.closest("a"))) { pop.hidden = true; markTopChips(); }
@@ -1048,6 +1149,7 @@ function viewNoAccess(el) {
     : `<div class="alert err">L'add-on non risponde: ricarica la pagina tra qualche secondo.</div>`;
   paintIcons(el);
 }
+let viewBox = null;  // contenitore della pagina aperta, dentro #view
 async function render() {
   route = parseHash();
   pageGuard = null;
@@ -1061,10 +1163,17 @@ async function render() {
   $("#top-pop").hidden = true;
   markTopChips();
   $$("#nav a").forEach((a) => a.classList.toggle("active", a.dataset.route === route.name));
-  const el = $("#view");
-  el.dataset.route = route.name;
+  const host = $("#view");
+  host.dataset.route = route.name;
+  // Ogni apertura disegna in un contenitore nuovo, che prende il posto del precedente e ne mostra il contenuto fino ai
+  // dati nuovi. Una pagina lasciata mentre aspettava una risposta scrive nel suo, ormai staccato, e non sopra quella
+  // aperta dopo: le viste lo riconoscono da el.isConnected, prima di toccare titolo e barra in alto
+  const el = document.createElement("div");
+  el.append(...[...host.childNodes].flatMap((n) => n === viewBox ? [...n.childNodes] : [n]));
+  host.replaceChildren(el);
+  viewBox = el;
   await view(el, route.sub);
-  paintIcons(el);
+  if (el.isConnected) paintIcons(el);
 }
 // Menu laterale: sul computer resta come l'hai lasciato, sul telefono si richiude dopo ogni scelta
 const phoneLayout = () => window.matchMedia("(max-width: 860px)").matches;
@@ -1083,14 +1192,20 @@ function initNav() {
   $("#nav").addEventListener("click", (e) => { if (e.target.closest("a") && phoneLayout()) setNav(false, false); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && phoneLayout() && document.body.classList.contains("nav-open")) setNav(false, false); });
 }
-// Pagina con modifiche non salvate: {dirty() → bool, save() → bool}; chiede prima di uscire
+// Pagina con modifiche non salvate: {dirty() → bool, save() → bool, message?}; chiede prima di uscire.
+// message dice dove vanno le modifiche, per esempio "Hai modifiche non ancora scritte sul controller."
 let pageGuard = null;
 let lastHash = location.hash;
 window.addEventListener("hashchange", async () => {
+  // Link dentro una finestra (Dettaglio Evento → porta o persona): la finestra si chiude e la pagina cambia sotto.
+  // Una finestra che sta ancora salvando resta: si rimane sulla pagina e la finestra si chiude da sola alla fine
+  if ($("#modal").open) cancelModal();
+  if ($("#modal").open) { history.replaceState(null, "", lastHash || "#"); return; }
   if (pageGuard?.dirty()) {
     const target = location.hash;
     history.replaceState(null, "", lastHash || "#");
-    const choice = await modal({title: "Modifiche Non Salvate", body: '<p style="margin:0">Hai modifiche non ancora scritte sul controller. Vuoi salvarle prima di uscire?</p>',
+    const text = pageGuard.message || "Hai modifiche non ancora salvate.";
+    const choice = await modal({title: "Modifiche Non Salvate", body: `<p style="margin:0">${esc(text)} Vuoi salvarle prima di uscire?</p>`,
       actions: [{label: "Resta Qui", value: null}, {label: "Scarta", kind: "danger", value: "discard"}, {label: "Salva", kind: "primary", value: "save"}]});
     if (!choice || (choice === "save" && !(await pageGuard.save()))) return;
     pageGuard = null;
