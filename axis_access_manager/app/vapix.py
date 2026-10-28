@@ -4,24 +4,81 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
+import socket
 import ssl
 
 import httpx
 
+_LOGGER = logging.getLogger(__name__)
+
 # Limite del controller per GetCredentialList
 CREDENTIAL_PAGE_SIZE = 300
+# Codici di errore dell'API Axis (FaultCode, Subcode o messaggio) → spiegazione per l'utente; il codice va nel log
+FAULT_TEXTS = {
+    "NotFound": "oggetto non trovato",
+    "InvalidArgVal": "valore non accettato",
+    "InvalidArgs": "valori non accettati",
+    "InvalidArg": "valore non accettato",
+    "ActionNotSupported": "operazione non supportata",
+    "Method not supported": "operazione non supportata",
+    "OperationProhibited": "operazione non permessa",
+    "NotAuthorized": "operazione non permessa",
+    "CapabilityViolated": "limite del controller raggiunto",
+    "ReferenceInUse": "oggetto ancora in uso",
+    "ModeNotAllowedForIoUser": "modo non ammesso",
+}
 
 
 class VapixError(Exception):
     """Il controller non risponde o risponde con un errore."""
 
+    def __init__(self, message: str, fault: str = "") -> None:
+        super().__init__(message)
+        # Codice dell'errore Axis com'è arrivato (per esempio ter:NotFound): per i controlli, non per l'utente
+        self.fault = fault
 
-def _fault_text(fault) -> str:
-    if isinstance(fault, dict):
-        for key in ("Reason", "Text", "message", "Message"):
-            if fault.get(key):
-                return str(fault[key])
-    return str(fault)
+
+class ControllerUnreachable(VapixError):
+    """Il controller non risponde: le richieste successive aspetterebbero allo stesso modo."""
+
+
+def _fault_code(data) -> str:
+    """Codici e testi di un Fault, o di una risposta {"error": ...} delle /axis-cgi, così come arrivano."""
+    if not isinstance(data, dict):
+        return ""
+    parts = [data.get("FaultCode"), data.get("Subcode")]
+    for key in ("Fault", "error"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            parts += [value.get(k) for k in ("Subcode", "Code", "code", "Reason", "Text", "message", "Message")]
+        elif value:
+            parts.append(value)
+    return " ".join(str(p) for p in parts if p not in (None, ""))
+
+
+def _refused(what: str, fault: str) -> VapixError:
+    reason = next((text for code, text in FAULT_TEXTS.items() if code in fault), "")
+    return VapixError(f"il controller ha rifiutato {what}" + (f" ({reason})" if reason else ""), fault)
+
+
+def _network_reason(err: Exception) -> str:
+    """Perché il collegamento non è riuscito, in parole: il nome dell'eccezione resta nel log."""
+    if isinstance(err, httpx.ConnectTimeout | TimeoutError):
+        return "tempo scaduto"
+    if isinstance(err, httpx.TimeoutException):
+        return "nessuna risposta in tempo"
+    if "CERTIFICATE_VERIFY_FAILED" in str(err):
+        return "certificato HTTPS non valido"
+    if isinstance(err, ssl.SSLError):
+        return "collegamento HTTPS non riuscito"
+    if isinstance(err, socket.gaierror):
+        return "indirizzo non trovato"
+    if isinstance(err, httpx.ConnectError | ConnectionRefusedError):
+        return "collegamento rifiutato o indirizzo errato"
+    if isinstance(err, ValueError | httpx.InvalidURL):
+        return "indirizzo non valido"
+    return "errore di rete"
 
 
 def _first_token(data: dict, item: dict) -> str:
@@ -42,35 +99,53 @@ class A1210Client:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.host = host
-        self._client = httpx.AsyncClient(
-            base_url=f"https://{host}",
-            auth=httpx.DigestAuth(username, password),
-            verify=verify_ssl,
-            timeout=10,
-            transport=transport,
-        )
+        options = {"auth": httpx.DigestAuth(username, password), "verify": verify_ssl, "timeout": 10}
+        try:
+            self._client = httpx.AsyncClient(base_url=f"https://{host}", transport=transport, **options)
+            self._invalid_host = False
+        except httpx.InvalidURL:
+            # Indirizzo salvato prima che l'app lo controllasse: ogni richiesta risponde con un errore, ma l'avvio
+            # dell'app non si ferma e l'indirizzo si può correggere
+            self._client = httpx.AsyncClient(transport=transport, **options)
+            self._invalid_host = True
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
     async def _post(self, path: str, body: dict) -> dict:
+        method = body.get("method") or next(iter(body), "")
+        if self._invalid_host:
+            raise ControllerUnreachable("indirizzo del controller non valido")
         try:
             response = await self._client.post(path, json=body)
-        except httpx.HTTPError as err:
-            raise VapixError(f"il controller non risponde ({err.__class__.__name__})") from err
+        except (httpx.HTTPError, httpx.InvalidURL) as err:
+            _LOGGER.debug("%s %s: %r", path, method, err)
+            raise ControllerUnreachable(f"il controller non risponde ({_network_reason(err)})") from err
         if response.status_code == 401:
             raise VapixError("credenziali del controller non valide")
-        if response.status_code != 200:
-            detail = response.text.strip()[:200]
-            message = f"il controller ha risposto con errore {response.status_code}"
-            raise VapixError(f"{message}: {detail}" if detail else message)
         try:
             data = response.json()
         except ValueError as err:
-            raise VapixError("risposta del controller non riconosciuta") from err
-        if isinstance(data, dict) and "Fault" in data:
-            raise VapixError(f"il controller ha rifiutato la richiesta: {_fault_text(data['Fault'])}")
+            if response.status_code == 200:
+                raise VapixError("risposta del controller non riconosciuta") from err
+            data = None
+        if response.status_code != 200 or (isinstance(data, dict) and "Fault" in data):
+            # Corpo e codici in inglese servono a chi legge il log, non all'utente
+            _LOGGER.info(
+                "Il controller ha risposto %s a %s %s: %s", response.status_code, path, method, response.text[:500]
+            )
+            fault = _fault_code(data)
+            if fault or response.status_code == 200:
+                raise _refused("la richiesta", fault)
+            raise VapixError(f"il controller ha risposto con errore {response.status_code}")
         return data
+
+    @staticmethod
+    def _check_error(path: str, data: dict) -> None:
+        """Errore delle API /axis-cgi: arriva con lo stato 200 e {"error": {"code": ..., "message": ...}}."""
+        if "error" in data:
+            _LOGGER.info("Il controller ha risposto con un errore a %s: %s", path, data["error"])
+            raise _refused("la richiesta", _fault_code(data))
 
     async def device_info(self) -> dict:
         """Modello, numero di serie e versione firmware."""
@@ -78,8 +153,7 @@ class A1210Client:
             "/axis-cgi/basicdeviceinfo.cgi",
             {"apiVersion": "1.0", "method": "getAllProperties"},
         )
-        if "error" in data:
-            raise VapixError(data["error"].get("message", "errore sconosciuto"))
+        self._check_error("/axis-cgi/basicdeviceinfo.cgi", data)
         return data.get("data", {}).get("propertyList", {})
 
     async def _cgi(self, path: str, method: str, params: dict | None = None, version: str = "1.0") -> dict:
@@ -88,8 +162,7 @@ class A1210Client:
         if params is not None:
             body["params"] = params
         data = await self._post(path, body)
-        if "error" in data:
-            raise VapixError((data["error"] or {}).get("message", "errore sconosciuto"))
+        self._check_error(path, data)
         return data.get("data") or {}
 
     async def date_time_info(self) -> dict:
@@ -142,14 +215,16 @@ class A1210Client:
 
     async def certificate_fingerprint(self) -> str:
         """Impronta SHA-256 del certificato HTTPS, per riconoscere il controller (come fa un browser)."""
-        host, _, port = self.host.rpartition(":") if self.host.count(":") == 1 else (self.host, "", "")
         context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         try:
-            _, writer = await asyncio.wait_for(asyncio.open_connection(host, int(port or 443), ssl=context), 10)
-        except (OSError, TimeoutError, ValueError) as err:
-            raise VapixError(f"certificato non leggibile ({err.__class__.__name__})") from err
+            # Come il client: anche un IPv6 tra parentesi quadre ([fd00::10]:443)
+            url = httpx.URL(f"https://{self.host}")
+            _, writer = await asyncio.wait_for(asyncio.open_connection(url.host, url.port or 443, ssl=context), 10)
+        except (OSError, TimeoutError, ValueError, httpx.InvalidURL) as err:
+            _LOGGER.debug("Certificato di %s non letto: %r", self.host, err)
+            raise VapixError(f"certificato non leggibile ({_network_reason(err)})") from err
         try:
             der = writer.get_extra_info("ssl_object").getpeercert(binary_form=True) or b""
         finally:
@@ -294,14 +369,15 @@ class A1210Client:
     async def remove_door(self, token: str) -> None:
         """Toglie la porta e la sua configurazione."""
         await self._post("/vapix/doorcontrol", {"axtdc:RemoveDoor": {"Token": [token]}})
-        await self._remove_configuration("/vapix/doorcontrol", "axtdc:RemoveDoorConfiguration", token)
+        await self._remove_if_present("/vapix/doorcontrol", "axtdc:RemoveDoorConfiguration", token)
 
-    async def _remove_configuration(self, path: str, method: str, token: str) -> None:
-        """Configurazione che va tolta insieme all'oggetto; se non c'era il controller risponde NotFound."""
+    async def _remove_if_present(self, path: str, method: str, token: str) -> None:
+        """Toglie un oggetto, o la configurazione che va tolta con lui: se non c'è già più il controller risponde
+        NotFound, e va bene così."""
         try:
             await self._post(path, {method: {"Token": [token]}})
         except VapixError as err:
-            if "NotFound" not in str(err):
+            if "NotFound" not in err.fault:
                 raise
 
     async def list_idpoints(self) -> list[dict]:
@@ -334,8 +410,8 @@ class A1210Client:
 
     async def remove_idpoint(self, token: str) -> None:
         """Toglie l'IdPoint e la sua configurazione, che il controller altrimenti tiene orfana."""
-        await self._post("/vapix/idpoint", {"axtid:RemoveIdPoint": {"Token": [token]}})
-        await self._remove_configuration("/vapix/idpoint", "axtid:RemoveIdPointConfiguration", token)
+        await self._remove_if_present("/vapix/idpoint", "axtid:RemoveIdPoint", token)
+        await self._remove_if_present("/vapix/idpoint", "axtid:RemoveIdPointConfiguration", token)
 
     async def set_io_assignment(self, io: str, mode: str, users: list[dict]) -> None:
         """Assegna un I/O fisico (lista vuota = libera). Il controller risponde 200 anche se rifiuta: si controlla."""
@@ -345,14 +421,15 @@ class A1210Client:
         )
         errors = [str(e.get("Error") or "errore") for e in data.get("IoAssignmentError") or []]
         if errors:
-            raise VapixError(f"assegnazione di {io} rifiutata: {', '.join(errors)}")
+            _LOGGER.info("Il controller ha rifiutato l'assegnazione di %s (%s): %s", io, mode, ", ".join(errors))
+            raise _refused("l'assegnazione dell'ingresso", ", ".join(errors))
 
     async def create_access_point(self, access_point: dict) -> str:
         data = await self._post("/vapix/pacs", {"pacsaxis:SetAccessPoint": {"AccessPoint": [access_point]}})
         return _first_token(data, access_point)
 
     async def remove_access_point(self, token: str) -> None:
-        await self._post("/vapix/pacs", {"pacsaxis:RemoveAccessPoint": {"Token": [token]}})
+        await self._remove_if_present("/vapix/pacs", "pacsaxis:RemoveAccessPoint", token)
 
     async def list_io(self) -> tuple[list[dict], list[dict]]:
         """I/O fisici del controller e a chi sono assegnati. Il servizio axisio sull'A1210 risponde su /vapix/pin."""

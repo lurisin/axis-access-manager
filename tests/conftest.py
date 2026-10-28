@@ -111,7 +111,7 @@ class FakeController:
 
     async def device_info(self):
         if self.offline:
-            raise VapixError("il controller non risponde (ConnectTimeout)")
+            raise VapixError("il controller non risponde (tempo scaduto)")
         return {"ProdNbr": "A1210", "Version": self.firmware, "SerialNumber": self.serial}
 
     async def certificate_fingerprint(self):
@@ -145,7 +145,7 @@ class FakeController:
 
     def _check_token(self, item):
         if self.refuse_axis_tokens and str(item.get("token") or "").startswith("Axis-"):
-            raise VapixError("il controller ha rifiutato la richiesta: InvalidArgVal")
+            raise VapixError("il controller ha rifiutato la richiesta (valore non accettato)", "ter:InvalidArgVal")
 
     def factory_reset(self):
         """Come un reset di fabbrica: resta solo quello che il controller ha di serie."""
@@ -252,7 +252,9 @@ class FakeController:
 
     async def set_io_assignment(self, io, mode, users):
         if self.fail_io_assignment:
-            raise VapixError(f"assegnazione di {io} rifiutata: ModeNotAllowedForIoUser")
+            raise VapixError(
+                "il controller ha rifiutato l'assegnazione dell'ingresso (modo non ammesso)", "ModeNotAllowedForIoUser"
+            )
         self.calls.append(("set_io_assignment", io, mode))
         # Come il firmware: senza utenti il cambio di modo da supervisionato è accettato ma ignorato
         if not users and self.io_assignments.get(io, {}).get("IoMode") == "supervised":

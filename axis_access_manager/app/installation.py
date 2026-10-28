@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import ipaddress
 import re
+
+import httpx
 
 from .config import Settings, normalize_host
 from .db import Database
@@ -14,10 +18,41 @@ MAX_CONTROLLERS = 1
 DEFAULT_SITE = "Struttura Principale"
 DEFAULT_AREA = "Generale"
 TOPIC_PATTERN = re.compile(r"^[A-Za-z0-9_\-/]+$")
+# Nome o IPv4, oppure IPv6 tra parentesi quadre, con la porta facoltativa
+HOST_PATTERN = re.compile(r"^(?:[A-Za-z0-9.\-]+|\[[0-9A-Fa-f:.]+\])(?::(\d{1,5}))?$")
+# Entità telecamera di Home Assistant: l'app la chiede a Home Assistant nell'indirizzo, niente altro ci deve stare
+CAMERA_PATTERN = re.compile(r"^camera\.[a-z0-9_]+$")
+CAMERA_ERROR = "la telecamera deve essere un'entità camera.* di Home Assistant"
+# Spostamento dei controller nelle aree (versioni prima della 0.7) già fatto: non si ripete a ogni avvio
+SETTING_SITES_MIGRATED = "sites_migrated"
 
 
 def _flag(value) -> bool:
     return bool(value) and value not in ("0", "false", "False")
+
+
+def check_host(value: str) -> str:
+    """Indirizzo del controller come lo userà il client: un IPv6 scritto senza parentesi le riceve.
+    Un indirizzo che il client non saprebbe usare è un errore qui, non al riavvio dell'app."""
+    host = normalize_host(value or "")
+    if not host:
+        raise ServiceError("manca l'indirizzo del controller")
+    with contextlib.suppress(ValueError):
+        ipaddress.IPv6Address(host)
+        host = f"[{host}]"
+    match = HOST_PATTERN.match(host)
+    port = int(match.group(1)) if match and match.group(1) else None
+    try:
+        httpx.URL(f"https://{host}")
+    except httpx.InvalidURL:
+        match = None
+    if len(host) > 253 or not match or (port is not None and not 1 <= port <= 65535):
+        raise ServiceError("indirizzo del controller non valido: scrivi il nome o l'IP, con la porta se serve")
+    return host
+
+
+def valid_camera(camera: str) -> bool:
+    return bool(CAMERA_PATTERN.match(camera))
 
 
 class InstallationService:
@@ -35,9 +70,15 @@ class InstallationService:
 
     @property
     def primary(self) -> dict | None:
-        """Controller in uso (il primo)."""
+        """Controller in uso (il primo). Una telecamera salvata che non è un'entità camera non si usa."""
         controllers = self.db.list_controllers()
-        return controllers[0] if controllers else None
+        if not controllers:
+            return None
+        controller = controllers[0]
+        for item in (controller, *controller["doors"]):
+            if not valid_camera(item.get("snapshot_camera") or ""):
+                item["snapshot_camera"] = ""
+        return controller
 
     def doors(self) -> list[dict]:
         primary = self.primary
@@ -99,34 +140,46 @@ class InstallationService:
         return self._places("controllers")
 
     def ensure_default_site(self) -> bool:
-        """All'avvio: ogni controller deve stare in un'area, e le porte la ereditano.
+        """Al primo avvio con questa versione, per i dati delle versioni prima della 0.7: ogni controller va in
+        un'area, e le porte la ereditano. Poi non si ripete: un controller lasciato Senza Area resta dov'è.
 
         Prima della 0.6 non c'erano strutture: si crea quella predefinita da rinominare. Dalla 0.6 alla 0.7
         l'area passa dalle porte al loro controller; resta sulla porta solo se diversa da quella del controller.
         """
+        if self.db.get_setting(SETTING_SITES_MIGRATED):
+            return False
         changed = False
         controllers = self.db.list_controllers()
         if not self.db.list_sites() and any(not c["area_id"] for c in controllers):
             site_id = self.db.save_site(None, DEFAULT_SITE, "")
             area_id = self.db.save_area(None, site_id, DEFAULT_AREA)
-            for door in self.db.list_doors():
-                if not door["area_id"]:
-                    self.db.set_door_area(door["id"], area_id)
+            for controller in controllers:
+                if not controller["area_id"]:
+                    self.db.set_controller_area(controller["id"], area_id)
             self.db.add_audit("sistema", "struttura predefinita creata", f"{DEFAULT_SITE} › {DEFAULT_AREA}")
             changed = True
         for controller in self.db.list_controllers():
-            if controller["area_id"]:
-                continue
             areas = [d["area_id"] for d in controller["doors"] if d["area_id"]]
-            area_id = max(set(areas), key=areas.count) if areas else self._default_area()
-            if not area_id:
+            if controller["area_id"] or not areas:
                 continue
+            area_id = max(set(areas), key=areas.count)
             self.db.set_controller_area(controller["id"], area_id)
             for door in controller["doors"]:
                 if door["area_id"] == area_id:
                     self.db.set_door_area(door["id"], 0)
+            self.db.add_audit(
+                "sistema",
+                "controller spostato nell'area delle sue porte",
+                f"{controller['name']}: {self._place(area_id)}",
+            )
             changed = True
+        self.db.set_setting(SETTING_SITES_MIGRATED, "1")
         return changed
+
+    def _place(self, area_id: int) -> str:
+        area = self.db.get_area(area_id)
+        site = self.db.get_site(area["site_id"]) if area else None
+        return f"{site['name']} › {area['name']}" if area and site else ""
 
     def effective_settings(self, base: Settings) -> Settings:
         """Opzioni dell'add-on con controller e prima porta presi dall'app."""
@@ -176,7 +229,7 @@ class InstallationService:
                 {
                     "door_token": options.door_token,
                     "name": "Porta",
-                    "snapshot_camera": options.snapshot_camera,
+                    "snapshot_camera": options.snapshot_camera if valid_camera(options.snapshot_camera) else "",
                     "snapshot_on_granted": int(options.snapshot_on_granted),
                     "ha_buttons": int(options.ha_door_buttons),
                     "intercom_name": options.intercom_name,
@@ -194,11 +247,7 @@ class InstallationService:
 
     def controller_fields(self, data: dict, existing: dict | None) -> dict:
         name = normalize_name(data.get("name") or "")
-        host = normalize_host(data.get("host") or "")
-        if not host:
-            raise ServiceError("manca l'indirizzo del controller")
-        if len(host) > 253 or not re.match(r"^[A-Za-z0-9.\-:\[\]]+$", host):
-            raise ServiceError("indirizzo del controller non valido")
+        host = check_host(data.get("host") or "")
         username = (data.get("username") or "").strip()
         if not username:
             raise ServiceError("manca il nome utente del controller")
@@ -245,8 +294,8 @@ class InstallationService:
         if controller is None:
             raise ServiceError("controller non trovato")
         camera = camera.strip()
-        if camera and not camera.startswith("camera."):
-            raise ServiceError("la telecamera deve essere un'entità camera di Home Assistant")
+        if camera and not valid_camera(camera):
+            raise ServiceError(CAMERA_ERROR)
         self.db.set_controller_camera(controller_id, camera)
         self.db.add_audit(
             user,
@@ -275,9 +324,9 @@ class InstallationService:
         existing = self.db.get_site(site_id) if site_id else None
         if site_id and existing is None:
             raise ServiceError("struttura non trovata")
-        name = normalize_name(data.get("name") or "")
-        if not name:
+        if not (data.get("name") or "").strip():
             raise ServiceError("manca il nome della struttura")
+        name = normalize_name(data["name"])
         clash = self.db.site_by_name(name)
         if clash and clash["id"] != site_id:
             raise ServiceError(f"esiste già una struttura chiamata {clash['name']}")
@@ -301,9 +350,9 @@ class InstallationService:
         site = self.db.get_site(site_id)
         if site is None:
             raise ServiceError("struttura non trovata")
-        name = normalize_name(data.get("name") or "")
-        if not name:
+        if not (data.get("name") or "").strip():
             raise ServiceError("manca il nome dell'area")
+        name = normalize_name(data["name"])
         clash = self.db.area_by_name(site_id, name)
         if clash and clash["id"] != area_id:
             raise ServiceError(f"in {site['name']} esiste già l'area {clash['name']}")
@@ -333,8 +382,8 @@ class InstallationService:
         if relay not in (1, 2):
             raise ServiceError("il relè del citofono è 1 o 2")
         camera = (data.get("snapshot_camera") or "").strip()
-        if camera and not camera.startswith("camera."):
-            raise ServiceError("la telecamera deve essere un'entità camera.* di Home Assistant")
+        if camera and not valid_camera(camera):
+            raise ServiceError(CAMERA_ERROR)
         return {
             "door_token": token,
             "name": normalize_name(data.get("name") or ""),

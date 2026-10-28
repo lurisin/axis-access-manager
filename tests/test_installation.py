@@ -167,7 +167,7 @@ async def test_rex_input_is_written_to_the_controller_and_can_be_undone(db, cont
 
     # Il controller rifiuta l'assegnazione: errore chiaro, i token creati restano per il prossimo tentativo
     controller.fail_io_assignment = True
-    with pytest.raises(ServiceError, match="rifiutato la configurazione"):
+    with pytest.raises(ServiceError, match="configurazione dell'ingresso non completata"):
         await service.update_input("IO2", {"role": "rex", "door": "porta"}, "admin")
     assert db.controller_inputs(controller_id)["IO2"]["idpoint_token"].startswith("idpoint-")
     assert db.controller_inputs(controller_id)["IO2"]["role"] == ""
@@ -410,7 +410,8 @@ def test_installation_api_reloads_runtime(settings, controller, tmp_path, monkey
         response = client.put("/api/programming/doors/porta2", json={"name": "Cantina B", "access_time": 4})
         assert response.status_code == 200
         programming = client.get("/api/programming").json()
-        assert programming["changes"][0]["summary"] == "porta Cantina B"
+        summary = programming["changes"][0]["summary"]
+        assert summary == "porta Cantina B: rinominata da Cantina, Tempo di Apertura 5 → 4 s"
         assert client.post(f"/api/programming/changes/{programming['changes'][0]['id']}/undo").status_code == 200
         assert controller.doors["porta2"]["Name"] == "Cantina"
 
