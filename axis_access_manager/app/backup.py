@@ -19,17 +19,20 @@ Una verifica al giorno rilegge tutte le parti e ne ricontrolla l'impronta.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import errno
 import gzip
 import hashlib
 import json
 import logging
 import os
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from .db import Database, now_iso
-from .programming import DOOR_TIMES, INPUT_ROLES, parse_duration
+from .programming import CONTACTS, DOOR_TIMES, INPUT_ROLES, parse_duration
+from .rules import describe_rules
 from .service import ServiceError, card_of_credential, plural
 from .vapix import VapixError
 
@@ -63,8 +66,8 @@ SETTING_VERIFY = "backup_verify"
 
 # Frequenza del backup automatico: etichetta e ore tra un controllo e l'altro (None: solo quello notturno)
 FREQUENCIES = {
-    "ora": ("Ogni Ora Se Cambiato", 1),
-    "6ore": ("Ogni 6 Ore Se Cambiato", 6),
+    "ora": ("Ogni Ora se Cambiato", 1),
+    "6ore": ("Ogni 6 Ore se Cambiato", 6),
     "notte": ("Solo Notturno", None),
 }
 DEFAULT_POLICY = {
@@ -92,6 +95,9 @@ RETRY_AFTER = timedelta(minutes=15)
 VERIFY_EVERY = timedelta(hours=24)
 # Un notturno fatto molto dopo la sua ora (add-on spento di notte, primo avvio) si chiama Automatico
 NIGHT_LATE = timedelta(hours=1)
+# Un backup appena aperto (confronto, anteprima o ripristino) per un po' non scade: il ripristino crea il backup
+# Prima del Ripristino, che sposta la finestra degli Ultimi, e il backup scelto spariva a metà del lavoro
+OPENED_KEPT = timedelta(hours=1)
 
 # Sezioni di un confronto: (singolare, plurale, femminile)
 SECTIONS = {
@@ -144,21 +150,21 @@ FIELD_LABELS = {
     "color": "Colore",
     "valid_days": "Durata",
     "rules": "Regole",
-    "holidays": "Chiusa nelle Festività",
+    "holidays": "Non Valida nei Giorni Festivi",
     "yearly": "Ogni Anno",
     "areas": "Aree",
     "perms": "Permessi",
     "value": "Valore",
     "host": "Indirizzo",
     "username": "Utente",
-    "verify_ssl": "Verifica Certificato",
+    "verify_ssl": "Verifica Certificato HTTPS",
     "area_id": "Posizione",
     "snapshot_camera": "Telecamera",
-    "snapshot_on_granted": "Foto degli Accessi Concessi",
+    "snapshot_on_granted": "Istantanea Anche sugli Accessi Concessi",
     "ha_buttons": "Pulsanti in Home Assistant",
     "intercom_name": "Citofono",
-    "intercom_open_door": "Apertura dal Citofono",
-    "intercom_relay": "Relè del Citofono",
+    "intercom_open_door": '"Apri" dal Citofono Apre Questa Porta',
+    "intercom_relay": "Relè del Tasto Apri",
     "intercom_mqtt_prefix": "Prefisso MQTT del Citofono",
     "mqtt_topic_prefix": "Prefisso MQTT",
     "model": "Modello",
@@ -169,7 +175,7 @@ FIELD_LABELS = {
     "mqtt": "MQTT",
     "mqtt_events": "Eventi MQTT",
     "Location": "Posizione",
-    "Timeout": "Attesa",
+    "Timeout": "Attesa PIN",
     "configuration": "Configurazione",
     "door": "Porta",
     "readers": "Lettori",
@@ -185,6 +191,18 @@ FIELD_LABELS = {
     "assigned": "Assegnato a",
     "managed": "Gestito dal Controller",
     **{field: label for field, (_, label, *_) in DOOR_TIMES.items()},
+}
+# Elenchi della parte di un controller letti uno per uno, con l'etichetta dei loro errori di lettura
+READ_LABELS = {
+    "schedules": "fasce orarie",
+    "doors": "porte",
+    "door_configurations": "configurazione delle porte",
+    "idpoints": "lettori",
+    "idpoint_configurations": "configurazione dei lettori",
+    "io_assignments": "ingressi e uscite",
+    "access_points": "punti di accesso",
+    "access_profiles": "profili di accesso",
+    "credentials": "tessere",
 }
 COLOR_NAMES = {
     "blue": "Blu",
@@ -202,9 +220,29 @@ class BackupError(ServiceError):
     """Backup non leggibile, non trovato o operazione non consentita."""
 
 
+class DamagedIndexError(BackupError):
+    """Indice del backup che non si legge (per esempio un file vuoto dopo una mancanza di corrente)."""
+
+
 def canonical(data) -> bytes:
     """JSON sempre scritto allo stesso modo: stesso contenuto, stessa impronta."""
     return json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()
+
+
+def _write_file(path: Path, data: bytes) -> None:
+    """Scrittura che resiste a una mancanza di corrente: file temporaneo portato su disco, poi il nome definitivo.
+    Senza fsync dopo un'interruzione restava un file vuoto con il nome giusto."""
+    partial = path.with_name(path.name + ".parziale")
+    with open(partial, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(partial, path)
+    folder = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(folder)
+    finally:
+        os.close(folder)
 
 
 class BackupStore:
@@ -213,20 +251,21 @@ class BackupStore:
     def __init__(self, root: Path | str) -> None:
         self.root = Path(root)
         self.parts = self.root / PARTS_DIR
+        # Indici illeggibili già segnalati nel log: list() gira ogni minuto
+        self._warned: set[str] = set()
 
     def write_part(self, data: dict) -> dict:
         raw = canonical(data)
         digest = hashlib.sha256(raw).hexdigest()
         path = self.parts / f"{digest}.json.gz"
-        if not path.exists():
+        # Una parte già scritta si riusa solo se si legge: rovinata finiva in ogni backup nuovo con lo stesso
+        # contenuto, così invece si ripara anche per i backup vecchi che la usano
+        if not self._intact(digest):
             self.parts.mkdir(parents=True, exist_ok=True)
-            partial = path.with_name(path.name + ".parziale")
-            with open(partial, "wb") as handle, gzip.GzipFile(filename="", mode="wb", fileobj=handle, mtime=0) as gz:
-                gz.write(raw)
-            os.replace(partial, path)
+            _write_file(path, gzip.compress(raw, mtime=0))
         return {"hash": digest, "size": path.stat().st_size}
 
-    def read_part(self, digest: str) -> dict:
+    def _raw_part(self, digest: str) -> bytes:
         if not HASH_PATTERN.match(digest or ""):
             raise BackupError("parte del backup non valida")
         try:
@@ -235,7 +274,17 @@ class BackupStore:
             raise BackupError("file del backup mancante o rovinato") from err
         if hashlib.sha256(raw).hexdigest() != digest:
             raise BackupError("file del backup rovinato: il contenuto non corrisponde alla sua impronta")
-        return json.loads(raw)
+        return raw
+
+    def _intact(self, digest: str) -> bool:
+        try:
+            self._raw_part(digest)
+        except BackupError:
+            return False
+        return True
+
+    def read_part(self, digest: str) -> dict:
+        return json.loads(self._raw_part(digest))
 
     def _path(self, backup_id: str) -> Path:
         if not ID_PATTERN.match(backup_id or ""):
@@ -253,15 +302,14 @@ class BackupStore:
     def save(self, manifest: dict) -> None:
         path = self._path(manifest["id"])
         self.root.mkdir(parents=True, exist_ok=True)
-        partial = path.with_name(path.name + ".parziale")
-        partial.write_text(json.dumps(manifest, ensure_ascii=False, indent=1))
-        os.replace(partial, path)
+        _write_file(path, json.dumps(manifest, ensure_ascii=False, indent=1).encode())
 
     def list(self) -> list[dict]:
-        """Backup dal più recente; un indice illeggibile si salta (e si segnala nel log)."""
+        """Backup dal più recente; un indice illeggibile si salta (e si segnala nel log, una volta)."""
         items, unreadable = self.scan()
-        for name in unreadable:
+        for name in sorted(set(unreadable) - self._warned):
             _LOGGER.warning("Indice di backup illeggibile: %s", name)
+        self._warned.update(unreadable)
         return items
 
     def scan(self) -> tuple[list[dict], list[str]]:
@@ -284,11 +332,15 @@ class BackupStore:
     def get(self, backup_id: str) -> dict:
         path = self._path(backup_id)
         try:
-            return json.loads(path.read_text())
+            manifest = json.loads(path.read_text())
         except FileNotFoundError as err:
             raise BackupError("backup non trovato") from err
         except (OSError, ValueError) as err:
-            raise BackupError("indice del backup rovinato") from err
+            raise DamagedIndexError("indice del backup rovinato") from err
+        # Come in scan(): un indice che non è di questo backup è rovinato
+        if not isinstance(manifest, dict) or manifest.get("id") != backup_id:
+            raise DamagedIndexError("indice del backup rovinato")
+        return manifest
 
     def delete(self, backup_id: str) -> None:
         self.remove([backup_id])
@@ -308,7 +360,7 @@ class BackupStore:
             if path.name.split(".")[0] not in used:
                 path.unlink(missing_ok=True)
                 removed += 1
-        for path in self.parts.glob("*.parziale"):
+        for path in [*self.parts.glob("*.parziale"), *self.root.glob("*.json.parziale")]:
             path.unlink(missing_ok=True)
         return removed
 
@@ -622,11 +674,11 @@ def rules_text(rules: list[dict], ctx: dict) -> str:
 
 
 def _schedule_rules_text(rules: list[dict]) -> str:
-    texts = []
-    for rule in rules or []:
-        days = ",".join(rule.get("days") or [])
-        texts.append(f"{days} {rule.get('start', '')}-{rule.get('end', '')}".strip())
-    return "; ".join(texts) or "—"
+    """Come nella pagina Regole: "lun-ven 08:00-18:00; sab 09:00-12:00"."""
+    try:
+        return describe_rules(rules or []) or "—"
+    except (KeyError, TypeError, ValueError):
+        return _text(rules)
 
 
 def common_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
@@ -685,12 +737,14 @@ def common_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
         view["utenti"][u["username"]] = _item(u["name"] or u["username"], {"name": u["name"], "perms": u["perms"]})
     for key, value in (part.get("settings") or {}).items():
         label = {
-            "default_group": "Gruppo predefinito",
-            "default_category": "Tipologia predefinita",
+            "default_group": "Profilo Predefinito",
+            "default_category": "Tipologia Predefinita",
             "notifications": "Notifiche",
         }.get(key) or (f"Cruscotto di {key.split(':', 1)[1]}" if key.startswith("dashboard_layout:") else key)
         show = {}
-        if key == "default_category":
+        if key == "default_group":
+            show["value"] = ctx["profiles"].get(value, value)
+        elif key == "default_category":
             show["value"] = categories.get(int(value or 0), value)
         elif key.startswith("dashboard_layout:") or key == "notifications":
             show["value"] = "personalizzato"
@@ -711,13 +765,13 @@ def controller_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
     view: dict[str, dict[str, dict]] = {key: {} for key in SECTIONS}
     controller = part.get("controller") or {}
     view["collegamento"]["collegamento"] = _item(
-        "Collegamento del controller",
+        "Collegamento del Controller",
         {k: controller.get(k) for k in ("name", "description", "host", "username", "verify_ssl", "area_id")},
         {"area_id": ctx["areas"].get(controller.get("area_id"), "—")},
     )
     device = part.get("device") or {}
     view["dispositivo"]["dispositivo"] = _item(
-        "Impostazioni del dispositivo",
+        "Impostazioni del Dispositivo",
         {k: device.get(k) for k in ("model", "serial", "firmware", "time_zone", "ntp", "mqtt", "mqtt_events")},
         {
             "ntp": _text((device.get("ntp") or {}).get("servers")),
@@ -837,7 +891,7 @@ def controller_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
             {
                 "role": INPUT_ROLES.get(mine.get("role") or "", mine.get("role") or "—"),
                 "door_token": ctx["doors"].get(mine.get("door_token"), mine.get("door_token") or "—"),
-                "contact": {"no": "normalmente aperto", "nc": "normalmente chiuso"}.get(mine.get("contact"), "—"),
+                "contact": CONTACTS.get(mine.get("contact"), "—"),
                 "schedule": ctx["schedules"].get(mine.get("schedule"), mine.get("schedule") or "—"),
             },
         )
@@ -908,33 +962,57 @@ def part_title(key: str, part: dict | None) -> str:
     return ((part or {}).get("controller") or {}).get("name") or f"Controller {key.split(':', 1)[-1]}"
 
 
-def compare_parts(old: dict[str, dict], new: dict[str, dict], only: str | None = None) -> list[dict]:
-    """Differenze tra due fotografie, parte per parte (Dati Comuni e ogni controller)."""
+def unread_lists(part: dict) -> list[str]:
+    """Elenchi della parte di un controller che non si sono potuti leggere (errori di controller_snapshot)."""
+    errors = [str(e) for e in part.get("errors") or []]
+    return [key for key, label in READ_LABELS.items() if any(e.startswith(f"{label}:") for e in errors)]
+
+
+def compare_parts(
+    old: dict[str, dict],
+    new: dict[str, dict],
+    only: str | None = None,
+    unread: dict[str, str] | None = None,
+    current: bool = False,
+) -> list[dict]:
+    """Differenze tra due fotografie, parte per parte (Dati Comuni e ogni controller).
+    Un elenco che una delle due non ha potuto leggere resta fuori dal confronto: vuoto sembrava svuotato.
+    unread: parti di new che non si sono potute leggere, con il motivo. current: new è lo stato attuale."""
+    old, new = dict(old), dict(new)
+    skipped: dict[str, list[str]] = {}
+    for key in (set(old) & set(new)) - {COMMON}:
+        before, after = old[key], new[key]
+        missing_before, missing_after = unread_lists(before), unread_lists(after)
+        if missing_before or missing_after:
+            old[key] = {**before, **{k: after[k] for k in missing_before if k in after}}
+            new[key] = {**after, **{k: before[k] for k in missing_after if k in before}}
+            skipped[key] = list(dict.fromkeys([*missing_before, *missing_after]))
     old_ctx, new_ctx = context_of(old), context_of(new)
     keys = [k for k in dict.fromkeys([*new, *old]) if only is None or k == only]
     groups = []
     for key in sorted(keys, key=lambda k: (k != COMMON, k)):
+        title = part_title(key, new.get(key) or old.get(key))
+        if unread and key in unread and key not in new:
+            # Controller che ora non risponde: senza la sua parte sembrava svuotato
+            reason = unread[key].removeprefix(f"{title}: ")
+            groups.append({"part": key, "title": title, "note": f"non letto: {reason}", "sections": []})
+            continue
         sections = diff_views(view_of(key, old.get(key), old_ctx), view_of(key, new.get(key), new_ctx))
         note = ""
         if key not in old:
             note = "non c'era nel backup più vecchio"
         elif key not in new:
-            note = "non c'è nel backup più recente"
+            note = "non c'è nello stato attuale" if current else "non c'è nel backup più recente"
+        elif key in skipped:
+            note = "esclusi dal confronto perché non letti: " + ", ".join(READ_LABELS[k] for k in skipped[key])
         if sections or note:
-            groups.append(
-                {
-                    "part": key,
-                    "title": part_title(key, new.get(key) or old.get(key)),
-                    "note": note,
-                    "sections": sections,
-                }
-            )
+            groups.append({"part": key, "title": title, "note": note, "sections": sections})
     return groups
 
 
 def _named(noun: str, label: str) -> str:
-    """ "Porta Scala Teatro", ma "Porta B" e non "Porta Porta B" se il nome comincia già così."""
-    return label if label.lower().split(" ")[0] == noun.lower() else f"{noun.capitalize()} {label}"
+    """ "porta Scala Teatro", ma "Porta B" e non "porta Porta B" se il nome comincia già così."""
+    return label if label.lower().split(" ")[0] == noun.lower() else f"{noun} {label}"
 
 
 def summary_text(groups: list[dict], limit: int = 6) -> str:
@@ -949,14 +1027,16 @@ def summary_text(groups: list[dict], limit: int = 6) -> str:
                 phrases.append(f"−{plural(len(section['removed']), one, many)}")
             changed = section["changed"]
             if section["key"] in ("collegamento", "dispositivo") and changed:
-                phrases.append(f"{one.capitalize()} di {group['title']} modificat{'e' if female else 'o'}")
+                phrases.append(f"{one} di {group['title']} modificat{'e' if female else 'o'}")
             elif 0 < len(changed) <= 2:
                 phrases += [f"{_named(one, c['label'])} modificat{'a' if female else 'o'}" for c in changed]
             elif changed:
                 phrases.append(f"{len(changed)} {many} modificat{'e' if female else 'i'}")
     if not phrases:
         return "Nessuna modifica"
-    return ", ".join(phrases[:limit]) + ("…" if len(phrases) > limit else "")
+    # Una frase: maiuscola solo all'inizio
+    text = ", ".join(phrases[:limit]) + ("…" if len(phrases) > limit else "")
+    return text[0].upper() + text[1:]
 
 
 def _parsed(value) -> datetime | None:
@@ -973,6 +1053,19 @@ def night_time(value: str) -> tuple[int, int]:
     if not match:
         raise BackupError("orario del backup notturno non valido (HH:MM)")
     return int(match[1]), int(match[2])
+
+
+def _night_at(day: date, hour: int, minute: int) -> datetime:
+    """Orario notturno di quel giorno, con l'offset locale di quel giorno: al cambio dell'ora non è quello di oggi."""
+    return datetime.combine(day, time(hour, minute)).astimezone()
+
+
+def _id_time(backup_id: str) -> str:
+    """Data e ora di un backup dal suo id (ora locale), quando l'indice non si legge."""
+    try:
+        return datetime.strptime(backup_id[:15], "%Y%m%d-%H%M%S").strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        return backup_id
 
 
 def retention(items: list[dict], policy: dict) -> dict[str, list[str]]:
@@ -1047,9 +1140,32 @@ class BackupService:
         self.checked_at: datetime | None = None
         self.change_checked_at: datetime | None = None
         self.failed_at: datetime | None = None
+        # Backup aperti di recente (load), che per OPENED_KEPT non scadono
+        self.opened: dict[str, datetime] = {}
 
     def _parts_of(self, manifest: dict) -> dict[str, dict]:
         return {key: self.store.read_part(info["hash"]) for key, info in (manifest.get("parts") or {}).items()}
+
+    def _readable(self, items: list[dict]) -> tuple[dict | None, dict[str, dict]]:
+        """Il backup più recente che si legge tutto, con le sue parti: la base del riassunto di un backup nuovo."""
+        cache: dict[str, dict | None] = {}
+        for manifest in items:
+            parts = {}
+            for key, info in (manifest.get("parts") or {}).items():
+                digest = info.get("hash") or ""
+                if digest not in cache:
+                    try:
+                        cache[digest] = self.store.read_part(digest)
+                    except BackupError:
+                        cache[digest] = None
+                if cache[digest] is None:
+                    break
+                parts[key] = cache[digest]
+            else:
+                if manifest is not items[0]:
+                    _LOGGER.warning("Ultimo backup non leggibile: riassunto rispetto al backup %s", manifest["id"])
+                return manifest, parts
+        return None, {}
 
     def latest(self) -> dict | None:
         items = self.store.list()
@@ -1117,12 +1233,9 @@ class BackupService:
         async with self.lock:
             try:
                 parts, errors = await self.snapshot(clients, offline)
-                last = self.latest()
-                try:
-                    last_parts = self._parts_of(last) if last else {}
-                except BackupError as err:
-                    _LOGGER.warning("Ultimo backup non leggibile, confronto saltato: %s", err)
-                    last, last_parts = None, {}
+                items = self.store.list()
+                last = items[0] if items else None
+                last_info = (last or {}).get("parts") or {}
                 manifest = new_manifest(self.store, kind, name, user, self.app_version)
                 for key, part in parts.items():
                     manifest["parts"][key] = {
@@ -1131,29 +1244,28 @@ class BackupService:
                         "counts": part_counts(key, part),
                     }
                 for key in errors:
-                    if key not in parts and last and key in last["parts"]:
-                        manifest["parts"][key] = {**last["parts"][key], "stale": last["id"]}
-                        parts[key] = last_parts[key]
+                    if key not in parts and key in last_info:
+                        manifest["parts"][key] = {**last_info[key], "stale": last["id"]}
                 manifest["errors"] = list(errors.values())
                 hashes = {k: v["hash"] for k, v in manifest["parts"].items()}
-                if skip_unchanged and last and hashes == {k: v["hash"] for k, v in last["parts"].items()}:
+                # Si decide sulle impronte dell'indice, senza leggere le parti: con l'ultimo backup illeggibile
+                # il confronto saltava e nasceva un backup nuovo a ogni controllo
+                if skip_unchanged and last and hashes == {k: v.get("hash") for k, v in last_info.items()}:
                     if not errors:
                         # Lo stato attuale è già tutto nell'ultimo backup: un errore vecchio non vale più
                         self.db.set_setting(SETTING_ERROR, "")
                     return None
-                if last:
-                    groups = compare_parts(last_parts, parts)
-                    manifest["summary"] = summary_text(groups)
-                    manifest["previous"] = last["id"]
-                    for key, info in manifest["parts"].items():
-                        info["summary"] = summary_text([g for g in groups if g["part"] == key])
-                else:
-                    manifest["summary"] = "Primo backup"
+                self._summarize(manifest, parts, errors, items)
                 self.store.save(manifest)
                 expired = self._prune()
             except OSError as err:
-                self._note_error(f"backup non salvato: {err}")
-                raise BackupError(f"backup non salvato: {err.strerror or err}") from err
+                _LOGGER.error("Backup non salvato: %s", err)
+                if err.errno == errno.ENOSPC:
+                    reason = "spazio su disco esaurito"
+                else:
+                    reason = "errore di scrittura del file" + (f" (errno {err.errno})" if err.errno else "")
+                self._note_error(f"backup non salvato: {reason}")
+                raise BackupError(f"backup non salvato: {reason}") from err
         if manifest["errors"]:
             self._note_error("; ".join(manifest["errors"]), manifest["id"])
         else:
@@ -1164,6 +1276,27 @@ class BackupService:
             label = manifest["name"] or KINDS[kind]
             self.db.add_audit(user, "backup creato", f"{label}: {manifest['summary']}")
         return manifest
+
+    def _summarize(self, manifest: dict, parts: dict[str, dict], errors: dict[str, str], items: list[dict]) -> None:
+        """Riassunto delle modifiche rispetto al backup più recente che si legge tutto."""
+        base, base_parts = self._readable(items)
+        if base is None:
+            manifest["summary"] = "Nessun backup precedente leggibile" if items else "Primo backup"
+            if items:
+                for info in manifest["parts"].values():
+                    info["summary"] = manifest["summary"]
+            return
+        current = dict(parts)
+        for key, info in manifest["parts"].items():
+            if info.get("stale"):
+                # Parte presa dall'ultimo backup per un controller che non risponde
+                with contextlib.suppress(BackupError):
+                    current[key] = self.store.read_part(info["hash"])
+        groups = compare_parts(base_parts, current, unread={k: e for k, e in errors.items() if k not in current})
+        manifest["summary"] = summary_text(groups)
+        manifest["previous"] = base["id"]
+        for key, info in manifest["parts"].items():
+            info["summary"] = summary_text([g for g in groups if g["part"] == key])
 
     def _note_error(self, error: str, backup_id: str = "") -> None:
         self.db.set_setting(SETTING_ERROR, json.dumps({"at": now_iso(), "error": error, "id": backup_id}))
@@ -1223,9 +1356,16 @@ class BackupService:
 
     def expiring_with(self, policy: dict) -> list[dict]:
         """Backup che con questa politica scadrebbero subito."""
-        items = self.store.list()
+        return self._expired(self.store.list(), policy)
+
+    def _expired(self, items: list[dict], policy: dict) -> list[dict]:
+        """Backup senza motivi per restare, tranne quelli aperti da poco (confronto, anteprima o ripristino)."""
         reasons = retention(items, policy)
-        return [m for m in items if not reasons[m["id"]]]
+        now = datetime.now(tz=UTC)
+        for backup_id, at in list(self.opened.items()):
+            if now - at >= OPENED_KEPT:
+                self.opened.pop(backup_id, None)
+        return [m for m in items if not reasons[m["id"]] and m["id"] not in self.opened]
 
     async def set_policy(self, values: dict, user: str, confirm: bool = False) -> dict:
         """Salva la politica. Se elimina dei backup serve la conferma: senza, dice solo quanti."""
@@ -1248,9 +1388,7 @@ class BackupService:
 
     def _prune(self) -> list[str]:
         """Toglie i backup scaduti (da chiamare con il lock preso)."""
-        items = self.store.list()
-        reasons = retention(items, self.policy())
-        expired = [m["id"] for m in items if not reasons[m["id"]]]
+        expired = [m["id"] for m in self._expired(self.store.list(), self.policy())]
         if expired:
             self.store.remove(expired)
         return expired
@@ -1265,13 +1403,16 @@ class BackupService:
         items = self.store.list() if items is None else items
         local = now.astimezone()
         hour, minute = night_time(policy["night"])
-        night = local.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if night > local:
-            night -= timedelta(days=1)
+        # Ogni giorno con il suo offset: al ritorno all'ora solare il notturno di ieri, calcolato con l'offset di
+        # oggi, risultava un'ora più tardi e sembrava saltato
+        day = local.date()
+        if _night_at(day, hour, minute) > local:
+            day -= timedelta(days=1)
         # La notte è coperta da un backup qualsiasi fatto dopo l'orario notturno
         latest = _parsed(items[0].get("created_at")) if items else None
-        if latest and latest >= night:
-            night += timedelta(days=1)
+        if latest and latest >= _night_at(day, hour, minute):
+            day += timedelta(days=1)
+        night = _night_at(day, hour, minute)
         runs = [{"kind": "notturno", "at": night}]
         hours = FREQUENCIES[policy["frequency"]][1]
         if hours:
@@ -1366,6 +1507,8 @@ class BackupService:
             "parts": len(checked),
             "damaged": damaged + len(unreadable),
             "errors": errors[:20],
+            # Indici illeggibili: non sono nell'elenco, si eliminano da qui (DELETE /api/backups/{id})
+            "unreadable": [stem for name in unreadable if ID_PATTERN.match(stem := name.removesuffix(".json"))],
         }
         self.db.set_setting(SETTING_VERIFY, json.dumps(result))
         return result
@@ -1391,7 +1534,9 @@ class BackupService:
 
     def load(self, backup_id: str) -> tuple[dict, dict[str, dict]]:
         manifest = self.store.get(backup_id)
-        return manifest, self._parts_of(manifest)
+        parts = self._parts_of(manifest)
+        self.opened[backup_id] = datetime.now(tz=UTC)
+        return manifest, parts
 
     async def set_locked(self, backup_id: str, locked: bool, user: str) -> dict:
         async with self.lock:
@@ -1405,11 +1550,20 @@ class BackupService:
 
     async def delete(self, backup_id: str, user: str) -> None:
         async with self.lock:
-            manifest = self.store.get(backup_id)
-            if manifest.get("locked"):
+            try:
+                manifest = self.store.get(backup_id)
+            except DamagedIndexError:
+                # Non si sa se era bloccato, ma senza indice il backup non serve: tenuto, il guasto Backup
+                # Rovinati non si toglieva più
+                manifest = None
+            if manifest and manifest.get("locked"):
                 raise BackupError("il backup è bloccato: sbloccalo prima di eliminarlo")
             self.store.delete(backup_id)
-        self.db.add_audit(user, "backup eliminato", manifest.get("name") or _when(manifest["created_at"]))
+        if manifest:
+            label = manifest.get("name") or _when(manifest.get("created_at"))
+        else:
+            label = f"{_id_time(backup_id)} (indice illeggibile)"
+        self.db.add_audit(user, "backup eliminato", label)
 
     def previous_of(self, backup_id: str) -> dict | None:
         items = self.store.list()
@@ -1419,20 +1573,32 @@ class BackupService:
         index = ids.index(backup_id)
         return items[index + 1] if index + 1 < len(items) else None
 
-    async def compare(self, backup_id: str, other: str, clients: dict[int, object], part: str | None = None) -> dict:
+    async def compare(
+        self,
+        backup_id: str,
+        other: str,
+        clients: dict[int, object],
+        part: str | None = None,
+        offline: dict[int, str] | None = None,
+    ) -> dict:
         """Differenze tra un backup e il precedente, lo stato attuale o un altro backup: sempre dal più vecchio
-        al più recente."""
+        al più recente. offline: controller da non aspettare, come per il backup (solo con lo stato attuale)."""
         manifest, parts = self.load(backup_id)
         if other == "attuale":
-            current, _ = await self.snapshot(clients)
-            older, newer = (manifest, parts), ({"id": "attuale", "created_at": now_iso()}, current)
-        else:
-            other_manifest = self.previous_of(backup_id) if other == "precedente" else self.store.get(other)
-            if other_manifest is None:
-                return {"older": None, "newer": _brief(manifest), "groups": [], "first": True}
-            pair = [(manifest, parts), (other_manifest, self._parts_of(other_manifest))]
-            pair.sort(key=lambda p: (p[0]["created_at"], p[0]["id"]))
-            older, newer = pair
+            current, errors = await self.snapshot(clients, offline)
+            unread = {k: e for k, e in errors.items() if k not in current}
+            return {
+                "older": _brief(manifest),
+                "newer": _brief({"id": "attuale", "created_at": now_iso()}),
+                "groups": compare_parts(parts, current, part, unread=unread, current=True),
+                "errors": [e for k, e in errors.items() if part is None or k == part],
+            }
+        other_manifest = self.previous_of(backup_id) if other == "precedente" else self.store.get(other)
+        if other_manifest is None:
+            return {"older": None, "newer": _brief(manifest), "groups": [], "first": True}
+        pair = [(manifest, parts), (other_manifest, self._parts_of(other_manifest))]
+        pair.sort(key=lambda p: (p[0]["created_at"], p[0]["id"]))
+        older, newer = pair
         return {
             "older": _brief(older[0]),
             "newer": _brief(newer[0]),
