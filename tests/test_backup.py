@@ -546,7 +546,7 @@ async def test_daily_verification_finds_damaged_backups(plant, db):
         backup_verify=plant.backups.last_verify(),
     )
     assert [(i["title"], i["text"]) for i in items] == [
-        ("Backup Rovinati", "2 backup non si possono ripristinare: file mancanti o rovinati")
+        ("Backup Rovinati", "2 backup non si possono ripristinare: file mancanti o rovinati.")
     ]
 
 
