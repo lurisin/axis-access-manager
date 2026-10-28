@@ -42,7 +42,7 @@ from .intercom import IntercomBridge, IntercomSettings
 from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
 from .programming import DIRECTIONS, INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
-from .rules_service import RulesService
+from .rules_service import ProfileNotWritten, RulesService
 from .service import (
     CASING_OPEN,
     CONTROLLER_KINDS,
@@ -1895,13 +1895,14 @@ async def _refresh_categories(app: FastAPI) -> None:
             _LOGGER.info("Profili di %s tipologie aggiornati dopo una modifica alle porte", changed)
     except (VapixError, ServiceError) as err:
         if (
-            places == state.places_key
+            not isinstance(err, ProfileNotWritten)
+            and places == state.places_key
             and not state.controller.paused
             and not state.db.get_setting(SETTING_CATEGORIES_PENDING)
         ):
-            # Porte e aree come all'ultimo aggiornamento riuscito (cambiati solo telecamera, nome, videocitofono…):
-            # sul controller non manca niente e l'errore resta nel log. Con le scritture sospese invece l'errore può
-            # essere un profilo diverso non scritto
+            # Porte e aree come all'ultimo aggiornamento riuscito (cambiati solo telecamera, nome, videocitofono…) e
+            # profili solo non letti: sul controller non manca niente e l'errore resta nel log. Un profilo diverso non
+            # scritto invece si riprova, anche quando l'errore viene dalle scritture sospese
             _LOGGER.warning("Profili delle tipologie non controllati: %s", err)
             return
         _LOGGER.warning("Profili delle tipologie non aggiornati, si riprova: %s", err)

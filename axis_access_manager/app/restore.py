@@ -123,7 +123,7 @@ def plan(
     matched = match_categories(saved_common, current_common)
     categories: list[dict] = []
     if "tipologie" in sections:
-        places = _places(saved, current, saved_ctx, current_ctx, readded)
+        places = _places(saved, current, saved_ctx, current_ctx, readded, controller_id)
         categories = _plan_categories(saved_common, current_common, saved_ctx, current_ctx, matched, places)
     persons: list[dict] = []
     if "persone" in sections:
@@ -188,13 +188,17 @@ def _same_place(saved_id, saved_names: dict, current_names: dict) -> int | None:
     return next((i for i, n in current_names.items() if n == name), None)
 
 
-def _places(saved: dict, current: dict, saved_ctx: dict, current_ctx: dict, readded: set) -> dict:
+def _places(
+    saved: dict, current: dict, saved_ctx: dict, current_ctx: dict, readded: set, controller_id: int | None
+) -> dict:
+    read = {int(key.split(":", 1)[1]) for key in current if key != COMMON}
     return {
         "saved_doors": _door_keys(saved),
         "current_doors": {v: k for k, v in _door_keys(current).items()},
         "readded": readded,
-        # Controller letti adesso: le porte degli altri non sono nella fotografia
-        "read": {int(key.split(":", 1)[1]) for key in current if key != COMMON},
+        # Controller dell'app che adesso non rispondono: le loro porte non sono nella fotografia. Le porte di un
+        # controller tolto dall'app (o tolto e aggiunto di nuovo, con un altro numero) non ci sono più
+        "unread": {controller_id} - read if controller_id else set(),
         "schedules": {s["token"] for s in (current.get(COMMON) or {}).get("schedules", [])},
         "saved_ctx": saved_ctx,
         "current_ctx": current_ctx,
@@ -214,7 +218,7 @@ def _map_rules(rules: list[dict], places: dict) -> tuple[list[dict], str, bool, 
             now = places["current_doors"].get(door) if door else None
             name = current_ctx["doors"].get(now) or saved_ctx["doors"].get(rule["target_id"])
             # Senza la parte del controller la porta sembrava sparita dall'app: la si cerca al ripristino
-            unknown = door is not None and door[0] not in places["read"]
+            unknown = door is not None and door[0] in places["unread"]
             unread |= unknown
             found = now is not None or door in places["readded"] or unknown
         elif target in ("area", "site"):

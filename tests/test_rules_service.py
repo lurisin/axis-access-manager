@@ -1,7 +1,8 @@
 import pytest
 
-from app.rules_service import RulesService
+from app.rules_service import ProfileNotWritten, RulesService
 from app.service import AccessService, ServiceError
+from app.vapix import VapixError
 
 OFFICE = [{"days": ["MO", "TU", "WE", "TH", "FR"], "start": "08:00", "end": "18:00"}]
 
@@ -250,6 +251,15 @@ async def test_categories_own_a_profile_built_from_doors_areas_and_sites(rules, 
 
     # La Cantina entra nell'area Camere: Pulizie la comprende da sola, Manutentore non cambia
     db.set_door_area(ids["cantina"], ids["rooms"])
+
+    async def refuse(profile):
+        raise VapixError("rifiutato")
+
+    # Profilo nuovo rifiutato: un errore da riprovare, diverso da un profilo solo non letto
+    controller.set_access_profile, working = refuse, controller.set_access_profile
+    with pytest.raises(ProfileNotWritten):
+        await rules.refresh_category_profiles()
+    controller.set_access_profile = working
     assert await rules.refresh_category_profiles() == 1
     assert {p["AccessPoint"] for p in controller.profiles[clean["token"]]["AccessPolicy"]} == {"ap-in", "ap-cantina"}
     assert await rules.refresh_category_profiles() == 0
