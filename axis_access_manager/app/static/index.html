@@ -3474,7 +3474,7 @@ let auditRows = [];
 // Dati Comuni e configurazione di ogni controller; ripristino selettivo con l'anteprima "Cosa Cambierà"
 const kb = (bytes) => bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round((bytes || 0) / 1024))} kB`;
 const backupTitle = (b) => b.name || b.kind_label;
-const BACKUP_FREQ = {ora: "Ogni Ora Se Cambiato", "6ore": "Ogni 6 Ore Se Cambiato", notte: "Solo Notturno"};
+const BACKUP_FREQ = {ora: "Ogni Ora se Cambiato", "6ore": "Ogni 6 Ore se Cambiato", notte: "Solo Notturno"};
 // "alle 21:47", "domani alle 03:00"; un momento già passato è questione di un minuto
 function aheadTime(iso) {
   const d = new Date(iso), now = new Date();
@@ -3487,12 +3487,16 @@ const backupNext = (next) => !next ? "" : `${next.kind === "notturno" ? "prossim
 function retentionText(p) {
   const rules = [[p.keep_daily, "uno al giorno per", "giorno", "giorni"], [p.keep_weekly, "uno alla settimana per", "settimana", "settimane"],
     [p.keep_monthly, "uno al mese per", "mese", "mesi"], [p.keep_yearly, "uno all'anno per", "anno", "anni"]].filter(([n]) => n);
-  return [`gli ultimi ${p.keep_last}`, ...rules.map(([n, what, one, many]) => `${what} ${plural(n, one, many)}`)].join(", ");
+  return [p.keep_last === 1 ? "l'ultimo" : `gli ultimi ${p.keep_last}`, ...rules.map(([n, what, one, many]) => `${what} ${plural(n, one, many)}`)].join(", ");
 }
-// Fin quando resta in un backup una persona eliminata: la regola più lunga
+// Fin quando resta in un backup una persona eliminata: la regola più lunga, Ultimi compresi. Con il backup automatico
+// ce n'è almeno uno ogni notte, quindi gli ultimi N coprono al massimo N giorni; senza, scadono solo con backup nuovi ("")
 function retentionSpan(p) {
-  const rule = [[p.keep_yearly, "anno", "anni"], [p.keep_monthly, "mese", "mesi"], [p.keep_weekly, "settimana", "settimane"], [p.keep_daily, "giorno", "giorni"]].find(([n]) => n);
-  return rule ? plural(rule[0], rule[1], rule[2]) : `gli ultimi ${p.keep_last} backup`;
+  if (!p.auto) return "";
+  const rules = [[p.keep_yearly, 366, "anno", "anni"], [p.keep_monthly, 31, "mese", "mesi"], [p.keep_weekly, 7, "settimana", "settimane"],
+    [p.keep_daily, 1, "giorno", "giorni"], [p.keep_last, 1, "giorno", "giorni"]];
+  const [n, , one, many] = rules.reduce((best, r) => r[0] * r[1] > best[0] * best[1] ? r : best);
+  return plural(n, one, many);
 }
 function backupStatus(data) {
   const p = data.policy, v = data.verify;
@@ -3501,7 +3505,7 @@ function backupStatus(data) {
     : `${statusDot("")}<span><b>Automatico Disattivato</b> · ${p.before_changes ? "solo prima delle modifiche e a mano" : "solo a mano"}</span>`;
   const check = !v ? `${statusDot("")}<span><b>File Non Ancora Verificati</b></span>`
     : v.ok ? `${statusDot("ok")}<span><b>File Verificati</b> ${esc(relTime(v.at))} · tutti leggibili</span>`
-    : `${statusDot("err")}<span><b>Verifica</b> ${esc(relTime(v.at))} · ${plural(v.damaged, "backup rovinato", "backup rovinati")}</span>`;
+    : `${statusDot("warn")}<span><b>Verifica</b> ${esc(relTime(v.at))} · ${plural(v.damaged, "backup rovinato", "backup rovinati")}</span>`;
   return `<div class="card bk-status"><div class="bk-st">${auto}</div><div class="bk-st">${check}</div><span class="spacer"></span>
     <button type="button" class="small" id="bk-verify" title="Rilegge tutti i file dei backup e ne controlla l'impronta">Verifica Ora</button>
     ${store.me.admin ? `<a class="btn small ghost" href="#impostazioni/backup" title="Backup automatico e quanti backup tenere">${icon("cog")}<span class="lbl">Impostazioni</span></a>` : ""}</div>`;
@@ -3528,8 +3532,8 @@ function backupRow(b, data, part) {
     <div class="row item-actions">
       <button type="button" class="small" data-cmp>Confronta</button>
       ${data.can_restore ? '<button type="button" class="small" data-restore>Ripristina</button>' : ""}
-      <button type="button" class="small ghost icon-only" data-lock title="${b.locked ? "Sblocca" : "Blocca: resta finché non lo sblocchi"}" aria-label="${b.locked ? "Sblocca" : "Blocca"}">${icon(b.locked ? "lockopen" : "lock")}</button>
-      ${data.can_restore ? `<button type="button" class="small ghost icon-only" data-del title="${b.locked ? "Sbloccalo per eliminarlo" : "Elimina"}" aria-label="Elimina" ${b.locked ? "disabled" : ""}>${icon("trash")}</button>` : ""}
+      ${b.locked && !can("utenti") ? "" : `<button type="button" class="small ghost icon-only" data-lock title="${b.locked ? "Sblocca" : "Blocca: resta finché non lo sblocchi"}" aria-label="${b.locked ? "Sblocca" : "Blocca"}">${icon(b.locked ? "lockopen" : "lock")}</button>`}
+      ${data.can_restore ? `<button type="button" class="small ghost icon-only danger" data-del title="${b.locked ? "Sbloccalo per eliminarlo" : "Elimina"}" aria-label="Elimina" ${b.locked ? "disabled" : ""}>${icon("trash")}</button>` : ""}
     </div></div>`;
 }
 async function viewBackups(body, part = "") {
@@ -3542,8 +3546,13 @@ async function viewBackups(body, part = "") {
     ? "Storico della configurazione di questo controller: porte, lettori, punti di accesso, profili e ingressi. Ripristina riporta porte e lettori com'erano oppure, per un controller resettato o sostituito, ricrea tutto con il Ripristino Completo."
     : "Ogni backup salva i Dati Comuni (persone, tessere, tipologie, fasce orarie, festività, strutture e utenti dell'app) e la configurazione di ogni controller. Le parti che non cambiano non occupano altro spazio.";
   const verify = data.verify;
+  const moreErrors = verify ? verify.errors.length - 5 : 0;
+  // Backup con l'indice illeggibile: non sono nell'elenco, si eliminano da qui (solo amministratori)
+  const unreadable = verify && !verify.ok && data.can_restore ? verify.unreadable || [] : [];
+  const idTime = (id) => { const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(id); return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : id; };
   body.innerHTML = `${error ? `<div class="alert">${icon("alert")}<div class="grow"><b>${error.id ? "Ultimo Backup Incompleto" : "Ultimo Backup Non Riuscito"}</b>${esc(error.error)} · ${esc(relTime(error.at))}</div></div>` : ""}
-    ${verify && !verify.ok ? `<div class="alert err">${icon("alert")}<div class="grow"><b>Backup Rovinati</b>${verify.errors.slice(0, 5).map((e) => esc(e)).join("<br>")}${verify.errors.length > 5 ? `<br>e altri ${verify.errors.length - 5}` : ""}<br><span class="small-text">Questi backup non si possono ripristinare: eliminali e premi Verifica Ora. Gli altri sono a posto.</span></div></div>` : ""}
+    ${verify && !verify.ok ? `<div class="alert">${icon("alert")}<div class="grow"><b>Backup Rovinati</b>${verify.errors.slice(0, 5).map((e) => esc(e)).join("<br>")}${moreErrors > 0 ? `<br>${moreErrors === 1 ? "e un altro" : `e altri ${moreErrors}`}` : ""}<br><span class="small-text">Questi backup non si possono ripristinare: eliminali e premi Verifica Ora. Gli altri sono a posto.</span>
+      ${unreadable.length ? `<div class="row" style="margin-top:8px">${unreadable.map((id) => `<button type="button" class="small danger" data-del-index="${esc(id)}" title="Backup con l'indice illeggibile">${icon("trash")}Elimina ${esc(idTime(id))}</button>`).join("")}</div>` : ""}</div></div>` : ""}
     <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 320px">${intro}</p><button type="button" class="primary" id="bk-new">${icon("plus")}Crea Backup Ora</button></div>
     ${part ? "" : backupStatus(data)}
     <div class="card flush"><div class="list" id="bk-list">${list.length ? list.map((b) => backupRow(b, data, part)).join("") : `<div class="empty">${icon("history")}<br><b>Nessun Backup</b><br>${data.policy.auto ? "Il primo backup automatico arriva entro pochi minuti, oppure crealo ora." : "Crea il primo con Crea Backup Ora: ci vogliono pochi secondi."}</div>`}</div></div>
@@ -3557,6 +3566,15 @@ async function viewBackups(body, part = "") {
     loadSummary();
     render();
   };
+  // Dopo l'eliminazione si rifà la verifica: è quella che toglie il guasto Backup Rovinati
+  $$("[data-del-index]", body).forEach((btn) => btn.onclick = async () => {
+    const when = idTime(btn.dataset.delIndex);
+    if (!await confirmBox("Elimina Backup", `Eliminare il backup del <b>${esc(when)}</b>? Il suo indice non si legge, quindi non si può ripristinare. Non si può annullare.`, "Elimina", true)) return;
+    if (!await run(() => api(`api/backups/${encodeURIComponent(btn.dataset.delIndex)}`, {method: "DELETE"}), "Backup eliminato")) return;
+    await run(() => api("api/backups/verify", {method: "POST"}));
+    loadSummary();
+    render();
+  });
   $("#bk-list").onclick = async (e) => {
     const btn = e.target.closest("button"), row = e.target.closest("[data-id]");
     if (!btn || !row) return;
@@ -3580,12 +3598,16 @@ async function viewBackupSettings(body) {
   const onOff = (key) => `<select data-bp="${key}" style="width:auto"><option value="1" ${p[key] ? "selected" : ""}>Attivo</option><option value="0" ${p[key] ? "" : "selected"}>Disattivato</option></select>`;
   const row = (ic, title, desc, control) => `<div class="item"><div class="ev-icon k-accent">${icon(ic)}</div><div class="grow"><div class="title">${esc(title)}</div><div class="meta">${desc}</div></div>${control}</div>`;
   const keep = (key, label, hint, max = 1000) => `<label>${esc(label)}<input type="number" data-bp="${key}" min="${key === "keep_last" ? 1 : 0}" max="${max}" step="1" value="${p[key]}" inputmode="numeric"><small>${hint}</small></label>`;
+  const footer = (d) => {
+    const span = retentionSpan(d.policy);
+    return `${plural(d.backups.length, "backup", "backup")} · ${kb(d.size)}. Stanno nella cartella dell'add-on ed entrano nei backup di Home Assistant: controlla che includano l'add-on e che vadano anche fuori sede (NAS o cloud). Una persona eliminata resta nei backup finché non scadono: ${span ? `con queste regole al massimo ${esc(span)}` : "con il backup automatico disattivato scadono solo quando se ne creano di nuovi"}, e in quelli bloccati finché non li sblocchi.`;
+  };
   body.innerHTML = `<div class="card flush" style="max-width:760px"><h2>${icon("history")}Backup Automatico</h2>
     <div class="list bk-set">
       ${row("refresh", "Backup Automatico", "Un backup quando cambia qualcosa, con la frequenza scelta, e comunque uno ogni notte.", onOff("auto"))}
       ${row("clock", "Frequenza", "Ogni quanto si guarda se è cambiato qualcosa. Se non è cambiato niente non si crea un backup.", `<select data-bp="frequency" style="width:auto">${Object.entries(BACKUP_FREQ).map(([k, label]) => `<option value="${k}" ${k === p.frequency ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`)}
       ${row("history", "Backup Notturno", "Si fa anche se non è cambiato niente: ogni giorno ha il suo punto di ripristino e si vede che il backup funziona.", `<input type="time" data-bp="night" value="${esc(p.night)}" style="width:auto" required>`)}
-      ${row("shield", "Backup Prima Delle Modifiche", "Prima di programmare porte, lettori e ingressi e di cambiare tipologie, fasce orarie e festività (uno ogni 10 minuti), prima di ogni importazione CSV e dopo ogni aggiornamento dell'add-on. Prima di un ripristino il backup si fa sempre.", onOff("before_changes"))}
+      ${row("shield", "Backup Prima delle Modifiche", "Prima di programmare porte, lettori, ingressi e punti di accesso, di cambiare tipologie, fasce orarie e festività e di eliminare una porta o un controller (uno ogni 10 minuti), prima di ogni importazione CSV e dopo ogni aggiornamento dell'add-on. Prima di un ripristino il backup si fa sempre.", onOff("before_changes"))}
     </div></div>
     <div class="card flush" style="max-width:760px"><h2>${icon("lock")}Quanti Backup Tenere</h2>
       <p class="muted small-text" style="margin:0 18px 10px">Come restic: si tengono gli ultimi, poi il più recente di ogni giorno, settimana, mese e anno. I backup bloccati restano sempre e non occupano posti.</p>
@@ -3596,11 +3618,9 @@ async function viewBackupSettings(body) {
         ${keep("keep_monthly", "Mensili", "uno al mese")}
         ${keep("keep_yearly", "Annuali", "uno all'anno", 100)}
       </div></div>
-    <p class="hint" style="max-width:760px">${plural(data.backups.length, "backup", "backup")} · ${kb(data.size)}. Stanno nella cartella dell'add-on ed entrano nei backup di Home Assistant: controlla che includano l'add-on e che vadano anche fuori sede (NAS o cloud). Una persona eliminata resta nei backup finché non scadono: con queste regole al massimo ${esc(retentionSpan(p))}.</p>`;
+    <p class="hint" style="max-width:760px" id="bp-hint">${footer(data)}</p>`;
   paintIcons(body);
-  body.onchange = async (e) => {
-    const input = e.target.closest("[data-bp]");
-    if (!input) return;
+  const saveField = async (input) => {
     const key = input.dataset.bp;
     const undo = () => { input.value = typeof p[key] === "boolean" ? (p[key] ? "1" : "0") : p[key]; };
     let value = input.value;
@@ -3609,6 +3629,7 @@ async function viewBackupSettings(body) {
       value = Number(input.value);
       if (!Number.isInteger(value) || value < Number(input.min) || value > Number(input.max)) { toast(`Scrivi un numero tra ${input.min} e ${input.max}`, true); undo(); return; }
     } else if (input.type === "time" && !value) { undo(); return; }
+    if (value === p[key]) return;
     const save = (confirm) => run(() => api("api/backups/policy", {method: "PUT", body: {[key]: value, confirm}}));
     let result = await save(false);
     if (result && !result.saved) {
@@ -3617,12 +3638,33 @@ async function viewBackupSettings(body) {
     }
     if (!result?.saved) { undo(); return; }
     toast(result.removed ? `Impostazioni salvate · ${plural(result.removed, "backup eliminato", "backup eliminati")}` : "Impostazioni salvate");
-    viewBackupSettings(body);
+    Object.assign(p, result.policy);
+    // Solo il testo in fondo: ridisegnare i campi toglieva il fuoco a quello in cui si sta scrivendo
+    const fresh = result.removed ? await api("api/backups").catch(() => null) : null;
+    if (fresh) data = fresh;
+    data.policy = p;
+    if (body.isConnected) $("#bp-hint", body).innerHTML = footer(data);
   };
+  // Un salvataggio alla volta: il secondo vede la regola già salvata dal primo
+  let saving = Promise.resolve();
+  const queue = (input) => { saving = saving.then(() => saveField(input)).catch(() => {}); };
+  // L'orario si salva uscendo dal campo: mentre si scrive, Chrome manda change appena le ore sono complete
+  // (04:00 scrivendo 0415), e in quel momento il fuoco non risulta nemmeno sul campo
+  let editing = null;
+  body.onchange = (e) => {
+    const input = e.target.closest("[data-bp]");
+    if (input && input !== editing) queue(input);
+  };
+  body.addEventListener("focusin", (e) => { if (e.target.matches?.('input[type="time"][data-bp]')) editing = e.target; });
+  body.addEventListener("focusout", (e) => {
+    if (e.target !== editing) return;
+    editing = null;
+    queue(e.target);
+  });
 }
 async function createBackup() {
   const created = await modal({title: "Crea Backup Ora",
-    body: field("Nome", '<input name="name" maxlength="80" placeholder="Per esempio: Prima dei lavori al piano 2">', "Facoltativo. Il backup comprende Dati Comuni e configurazione di ogni controller."),
+    body: field("Nome", '<input name="name" maxlength="80" placeholder="es. Prima dei lavori al piano 2">', "Facoltativo. Il backup comprende Dati Comuni e configurazione di ogni controller."),
     actions: [{label: "Annulla", value: null}, {label: "Crea Backup", kind: "primary", submit: true, onClick: async (dlg) => (await run(() => api("api/backups", {method: "POST", body: {name: val(dlg, "name")}}))) || false}]});
   if (!created) return;
   toast(created.errors?.length ? `Backup incompleto: ${created.errors[0]}` : `Backup creato · ${created.summary}`, Boolean(created.errors?.length));
@@ -3630,12 +3672,14 @@ async function createBackup() {
 }
 // Al massimo 40 righe per elenco: con centinaia di tessere cambiate basta il numero
 function capped(items, line) {
-  return items.slice(0, 40).map(line).join("") + (items.length > 40 ? `<li class="muted">e altri ${items.length - 40}</li>` : "");
+  const rest = items.length - 40;
+  return items.slice(0, 40).map(line).join("") + (rest > 0 ? `<li class="muted">${rest === 1 ? "e un altro" : `e altri ${rest}`}</li>` : "");
 }
 function diffHtml(d) {
   if (d.first) return '<p class="muted" style="margin:0">È il primo backup: prima non c\'è niente con cui confrontarlo.</p>';
-  const when = (x) => x.id === "attuale" ? "adesso" : `${fmtDateTime(x.created_at)} (${backupTitle(x)})`;
-  const head = `<p class="muted small-text" style="margin:0 0 4px">Cosa è cambiato dal ${esc(when(d.older))} ${d.newer.id === "attuale" ? "a" : "al"} ${esc(when(d.newer))}.</p>`;
+  const when = (x) => `${fmtDateTime(x.created_at)} (${backupTitle(x)})`;
+  const until = d.newer.id === "attuale" ? "allo stato attuale" : `al ${when(d.newer)}`;
+  const head = `<p class="muted small-text" style="margin:0 0 4px">Cosa è cambiato dal ${esc(when(d.older))} ${esc(until)}.</p>`;
   if (!d.groups.length) return head + `<div class="empty">${icon("check")}<br>Nessuna differenza.</div>`;
   return head + d.groups.map((g) => `<h3 class="diff-part">${esc(g.title)}${g.note ? ` <span class="muted small-text">· ${esc(g.note)}</span>` : ""}</h3>
     ${g.sections.map((s) => `<div class="diff-sec"><div class="diff-title">${esc(s.title)}</div><ul class="diff">
@@ -3646,16 +3690,22 @@ function diffHtml(d) {
 }
 function compareBackup(b, backups, part = "") {
   const others = backups.filter((x) => x.id !== b.id && (!part || x.parts?.[part]));
-  const options = `<option value="precedente">Backup precedente</option><option value="attuale">Stato attuale</option>${others.map((x) => `<option value="${esc(x.id)}">${esc(fmtDateTime(x.created_at))} · ${esc(backupTitle(x))}</option>`).join("")}`;
+  const options = `<option value="precedente">Backup Precedente</option><option value="attuale">Stato Attuale</option>${others.map((x) => `<option value="${esc(x.id)}">${esc(fmtDateTime(x.created_at))} · ${esc(backupTitle(x))}</option>`).join("")}`;
   modal({title: `Confronta: ${backupTitle(b)}`, wide: true,
     body: `<div class="field"><label>Confronta con</label><select name="other">${options}</select></div><div id="cmp-body">${loadingBox()}</div>`,
     actions: [{label: "Chiudi", value: null}],
     onOpen: (dlg) => {
+      let latest = 0;
       const load = async () => {
         const box = $("#cmp-body", dlg);
+        const mine = ++latest;
         box.innerHTML = loadingBox();
-        try { box.innerHTML = diffHtml(await api(`api/backups/${b.id}/compare?other=${encodeURIComponent(val(dlg, "other"))}${part ? `&part=${encodeURIComponent(part)}` : ""}`)); }
-        catch (err) { box.innerHTML = errorBox("Confronto Non Riuscito", err); }
+        let html;
+        try { html = diffHtml(await api(`api/backups/${b.id}/compare?other=${encodeURIComponent(val(dlg, "other"))}${part ? `&part=${encodeURIComponent(part)}` : ""}`)); }
+        catch (err) { html = errorBox("Confronto Non Riuscito", err); }
+        // La risposta di una scelta precedente (lo Stato Attuale può metterci secondi) non copre quella dell'ultima
+        if (mine !== latest || !box.isConnected) return;
+        box.innerHTML = html;
         paintIcons(box);
       };
       $('[name="other"]', dlg).onchange = load;
@@ -3668,7 +3718,7 @@ function restoreItemHtml(i) {
     <input type="checkbox" name="rs" value="${esc(i.key)}" ${i.default && !i.blocked ? "checked" : ""} ${i.blocked ? "disabled" : ""}>
     <div class="ev-icon ${cls}">${icon(ic)}</div>
     <div class="grow"><div class="title">${esc(i.label)} <span class="muted small-text">· ${esc(i.text)}</span></div>
-      ${i.changes.length ? `<div class="diff-fields">${i.changes.slice(0, 8).map((c) => `<span><span class="muted">${esc(c.label)}:</span> ${c.old === "—" ? "" : `<s>${esc(c.old)}</s> → `}${esc(c.new)}</span>`).join("")}${i.changes.length > 8 ? `<span class="muted">e altre ${i.changes.length - 8}</span>` : ""}</div>` : ""}
+      ${i.changes.length ? `<div class="diff-fields">${i.changes.slice(0, 8).map((c) => `<span><span class="muted">${esc(c.label)}:</span> ${c.old === "—" ? "" : `<s>${esc(c.old)}</s> → `}${esc(c.new)}</span>`).join("")}${i.changes.length > 8 ? `<span class="muted">${i.changes.length === 9 ? "e un'altra" : `e altre ${i.changes.length - 8}`}</span>` : ""}</div>` : ""}
       ${i.warnings.map((w) => `<div class="rs-note">${icon("alert")}<span>${esc(w[0].toUpperCase() + w.slice(1))}</span></div>`).join("")}
       ${i.blocked ? `<div class="rs-note err">${icon("block")}<span>Non si può: ${esc(i.blocked)}</span></div>` : ""}
       ${i.password ? `<div class="rs-pass"><input type="password" name="mqtt_password" autocomplete="new-password" placeholder="Password di ${esc(i.username)}"><small class="muted">Nei backup le password non ci sono: scrivila qui, non viene salvata.</small></div>` : ""}
@@ -3715,7 +3765,7 @@ async function restoreBackup(b, data, part = "") {
     body: `${preview.paused ? `<div class="alert err">${icon("alert")}<div class="grow"><b>Scritture Sospese</b>${esc(preview.paused)}</div></div>` : ""}
       <p class="muted small-text" style="margin-top:0">${full
         ? "Si scrive nell'ordine dell'elenco, le tessere per ultime. Quello che sul controller c'è ma nel backup no è spuntato solo se il controller è appena stato resettato. La programmazione oraria delle porte non si ripristina: niente sblocchi programmati."
-        : "Spunta cosa riportare com'era. Togliere quello che è stato aggiunto dopo il backup non è spuntato: di solito è lavoro buono fatto nel frattempo."} Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
+        : "Spunta cosa riportare com'era. Le righe che toglierebbero ciò che è stato aggiunto dopo il backup non sono spuntate: di solito è lavoro fatto nel frattempo, da tenere."} Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
       ${groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map(restoreItemHtml).join("")}</div>`).join("")}`,
     actions: [{label: "Annulla", value: null}, {label: "Ripristina Selezionati", kind: "primary", onClick: (dlg) => {
       const chosen = $$('[name="rs"]:checked', dlg).map((x) => x.value);
@@ -3727,14 +3777,17 @@ async function restoreBackup(b, data, part = "") {
     }}],
     onOpen: (dlg) => {
       const update = () => { const n = $$('[name="rs"]:checked', dlg).length; $(".dlg-foot .primary", dlg).textContent = `Ripristina Selezionati (${n})`; };
-      dlg.addEventListener("change", update);
+      // Sul modulo, non su #modal: la finestra è condivisa e il modulo si rifà a ogni apertura, così il
+      // conteggio non rinomina i pulsanti delle finestre aperte dopo
+      $("form", dlg).addEventListener("change", update);
       update();
     }});
   if (!keys) return;
-  toast(full ? "Ripristino completo in corso: può volerci qualche decina di secondi…" : "Ripristino in corso…");
+  toast(full ? "Ripristino Completo in corso: può volerci qualche decina di secondi…" : "Ripristino in corso…");
   const result = await run(() => api(`api/backups/${b.id}/restore`, {method: "POST", body: {sections, part, keys, mqtt_password: mqttPassword}}));
   if (!result) return;
-  await modal({title: result.failed.length ? "Ripristino Parziale" : "Ripristino Fatto", body: restoreResultHtml(result), actions: [{label: "Chiudi", value: null}]});
+  const title = !result.failed.length ? "Ripristino Fatto" : result.applied.length ? "Ripristino Parziale" : "Ripristino Non Riuscito";
+  await modal({title, body: restoreResultHtml(result), actions: [{label: "Chiudi", value: null}]});
   loadSummary();
   render();
 }
@@ -3752,6 +3805,9 @@ async function viewSettings(el, sub) {
   let s;
   try { s = await api("api/status?controller=false"); } catch (err) { body.innerHTML = errorBox("Stato Non Leggibile", err); return; }
   const m = s.mqtt, ha = s.home_assistant, o = s.options;
+  // Controllo del database all'avvio ({at, text}) e copia per il backup di Home Assistant: i motivi arrivano in minuscolo
+  const dbRecovered = s.database.recovered?.text ? s.database.recovered : null;
+  const capFirst = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
   const haCard = props([
     ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} Attive, dispositivo "Controllo Accessi"` : `${statusDot("")} Disattivate nelle opzioni`],
     ...(ha.integration ? [["Entità", esc(ha.entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
@@ -3764,19 +3820,22 @@ async function viewSettings(el, sub) {
         <div class="card"><h2>${icon("dashboard")}Home Assistant</h2>${haCard}</div>
         <div class="card"><h2>${icon("cog")}Opzioni dell'Add-on</h2>${props([
           ["Tipologia Predefinita", esc((await loadGroups(), categoryOf(store.me.default_category)?.name) || "—")],
-          ["Conservazione Registro", `${o.event_retention_days} giorni`],
-          ["Broker MQTT", o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
-        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti Aggiuntivi → Axis Access Manager → Configurazione. La tipologia predefinita si sceglie in Persone → Tipologie.</p></div>
+          ["Conservazione Registro", plural(o.event_retention_days, "giorno", "giorni")],
+          ["Broker MQTT", !m.configured ? `${statusDot("warn")} Nessun Broker: installa l'add-on Mosquitto, l'app lo trova da sola` : o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
+        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione. La tipologia predefinita si sceglie in Persone → Tipologie.</p></div>
       </div>
       <div>
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Anagrafica CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Anagrafica<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia</code> (solo nome e tessera obbligatori, date gg/mm/aaaa). La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi.</p></div>
-        <div class="card"><h2>${icon("download")}Database dell'Add-on</h2>${props([
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo nome e tessera obbligatori, date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>
+        <div class="card"><h2>${icon("history")}Database dell'Add-on</h2>${dbRecovered ? `<div class="alert err">${icon("alert")}<div class="grow"><b>${dbRecovered.text.includes("ripristinata la copia") ? "Database Ripristinato dalla Copia" : "Database Non Ripristinato"}</b>${esc(capFirst(dbRecovered.text))} · ${esc(relTime(dbRecovered.at))}</div></div>` : ""}${props([
           ["Versione dello Schema", esc(s.database.schema)],
-          ["Copia per il Backup di HA", s.database.ha_copy ? `${statusDot("ok")} Preparata ${esc(relTime(s.database.ha_copy))}` : `${statusDot("")} Non ancora: si prepara prima del prossimo backup`],
-          ["Copie Prima degli Aggiornamenti", s.database.copies.length ? s.database.copies.map((c) => `${esc(fmtDateTime(c.at))} <span class="muted">· ${Math.max(1, Math.round(c.size / 1024))} kB</span>`).join("<br>") : "nessuna"],
+          // Il motivo dice già che la copia non è aggiornata ("copia non aggiornata (…)", "… resta la copia precedente")
+          ["Copia per il Backup di Home Assistant", s.database.ha_copy_error
+            ? `${statusDot("warn")} ${esc(capFirst(s.database.ha_copy_error))}${s.database.ha_copy ? ` <span class="muted">· preparata ${esc(relTime(s.database.ha_copy))}</span>` : ""}`
+            : s.database.ha_copy ? `${statusDot("ok")} Preparata ${esc(relTime(s.database.ha_copy))}` : `${statusDot("")} Non ancora: si prepara prima del prossimo backup`],
+          ["Copie Prima degli Aggiornamenti", s.database.copies.length ? s.database.copies.map((c) => `${esc(fmtDateTime(c.at))} <span class="muted">· ${kb(c.size)}</span>`).join("<br>") : "nessuna"],
         ])}<p class="hint">Prima di ogni aggiornamento dell'add-on si fa una copia del database (si tengono le ultime 3). Subito prima di ogni backup di Home Assistant si prepara una copia coerente, usata all'avvio se il database risultasse danneggiato.</p></div>
         ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Stato del controller, delle porte, degli eventi MQTT e dei citofoni: nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
       </div>
@@ -3809,9 +3868,9 @@ async function viewUsers(body) {
   paintIcons(body);
   const form = (u) => `${u ? "" : field("Nome Utente di Home Assistant", `<input name="username" autocomplete="off" placeholder="es. mario">`, "Lo trovi in Impostazioni → Persone → Utenti di Home Assistant.")}
     ${field("Nome", `<input name="name" maxlength="100" value="${esc(u?.name || "")}" placeholder="facoltativo">`)}
-    ${field("Ruolo", `<select name="role">${Object.entries(data.roles).map(([k, r]) => `<option value="${k}" ${u?.role === k ? "selected" : ""}>${esc(r.label)}</option>`).join("")}<option value="personalizzato" ${u?.role === "personalizzato" ? "selected" : ""}>Personalizzato</option></select>`)}
+    ${field("Ruolo", `<select name="role">${Object.entries(data.roles).map(([k, r]) => `<option value="${k}" ${(u ? u.role : "solo_stato") === k ? "selected" : ""}>${esc(r.label)}</option>`).join("")}<option value="personalizzato" ${u?.role === "personalizzato" ? "selected" : ""}>Personalizzato</option></select>`)}
     <div class="field"><label>Permessi</label><div class="perm-list">${Object.entries(data.permissions).map(([k, label]) => `<label><input type="checkbox" name="perm" value="${k}" ${(u ? u.perms : data.roles.solo_stato.perms).includes(k) ? "checked" : ""}>${esc(label)}</label>`).join("")}</div>
-      <p class="hint">Tutti vedono il cruscotto e lo stato del controller.</p></div>`;
+      <p class="hint">Senza «${esc(data.permissions.stato)}» non si vedono Cruscotto, Porte e Notifiche, né guasti e allarmi in alto. Lo stato del controller è nella sua scheda Stato, in Impianti, che richiede il permesso di configurare i controller.</p></div>`;
   const bind = (dlg) => {
     const role = $("[name=role]", dlg);
     const boxes = $$("[name=perm]", dlg);
@@ -3842,29 +3901,50 @@ async function viewUsers(body) {
   };
 }
 async function loadAudit(more = false) {
+  const body = $("#audit"), btn = $("#audit-more");
+  if (!body) return;
+  // Un secondo clic su Carica Altre ripartirebbe dallo stesso punto e raddoppierebbe le righe
+  if (more && btn.disabled) return;
+  btn.disabled = true;
   const params = new URLSearchParams({limit: "50"});
   if (more && auditRows.length) params.set("before_id", auditRows[auditRows.length - 1].id);
-  const rows = await api("api/audit?" + params).catch(() => []);
+  let rows;
+  try { rows = await api("api/audit?" + params); }
+  catch (err) {
+    btn.disabled = false;
+    // Un errore non è "nessuna attività"
+    if (!body.isConnected) return;
+    if (more) toast(err.message, true);
+    else body.innerHTML = `<tr><td colspan="3">${errorBox("Attività Non Leggibili", err)}</td></tr>`;
+    return;
+  }
+  btn.disabled = false;
+  // Pagina cambiata nel frattempo: le righe sono di un elenco che non c'è più
+  if (!body.isConnected) return;
   auditRows = more ? auditRows.concat(rows) : rows;
-  const body = $("#audit");
-  if (!body) return;
-  body.innerHTML = auditRows.length ? auditRows.map((a) => `<tr><td>${esc(fmtDateTime(a.ts))}</td><td>${esc(a.user)}</td><td><b>${esc(a.action)}</b>${a.detail ? `<div class="muted small-text">${esc(a.detail)}</div>` : ""}</td></tr>`).join("") : '<tr><td colspan="3" class="muted">nessuna attività</td></tr>';
+  body.innerHTML = auditRows.length ? auditRows.map((a) => `<tr><td>${esc(fmtDateTime(a.ts))}</td><td>${esc(a.user)}</td><td><b>${esc(a.action)}</b>${a.detail ? `<div class="muted small-text">${esc(a.detail)}</div>` : ""}</td></tr>`).join("") : '<tr><td colspan="3" class="muted">Nessuna attività.</td></tr>';
   $("#audit-more-box").hidden = rows.length < 50;
 }
 async function importCsv(e) {
   const file = e.target.files[0];
   e.target.value = "";
   if (!file) return;
-  const text = await file.text();
+  // Excel salva il CSV in ANSI (Windows-1252): letto come UTF-8, "Niccolò" diventava "Niccol�"
+  const bytes = await file.arrayBuffer();
+  let text;
+  try { text = new TextDecoder("utf-8", {fatal: true}).decode(bytes); } catch (err) { text = new TextDecoder("windows-1252").decode(bytes); }
   const preview = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: false}}));
   if (!preview) return;
-  const table = (res) => `<p>${res.riepilogo.righe} righe: <b>${res.riepilogo.ok}</b> ${res.applicato ? "importate" : "da importare"}, <b>${res.riepilogo.aggiornate || 0}</b> ${res.applicato ? "aggiornate" : "da aggiornare"}, ${res.riepilogo.saltate} saltate, ${res.riepilogo.errori} con errori.</p>
-    <div class="table-wrap"><table class="table"><thead><tr><th>Riga</th><th>Nome</th><th>Tessera</th><th>Esito</th></tr></thead><tbody>${res.righe.map((r) => `<tr><td>${r.riga}</td><td>${esc(r.nome)}</td><td><code>${esc(r.tessera)}</code></td><td><span class="pill ${r.esito === "errore" ? "err" : r.esito === "saltata" ? "" : r.esito.includes("aggiorn") ? "warn" : "ok"}">${esc(r.esito)}</span> <span class="small-text">${esc(r.dettaglio)}</span></td></tr>`).join("")}</tbody></table></div>`;
-  const go = await modal({title: "Anteprima importazione", wide: true, body: table(preview),
+  const table = (res) => {
+    const s = res.riepilogo, ok = s.ok, updated = s.aggiornate || 0;
+    return `<p>${plural(s.righe, "riga", "righe")}: <b>${ok}</b> ${res.applicato ? (ok === 1 ? "importata" : "importate") : "da importare"}, <b>${updated}</b> ${res.applicato ? (updated === 1 ? "aggiornata" : "aggiornate") : "da aggiornare"}, ${plural(s.saltate, "saltata", "saltate")}, ${s.errori} con errori.</p>
+    <div class="table-wrap"><table class="table"><thead><tr><th>Riga</th><th>Nome</th><th>Tessera</th><th>Esito</th></tr></thead><tbody>${res.righe.map((r) => `<tr><td>${r.riga}</td><td>${esc(r.nome)}</td><td><code>${esc(r.tessera)}</code></td><td><span class="pill ${r.esito === "errore" ? "err" : r.esito === "saltata" ? "" : r.esito.includes("aggiorn") ? "info" : "ok"}">${esc(r.etichetta || r.esito)}</span> <span class="small-text">${esc(r.dettaglio)}</span></td></tr>`).join("")}</tbody></table></div>`;
+  };
+  const go = await modal({title: "Anteprima Importazione", wide: true, body: table(preview),
     actions: [{label: "Annulla", value: false}, ...(preview.riepilogo.ok || preview.riepilogo.aggiornate ? [{label: [preview.riepilogo.ok ? `Importa ${preview.riepilogo.ok}` : "", preview.riepilogo.aggiornate ? `Aggiorna ${preview.riepilogo.aggiornate}` : ""].filter(Boolean).join(" e "), kind: "primary", value: true}] : [])]});
   if (!go) return;
   const result = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: true}}));
-  if (result) await modal({title: "Importazione completata", wide: true, body: table(result), actions: [{label: "Chiudi", kind: "primary", value: true}]});
+  if (result) await modal({title: "Importazione Completata", wide: true, body: table(result), actions: [{label: "Chiudi", kind: "primary", value: true}]});
 }
 
 // ---------- Avvio ----------
@@ -3883,14 +3963,18 @@ async function start() {
     user.hidden = false;
     $("#nav-avatar").textContent = initials(store.me.user);
     $("#nav-user-name").textContent = store.me.user;
-    $("#nav-user-role").textContent = store.me.role || "Permessi Personalizzati";
+    $("#nav-user-role").textContent = store.me.role || "Personalizzato";
     user.title = `${store.me.user}${store.me.admin ? " · gestisci gli utenti" : ""}`;
     if (store.me.admin) { user.href = "#impostazioni/utenti"; user.dataset.routeLink = "impostazioni"; }
   }
   await loadSummary();
-  await render();
-  setInterval(loadSummary, 5000);
-  setInterval(refreshView, 15000);
+  // Gli aggiornamenti periodici (avvisi in alto, add-on non raggiungibile, ricarica dopo un aggiornamento)
+  // partono anche se la prima pagina non si carica
+  try { await render(); }
+  finally {
+    setInterval(loadSummary, 5000);
+    setInterval(refreshView, 15000);
+  }
 }
 start();
 </script>
