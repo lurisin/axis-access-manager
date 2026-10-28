@@ -26,6 +26,8 @@ DB_PATH = Path("/data/axis_access_manager.db")
 HA_COPY_DIR = "copia_backup"
 # Perché l'ultimo backup_pre non ha aggiornato la copia (il file c'è solo in quel caso)
 HA_COPY_ERROR = "errore.txt"
+# Inizio dei messaggi di recover() quando il database è tornato quello della copia
+RESTORED = "ripristinata la copia del backup"
 # Copie prima degli aggiornamenti dello schema o dell'add-on
 UPDATE_COPY_DIR = "copie_database"
 UPDATE_COPIES_KEPT = 3
@@ -171,7 +173,7 @@ def recover(db_path: Path) -> str:
             Path(f"{db_path}{suffix}").unlink(missing_ok=True)
         os.replace(restoring, db_path)
         _sync_dir(db_path.parent)
-        return "ripristinata la copia del backup: il ripristino si era interrotto all'avvio precedente"
+        return f"{RESTORED}: il ripristino si era interrotto all'avvio precedente"
     # Resti di un ripristino interrotto prima della fine della copia
     for leftover in (restoring, Path(f"{restoring}.parziale"), Path(f"{restoring}.parziale-journal")):
         leftover.unlink(missing_ok=True)
@@ -207,18 +209,18 @@ def recover(db_path: Path) -> str:
             Path(f"{db_path}{suffix}").unlink(missing_ok=True)
         os.replace(restoring, db_path)
         _sync_dir(db_path.parent)
-        return f"{problem}, ripristinata la copia del backup del {when}"
+        return f"{problem}, {RESTORED} del {when}"
     broken = db_path.with_name(f"{db_path.stem}_danneggiato_{datetime.now():%Y%m%d_%H%M%S}{db_path.suffix}")
-    # Il journal va con il file danneggiato: lì serve a chi vuole recuperarne qualcosa, sulla copia la rovinerebbe
-    for suffix in ("-journal", "-wal"):
+    # Journal e WAL (con il suo indice -shm) vanno con il file danneggiato: lì servono a chi vuole recuperarne
+    # le ultime modifiche, sulla copia la rovinerebbero
+    for suffix in ("-journal", "-wal", "-shm"):
         side = Path(f"{db_path}{suffix}")
         if side.exists():
             os.replace(side, Path(f"{broken}{suffix}"))
-    Path(f"{db_path}-shm").unlink(missing_ok=True)
     os.replace(db_path, broken)
     os.replace(restoring, db_path)
     _sync_dir(db_path.parent)
-    return f"{problem} spostato in {broken.name}, ripristinata la copia del backup del {when}"
+    return f"{problem} spostato in {broken.name}, {RESTORED} del {when}"
 
 
 def update_copy(db_path: Path, reason: str) -> Path:

@@ -434,6 +434,12 @@ def no_scheduled_backups(monkeypatch):
     monkeypatch.setenv("AAM_SCHEDULED_BACKUPS", "0")
 
 
+@pytest.fixture(autouse=True)
+def home_assistant_zone(monkeypatch):
+    """Home Assistant con il fuso del controller finto, qualunque sia quello di chi esegue i test."""
+    monkeypatch.setattr("app.health.ha_time_zone", lambda: "Europe/Rome")
+
+
 @pytest.fixture
 def settings():
     return parse_options(

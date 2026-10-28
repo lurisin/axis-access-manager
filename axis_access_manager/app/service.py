@@ -381,9 +381,7 @@ class AccessService:
                     access = {k: card[k] for k in ("access_profile", "valid_from", "valid_to")}
                     if not access["access_profile"]:
                         access["access_profile"] = self.default_group
-                    credential = self._credential(user_token, person["name"], card["number"], access)
-                    credential["Enabled"] = card["enabled"]
-                    credential["Status"] = "Enabled" if card["enabled"] else "Disabled"
+                    credential = self._credential(user_token, person["name"], card["number"], access, card["enabled"])
                     token = await self.controller.set_credential(credential)
                 except VapixError as err:
                     failed.append({"card": card["number"], "person": person["name"], "error": str(err)})
@@ -458,14 +456,14 @@ class AccessService:
         ]
         return credential
 
-    def _credential(self, user_token: str, name: str, number: str, access: dict) -> dict:
+    def _credential(self, user_token: str, name: str, number: str, access: dict, enabled: bool = True) -> dict:
         return self._apply_access(
             {
                 "token": "",
                 "UserToken": user_token,
                 "Description": name,
-                "Enabled": True,
-                "Status": "Enabled",
+                "Enabled": bool(enabled),
+                "Status": "Enabled" if enabled else "Disabled",
                 "IdData": [{"Name": "Card", "Value": number}],
                 "Attribute": [],
                 "AuthenticationProfile": [],
@@ -489,7 +487,9 @@ class AccessService:
         company: str = "",
         notes: str = "",
         category_id: int = 0,
+        enabled: bool = True,
     ) -> dict:
+        """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»)."""
         name, number = normalize_name(name), normalize_card(card)
         company = normalize_text(company, 100, "ditta o reparto")
         notes = normalize_text(notes, 1000, "testo delle note")
@@ -511,7 +511,7 @@ class AccessService:
             )
             try:
                 credential_token = await self.controller.set_credential(
-                    self._credential(user_token, name, number, access)
+                    self._credential(user_token, name, number, access, enabled)
                 )
             except VapixError:
                 # Senza tessera l'utente resterebbe orfano sul controller
@@ -525,13 +525,15 @@ class AccessService:
                 self.db.update_person_details(person_id, company, notes)
             if category:
                 self.db.set_person_category(person_id, category["id"])
-            self.db.add_card(person_id, number, credential_token, access=access)
-            detail = f"{name}, tessera {number}" + (f", tipologia {category['name']}" if category else "")
+            self.db.add_card(person_id, number, credential_token, enabled, access)
+            detail = f"{name}, tessera {number}" + ("" if enabled else " sospesa")
+            detail += f", tipologia {category['name']}" if category else ""
             self.db.add_audit(user, "persona creata", detail)
             self._changed()
             return self.db.get_person(person_id)
 
-    async def add_card(self, person_id: int, card: str, user: str) -> dict:
+    async def add_card(self, person_id: int, card: str, user: str, enabled: bool = True) -> dict:
+        """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»)."""
         number = normalize_card(card)
         async with self.lock:
             person = self._person(person_id)
@@ -542,11 +544,12 @@ class AccessService:
             # Chi è stato letto da una tessera senza utente ne riceve uno: "credenziale:..." non è un utente
             user_token = await self._ensure_user(person)
             credential_token = await self.controller.set_credential(
-                self._credential(user_token, person["name"], number, access)
+                self._credential(user_token, person["name"], number, access, enabled)
             )
-            self.db.add_card(person_id, number, credential_token, access=access)
+            self.db.add_card(person_id, number, credential_token, enabled, access)
             self._changed()
-            self.db.add_audit(user, "tessera aggiunta", f"{person['name']}, tessera {number}")
+            detail = f"{person['name']}, tessera {number}" + ("" if enabled else " sospesa")
+            self.db.add_audit(user, "tessera aggiunta", detail)
             return self.db.get_person(person_id)
 
     async def update_person(
@@ -634,7 +637,7 @@ class AccessService:
                 self.db.add_audit(
                     user, "tipologia cambiata", f"{person['name']}: {category['name'] if category else 'nessuna'}"
                 )
-            detail = f"{person['name']}: gruppo {access['access_profile']}"
+            detail = f"{person['name']}: {await self._profile_label(access['access_profile'])}"
             if access["valid_from"] and access["valid_to"]:
                 detail += f", valida dal {local_time(access['valid_from'])} al {local_time(access['valid_to'])}"
             elif access["valid_from"]:
@@ -643,6 +646,18 @@ class AccessService:
                 detail += f", valida fino al {local_time(access['valid_to'])}"
             self.db.add_audit(user, "accesso modificato", detail)
             return self.db.get_person(person_id)
+
+    async def _profile_label(self, token: str) -> str:
+        """Accesso da mostrare nelle attività: la tipologia che usa il profilo, o il suo nome sul controller."""
+        category = next((c for c in self.db.list_categories() if c["group_token"] == token), None)
+        if category:
+            return f"tipologia {category['name']}"
+        try:
+            profiles = await self.controller.get_access_profiles([token])
+        except VapixError:
+            profiles = []
+        name = (profiles[0].get("Name") or "") if profiles else ""
+        return f"profilo {name}" if name else "accesso personalizzato"
 
     async def set_card_enabled(self, card_id: int, enabled: bool, user: str) -> dict:
         async with self.lock:
@@ -697,7 +712,8 @@ class AccessService:
     async def restore_person(self, saved: dict, cards: list[dict], category_id: int, user: str) -> dict:
         """Riporta una persona com'era in un backup: nome, ditta, note, tipologia e tessere con accesso e stato.
         Se non c'è più si ricrea, con lo stesso numero e la stessa data di creazione se il numero è libero.
-        cards: tessere del backup già controllate (numero libero o già della persona, profilo che esiste)."""
+        cards: tessere del backup già controllate (numero libero o già della persona, profilo che esiste); le altre
+        tessere della persona restano come sono."""
         current = self.db.get_person(saved["id"])
         if current is not None and current["created_at"] != saved["created_at"]:
             current = None
@@ -748,13 +764,8 @@ class AccessService:
                     else:
                         await self.controller.disable_credential(mine["axis_credential_token"])
                     self.db.set_card_enabled(mine["id"], card["enabled"])
-            # Tessere aggiunte dopo il backup: le tessere del backup ci sono già, la persona non resta senza
-            for number, mine in have.items():
-                if number in wanted:
-                    continue
-                if not mine["missing_since"]:
-                    await self.controller.remove_credential(mine["axis_credential_token"])
-                self.db.delete_card(mine["id"])
+            # Le tessere che non sono in cards (aggiunte dopo il backup) restano: il ripristino le elimina solo
+            # con la loro riga, scelta a parte nell'anteprima
             self.db.add_audit(user, "persona ripristinata da backup", person["name"])
             self._changed()
             return self.db.get_person(person_id)

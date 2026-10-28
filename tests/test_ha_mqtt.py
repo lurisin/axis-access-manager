@@ -104,6 +104,26 @@ def test_second_door_gets_its_own_entities_and_commands(settings, db):
     assert parse_command("sblocca") is None
 
 
+def test_old_entity_ids_stay_with_their_door(settings, db):
+    def buttons(doors, first_token):
+        bridge = HaBridge(dataclasses.replace(settings, door_token=first_token), EventMonitor(prefix="x"), db, doors)
+        return {
+            o: c["payload_press"] for _, o, c in bridge._entities() if o.startswith("apri_porta") and "lungo" not in o
+        }
+
+    ingresso = {"id": 1, "door_token": "porta", "name": "Ingresso", "ha_buttons": True}
+    cantina = {"id": 2, "door_token": "porta2", "name": "Cantina", "ha_buttons": True}
+    assert buttons([ingresso, cantina], "porta") == {"apri_porta": "apri", "apri_porta_2": "apri:porta2"}
+    # Controller tolto e aggiunto con le porte in un altro ordine: Apri Porta apre ancora l'ingresso
+    readded = [{**cantina, "id": 3}, {**ingresso, "id": 4}]
+    assert buttons(readded, "porta2") == {"apri_porta": "apri:porta", "apri_porta_3": "apri:porta2"}
+    # Token nuovo dal Ripristino Completo: stessa porta
+    db.replace_token("porta", "Axis-nuovo")
+    assert buttons([{**ingresso, "door_token": "Axis-nuovo"}], "Axis-nuovo") == {"apri_porta": "apri"}
+    # Porta tolta dall'app: i vecchi identificativi non passano a un'altra porta
+    assert buttons([cantina], "porta2") == {"apri_porta_2": "apri:porta2"}
+
+
 async def test_controller_and_door_condition_entities(bridge):
     client = FakeClient()
     monitor = bridge.monitor

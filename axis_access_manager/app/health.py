@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database, now_iso
-from .programming import CONTROLLER_INPUTS, rex_policies, rex_uncovered, unlinked_points
+from .programming import CONTROLLER_INPUTS, input_problem, rex_policies, rex_uncovered, unlinked_points
 from .vapix import VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,6 +50,8 @@ class ControllerHealth:
     cert_fingerprint: str = ""
     # Secondi in più (o in meno) dell'orologio del controller rispetto a Home Assistant
     clock_offset: float | None = None
+    # time.time() - time.monotonic() alla misura: se poi l'orologio di Home Assistant salta, lo scarto si corregge
+    clock_reference: float | None = None
     time_zone: str = ""
     # Fuso del controller con ore diverse da quello di Home Assistant: fasce orarie e festività sfasate
     zone_differs: bool = False
@@ -59,6 +61,8 @@ class ControllerHealth:
     unmanaged: list[str] = field(default_factory=list)
     # Ingressi che aprono la porta senza il permesso di farlo: il controller li nega
     rex_missing: list[str] = field(default_factory=list)
+    # Ingressi programmati solo in parte o con oggetti tolti fuori dall'app: si riparano scrivendoli di nuovo
+    input_problems: list[str] = field(default_factory=list)
     # Controlli riusciti da quando risponde: decide quando rileggere ora e NTP
     answered: int = 0
 
@@ -69,7 +73,14 @@ class ControllerHealth:
     def as_dict(self) -> dict:
         data = asdict(self)
         data.pop("answered")
+        data.pop("clock_reference")
         return {**data, "unreachable": self.unreachable}
+
+    def clock_offset_now(self) -> float | None:
+        """Scarto dell'orologio corretto per i salti dell'orologio di Home Assistant dopo la misura."""
+        if self.clock_offset is None or self.clock_reference is None:
+            return self.clock_offset
+        return round(self.clock_offset - ((time.time() - time.monotonic()) - self.clock_reference), 1)
 
 
 def parse_utc(value: str) -> datetime | None:
@@ -249,7 +260,7 @@ class HealthMonitor:
             answered = time.time()
         except VapixError as err:
             _LOGGER.debug("Ora del controller %s non letta: %s", state.name, err)
-            state.clock_offset = None
+            state.clock_offset = state.clock_reference = None
             state.zone_differs = False
             return
         controller_time = parse_utc(info.get("utcDateTime") or info.get("dateTime") or "")
@@ -263,6 +274,7 @@ class HealthMonitor:
         # se il controller è sincronizzato ("36 s avanti" invece di "Home Assistant è 36 s indietro").
         # A metà della richiesta: il ritardo della rete non conta come scarto
         state.clock_offset = round(controller_time.timestamp() - (asked + answered) / 2, 1) if controller_time else None
+        state.clock_reference = time.time() - time.monotonic() if controller_time else None
         state.time_zone = str(info.get("timeZone") or info.get("posixTimeZone") or "")
         state.ha_time_zone = ha_time_zone()
         state.zone_differs = zone_differs(info, state.ha_time_zone)
@@ -292,6 +304,13 @@ class HealthMonitor:
             p.get("Name") or p["token"] for p in unlinked_points(points, controllers) if p.get("Enabled") is not False
         ]
         rows = self.db.controller_inputs(state.id)
+
+        def name(io: str) -> str:
+            return rows[io]["name"] or CONTROLLER_INPUTS[io][0]
+
+        state.input_problems = [
+            name(io) for io in CONTROLLER_INPUTS if io in rows and input_problem(io, rows[io], points)
+        ]
         existing = {p.get("token") for p in points}
         wanted = [t for t in rex_policies(rows.values()) if t in existing]
         try:
@@ -300,7 +319,7 @@ class HealthMonitor:
             _LOGGER.debug("Profili di accesso di %s non letti: %s", state.name, err)
             return
         state.rex_missing = [
-            rows[io]["name"] for io in CONTROLLER_INPUTS if io in rows and rows[io]["access_point_token"] in missing
+            name(io) for io in CONTROLLER_INPUTS if io in rows and rows[io]["access_point_token"] in missing
         ]
 
     def check_identity(self, row: dict, state: ControllerHealth) -> None:
