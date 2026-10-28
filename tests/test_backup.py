@@ -355,7 +355,7 @@ def test_backup_api_permissions_and_restore(client, controller):
     backups = client.get("/api/backups", headers=admin).json()["backups"]
     assert backups[0]["id"] == result["backup_before"] and backups[0]["kind_label"] == "Prima del Ripristino"
     # Con la data del backup di partenza: niente catene di nomi
-    assert backups[0]["name"].startswith("Prima del ripristino del backup del ")
+    assert backups[0]["name"].startswith("Prima del Ripristino del Backup del ")
     assert "Prima dei lavori" not in backups[0]["name"]
     actions = [a["action"] for a in client.get("/api/audit", headers=admin).json()]
     assert "ripristino da backup" in actions and "persona ricreata da backup" in actions
