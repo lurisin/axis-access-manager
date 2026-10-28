@@ -1919,32 +1919,49 @@ const LOG_VIEWS = {
   allarmi: ["Allarmi", "allarme,manomissione"],
   tutto: ["Tutto", ""],
 };
-const ACCESS_KINDS = "concesso,apertura_remota,uscita,citofono,lettura";
+// Accessi riusciti, come li conta il server (ACCESS_COUNT_KINDS): la lettura precede il concesso e il citofono non apre
+const ACCESS_KINDS = "concesso,apertura_remota,uscita";
 const savedView = () => { try { return localStorage.getItem("aam-log-view") || "controllo"; } catch (err) { return "controllo"; } };
 const logFilters = {q: "", view: savedView(), door: "", from: "", to: ""};
 let logEvents = [];
 let logSelected = 0;
+// Vale solo la risposta dell'ultima richiesta: un cambio di vista o un aggiornamento lento non mescolano gli elenchi
+let logSeq = 0, logHiddenSeq = 0, logBusy = false;
+// Giorno della lista disegnata: dopo mezzanotte "Oggi" e "Ieri" cambiano anche senza eventi nuovi
+let logDay = "";
+// Giorno di calendario aaaa-mm-gg, e lo stesso spostato di n giorni (al cambio dell'ora un giorno non dura 24 ore)
+const logDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+function logShiftDay(day, n) {
+  const d = new Date(day + "T12:00:00");
+  d.setDate(d.getDate() + n);
+  return logDate(d);
+}
 function logParams(extra = {}) {
   const p = new URLSearchParams();
   if (logFilters.q) p.set("q", logFilters.q);
   const kinds = (LOG_VIEWS[logFilters.view] || LOG_VIEWS.tutto)[1];
   if (kinds) p.set("kind", kinds);
   if (logFilters.door) p.set("door", logFilters.door);
-  if (logFilters.from) p.set("since", new Date(logFilters.from + "T00:00:00").toISOString());
-  if (logFilters.to) p.set("until", new Date(new Date(logFilters.to + "T00:00:00").getTime() + 86400000).toISOString());
+  // Senza fuso: la mezzanotte la calcola il server con l'ora di Home Assistant, come per il CSV e il cruscotto
+  if (logFilters.from) p.set("since", logFilters.from + "T00:00:00");
+  if (logFilters.to) p.set("until", logShiftDay(logFilters.to, 1) + "T00:00:00");
   Object.entries(extra).forEach(([k, v]) => p.set(k, v));
   return p;
 }
 const KIND_DOT = {"k-ok": "ok", "k-warn": "warn", "k-err": "err", "k-info": "info", "k-accent": "accent", "k-muted": ""};
+// Dopo il nome, l'esito in breve: dall'etichetta del tipo uscirebbe "Mario Rossi letta" o "Tessera 04AB negato"
+const LOG_ROW_WHAT = {concesso: "accesso concesso", negato: "accesso negato", lettura: "tessera letta"};
+// Origine dell'evento come la scrive l'app (db.SOURCE_LABELS); gli altri valori sono già nomi
+const LOG_SOURCES = {lettore: "Lettore", controller: "Controller", porta: "Porta"};
 // Riga compatta: ora, colore dell'esito, chi, cosa, dove
 function logRow(e) {
   const [label, cls] = KINDS[e.kind] || [e.kind, "k-muted"];
   const who = e.person_name || (e.card ? `Tessera ${e.card}` : e.kind === "citofono" ? e.source || "Citofono" : e.kind === "apertura_remota" ? e.source || "Home Assistant" : e.kind === "uscita" ? e.source || "Pulsante" : inputDenied(e) ? e.source : "");
-  let what = who ? label.replace(/^Accesso /, "").replace(/^Tessera /, "") : label;
+  let what = who ? LOG_ROW_WHAT[e.kind] || label.replace(/^Accesso /, "").replace(/^Tessera /, "") : label;
   if (what.toLowerCase() === who.toLowerCase()) what = "";
   return `<div class="ev ${e.id === logSelected ? "sel" : ""}" data-event="${e.id}" role="button" tabindex="0" title="${esc(fmtFull(e.ts))}">
     <span class="time">${esc(fmtTime(e.ts))}</span><span class="dot ${KIND_DOT[cls] || ""}"></span>
-    <span class="what">${who ? `<b>${esc(who)}</b> <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="con istantanea">${icon("camera", "icon")}</span>` : ""}${e.recovered ? ' <span class="muted small-text" title="Recuperato dal registro interno del controller">· recuperato</span>' : ""}</span>
+    <span class="what">${who ? `<b>${esc(who)}</b> <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="Con foto">${icon("camera", "icon")}</span>` : ""}${e.recovered ? ' <span class="muted small-text" title="Recuperato dal registro interno del controller">· recuperato</span>' : ""}</span>
     ${multiDoor() ? `<span class="where">${esc(eventPlace(e))}</span>` : "<span></span>"}
   </div>`;
 }
@@ -1959,10 +1976,10 @@ function eventDetail(e) {
     e.detail ? ["Dettaglio", esc(e.detail)] : null,
     e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
     e.recovered ? ["Recuperato", "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
-    controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(e.source)] : null,
+    controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(LOG_SOURCES[e.source] || e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
-    ${e.snapshot ? `<img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="istantanea" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    ${e.snapshot ? `<img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
     ${props(rows)}
     <div class="row" style="margin-top:14px">
       ${e.person_id && can("persone") ? `<a class="btn small" href="#persone/${e.person_id}">${icon("user")}Scheda Persona</a>` : ""}
@@ -1986,11 +2003,18 @@ function showEvent(e) {
     $("#l-detail-x").onclick = () => { panel.hidden = true; $(".log-layout").classList.remove("split"); logSelected = 0; $$(".list.compact > .ev.sel").forEach((r) => r.classList.remove("sel")); };
     bind(panel, () => {});
   } else {
-    modal({title: "Dettaglio Evento", body: eventDetail(e), onOpen: (dlg) => { bindSnapshots(dlg); bind(dlg, () => dlg.close()); }});
+    modal({title: "Dettaglio Evento", body: eventDetail(e), onOpen: (dlg) => {
+      bindSnapshots(dlg);
+      bind(dlg, () => dlg.close());
+      // Porta, Scheda Persona e Registra Tessera aprono un'altra pagina: la finestra non deve restarle sopra
+      $$('a[href^="#"]', dlg).forEach((a) => a.addEventListener("click", () => dlg.close()));
+    }});
   }
 }
 async function viewLog(el) {
   const doors = allDoors();
+  // Il filtro su una porta tolta nel frattempo (o con una porta sola) non avrebbe un menu per toglierlo
+  if (logFilters.door && (doors.length < 2 || !doors.some((d) => d.token === logFilters.door))) logFilters.door = "";
   const doorSelect = doors.length > 1 ? `<select id="l-door" aria-label="Porta"><option value="">Tutte le Porte</option>${doorOptionGroups(doors, logFilters.door)}</select>` : "";
   el.innerHTML = `
     <div class="toolbar">
@@ -2042,9 +2066,18 @@ function setCursor(params, events) {
   params.set("before_id", last.id);
 }
 async function loadLog(more = false) {
+  const seq = ++logSeq;
   const params = logParams({limit: "100"});
   if (more && logEvents.length) setCursor(params, logEvents);
+  // Un conteggio partito per la vista di prima non vale più
+  if (!more) logHiddenSeq++;
+  // Un doppio clic su "Carica Altri" chiederebbe due volte la stessa pagina
+  if (more && $("#l-more")) $("#l-more").disabled = true;
+  logBusy = true;
   const data = await run(() => api("api/events?" + params));
+  if (seq !== logSeq) return;
+  logBusy = false;
+  if ($("#l-more")) $("#l-more").disabled = false;
   if (!data || !$("#l-list")) return;
   logEvents = more ? logEvents.concat(data) : data;
   renderLog();
@@ -2054,42 +2087,57 @@ async function loadLog(more = false) {
 }
 // Nelle viste filtrate dice quanti accessi riusciti non si vedono, senza mostrarli tutti
 async function updateHiddenCount() {
+  const seq = ++logHiddenSeq;
   const box = $("#l-hidden");
   if (!box) return;
   const kinds = (LOG_VIEWS[logFilters.view] || LOG_VIEWS.tutto)[1];
   if (!kinds || kinds.includes("concesso")) { box.hidden = true; return; }
   const p = logParams({kind: ACCESS_KINDS});
-  if (!logFilters.from && !logFilters.to) p.set("since", new Date(new Date().setHours(0, 0, 0, 0)).toISOString());
+  if (!logFilters.from && !logFilters.to) p.set("since", logDate(new Date()) + "T00:00:00");
   const r = await api("api/events/count?" + p).catch(() => null);
-  if (!r || !$("#l-hidden")) return;
+  if (seq !== logHiddenSeq || !r || !box.isConnected) return;
   box.hidden = !r.count;
   box.innerHTML = `<span class="pill ok">${r.count}</span><span style="flex:1">${r.count === 1 ? "accesso riuscito non mostrato" : "accessi riusciti non mostrati"} in questa vista${logFilters.from || logFilters.to ? "" : " (oggi)"}</span><a href="#registro" data-show-all>Mostra Tutto</a>`;
 }
 // Righe del registro con l'intestazione del giorno quando cambia
 function logRows(events) {
   let lastDay = "";
-  const today = new Date().toDateString(), yesterday = new Date(Date.now() - 86400000).toDateString();
+  const before = new Date();
+  before.setDate(before.getDate() - 1);
+  const today = new Date().toDateString(), yesterday = before.toDateString();
   return events.map((e) => {
     const d = new Date(e.ts);
-    const day = d.toDateString() === today ? "Oggi" : d.toDateString() === yesterday ? "Ieri" : d.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long", year: "numeric"});
+    const long = d.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long", year: "numeric"});
+    const day = d.toDateString() === today ? "Oggi" : d.toDateString() === yesterday ? "Ieri" : long[0].toUpperCase() + long.slice(1);
     const head = day !== lastDay ? `<div class="day">${esc(day)}</div>` : "";
     lastDay = day;
     return head + logRow(e);
   }).join("");
 }
 function renderLog() {
-  $("#l-list").innerHTML = logEvents.length ? logRows(logEvents) : `<div class="empty">${logFilters.view === "controllo" && !logFilters.q ? "niente da controllare: nessun rifiuto o allarme" : "nessun evento con questi filtri"}</div>`;
+  logDay = new Date().toDateString();
+  $("#l-list").innerHTML = logEvents.length ? logRows(logEvents) : `<div class="empty">${logFilters.view === "controllo" && !logFilters.q ? "Niente da controllare: nessun accesso negato, nessuna tessera sconosciuta e nessun allarme." : "Nessun evento con questi filtri."}</div>`;
 }
 async function refreshLog() {
-  // Solo se si guarda la cima del registro senza ricerca né date
-  if (logFilters.q || logFilters.from || logFilters.to || window.scrollY > 200) return;
+  // Solo se si guarda la cima del registro senza ricerca né date, e non mentre arriva un'altra pagina
+  if (logFilters.q || logFilters.from || logFilters.to || window.scrollY > 200 || logBusy) return;
+  const seq = logSeq;
   const data = await api("api/events?" + logParams({limit: "100"})).catch(() => null);
-  if (!data || !$("#l-list")) return;
+  if (seq !== logSeq || !data || !$("#l-list")) return;
   updateHiddenCount();
-  // Anche un evento recuperato che entra più in basso, al suo orario, cambia la lista
-  if (data.map((e) => e.id).join() === logEvents.slice(0, data.length).map((e) => e.id).join()) return;
-  logEvents = data;
+  // Con "Carica Altri" l'elenco allungato resta: si rinnova la prima pagina e si tengono gli eventi più vecchi
+  const last = data.at(-1);
+  const rest = data.length === 100 && logEvents.length > 100 ? logEvents.filter((e) => e.ts < last.ts || (e.ts === last.ts && e.id < last.id)) : [];
+  const fresh = data.concat(rest);
+  // Anche un evento recuperato che entra più in basso, una foto o un dettaglio arrivati dopo, o un giorno nuovo
+  if (JSON.stringify(fresh) === JSON.stringify(logEvents) && logDay === new Date().toDateString()) return;
+  const shown = JSON.stringify(logEvents.find((e) => e.id === logSelected));
+  logEvents = fresh;
   renderLog();
+  if (!rest.length) $("#l-more-box").hidden = data.length < 100;
+  // Il dettaglio aperto accanto all'elenco passa alla versione nuova dell'evento (foto, più pressioni)
+  const open = logEvents.find((e) => e.id === logSelected);
+  if (open && JSON.stringify(open) !== shown && $("#l-detail") && !$("#l-detail").hidden && window.matchMedia("(min-width: 1100px)").matches) showEvent(open);
 }
 // Opzioni porta raggruppate per struttura e area
 function doorOptionGroups(doors, selected = "") {
@@ -2113,7 +2161,7 @@ function weekPreview(rules) {
     const segs = rules.filter((r) => r.days.includes(code)).map((r) => {
       const toMin = (t) => { const [h, m] = t.split(":").map(Number); return h * 60 + m; };
       const left = (toMin(r.start) / 1440) * 100, width = ((toMin(r.end) - toMin(r.start)) / 1440) * 100;
-      return width > 0 ? `<span class="seg" style="left:${left}%;width:${width}%" title="${r.start}-${r.end}"></span>` : "";
+      return width > 0 ? `<span class="seg" style="left:${left}%;width:${width}%" title="${r.start}–${r.end}"></span>` : "";
     }).join("");
     return `<span>${name}</span><div class="track">${segs}</div>`;
   }).join("");
@@ -2128,42 +2176,49 @@ async function viewRules(el, sub) {
   el.innerHTML = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#regole/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div><div id="r-body"><div class="loading"><span class="spinner"></span></div></div>`;
   const body = $("#r-body");
   if (tab === "festivita") return viewHolidays(body);
+  // L'errore di questa lettura, non di una precedente
+  store.groupsError = "";
   await loadGroups(true);
-  if (store.groupsError && !store.groups.length) {
-    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Regole Non Leggibili dal Controller</b>${esc(store.groupsError)}</div></div>`;
-    store.groupsError = "";
+  const stale = store.groupsError;
+  store.groupsError = "";
+  if (stale && !store.groups.length) {
+    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Regole Non Leggibili dal Controller</b>${esc(stale)}</div></div>`;
     return;
   }
-  store.groupsError = "";
-  viewSchedules(body);
+  viewSchedules(body, stale);
   paintIcons(body);
 }
-// Interruttore "Mostra Nascosti" in cima a gruppi e fasce
+// Lettura non riuscita con i dati della lettura precedente: si mostrano, ma non come se fossero aggiornati
+const rulesStaleBox = (message) => message ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Non Aggiornati</b>Qui sotto vedi l'ultima lettura riuscita, che potrebbe non essere più attuale (${esc(message)}).</div></div>` : "";
+// Interruttore "Mostra Nascoste" in cima alle fasce
 function hiddenToggle(kind, count) {
-  return count ? `<label class="row small-text muted" style="cursor:pointer"><input type="checkbox" id="show-hidden" ${showHidden[kind] ? "checked" : ""}>Mostra Nascosti (${count})</label>` : "";
+  return count ? `<label class="row small-text muted" style="cursor:pointer"><input type="checkbox" id="show-hidden" ${showHidden[kind] ? "checked" : ""}>Mostra Nascoste (${count})</label>` : "";
 }
 function bindHiddenToggle(kind) {
   const box = $("#show-hidden");
   if (box) box.onchange = () => { showHidden[kind] = box.checked; render(); };
 }
 async function setHidden(kind, token, hidden) {
-  return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosto: lo ritrovi con \"Mostra Nascosti\"" : "Di nuovo visibile");
+  return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosta: la ritrovi con \"Mostra Nascoste\"" : "Di nuovo visibile");
 }
 
 // Tipologie: chi è la persona, dove e quando entra, quanto dura la tessera. L'app tiene il profilo sul controller.
 async function viewCategories(el) {
   el.innerHTML = `${personTabs("tipologie")}<div id="c-body">${loadingBox()}</div>`;
   const body = $("#c-body");
-  await Promise.all([loadGroups(true), loadPlaces(true)]);
+  // Come loadPlaces, ma con l'errore: senza strutture e aree le righe sembrerebbero su luoghi eliminati
+  let placesError = "";
+  store.groupsError = "";
+  await Promise.all([loadGroups(true), api("api/locations").then((x) => { store.places = x; }, (err) => { placesError = err.message; })]);
   if (!body.isConnected) return;
-  if (store.groupsError && !store.schedules.length) {
-    body.innerHTML = errorBox("Tipologie Non Leggibili dal Controller", {message: store.groupsError});
-    store.groupsError = "";
+  const groupsError = store.groupsError;
+  store.groupsError = "";
+  if (groupsError && !store.schedules.length) {
+    body.innerHTML = errorBox("Tipologie Non Leggibili dal Controller", {message: groupsError});
     return;
   }
-  store.groupsError = "";
   const cats = store.categories;
-  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">La tipologia dice chi è la persona (manutentore, pulizie, ospite…) e decide dove e quando apre la sua tessera, e per quanto tempo. Un'area o una struttura comprende tutte le sue porte, anche quelle aggiunte dopo.</p>
+  body.innerHTML = `${rulesStaleBox([groupsError, placesError].filter(Boolean).join("; "))}<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">La tipologia dice chi è la persona (manutentore, pulizie, ospite…) e decide dove e quando apre la sua tessera, e per quanto tempo. Un'area o una struttura comprende tutte le sue porte, anche quelle aggiunte dopo.</p>
     <button type="button" class="primary w-regole" id="c-new">${icon("plus")}Nuova Tipologia</button></div>
     ${cats.length ? `<div class="grid cards">${cats.map((c) => `<div class="card" style="margin:0">
       <h2><span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}<span class="spacer"></span>${c.default ? '<span class="pill accent">Predefinita</span>' : ""}</h2>
@@ -2175,22 +2230,30 @@ async function viewCategories(el) {
       <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-c-edit="${c.id}">${icon("edit")}Modifica</button>
         ${c.default ? "" : `<button type="button" class="small" data-c-default="${c.id}">Rendi Predefinita</button><button type="button" class="small danger" data-c-del="${c.id}">Elimina</button>`}</div>
     </div>`).join("")}</div>`
-    : `<div class="card"><div class="empty">${icon("card")}<br>Nessuna tipologia.<br>Esempi: <b>Manutentore</b> ovunque sempre, <b>Pulizie</b> nelle camere 07–15, <b>Ospite</b> con durata di 1 giorno.</div></div>`}`;
+    : `<div class="card"><div class="empty">${icon("card")}<br>Nessuna tipologia.<br>Esempi: <b>Manutentore</b> ovunque sempre, <b>Pulizie</b> nelle camere 07:00–15:00, <b>Ospite</b> con durata di 1 giorno.</div></div>`}`;
   paintIcons(body);
   // Luoghi per le righe: strutture, aree e porte del controller in uso
   const placeOptions = (selected) => {
     const opt = (value, label) => `<option value="${value}" ${value === selected ? "selected" : ""}>${esc(label)}</option>`;
     const sites = realSites();
-    const areas = sites.flatMap((x) => x.areas.map((a) => opt(`area:${a.id}`, `${x.name} › ${a.name}`)));
-    return `${sites.length ? `<optgroup label="Strutture">${sites.map((x) => opt(`site:${x.id}`, x.name)).join("")}</optgroup>` : ""}
-      ${areas.length ? `<optgroup label="Aree">${areas.join("")}</optgroup>` : ""}
-      <optgroup label="Porte">${allDoors().map((d) => opt(`door:${d.id}`, d.name + (placeOf(d) ? ` · ${placeOf(d)}` : ""))).join("")}</optgroup>`;
+    const areas = sites.flatMap((x) => x.areas.map((a) => [`area:${a.id}`, `${x.name} › ${a.name}`]));
+    const doors = allDoors().map((d) => [`door:${d.id}`, d.name + (placeOf(d) ? ` · ${placeOf(d)}` : "")]);
+    // Un luogo che non c'è più resta scelto e lo si vede: il primo della lista lo coprirebbe senza cambiare la riga
+    const known = [...sites.map((x) => `site:${x.id}`), ...areas.map(([v]) => v), ...doors.map(([v]) => v)];
+    const gone = selected && !known.includes(selected) ? `<option value="${esc(selected)}" selected>${{site: "Struttura Eliminata", area: "Area Eliminata"}[selected.split(":")[0]] || "Porta Eliminata"}</option>` : "";
+    return `${gone}${sites.length ? `<optgroup label="Strutture">${sites.map((x) => opt(`site:${x.id}`, x.name)).join("")}</optgroup>` : ""}
+      ${areas.length ? `<optgroup label="Aree">${areas.map(([v, label]) => opt(v, label)).join("")}</optgroup>` : ""}
+      <optgroup label="Porte">${doors.map(([v, label]) => opt(v, label)).join("")}</optgroup>`;
   };
-  const scheduleOptions = (selected) => store.schedules.filter((x) => !x.hidden || x.token === selected)
-    .map((x) => `<option value="${esc(x.token)}" ${x.token === selected ? "selected" : ""}>${esc(x.name)}${x.summary ? " · " + esc(x.summary) : ""}</option>`).join("");
+  // Lo stesso per una fascia tolta dal controller: il server rifiuta la riga e dice quale correggere
+  const scheduleOptions = (selected) => (selected && !store.schedules.some((x) => x.token === selected) ? `<option value="${esc(selected)}" selected>Fascia Non Più sul Controller</option>` : "")
+    + store.schedules.filter((x) => !x.hidden || x.token === selected)
+      .map((x) => `<option value="${esc(x.token)}" ${x.token === selected ? "selected" : ""}>${esc(x.name)}${x.summary ? " · " + esc(x.summary) : ""}</option>`).join("");
+  // Riga nuova: prima porta e Sempre (o la prima fascia), valori che il menu mostra davvero
+  const newRow = () => ({place: allDoors()[0] ? `door:${allDoors()[0].id}` : "",
+    schedule: (store.schedules.find((x) => x.always) || store.schedules.find((x) => !x.hidden) || store.schedules[0])?.token || ""});
   const editor = async (c) => {
-    let rows = c ? c.rules.map((r) => ({place: `${r.target}:${r.target_id}`, schedule: r.schedule}))
-      : [{place: allDoors()[0] ? `door:${allDoors()[0].id}` : "", schedule: "standard_always"}];
+    let rows = c ? c.rules.map((r) => ({place: `${r.target}:${r.target_id}`, schedule: r.schedule})) : [newRow()];
     const paint = (dlg) => {
       $("#c-rules", dlg).innerHTML = rows.map((r, i) => `<div class="rule-row access-row" data-i="${i}">
         <select data-k="place" aria-label="Dove">${placeOptions(r.place)}</select>
@@ -2205,11 +2268,11 @@ async function viewCategories(el) {
         <p class="hint">Ogni riga apre una porta, un'area o un'intera struttura nella fascia scelta. Una struttura comprende tutte le sue aree: per tenere fuori i locali tecnici, scegli le singole aree.</p></div>
       ${field("Durata della Tessera", `<input type="number" name="valid_days" min="0" max="3650" value="${c?.valid_days || 0}">`, "In giorni dalla registrazione. 0 = illimitata.")}
       ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(c?.description || "")}" placeholder="facoltativa">`)}
-      ${c && c.persons ? `<p class="hint">Le modifiche valgono subito per ${plural(c.persons, "la persona", "le persone")} con questa tipologia${c.custom ? ", tranne chi ha un accesso personalizzato" : ""}.</p>` : ""}`;
+      ${c && c.persons ? `<p class="hint">Le modifiche valgono subito per ${c.persons === 1 ? "la persona" : `le ${c.persons} persone`} con questa tipologia${c.custom ? ", tranne chi ha un accesso personalizzato" : ""}.</p>` : ""}`;
     return modal({title: c ? "Modifica Tipologia" : "Nuova Tipologia", wide: true, body: form,
       onOpen: (dlg) => {
         paint(dlg);
-        $("#c-add", dlg).onclick = () => { rows.push({place: rows.at(-1)?.place || "", schedule: rows.at(-1)?.schedule || "standard_always"}); paint(dlg); };
+        $("#c-add", dlg).onclick = () => { rows.push(rows.length ? {...rows.at(-1)} : newRow()); paint(dlg); };
         $("#c-rules", dlg).addEventListener("change", (e) => {
           const row = e.target.closest("[data-i]");
           if (row) rows[Number(row.dataset.i)][e.target.dataset.k] = e.target.value;
@@ -2220,7 +2283,8 @@ async function viewCategories(el) {
         });
       },
       actions: [{label: "Annulla", value: null}, {label: c ? "Salva" : "Crea", kind: "primary", submit: true, onClick: async (dlg) => {
-        const rules = rows.filter((r) => r.place).map((r) => { const [target, id] = r.place.split(":"); return {target, target_id: Number(id), schedule: r.schedule}; });
+        // Tutte le righe a video: una riga senza luogo la rifiuta il server, invece di sparire in silenzio
+        const rules = rows.map((r) => { const [target, id] = r.place.split(":"); return {target, target_id: Number(id) || 0, schedule: r.schedule}; });
         const payload = {name: val(dlg, "name"), color: $("[name=color]:checked", dlg)?.value || "blue", valid_days: Number(val(dlg, "valid_days") || 0), description: val(dlg, "description"), rules};
         const r = await run(() => api(c ? `api/categories/${c.id}` : "api/categories", {method: c ? "PUT" : "POST", body: payload}));
         if (!r) return false;
@@ -2238,36 +2302,46 @@ async function viewCategories(el) {
     } else if (b.dataset.cDefault) {
       if (await run(() => api("api/default-category", {method: "PUT", body: {category_id: c.id}}), `${c.name} è la nuova tipologia predefinita`)) { store.me.default_category = c.id; render(); }
     } else if (b.dataset.cDel) {
-      if (c.persons) { toast(`${c.name} ha ${plural(c.persons, "persona", "persone")}: spostale prima in un'altra tipologia`, true); return; }
+      if (c.persons) { toast(`${c.name} ha ${plural(c.persons, "persona", "persone")}: ${c.persons === 1 ? "spostala" : "spostale"} prima in un'altra tipologia`, true); return; }
       if (await confirmBox("Elimina Tipologia", `Eliminare la tipologia <b>${esc(c.name)}</b> e il suo profilo sul controller?`, "Elimina", true) &&
           await run(() => api(`api/categories/${c.id}`, {method: "DELETE"}), "Tipologia eliminata")) render();
     }
   };
 }
-function viewSchedules(body) {
+// Sempre (s.always) fa da fascia dei profili con fasce diverse per porta e dei pulsanti: tutti i giorni, anche nei festivi
+const SCHEDULE_ALWAYS = [{days: DAYS.map((d) => d[0]), start: "00:00", end: "24:00"}];
+const SCHEDULE_ALWAYS_NOTE = "Fascia usata dall'app per le tipologie con fasce diverse per porta e per i pulsanti: resta valida sempre, anche nei festivi.";
+// Cambiata da una versione precedente: va rimessa com'era. Una definizione che l'editor non sa leggere (di fabbrica o
+// di un altro strumento) non la si giudica: chi la modifica la riscrive comunque valida sempre
+const scheduleAlwaysChanged = (s) => s.holidays || (s.readable && !DAYS.every(([code]) => s.rules.some((r) => r.days.includes(code) && r.start === "00:00" && r.end === "24:00")));
+function viewSchedules(body, stale = "") {
   const hiddenCount = store.schedules.filter((s) => s.hidden).length;
   const list = store.schedules.filter((s) => showHidden.schedule || !s.hidden);
   const badge = (s) => s.managed ? '<span class="pill accent">Creata Qui</span>' : s.standard ? '<span class="pill">Predefinita del Controller</span>' : '<span class="pill">Esterna</span>';
-  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Le fasce orarie dicono quando si entra: le usano le righe Dove e Quando delle tipologie. Tutte si possono modificare; quelle che non ti servono puoi nasconderle.</p>
+  body.innerHTML = `${rulesStaleBox(stale)}<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Le fasce orarie dicono quando si entra: le usano le righe Dove e Quando delle tipologie. Tutte si possono modificare; quelle che non ti servono puoi nasconderle.</p>
     ${hiddenToggle("schedule", hiddenCount)}<button type="button" class="primary w-regole" id="s-new">${icon("plus")}Nuova Fascia</button></div>
     <div class="grid cards">${list.map((s) => `<div class="card ${s.hidden ? "is-hidden" : ""}" style="margin:0">
       <h2>${esc(s.name)}<span class="spacer"></span>${badge(s)}${s.hidden ? '<span class="pill">Nascosta</span>' : ""}</h2>
       ${s.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(s.description)}</p>` : ""}
+      ${s.always && scheduleAlwaysChanged(s) ? `<div class="alert stack" style="margin:0 0 10px">${icon("alert")}<div class="grow"><b>Fascia da Ripristinare</b>Deve valere tutti i giorni 00:00–24:00, anche nei festivi: com'è ora, le tipologie con fasce diverse per porta e i pulsanti possono non aprire quando dovrebbero.</div><button type="button" class="small primary w-regole" data-s-restore="${esc(s.token)}">Ripristina</button></div>` : ""}
       ${s.readable ? weekPreview(s.rules) + `<p class="small-text" style="margin:8px 0 0">${esc(s.summary)}</p>` : `<p class="muted small-text">Definita con regole che l'editor non sa mostrare: se la modifichi la riscrivi da capo.</p>`}
-      <p class="hint">${s.holidays ? "Non vale nei giorni festivi." : "Vale anche nei festivi."}${s.groups.length ? ` Usata da: ${esc([...new Set(s.groups)].join(", "))}.` : ""}</p>
+      <p class="hint">${s.holidays ? "Non vale nei giorni festivi." : "Vale anche nei festivi."}${s.always ? " L'app la usa per le tipologie con fasce diverse per porta e per i pulsanti." : ""}${s.groups.length ? ` Usata da: ${esc([...new Set(s.groups)].join(", "))}.` : ""}</p>
       <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-s-edit="${esc(s.token)}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost" data-s-hide="${esc(s.token)}" data-hidden="${s.hidden ? 1 : 0}">${s.hidden ? "Mostra" : "Nascondi"}</button>
-        ${s.groups.length ? "" : `<button type="button" class="small danger" data-s-del="${esc(s.token)}">Elimina</button>`}</div>
-    </div>`).join("") || '<div class="empty">nessuna fascia da mostrare</div>'}</div>`;
+        ${s.groups.length || s.always ? "" : `<button type="button" class="small danger" data-s-del="${esc(s.token)}">Elimina</button>`}</div>
+    </div>`).join("") || '<div class="empty">Nessuna fascia da mostrare.</div>'}</div>`;
   bindHiddenToggle("schedule");
   $("#s-new").onclick = () => scheduleEditor();
   body.onclick = async (e) => {
     const b = e.target.closest("button");
     if (!b) return;
-    const s = store.schedules.find((x) => x.token === (b.dataset.sEdit || b.dataset.sDel || b.dataset.sHide));
+    const s = store.schedules.find((x) => x.token === (b.dataset.sEdit || b.dataset.sDel || b.dataset.sHide || b.dataset.sRestore));
     if (!s) return;
     if (b.dataset.sEdit) scheduleEditor(s);
-    else if (b.dataset.sHide) { if (await setHidden("schedule", s.token, b.dataset.hidden !== "1")) render(); }
+    else if (b.dataset.sRestore) {
+      const payload = {name: s.name, description: s.description, holidays: false, rules: SCHEDULE_ALWAYS};
+      if (await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "PUT", body: payload}), "Fascia ripristinata sul controller")) render();
+    } else if (b.dataset.sHide) { if (await setHidden("schedule", s.token, b.dataset.hidden !== "1")) render(); }
     else if (b.dataset.sDel) {
       if (await confirmBox("Elimina Fascia Oraria", `Eliminare <b>${esc(s.name)}</b> dal controller?${s.standard ? " È una fascia predefinita del controller: se ti serve di nuovo dovrai ricrearla." : ""}`, "Elimina", true) &&
           await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "DELETE"}), "Fascia eliminata")) render();
@@ -2275,7 +2349,12 @@ function viewSchedules(body) {
   };
 }
 async function scheduleEditor(s) {
-  let rules = s && s.rules.length ? s.rules.map((r) => ({...r, days: [...r.days]})) : [{days: ["MO", "TU", "WE", "TH", "FR"], start: "08:00", end: "18:00"}];
+  // Una fascia che l'editor non sa leggere parte vuota: gli intervalli proposti sembrerebbero quelli attuali
+  let rules = s ? s.rules.map((r) => ({...r, days: [...r.days]})) : [{days: ["MO", "TU", "WE", "TH", "FR"], start: "08:00", end: "18:00"}];
+  // Di Sempre si cambiano solo nome e descrizione
+  const fixed = Boolean(s?.always);
+  const intro = fixed ? `${SCHEDULE_ALWAYS_NOTE}${scheduleAlwaysChanged(s) ? " Salvando la rimetti valida tutti i giorni 00:00–24:00." : ""}`
+    : s && !s.managed ? `${s.standard ? "È una fascia predefinita del controller." : "Questa fascia è stata creata fuori dall'app."}${s.readable ? " Salvando la riscrivi con gli intervalli qui sotto e da quel momento la gestisce l'app." : " Le regole attuali non si possono mostrare: scrivi gli intervalli da usare. Da quel momento la gestisce l'app."}${s.groups.length ? ` Vale subito per: ${esc(s.groups.join(", "))}.` : ""}` : "";
   const renderRules = (dlg) => {
     $("#rules", dlg).innerHTML = rules.map((r, i) => `<div class="rule-row" data-i="${i}">
       <span class="days">${DAYS.map(([code, letter, name]) => `<button type="button" class="${r.days.includes(code) ? "on" : ""}" data-day="${code}" title="${name}">${letter}</button>`).join("")}</span>
@@ -2286,22 +2365,23 @@ async function scheduleEditor(s) {
   const ok = await modal({
     title: s ? "Modifica Fascia Oraria" : "Nuova Fascia Oraria",
     wide: true,
-    body: `${s && !s.managed ? `<div class="alert info">${icon("alert")}<div class="grow">${s.standard ? "È una fascia predefinita del controller." : "Questa fascia è stata creata fuori dall'add-on."} Salvando la riscrivi con gli intervalli qui sotto e da quel momento la gestisce l'add-on.${s.groups.length ? ` Vale subito per: ${esc(s.groups.join(", "))}.` : ""}</div></div>` : ""}<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(s?.name || "")}" placeholder="es. Orario negozio">`)}
+    body: `${intro ? `<div class="alert info">${icon("alert")}<div class="grow">${intro}</div></div>` : ""}<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(s?.name || "")}" placeholder="es. Orario Negozio">`)}
       ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(s?.description || "")}" placeholder="facoltativa">`)}</div>
-      <div class="field"><label>Intervalli Settimanali</label><div id="rules"></div>
+      ${fixed ? "" : `<div class="field"><label>Intervalli Settimanali</label><div id="rules"></div>
         <div class="row"><button type="button" class="small" id="add-rule">${icon("plus")}Aggiungi Intervallo</button>
-        <span class="muted small-text">Modelli:</span><button type="button" class="small ghost" data-tpl="office">Lun-Ven 8-18</button>
-        <button type="button" class="small ghost" data-tpl="shop">Lun-Sab 7-20</button><button type="button" class="small ghost" data-tpl="day">Tutti i Giorni 6-22</button><button type="button" class="small ghost" data-tpl="always">Sempre</button></div></div>
+        <span class="muted small-text">Modelli:</span><button type="button" class="small ghost" data-tpl="office">Lun-Ven 08:00–18:00</button>
+        <button type="button" class="small ghost" data-tpl="shop">Lun-Sab 07:00–20:00</button><button type="button" class="small ghost" data-tpl="day">Tutti i Giorni 06:00–22:00</button><button type="button" class="small ghost" data-tpl="always">Sempre</button></div></div>
       <div class="field inline"><input type="checkbox" name="holidays" id="f-hol" ${s ? (s.holidays ? "checked" : "") : "checked"}><label for="f-hol">Non Valida nei Giorni Festivi</label></div>
       <p class="hint" style="margin:-8px 0 12px">I festivi si gestiscono nella scheda <a href="#regole/festivita">Festività</a>.</p>
-      <div class="field"><label>Anteprima</label><div id="preview"></div></div>`,
+      <div class="field"><label>Anteprima</label><div id="preview"></div></div>`}`,
     actions: [{label: "Annulla", value: null}, {label: s ? "Salva" : "Crea", kind: "primary", submit: true, onClick: async (dlg) => {
-      const payload = {name: val(dlg, "name"), description: val(dlg, "description"), holidays: val(dlg, "holidays"),
-        rules: rules.map((r) => ({...r, end: r.end === "23:59" ? "24:00" : r.end}))};
+      const payload = {name: val(dlg, "name"), description: val(dlg, "description"), holidays: fixed ? false : val(dlg, "holidays"),
+        rules: fixed ? SCHEDULE_ALWAYS : rules.map((r) => ({...r, end: r.end === "23:59" ? "24:00" : r.end}))};
       const path = s ? `api/schedules/${encodeURIComponent(s.token)}` : "api/schedules";
       return (await run(() => api(path, {method: s ? "PUT" : "POST", body: payload}), s ? "Fascia aggiornata sul controller" : "Fascia creata sul controller")) || false;
     }}],
     onOpen: (dlg) => {
+      if (fixed) return;
       renderRules(dlg);
       $("#add-rule", dlg).onclick = () => { rules.push({days: ["MO", "TU", "WE", "TH", "FR"], start: "09:00", end: "13:00"}); renderRules(dlg); };
       $$("[data-tpl]", dlg).forEach((b) => b.onclick = () => {
@@ -2331,15 +2411,15 @@ async function viewHolidays(body) {
   let list;
   try { list = await api("api/holidays"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   const year = new Date().getFullYear();
-  body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie gestite dall'add-on con l'opzione "Non Valida nei Giorni Festivi". Le fasce mai modificate qui non cambiano.</p>
+  body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie gestite dall'app con l'opzione "Non Valida nei Giorni Festivi". Le fasce mai modificate qui non cambiano.</p>
     <div class="card w-regole"><h2>Aggiungi Festività</h2>
       <form class="row" id="h-form"><input type="date" name="day" required><input name="name" placeholder="Nome (es. Patrono)" maxlength="60" style="flex:1;min-width:160px">
       <label class="row small-text"><input type="checkbox" name="yearly" checked> Ogni Anno</label><button type="submit" class="primary">Aggiungi</button></form>
       <p class="hint">Oppure <button type="button" class="small" id="h-it">Aggiungi le Festività Nazionali Italiane</button> (fisse ogni anno, Pasquetta ${year} e ${year + 1}).</p></div>
     <div class="card flush"><div class="list">${list.length ? list.map((h) => `<div class="item">
       <div class="ev-icon k-accent">${icon("clock")}</div>
-      <div class="grow"><div class="title">${esc(h.name || "Festività")}</div><div class="meta">${h.yearly ? esc(new Date(h.day + "T12:00:00").toLocaleDateString("it-IT", {day: "numeric", month: "long"})) + " · ogni anno" : esc(fmtDate(h.day + "T12:00:00"))}</div></div>
-      <button type="button" class="small danger w-regole" data-h-del="${esc(h.day)}">Elimina</button></div>`).join("") : '<div class="empty">nessuna festività</div>'}</div></div>`;
+      <div class="grow"><div class="title">${esc(h.name || "Festività")}</div><div class="meta">${esc(new Date(h.day + "T12:00:00").toLocaleDateString("it-IT", h.yearly ? {day: "numeric", month: "long"} : {day: "numeric", month: "long", year: "numeric"})) + (h.yearly ? " · ogni anno" : "")}</div></div>
+      <button type="button" class="small danger w-regole" data-h-del="${esc(h.day)}">Elimina</button></div>`).join("") : '<div class="empty">Nessuna festività.</div>'}</div></div>`;
   paintIcons(body);
   $("#h-form").onsubmit = async (e) => {
     e.preventDefault();
