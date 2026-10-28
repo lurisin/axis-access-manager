@@ -133,6 +133,20 @@ async def test_damaged_part_is_detected(plant):
         plant.backups.load(manifest["id"])
 
 
+async def test_damaged_compressed_stream_is_detected_and_repaired(plant):
+    # Un byte cambiato nel flusso compresso dà zlib.error, non BadGzipFile: create() e verify() andavano in eccezione
+    manifest = await plant.backup()
+    path = plant.backups.store.parts / f"{manifest['parts'][COMMON]['hash']}.json.gz"
+    data = path.read_bytes()
+    path.write_bytes(data[:10] + b"\x07" + data[11:])
+
+    with pytest.raises(BackupError, match="rovinato"):
+        plant.backups.load(manifest["id"])
+    assert (await plant.backups.verify_now())["damaged"] == 1
+    assert await plant.backup("automatico", skip=True) is None
+    assert path.read_bytes() == data and (await plant.backups.verify_now())["ok"]
+
+
 async def test_unreachable_controller_makes_an_incomplete_backup(plant, controller, db):
     first = await plant.backup()
     controller.offline = True
@@ -261,6 +275,25 @@ async def test_restore_deleted_category_and_its_persons(plant, controller, db):
     person = db.get_person(anna["id"])
     assert person["category_id"] == category["id"]
     assert person["cards"][0]["access_profile"] == restored["group_token"]
+
+
+async def test_category_rules_on_doors_of_an_unread_controller(plant, controller, db):
+    # Senza la parte del controller le porte sembravano sparite: la riga era bloccata con un motivo sbagliato
+    rule = {"target": "door", "target_id": plant.scala, "schedule": "standard_always"}
+    category = await plant.rules.save_category(None, {"name": "Pulizie", "color": "teal", "rules": [rule]}, "admin")
+    backup = await plant.backup()
+    await plant.rules.delete_category(category["id"], "admin")
+    _, saved = plant.backups.load(backup["id"])
+    controller.offline = True
+    current, _ = await plant.backups.snapshot(plant.clients)
+    controller.offline = False
+
+    [item] = plan(saved, current, ["tipologie"], plant.controller_id)
+
+    assert item["action"] == "ricrea" and not item["blocked"] and "non risponde" in item["warnings"][0]
+    runtime = Runtime(db, plant.access, plant.rules, plant.programming, plant.controller_id)
+    assert not (await apply([item], [item["key"]], runtime, "admin"))["failed"]
+    assert db.all_category_rules()[category["id"]] == [rule]
 
 
 async def test_category_created_after_backup_is_offered_but_not_ticked(plant):

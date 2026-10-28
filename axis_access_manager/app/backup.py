@@ -2,7 +2,7 @@
 
 Ogni backup è un piccolo file indice in /data/backup con l'elenco delle sue parti: una per i Dati Comuni
 (persone, tessere, tipologie, fasce orarie, festività, strutture, utenti dell'app) e una per ogni controller
-(porte, lettori, punti di accesso, profili, ingressi, impostazioni del dispositivo).
+(porte, lettori, punti di accesso, profili, ingressi, impostazioni del controller).
 Ogni parte è un file JSON compresso che ha per nome l'impronta SHA-256 del suo contenuto: una parte che non
 è cambiata dal backup precedente non si riscrive, si riusa il file. Così molti backup quasi uguali occupano
 poco più di uno, e confrontare due backup vuol dire confrontare le loro parti.
@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import zlib
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
@@ -110,13 +111,18 @@ SECTIONS = {
     "strutture": ("struttura", "strutture", True),
     "utenti": ("utente dell'app", "utenti dell'app", False),
     "impostazioni": ("impostazione dell'app", "impostazioni dell'app", True),
-    "collegamento": ("collegamento", "collegamenti", False),
-    "dispositivo": ("impostazioni del dispositivo", "impostazioni del dispositivo", True),
+    "collegamento": ("connessione", "connessioni", True),
+    "dispositivo": ("impostazioni del controller", "impostazioni del controller", True),
     "porte": ("porta", "porte", True),
     "lettori": ("lettore", "lettori", False),
     "punti": ("punto di accesso", "punti di accesso", False),
     "profili": ("profilo di accesso", "profili di accesso", False),
     "ingressi": ("ingresso", "ingressi", False),
+}
+# Sezioni con una sola riga per controller: nel riassunto una frase con il nome del controller
+CONTROLLER_CHANGED = {
+    "collegamento": "connessione del {} modificata",
+    "dispositivo": "impostazioni del {} modificate",
 }
 SECTION_TITLES = {
     "persone": "Persone",
@@ -127,8 +133,8 @@ SECTION_TITLES = {
     "strutture": "Strutture e Aree",
     "utenti": "Utenti dell'App",
     "impostazioni": "Impostazioni dell'App",
-    "collegamento": "Collegamento",
-    "dispositivo": "Dispositivo",
+    "collegamento": "Connessione",
+    "dispositivo": "Impostazioni del Controller",
     "porte": "Porte",
     "lettori": "Lettori",
     "punti": "Punti di Accesso",
@@ -159,14 +165,14 @@ FIELD_LABELS = {
     "host": "Indirizzo",
     "username": "Utente",
     "verify_ssl": "Verifica Certificato HTTPS",
-    "area_id": "Posizione",
+    "area_id": "Struttura e Area",
     "snapshot_camera": "Telecamera",
-    "snapshot_on_granted": "Istantanea Anche sugli Accessi Concessi",
+    "snapshot_on_granted": "Foto Anche sugli Accessi Concessi",
     "ha_buttons": "Pulsanti in Home Assistant",
-    "intercom_name": "Citofono",
-    "intercom_open_door": '"Apri" dal Citofono Apre Questa Porta',
+    "intercom_name": "Nome del Videocitofono",
+    "intercom_open_door": '"Apri" dal Videocitofono Apre Questa Porta',
     "intercom_relay": "Relè del Tasto Apri",
-    "intercom_mqtt_prefix": "Prefisso MQTT del Citofono",
+    "intercom_mqtt_prefix": "Prefisso MQTT del Videocitofono",
     "mqtt_topic_prefix": "Prefisso MQTT",
     "model": "Modello",
     "serial": "Numero di Serie",
@@ -271,7 +277,8 @@ class BackupStore:
             raise BackupError("parte del backup non valida")
         try:
             raw = gzip.decompress((self.parts / f"{digest}.json.gz").read_bytes())
-        except (OSError, EOFError, gzip.BadGzipFile) as err:
+        # Un flusso compresso rovinato dà zlib.error, che non è un OSError come BadGzipFile
+        except (OSError, EOFError, zlib.error) as err:
             raise BackupError("file del backup mancante o rovinato") from err
         if hashlib.sha256(raw).hexdigest() != digest:
             raise BackupError("file del backup rovinato: il contenuto non corrisponde alla sua impronta")
@@ -771,13 +778,13 @@ def controller_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
     view: dict[str, dict[str, dict]] = {key: {} for key in SECTIONS}
     controller = part.get("controller") or {}
     view["collegamento"]["collegamento"] = _item(
-        "Collegamento del Controller",
+        "Connessione del Controller",
         {k: controller.get(k) for k in ("name", "description", "host", "username", "verify_ssl", "area_id")},
         {"area_id": ctx["areas"].get(controller.get("area_id"), "—")},
     )
     device = part.get("device") or {}
     view["dispositivo"]["dispositivo"] = _item(
-        "Impostazioni del Dispositivo",
+        "Impostazioni del Controller",
         {k: device.get(k) for k in ("model", "serial", "firmware", "time_zone", "ntp", "mqtt", "mqtt_events")},
         {
             "ntp": _text((device.get("ntp") or {}).get("servers")),
@@ -1032,8 +1039,8 @@ def summary_text(groups: list[dict], limit: int = 6) -> str:
             if section["removed"]:
                 phrases.append(f"−{plural(len(section['removed']), one, many)}")
             changed = section["changed"]
-            if section["key"] in ("collegamento", "dispositivo") and changed:
-                phrases.append(f"{one} di {group['title']} modificat{'e' if female else 'o'}")
+            if section["key"] in CONTROLLER_CHANGED and changed:
+                phrases.append(CONTROLLER_CHANGED[section["key"]].format(_named("controller", group["title"])))
             elif 0 < len(changed) <= 2:
                 phrases += [f"{_named(one, c['label'])} modificat{'a' if female else 'o'}" for c in changed]
             elif changed:
