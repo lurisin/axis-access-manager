@@ -8,6 +8,20 @@ from datetime import UTC, date, datetime, timedelta
 DAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 DAY_NAMES = {"MO": "lun", "TU": "mar", "WE": "mer", "TH": "gio", "FR": "ven", "SA": "sab", "SU": "dom"}
 TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$|^24:00$")
+MONTH_NAMES = [
+    "gennaio",
+    "febbraio",
+    "marzo",
+    "aprile",
+    "maggio",
+    "giugno",
+    "luglio",
+    "agosto",
+    "settembre",
+    "ottobre",
+    "novembre",
+    "dicembre",
+]
 
 # Fasce predefinite del controller (Sempre, Orario d'ufficio, Fine settimana)
 STANDARD_PREFIX = "standard_"
@@ -178,6 +192,16 @@ def italian_holidays(years: list[int]) -> list[dict]:
             {"day": (easter(year) + timedelta(days=1)).isoformat(), "name": "Lunedì dell'Angelo", "yearly": False}
         )
     return holidays
+
+
+def holiday_label(day: str, name: str = "", yearly: bool = False) -> str:
+    """Festività come la mostra la pagina: «Natale (25 dicembre, ogni anno)», «Lunedì dell'Angelo (6 aprile 2026)»."""
+    try:
+        parsed = date.fromisoformat(day)
+    except ValueError:
+        return " ".join(filter(None, [name, day]))
+    when = f"{parsed.day} {MONTH_NAMES[parsed.month - 1]}" + (", ogni anno" if yearly else f" {parsed.year}")
+    return f"{name} ({when})" if name else when
 
 
 def normalize_holiday(day: str, name: str) -> tuple[str, str]:

@@ -329,7 +329,7 @@ class InstallationService:
         if controller is None:
             raise ServiceError("controller non trovato")
         self.db.delete_controller(controller_id)
-        self.db.add_audit(user, "controller rimosso dall'app", f"{controller['name']} ({controller['host']})")
+        self.db.add_audit(user, "controller tolto dall'app", f"{controller['name']} ({controller['host']})")
 
     # Strutture e aree
 
@@ -353,7 +353,7 @@ class InstallationService:
         if site is None:
             raise ServiceError("struttura non trovata")
         self.db.delete_site(site_id)
-        self.db.add_audit(user, "struttura rimossa", site["name"])
+        self.db.add_audit(user, "struttura eliminata", site["name"])
 
     def save_area(self, area_id: int | None, site_id: int, data: dict, user: str) -> dict:
         existing = self.db.get_area(area_id) if area_id else None
@@ -378,7 +378,7 @@ class InstallationService:
         if area is None:
             raise ServiceError("area non trovata")
         self.db.delete_area(area_id)
-        self.db.add_audit(user, "area rimossa", area["name"])
+        self.db.add_audit(user, "area eliminata", area["name"])
 
     def door_fields(self, data: dict) -> dict:
         token = (data.get("door_token") or "").strip()
@@ -456,4 +456,4 @@ class InstallationService:
         if door is None:
             raise ServiceError("porta non trovata")
         self.db.delete_door(door_id)
-        self.db.add_audit(user, "porta rimossa dall'app", door["name"])
+        self.db.add_audit(user, "porta tolta dall'app", door["name"])
