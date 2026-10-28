@@ -1,14 +1,14 @@
 # Axis Access Manager
 
-Add-on di Home Assistant per gestire tessere, anagrafica e log di accesso di un controller **Axis A1210**.
+Add-on di Home Assistant per gestire persone, tessere e registro degli accessi di un controller **Axis A1210**.
 L'interfaccia compare nella barra laterale di Home Assistant tramite Ingress; il controller resta la fonte
 di verità per le aperture, quindi la porta funziona anche se Home Assistant è spento.
 
-Cosa fa: anagrafica e tipologie sincronizzate con l'A1210, tessere da registrare, fasce orarie e festività,
-validità temporanea, cruscotto personalizzabile, notifiche, registro con foto ed esportazione CSV, impianti con schema
-lettori ↔ porte e ingressi (pulsanti, relè del citofono, contatto porta), videocitofoni Hikvision, entità ed eventi in
-Home Assistant, importazione CSV, utenti con ruoli e permessi, backup con confronto, ripristino e ripristino completo
-del controller. Istruzioni in [DOCS.md](axis_access_manager/DOCS.md), novità di ogni versione nel
+Cosa fa: persone, tessere e tipologie sincronizzate con l'A1210, tessere da registrare, fasce orarie e festività,
+validità temporanea, cruscotto personalizzabile, notifiche di guasti e allarmi, registro con foto ed esportazione CSV,
+impianti con schema lettori ↔ porte e ingressi (pulsanti, relè del citofono, contatto porta), videocitofoni Hikvision,
+entità ed eventi in Home Assistant, importazione CSV, utenti con ruoli e permessi, backup con confronto, ripristino e
+ripristino completo del controller. Istruzioni in [DOCS.md](axis_access_manager/DOCS.md), novità di ogni versione nel
 [CHANGELOG](axis_access_manager/CHANGELOG.md).
 
 ## Struttura
@@ -20,6 +20,7 @@ requirements-dev.txt         dipendenze per i test e ruff
 .github/workflows/ci.yaml    test, ruff e controllo dell'add-on a ogni push su main e a ogni pull request
 axis_access_manager/         l'add-on
   config.yaml                opzioni, Ingress, servizio MQTT, copia del database prima dei backup di Home Assistant
+                             e file esclusi da quei backup
   translations/it.yaml       nomi e descrizioni delle opzioni nella scheda Configurazione
   DOCS.md                    documentazione (scheda Documentazione dell'add-on)
   CHANGELOG.md               novità di ogni versione
@@ -32,15 +33,16 @@ axis_access_manager/         l'add-on
     events.py                ascolto degli eventi pubblicati via MQTT dall'A1210
     db.py                    database SQLite in /data (persone, tessere, regole, eventi, audit)
     backup_copy.py           copie coerenti del database (prima dei backup di Home Assistant e degli aggiornamenti)
-    service.py               logica: sincronizzazione, anagrafica, tipologia e validità, eventi, apertura porta
+                             e ripristino dalla copia all'avvio
+    service.py               logica: sincronizzazione, persone e tessere, tipologia e validità, eventi, apertura porta
     rules.py                 fasce orarie e festività in iCalendar, validità delle tessere
     rules_service.py         tipologie, profili di accesso Axis, fasce orarie e festività sul controller
     installation.py          impianti: controller e porte con videocitofono e telecamera, configurati nell'app
     programming.py           programmazione del controller (porte, lettori, collegamenti, ingressi) con annullamento
-    health.py                stato di ogni controller: raggiungibile, identità, orologio
+    health.py                stato di ogni controller: raggiungibile, identità, orologio e fuso orario
     notifications.py         notifiche, guasti e allarmi
     backup.py                backup dell'app: dati comuni e configurazione dei controller, confronto, ritenzione, verifica
-    restore.py               ripristino selettivo (tipologie, persone e tessere, porte e lettori)
+    restore.py               ripristino selettivo (porte e lettori, tipologie, persone e tessere)
     full_restore.py          ripristino completo di un controller resettato o sostituito
     users.py                 utenti dell'app e permessi
     intercom.py              videocitofono Hikvision tramite l'add-on Hikvision Doorbell
