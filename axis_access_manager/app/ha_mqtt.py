@@ -308,7 +308,7 @@ class HaBridge:
                 "controller_online",
                 {
                     **state,
-                    "name": "Controller Online",
+                    "name": "Controller Collegato al Broker",
                     "device_class": "connectivity",
                     "entity_category": "diagnostic",
                     "value_template": "{{ value_json.controller.online }}",
@@ -507,18 +507,19 @@ class HaBridge:
         if self.enabled and self._midnight is None:
             self._midnight = asyncio.get_running_loop().create_task(self._midnight_loop())
 
-    async def stop(self) -> None:
+    async def stop(self, offline: bool = True) -> None:
         """Da chiamare prima di chiudere la connessione al broker (spegnimento o nuova configurazione).
 
         Con una chiusura ordinata il broker scarta il messaggio di addio: "offline" si pubblica qui, altrimenti in
-        Home Assistant le entità resterebbero disponibili con l'ultimo stato.
+        Home Assistant le entità resterebbero disponibili con l'ultimo stato. offline=False quando la nuova
+        configurazione si ricollega subito con le stesse entità: non diventano non disponibili per un attimo.
         """
         if self._midnight is not None:
             self._midnight.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._midnight
             self._midnight = None
-        if not self.enabled:
+        if not self.enabled or not offline:
             return
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(

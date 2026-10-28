@@ -68,7 +68,7 @@ async def test_open_from_app_sends_one_access_door(service, db, controller, cloc
     assert controller.calls == [("access_door", "porta", False)]
     assert details(db) == [
         ("citofono", "ha suonato", "Citofono scala"),
-        ("apertura_remota", "8 s dopo la chiamata", "App Hik-Connect (Citofono)"),
+        ("apertura_remota", "8 s dopo la chiamata", "App Hik-Connect (Videocitofono)"),
     ]
 
 
@@ -115,7 +115,7 @@ async def test_credentials_stored_on_intercom_are_not_forwarded(service, db, con
     await settle()
 
     assert controller.calls == []
-    assert details(db)[-1][1] == "apertura con tessera del citofono non inoltrata all'A1210"
+    assert details(db)[-1][1] == "apertura con tessera del videocitofono non inoltrata all'A1210"
 
 
 async def test_forwarding_disabled_only_logs(service, db, controller, clock):

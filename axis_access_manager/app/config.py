@@ -152,21 +152,26 @@ def load_settings(path: Path = OPTIONS_PATH) -> Settings:
 
 
 async def resolve_mqtt(
-    settings: Settings, client: httpx.AsyncClient | None = None, token: str | None = None
+    settings: Settings, client: httpx.AsyncClient | None = None, token: str | None = None, quiet: bool = False
 ) -> MqttSettings | None:
-    """Restituisce il broker da usare: quello nelle opzioni o quello del Supervisor."""
+    """Restituisce il broker da usare: quello nelle opzioni o quello del Supervisor.
+
+    quiet: nuovo tentativo dopo l'avvio, ogni minuto finché il broker non c'è; il motivo va nel log solo in debug,
+    perché l'avviso all'avvio c'è già e senza Mosquitto riempirebbe il log."""
     if settings.mqtt:
         return settings.mqtt
+    level = logging.DEBUG if quiet else logging.WARNING
     token = token or supervisor_token()
     if not token:
-        _LOGGER.warning("Token del Supervisor non disponibile: imposta mqtt_host nelle opzioni")
+        _LOGGER.log(level, "Token del Supervisor non disponibile: imposta mqtt_host nelle opzioni")
         return None
     owns_client = client is None
     client = client or httpx.AsyncClient(timeout=10)
     try:
         response = await client.get(SUPERVISOR_MQTT_URL, headers={"Authorization": f"Bearer {token}"})
         if response.status_code != 200:
-            _LOGGER.warning(
+            _LOGGER.log(
+                level,
                 "Il Supervisor non fornisce un broker MQTT (risposta %s): installa l'add-on Mosquitto "
                 "oppure imposta mqtt_host nelle opzioni",
                 response.status_code,
@@ -180,7 +185,7 @@ async def resolve_mqtt(
             password=data.get("password"),
         )
     except (httpx.HTTPError, KeyError, ValueError) as err:
-        _LOGGER.warning("Richiesta del broker MQTT al Supervisor non riuscita: %s", err)
+        _LOGGER.log(level, "Richiesta del broker MQTT al Supervisor non riuscita: %s", err)
         return None
     finally:
         if owns_client:
