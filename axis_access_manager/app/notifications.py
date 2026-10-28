@@ -28,10 +28,15 @@ TYPES = {
     "programming": (
         "Porte Che Non Si Aprono",
         "Punti di accesso che il controller non gestisce, pulsanti senza il permesso di apertura o ingressi rimasti "
-        "programmati a metà, per esempio dopo un reset del controller: la porta non si apre.",
+        "programmati a metà, per esempio dopo un reset del controller: la porta non si apre. Segnala anche "
+        "le tipologie non ancora aggiornate sul controller dopo una modifica a porte e aree.",
         "urgent",
     ),
-    "mqtt": ("Collegamento MQTT Perso", "L'add-on non riceve più gli eventi dal broker MQTT.", "urgent"),
+    "mqtt": (
+        "Collegamento MQTT Perso",
+        "L'add-on non riceve più gli eventi dal broker MQTT, oppure non c'è nessun broker MQTT.",
+        "urgent",
+    ),
     "unknown_card": ("Tessere Sconosciute", "Tessere non registrate passate sul lettore.", "urgent"),
     "denied": (
         "Accessi Negati",
@@ -102,6 +107,9 @@ MAX_EVENTS = 500
 SEVERITY_ORDER = {"crit": 0, "warn": 1, "low": 2}
 SETTING_LEVELS = "notifications"
 SETTING_SEEN = "notifications_seen"
+# Tipologie con il profilo sul controller ancora da aggiornare dopo una modifica a porte o aree ({"at", "error"}):
+# la scrive main._refresh_categories, che riprova dopo ogni sincronizzazione
+SETTING_CATEGORIES_PENDING = "categories_refresh_pending"
 # Dopo l'avvio i guasti tornano man mano (controllo dei controller, stato MQTT): fino ad allora le viste restano
 SETTLE = timedelta(minutes=5)
 # Id dei gruppi di eventi nelle versioni precedenti: g<primo evento>-<ultimo>
@@ -245,7 +253,20 @@ class NotificationService:
             )
 
         if controller_configured:
-            if mqtt_configured and not mqtt_connected:
+            if not mqtt_configured:
+                # Il broker si cerca di nuovo ogni minuto (main._wait_for_broker): la notifica sparisce da sola
+                add(
+                    "mqtt",
+                    "mqtt:none",
+                    "crit",
+                    "Nessun Broker MQTT",
+                    "Gli eventi del controller non arrivano all'app: registro e stato porta non si aggiornano. "
+                    "Installa l'add-on Mosquitto o imposta il broker nelle opzioni dell'add-on: l'app lo cerca di "
+                    "nuovo ogni minuto, senza riavvio.",
+                    now.isoformat(timespec="seconds"),
+                    link="#impianti/stato",
+                )
+            elif not mqtt_connected:
                 add(
                     "mqtt",
                     "mqtt",
@@ -386,6 +407,22 @@ class NotificationService:
                         link="#impianti",
                         weight=_offset_weight(offset),
                     )
+            pending = _json_dict(self.db.get_setting(SETTING_CATEGORIES_PENDING))
+            if pending is not None:
+                # Il controller applica ancora le righe di prima: chi doveva perdere una porta la apre ancora
+                error = str(pending.get("error") or "")
+                add(
+                    "programming",
+                    "categories",
+                    "crit",
+                    "Tipologie Non Aggiornate sul Controller",
+                    "Le ultime modifiche a porte e aree non sono ancora sul controller, che applica le tipologie "
+                    "com'erano prima. "
+                    + (f"{_sentence(error)} " if error else "")
+                    + "L'app riprova dopo ogni sincronizzazione con il controller.",
+                    str(pending.get("at") or "") or now.isoformat(timespec="seconds"),
+                    link="#persone/tipologie",
+                )
         if missing and missing.get("count"):
             add(
                 "missing_cards",
@@ -499,9 +536,14 @@ class NotificationService:
             )
         if levels["expiring"] != "off":
             for person in self.db.list_persons():
-                ends = [e for e in (_parse(c.get("valid_to") or "") for c in person["cards"]) if e]
+                ends = []
+                for card in person["cards"]:
+                    start, end = _parse(card.get("valid_from") or ""), _parse(card.get("valid_to") or "")
+                    # Come il cruscotto e In Scadenza in Persone: una tessera non ancora valida non è in scadenza
+                    if end and now < end <= now + EXPIRING and not (start and start > now):
+                        ends.append(end)
                 end = min(ends) if ends else None
-                if end and now < end <= now + EXPIRING:
+                if end:
                     add(
                         "expiring",
                         f"x{person['id']}:{end.isoformat()}",
@@ -596,6 +638,17 @@ def _offset_weight(seconds: float | None) -> int:
     """Peso dello scarto dell'orologio: oltre 10 minuti e oltre un'ora la notifica vista torna da gestire."""
     value = abs(seconds or 0)
     return 2 if value >= 3600 else 1 if value >= 600 else 0
+
+
+def _json_dict(value: str | None) -> dict | None:
+    """Impostazione salvata come oggetto JSON; None se è vuota, {} se non si legge."""
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 def _names(names: list[str]) -> str:

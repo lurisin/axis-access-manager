@@ -103,7 +103,7 @@ def _anonymous_denied(row: dict) -> bool:
 
 
 def parse_command(command: str) -> tuple[bool, str] | None:
-    """Comando dei pulsanti: "apri" o "apri_lungo", seguito da ":<porta>" per le porte oltre la prima."""
+    """Comando dei pulsanti: "apri" o "apri_lungo", seguito da ":<porta>" (senza, la porta di HaBridge.legacy_door)."""
     action, _, door = command.partition(":")
     if action not in COMMANDS:
         return None
@@ -363,7 +363,7 @@ class HaBridge:
         legacy = self.legacy_door()
         for door in self.doors:
             # Porta con gli identificativi di sempre: nomi e id delle versioni precedenti. Le altre hanno il loro
-            # nome e il loro id, che non passa mai a un'altra porta. Il comando senza porta va alla prima porta.
+            # nome e il loro id, che non passa mai a un'altra porta. Il comando senza porta va a quella di sempre.
             if legacy and door["door_token"] == legacy:
                 suffix, label = "", "Porta"
                 extra = "" if door["door_token"] == self.settings.door_token else f":{door['door_token']}"

@@ -37,9 +37,9 @@ from .health import (
     ha_time_zone,
     paused_reason,
 )
-from .installation import MAX_CONTROLLERS, InstallationService, check_host
+from .installation import MAX_CONTROLLERS, InstallationService, check_host, same_controller
 from .intercom import IntercomBridge, IntercomSettings
-from .notifications import EXPIRING, FAULT_TYPES, NotificationService
+from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
 from .programming import DIRECTIONS, INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import RulesService
@@ -684,7 +684,7 @@ def create_app(
             "sync": state.last_sync,
             "notifications": listing["open"] if listing else 0,
             # Barra in alto: guasti finché durano, allarmi finché non se ne prende visione
-            "faults": [_brief(i) for i in listing["items"] if i["type"] in FAULT_TYPES] if listing else [],
+            "faults": [_brief(i) for i in listing["items"] if i["fault"]] if listing else [],
             "alarms": [_brief(i) for i in listing["items"] if i["type"] == "door_alarm" and not i["seen"]]
             if listing
             else [],
@@ -1340,7 +1340,7 @@ def create_app(
         existing = request.app.state.db.get_controller(body.controller_id) if body.controller_id else None
         if not password and existing:
             # La password salvata va solo all'indirizzo e all'utente salvati: mai a un indirizzo scritto qui
-            if (host.lower(), body.username.strip()) != (existing["host"].lower(), existing["username"]):
+            if not same_controller(host, body.username, existing):
                 raise ServiceError("indirizzo o utente cambiati: scrivi di nuovo la password del controller")
             password = existing["password"]
         client = request.app.state.injected_controller or A1210Client(host, body.username, password, body.verify_ssl)
@@ -1673,8 +1673,6 @@ def create_app(
     return app
 
 
-# Tipologie con il profilo sul controller ancora da aggiornare dopo una modifica a porte o aree ({"at", "error"})
-SETTING_CATEGORIES_PENDING = "categories_refresh_pending"
 # Operazioni ancora in corso sul client del controller (comandi di Home Assistant e del citofono, sincronizzazione,
 # scritture a più passi): quanto si aspetta prima di chiuderlo allo spegnimento e con una nuova configurazione
 STOP_GRACE = 5
@@ -1890,6 +1888,8 @@ def _wire(app: FastAPI) -> None:
             ),
         )
         intercom.door = door
+        # Stesso citofono di una porta precedente: la chiamata la segue quella (vedi sotto)
+        intercom.call = next((i for i in state.intercoms if i.call_topic == intercom.call_topic), None)
         state.intercoms.append(intercom)
         for topic in intercom.topics:
             # Stesso citofono su due porte (relè 1 e 2): la chiamata è una e la tiene la prima porta, invece di
@@ -1904,7 +1904,8 @@ def _wire(app: FastAPI) -> None:
 
             async def on_command(command: str) -> None:
                 parsed = parse_command(command)
-                door = (parsed[1] or cfg.door_token) if parsed else ""
+                # Senza porta (automazioni delle versioni precedenti): la porta con gli identificativi di sempre
+                door = (parsed[1] or bridge.legacy_door()) if parsed else ""
                 if parsed is None or door not in allowed:
                     _LOGGER.warning("Comando sconosciuto da Home Assistant: %s", command)
                     return
@@ -2044,18 +2045,10 @@ def _current_notifications(state) -> list[dict]:
         missing=_missing_summary(state.db),
         backup=state.backups.last_error(),
         backup_verify=state.backups.last_verify(),
-        **_database_problems(state),
+        # Database ripristinato all'avvio e copia per il backup di Home Assistant non aggiornata ("" se tutto bene)
+        db_recovery=(getattr(state, "db_recovery", None) or {}).get("text", ""),
+        ha_copy_error=ha_copy_error(state.db.path) if state.db.path else "",
     )
-
-
-def _database_problems(state) -> dict[str, str]:
-    """Database ripristinato all'avvio e copia per il backup di Home Assistant non aggiornata. Si passano solo se ci
-    sono: per collect() i valori predefiniti ("") vogliono dire nessun guasto."""
-    problems = {
-        "db_recovery": (getattr(state, "db_recovery", None) or {}).get("text", ""),
-        "ha_copy_error": ha_copy_error(state.db.path) if state.db.path else "",
-    }
-    return {key: value for key, value in problems.items() if value}
 
 
 def _notification_listing(request: Request) -> dict:
@@ -2072,7 +2065,10 @@ def _intercom_status(intercom: IntercomBridge) -> dict:
         "open_door": intercom.settings.open_door,
         "topics": intercom.topics,
         "call_state": intercom.call_state,
-        "last_message_at": intercom.last_message_at,
+        # I messaggi della chiamata arrivano alla prima porta dello stesso citofono
+        "last_message_at": max(
+            (i.last_message_at for i in (intercom, intercom.call) if i and i.last_message_at), default=None
+        ),
     }
 
 
@@ -2308,11 +2304,8 @@ def _controller_clock_offset(state) -> float | None:
     health = state.health.states.get(primary["id"]) if primary else None
     if not health or health.clock_offset is None or not controller_synced(health):
         return None
-    reference = getattr(health, "clock_reference", None)
-    if reference is not None:
-        # Orologio di Home Assistant spostato dopo la misura: lo scarto si corregge subito, non alla rilettura
-        return health.clock_offset - ((time.time() - time.monotonic()) - reference)
-    return health.clock_offset
+    # Orologio di Home Assistant spostato dopo la misura: lo scarto si corregge subito, non alla rilettura
+    return health.clock_offset_now()
 
 
 def _offline_controllers(state) -> dict[int, str]:

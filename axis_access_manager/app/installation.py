@@ -51,6 +51,16 @@ def check_host(value: str) -> str:
     return host
 
 
+def same_controller(host: str, username: str, existing: dict) -> bool:
+    """Stesso indirizzo (senza maiuscole) e stesso utente del controller salvato: solo lì va la sua password."""
+    try:
+        saved = check_host(existing["host"] or "")
+    except ServiceError:
+        # Salvato da una versione precedente, prima del controllo dell'indirizzo
+        saved = existing["host"] or ""
+    return (host.lower(), username.strip()) == (saved.lower(), (existing["username"] or "").strip())
+
+
 def valid_camera(camera: str) -> bool:
     return bool(CAMERA_PATTERN.match(camera))
 
@@ -255,6 +265,9 @@ class InstallationService:
         if not password:
             if not existing or not existing["password"]:
                 raise ServiceError("manca la password del controller")
+            # La password salvata va solo all'indirizzo e all'utente salvati, anche dal controllo periodico
+            if not same_controller(host, username, existing):
+                raise ServiceError("indirizzo o utente cambiati: scrivi di nuovo la password del controller")
             password = existing["password"]
         prefix = (data.get("mqtt_topic_prefix") or "").strip().strip("/")
         if not prefix or not TOPIC_PATTERN.match(prefix):

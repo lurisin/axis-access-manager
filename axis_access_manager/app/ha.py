@@ -93,9 +93,14 @@ class HomeAssistant:
         if not response.headers.get("content-type", "").lower().startswith("image/"):
             _LOGGER.warning("Istantanea da %s non riuscita: %s", camera, response.headers.get("content-type"))
             return "", "la telecamera non ha mandato un'immagine"
-        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{name}.jpg"
-        await asyncio.to_thread((self.snapshot_dir / filename).write_bytes, response.content)
+        try:
+            self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread((self.snapshot_dir / filename).write_bytes, response.content)
+        except OSError as err:
+            # Disco di Home Assistant pieno o cartella Media in sola lettura
+            _LOGGER.warning("Istantanea da %s non salvata: %s", camera, err)
+            return "", "istantanea non salvata: spazio esaurito o cartella Media non scrivibile"
         return filename, ""
 
     async def button_presser(self, command: str = "", now: datetime | None = None) -> str | None:

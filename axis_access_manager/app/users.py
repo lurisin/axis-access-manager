@@ -19,7 +19,8 @@ PERMISSIONS = {
     "regole_modifica": "Modificare tipologie, fasce orarie e festività",
     "import_export": "Esportare e importare file CSV",
     "impianti": "Configurare controller, porte, citofoni e telecamere e programmare il controller",
-    "backup": "Vedere, creare, bloccare e confrontare i backup (ripristinare ed eliminare restano agli amministratori)",
+    "backup": "Vedere, creare, bloccare e confrontare i backup (sbloccare, ripristinare ed eliminare restano agli "
+    "amministratori)",
     "utenti": "Gestire gli utenti dell'app e vedere le attività (amministratore)",
 }
 # Nome breve di ogni permesso, per Registro Attività e confronto dei backup
