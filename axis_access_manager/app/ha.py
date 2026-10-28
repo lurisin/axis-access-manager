@@ -16,8 +16,8 @@ from .config import supervisor_token
 _LOGGER = logging.getLogger(__name__)
 
 CORE_API = "http://supervisor/core/api"
-# Pulsanti MQTT di Home Assistant: l'elenco serve per trovare quello appena premuto
-MQTT_BUTTONS = "{{ integration_entities('mqtt') | select('match', 'button\\.') | list | join(',') }}"
+# Attributo dei pulsanti dell'add-on in Home Assistant con il comando che mandano: lega la pressione al comando
+BUTTON_COMMAND = "comando"
 PRESS_WINDOW = 15
 # Istantanee nella cartella Media di Home Assistant: si vedono da Media, File editor e Samba.
 # Fino alla 0.11 stavano nei dati dell'add-on, invisibili all'utente.
@@ -79,8 +79,11 @@ class HomeAssistant:
         try:
             response = await self._client.get(f"/camera_proxy/{camera}")
         except httpx.HTTPError as err:
-            _LOGGER.warning("Istantanea da %s non riuscita: %s", camera, err)
-            return "", f"Home Assistant non risponde ({err})"
+            # Il testo di httpx (in inglese, spesso vuoto con i tempi scaduti) resta nel log
+            _LOGGER.warning("Istantanea da %s non riuscita: %r", camera, err)
+            if isinstance(err, httpx.TimeoutException):
+                return "", "Home Assistant non risponde (tempo scaduto)"
+            return "", "Home Assistant non risponde"
         if response.status_code != 200 or not response.content:
             _LOGGER.warning("Istantanea da %s non riuscita: risposta %s", camera, response.status_code)
             return "", f"telecamera non disponibile (risposta {response.status_code} di Home Assistant)"
@@ -89,20 +92,19 @@ class HomeAssistant:
         await asyncio.to_thread((self.snapshot_dir / filename).write_bytes, response.content)
         return filename, ""
 
-    async def button_presser(self, now: datetime | None = None) -> str | None:
-        """Nome della persona che ha appena premuto un pulsante MQTT, dal contesto dello stato del pulsante.
+    async def button_presser(self, command: str = "", now: datetime | None = None) -> str | None:
+        """Nome della persona che ha appena premuto il pulsante dell'add-on che manda questo comando.
 
         Il comando MQTT non dice chi l'ha mandato: Home Assistant però salva nello stato del pulsante l'ora
-        della pressione e l'utente. Restituisce None se non si riesce a saperlo, "" se non c'è un utente
-        (ad esempio un'automazione).
+        della pressione e l'utente. Si guarda solo il pulsante con questo comando (attributo BUTTON_COMMAND),
+        così la pressione di un altro pulsante non attribuisce l'apertura a chi non l'ha fatta. Restituisce None
+        se non si riesce a saperlo, anche quando quel pulsante non è stato premuto di recente (comando pubblicato
+        direttamente su MQTT), "" se non c'è un utente (ad esempio un'automazione).
         """
-        if not self.available:
+        if not self.available or not command:
             return None
         now = now or datetime.now(tz=UTC)
         try:
-            response = await self._client.post("/template", json={"template": MQTT_BUTTONS})
-            response.raise_for_status()
-            buttons = {b for b in response.text.strip().split(",") if b}
             response = await self._client.get("/states")
             response.raise_for_status()
             states = response.json()
@@ -111,7 +113,9 @@ class HomeAssistant:
             return None
         pressed = []
         for state in states:
-            if state.get("entity_id") not in buttons:
+            if not str(state.get("entity_id", "")).startswith("button."):
+                continue
+            if (state.get("attributes") or {}).get(BUTTON_COMMAND) != command:
                 continue
             try:
                 at = datetime.fromisoformat(str(state.get("state")).replace("Z", "+00:00"))
@@ -147,4 +151,8 @@ class HomeAssistant:
     def delete_snapshots(self, filenames: list[str]) -> None:
         for filename in filenames:
             path = self.snapshot_dir / Path(filename).name
-            path.unlink(missing_ok=True)
+            # Un file che non si cancella (errore di I/O, permessi) non ferma la pulizia degli altri
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as err:
+                _LOGGER.warning("Istantanea %s non cancellata: %s", path, err)

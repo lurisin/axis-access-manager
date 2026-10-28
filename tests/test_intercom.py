@@ -115,7 +115,7 @@ async def test_credentials_stored_on_intercom_are_not_forwarded(service, db, con
     await settle()
 
     assert controller.calls == []
-    assert details(db)[-1][1] == "apertura con Tessera del citofono non inoltrata all'A1210"
+    assert details(db)[-1][1] == "apertura con tessera del citofono non inoltrata all'A1210"
 
 
 async def test_forwarding_disabled_only_logs(service, db, controller, clock):
@@ -125,6 +125,23 @@ async def test_forwarding_disabled_only_logs(service, db, controller, clock):
 
     assert controller.calls == []
     assert "inoltro all'A1210 disattivato" in details(db)[-1][1]
+
+
+async def test_forwarding_disabled_open_answers_the_call(service, db, controller, clock):
+    # Chi apre dall'app durante la chiamata ha risposto anche se l'apertura non va all'A1210
+    bridge = bridge_for(service, db, clock, open_door=False)
+    bridge.handle(CALL, b"ringing")
+    clock.now += 6
+    bridge.handle(RELAY_ATTRIBUTES, b'{"unlock_type": "HOUSEHOLDER", "control_source": "app"}')
+    bridge.handle(RELAY, b"ON")
+    bridge.handle(CALL, b"idle")
+    await settle()
+
+    assert controller.calls == []
+    assert [d[1] for d in details(db)] == [
+        "ha suonato",
+        "apertura da App Hik-Connect (inoltro all'A1210 disattivato), 6 s dopo la chiamata",
+    ]
 
 
 def test_call_outcomes(service, db, clock):
@@ -161,6 +178,6 @@ def test_monitor_routes_extra_subscriptions():
 def test_unlock_source_labels():
     assert unlock_source({"unlock_type": "HOUSEHOLDER", "control_source": "app"}) == "App Hik-Connect"
     assert unlock_source({"unlock_type": "HOUSEHOLDER", "control_source": "indoorMonitor"}) == "Monitor Interno"
-    assert unlock_source({"unlock_type": "HOUSEHOLDER"}) == "App O Monitor"
+    assert unlock_source({"unlock_type": "HOUSEHOLDER"}) == "App o Monitor"
     assert unlock_source({"unlock_type": "CENTER_PLATFORM"}) == "App Hik-Connect"
-    assert unlock_source({}) == "App O Monitor"
+    assert unlock_source({}) == "App o Monitor"
