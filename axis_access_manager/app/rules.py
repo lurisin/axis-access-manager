@@ -16,9 +16,11 @@ ITALIAN_HOLIDAYS = [
     ("01-01", "Capodanno"),
     ("01-06", "Epifania"),
     ("04-25", "Festa della Liberazione"),
-    ("05-01", "Festa dei lavoratori"),
+    ("05-01", "Festa dei Lavoratori"),
     ("06-02", "Festa della Repubblica"),
     ("08-15", "Ferragosto"),
+    # Festa nazionale dal 2026 (legge 151 del 2025)
+    ("10-04", "San Francesco d'Assisi"),
     ("11-01", "Ognissanti"),
     ("12-08", "Immacolata Concezione"),
     ("12-25", "Natale"),

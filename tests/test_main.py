@@ -194,7 +194,7 @@ def test_rules_and_dashboard_endpoints(client):
     person = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": group}).json()
     assert client.put(f"/api/persons/{person['id']}/access", json={"group": "profilo_sempre"}).status_code == 200
     assert client.post("/api/holidays/italia", json={"year": 2026}).status_code == 200
-    assert len(client.get("/api/holidays").json()) == 12
+    assert len(client.get("/api/holidays").json()) == 13
 
     groups = client.get("/api/groups").json()
     assert {g["name"] for g in groups["groups"]} == {"Sempre", "Dipendenti"}

@@ -70,8 +70,8 @@ async def test_standard_and_external_schedules_can_be_edited_and_hidden(rules, c
     assert listed[-1]["token"] == "altra" and listed[-1]["hidden"] is True
     await rules.delete_schedule("altra", "admin")
     assert "altra" not in controller.schedules
-    # Usata dal gruppo predefinito
-    with pytest.raises(ServiceError, match="usata dai gruppi"):
+    # La fascia dei profili con fasce diverse per porta
+    with pytest.raises(ServiceError, match="non si può eliminare"):
         await rules.delete_schedule("standard_always", "admin")
 
 
@@ -88,7 +88,7 @@ async def test_create_group_copies_default_profile_with_new_schedule(rules, cont
     assert profile["Schedule"] == [schedule]
     # Il profilo predefinito non cambia
     assert controller.profiles["profilo_sempre"]["AccessPolicy"][0]["Schedule"] == ["standard_always"]
-    with pytest.raises(ServiceError, match="usata dai gruppi Dipendenti"):
+    with pytest.raises(ServiceError, match="usata dal profilo Dipendenti"):
         await rules.delete_schedule(schedule, "admin")
 
 
