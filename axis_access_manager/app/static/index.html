@@ -3163,16 +3163,30 @@ const contactHint = (role, contact = "no") => role === "" || role === "alarm" ? 
 
 function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   const saved = linksOf(p);
-  let pending = saved.map((l) => ({...l}));
+  // Ridisegno della stessa pagina (ingresso salvato, riparazione): i collegamenti non ancora salvati restano
+  const draft = schemaDraft?.ctrl === ctrl.id ? schemaDraft.links : null;
+  schemaDraft = null;
+  const known = (l) => (p.readers.some((r) => r.token === l.reader) && p.doors.some((d) => d.token === l.door)) || saved.some((s) => linkKey(s) === linkKey(l));
+  let pending = (draft ? draft.filter(known) : saved).map((l) => ({...l}));
   let selected = null, selectedInput = null;
   const inputs = p.inputs || [];
   const inputOf = (io) => inputs.find((i) => i.io === io);
   const linkedDoor = (i) => DOOR_INPUT_ROLES.includes(i.role) && i.door ? i.door : "";
   const inputMeta = (i) => [p.input_roles?.[i.role] || "Non Usato", linkedDoor(i) ? doorName({token: i.door}) : "", i.pins.join(", ")].filter(Boolean).join(" · ");
-  const inputDot = (i) => i.port == null ? '<span class="muted" title="Stato non disponibile: il controller non invia eventi per questo ingresso">–</span>'
+  const inputDot = (i) => i.port == null ? '<span class="muted" title="Stato non disponibile: il controller non invia eventi per questo ingresso">—</span>'
     : i.active === true ? '<span class="dot warn" title="Attivo"></span>' : i.active === false ? '<span class="dot ok" title="A riposo"></span>' : "";
   const readerName = (token) => { const r = p.readers.find((x) => x.token === token); return r?.name || token; };
   const directionsOf = (door) => [...new Set(p.access_points.filter((a) => a.door === door).map((a) => a.direction || ""))];
+  // Attivo o disattivato vale per il punto di accesso (porta e direzione) con tutti i suoi lettori. Si tiene lo stato
+  // anche dei punti senza lettori: un filo nuovo o spostato prende quello del punto di arrivo, non lo cambia
+  const pointKey = (door, direction) => `${door}>${direction || ""}`;
+  const savedPoint = new Map(saved.map((l) => [pointKey(l.door, l.direction), l.enabled]));
+  p.access_points.forEach((a) => { if (a.door && !savedPoint.has(pointKey(a.door, a.direction))) savedPoint.set(pointKey(a.door, a.direction), a.enabled); });
+  const onPoint = (door, direction, except = null) => pending.filter((x) => x !== except && x.door === door && x.direction === direction);
+  const pointEnabled = (door, direction, except = null) => {
+    const other = onPoint(door, direction, except)[0];
+    return other ? other.enabled : savedPoint.get(pointKey(door, direction)) ?? true;
+  };
   const changes = () => {
     const before = new Map(saved.map((l) => [linkKey(l), l]));
     const after = new Map(pending.map((l) => [linkKey(l), l]));
@@ -3180,11 +3194,18 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     after.forEach((l, k) => {
       const old = before.get(k);
       if (!old) list.push(`Collega ${readerName(l.reader)} → ${doorName({token: l.door})} (${DIRECTION_LABELS[l.direction]})`);
-      else if (linkSig(old) !== linkSig(l)) list.push(`${readerName(l.reader)} → ${doorName({token: l.door})}: ${DIRECTION_LABELS[l.direction]}${l.enabled ? "" : ", disattivato"}`);
+      else if (old.direction !== l.direction) list.push(`${readerName(l.reader)} → ${doorName({token: l.door})}: da ${DIRECTION_LABELS[old.direction]} a ${DIRECTION_LABELS[l.direction]}`);
     });
     before.forEach((l, k) => { if (!after.has(k)) list.push(`Scollega ${readerName(l.reader)} da ${doorName({token: l.door})}`); });
+    // Riattivare o disattivare un punto di accesso cambia tutti i suoi lettori: si dice per il punto, con i lettori
+    new Map(pending.map((l) => [pointKey(l.door, l.direction), l])).forEach((l, k) => {
+      if (l.enabled === (savedPoint.get(k) ?? true)) return;
+      const readers = onPoint(l.door, l.direction).map((x) => readerName(x.reader)).join(", ");
+      list.push(`${l.enabled ? "Riattiva" : "Disattiva"} il punto di accesso ${doorName({token: l.door})} · ${DIRECTION_LABELS[l.direction]}, per ${readers}`);
+    });
     return list;
   };
+  const keep = () => { schemaDraft = changes().length ? {ctrl: ctrl.id, links: pending.map((l) => ({...l}))} : null; };
   body.innerHTML = `${errors}
     <div class="card">
       <p class="muted small-text" id="sch-hint" style="margin-top:0"></p>
@@ -3192,21 +3213,23 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
         <div class="sch-col"><div class="sch-head">Lettori</div>${p.readers.map((r) => `<button type="button" class="sch-node" data-reader="${esc(r.token)}">
           <span class="ev-icon k-accent">${icon("card")}</span><span class="grow"><b>${esc(r.name || r.token)}</b><span class="sch-meta" data-reader-meta="${esc(r.token)}"></span></span></button>`).join("")}
           ${inputs.length ? `<div class="sch-head" style="margin-top:8px">Ingressi</div>${inputs.map((i) => `<button type="button" class="sch-node" data-input="${esc(i.io)}">
-          <span class="ev-icon ${i.role ? "k-info" : "k-muted"}">${icon(INPUT_ICONS[i.role] || "chip")}</span><span class="grow"><b>${esc(i.name)}</b><span class="sch-meta">${esc(inputMeta(i))}</span></span>${inputDot(i)}</button>`).join("")}` : ""}</div>
+          <span class="ev-icon ${i.problem ? "k-warn" : i.role ? "k-info" : "k-muted"}">${icon(INPUT_ICONS[i.role] || "chip")}</span><span class="grow"><b>${esc(i.name)}</b><span class="sch-meta">${esc(inputMeta(i))}</span>${i.problem ? `<span class="sch-meta" style="color:var(--warn)">Da riscrivere: ${esc(i.problem)}</span>` : ""}</span>${inputDot(i)}</button>`).join("")}` : ""}</div>
         <div class="sch-mid"></div>
         <div class="sch-col"><div class="sch-head" style="text-align:right">Porte</div>${p.doors.map((d) => `<button type="button" class="sch-node" data-door="${esc(d.token)}">
-          <span class="ev-icon k-ok">${icon("door")}</span><span class="grow"><b>${esc(doorName(d))}</b><span class="sch-meta">${appDoor(d.token) ? esc(d.name && d.name !== doorName(d) ? `sul controller: ${d.name}` : d.token) : "non gestita dall'app"}</span></span></button>`).join("")}</div>
+          <span class="ev-icon k-muted">${icon("door")}</span><span class="grow"><b>${esc(doorName(d))}</b><span class="sch-meta">${appDoor(d.token) ? esc(d.name && d.name !== doorName(d) ? `sul controller: ${d.name}` : d.token) : "non gestita dall'app"}</span></span></button>`).join("")}</div>
         <svg class="sch-lines" id="sch-svg" aria-hidden="true"></svg><div id="sch-gears"></div>
       </div>` : '<div class="empty">Sul controller non ci sono lettori o porte da collegare.</div>'}
-      <p class="hint">Ogni filo è un lettore o un ingresso che comanda una porta. I collegamenti dei lettori si scrivono sul controller solo con Salva; quelli degli ingressi con il Salva della loro scheda. Ogni modifica si può annullare dallo Storico Modifiche.</p>
+      <p class="hint">Ogni filo è un lettore o un ingresso che comanda una porta. I collegamenti dei lettori si scrivono sul controller solo con Salva; quelli degli ingressi con Scrivi sul Controller nella loro finestra. Ogni modifica si può annullare dallo Storico Modifiche.</p>
     </div>
     <div class="save-bar" id="sch-bar" hidden><span class="grow" id="sch-changes"></span><button type="button" id="sch-discard">Scarta</button><button type="button" class="primary" id="sch-save">Salva</button></div>`;
   paintIcons(body);
   const schema = $("#schema");
   if (!schema) return;
+  // Fili ridisegnati quando lo schema cambia larghezza, anche senza ridimensionare la finestra (menu laterale)
+  const resize = new ResizeObserver(() => draw());
 
   function draw() {
-    if (!document.body.contains(schema)) { window.removeEventListener("resize", draw); return; }
+    if (!document.body.contains(schema)) { resize.disconnect(); return; }
     const box = schema.getBoundingClientRect();
     const svg = $("#sch-svg"), gears = $("#sch-gears");
     svg.setAttribute("width", box.width);
@@ -3275,12 +3298,23 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
 
   async function editLink(l) {
     const dirs = directionsOf(l.door);
-    const shared = pending.filter((x) => x !== l && x.door === l.door && x.direction === l.direction).map((x) => readerName(x.reader));
+    const shared = (direction) => {
+      const names = onPoint(l.door, direction, l).map((x) => readerName(x.reader));
+      return names.length ? ` Vale anche per ${names.join(", ")}, che ${names.length === 1 ? "usa" : "usano"} lo stesso punto di accesso.` : "";
+    };
     const result = await modal({title: `${readerName(l.reader)} → ${doorName({token: l.door})}`,
       body: `${field("Direzione", `<select name="direction">${dirs.map((k) => `<option value="${esc(k)}" ${k === l.direction ? "selected" : ""}>${DIRECTION_LABELS[k] ?? esc(k)}</option>`).join("")}</select>`,
-        "Ingresso o uscita dalla porta: i gruppi possono dare accesso solo in una direzione.")}
+        "Entrata o uscita dalla porta: i profili di accesso possono valere solo per una direzione.")}
         <div class="field inline"><input type="checkbox" name="enabled" id="f-le" ${l.enabled ? "checked" : ""}><label for="f-le">Collegamento Attivo</label></div>
-        <p class="hint" style="margin-top:-8px">Spento: il lettore resta collegato ma non apre la porta.${shared.length ? ` Vale anche per ${esc(shared.join(", "))}, che usano lo stesso punto di accesso.` : ""}</p>`,
+        <p class="hint" style="margin-top:-8px">Spento: il lettore resta collegato ma non apre la porta.<span data-shared>${esc(shared(l.direction))}</span></p>`,
+      // Un'altra direzione è un altro punto di accesso: la spunta e gli altri lettori diventano quelli del punto di arrivo
+      onOpen: (dlg) => {
+        const select = $('[name="direction"]', dlg);
+        select.onchange = () => {
+          $('[name="enabled"]', dlg).checked = select.value === l.direction ? l.enabled : pointEnabled(l.door, select.value, l);
+          $("[data-shared]", dlg).textContent = shared(select.value);
+        };
+      },
       actions: [{label: "Scollega", kind: "danger", value: "unlink"}, {label: "Annulla", value: null}, {label: "Applica", kind: "primary", submit: true, onClick: (dlg) => ({direction: val(dlg, "direction"), enabled: val(dlg, "enabled")})}]});
     if (!result) return;
     if (result === "unlink") pending = pending.filter((x) => x !== l);
@@ -3298,13 +3332,18 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     if (door && !DOOR_INPUT_ROLES.includes(role)) { toast(`${i.name}: questo ingresso non si collega a una porta`, true); return; }
     const doorOptions = p.doors.map((d) => `<option value="${esc(d.token)}" ${d.token === (door || i.door) ? "selected" : ""}>${esc(doorName(d))}</option>`).join("");
     const startName = role !== i.role && (i.name === i.default_name || Object.values(p.input_roles).includes(i.name)) ? p.input_roles[role] || i.default_name : i.name;
+    // Contatto e linea supervisionata servono solo ai ruoli che l'app scrive sul controller: con Non Usato e Ingresso
+    // di Allarme non hanno effetto. La linea supervisionata solo per pulsante e relè: col contatto porta non è provata al banco
+    const wired = (r) => DOOR_INPUT_ROLES.includes(r);
+    const supervisable = (r) => i.can_supervise && ["rex", "intercom"].includes(r);
     const ok = await modal({title: i.name,
-      body: `${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? " È anche il nome dell'entità in Home Assistant." : ""} Compare nel registro per le aperture da questo ingresso.`)}
+      body: `${i.problem ? `<div class="alert" style="margin:0 0 12px">${icon("alert")}<div class="grow"><b>Da Riscrivere</b>${esc(i.problem[0].toUpperCase() + i.problem.slice(1))}. Premi Scrivi sul Controller: anche con le stesse impostazioni l'app completa la programmazione.</div></div>` : ""}
+        ${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? " È anche il nome dell'entità in Home Assistant." : ""} Compare nel registro per le aperture da questo ingresso.`)}
         ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(inputRoleHint(i.io, role))}</span>`)}
         <div data-door-field ${DOOR_INPUT_ROLES.includes(role) ? "" : "hidden"}>${field("Porta", `<select name="door">${doorOptions}</select>`)}</div>
-        ${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role))}</span>`)}
-        <div class="field inline"><input type="checkbox" name="supervised" id="f-sup" ${i.supervised ? "checked" : ""} ${i.can_supervise && role !== "door_monitor" ? "" : "disabled"}><label for="f-sup">Linea Supervisionata</label></div>
-        <p class="hint" style="margin-top:-8px">${i.can_supervise ? "Con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. Attivala solo se le resistenze sono montate. Dopo averla tolta, l'ingresso può risultare attivo finché non riavvii il controller." : "Questo ingresso non supporta la linea supervisionata."}</p>`,
+        <div data-wiring ${wired(role) ? "" : "hidden"}>${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role))}</span>`)}
+        <div class="field inline"><input type="checkbox" name="supervised" id="f-sup" ${i.supervised && supervisable(role) ? "checked" : ""} ${supervisable(role) ? "" : "disabled"}><label for="f-sup">Linea Supervisionata</label></div>
+        <p class="hint" style="margin-top:-8px">${i.can_supervise ? "Con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. Attivala solo se le resistenze sono montate. Dopo averla tolta, l'ingresso può risultare attivo finché non riavvii il controller." : "Questo ingresso non supporta la linea supervisionata."}</p></div>`,
       onOpen: (dlg) => {
         const select = $('[name="role"]', dlg), name = $('[name="name"]', dlg);
         select.onchange = () => {
@@ -3314,16 +3353,16 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
           }
           $("[data-door-field]", dlg).hidden = !DOOR_INPUT_ROLES.includes(select.value);
           $("[data-role-hint]", dlg).textContent = inputRoleHint(i.io, select.value);
+          $("[data-wiring]", dlg).hidden = !wired(select.value);
           $("[data-contact-hint]", dlg).textContent = contactHint(select.value);
-          // Il contatto porta con le resistenze non è ancora provato al banco
           const supervised = $('[name="supervised"]', dlg);
-          supervised.disabled = !i.can_supervise || select.value === "door_monitor";
+          supervised.disabled = !supervisable(select.value);
           if (supervised.disabled) supervised.checked = false;
         };
       },
       actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
         (await saveProgramming(`api/programming/inputs/${encodeURIComponent(i.io)}`, {name: val(dlg, "name"), role: val(dlg, "role"), door: val(dlg, "door"), contact: val(dlg, "contact"), supervised: val(dlg, "supervised")}, "Ingresso salvato")) || false}]});
-    if (ok) render();
+    if (ok) { keep(); render(); }
   }
 
   schema.onclick = (e) => {
@@ -3355,8 +3394,9 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     else if (!dirs.length) toast("Sul controller questa porta non ha punti di accesso: per ora l'app collega solo a punti di accesso già programmati", true);
     else {
       const direction = dirs.includes("in") ? "in" : dirs[0];
-      const same = pending.find((l) => l.door === token && l.direction === direction);
-      pending.push({reader: selected, door: token, direction, enabled: same ? same.enabled : true});
+      const enabled = pointEnabled(token, direction);
+      pending.push({reader: selected, door: token, direction, enabled});
+      if (!enabled) toast("Il punto di accesso di questa porta è disattivato: il lettore non apre finché non lo riattivi con l'ingranaggio sul filo");
     }
     selected = null;
     update();
@@ -3364,7 +3404,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   async function save(rerender = true) {
     const list = changes();
     if (!list.length) return true;
-    const ok = await confirmBox("Scrivi sul Controller", `Queste modifiche cambiano quale lettore apre quale porta:<ul style="margin:8px 0 0;padding-left:20px">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="hint">Se dopo il salvataggio le tessere non aprono più, annulla dallo Storico Modifiche.</p>`, "Salva sul Controller");
+    const ok = await confirmBox("Scrivi sul Controller", `Queste modifiche cambiano quale lettore apre quale porta:<ul style="margin:8px 0 0;padding-left:20px">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="hint">Se dopo il salvataggio le tessere non aprono più, annulla dallo Storico Modifiche.</p>`, "Scrivi sul Controller");
     if (!ok) return false;
     const result = await run(() => api("api/programming/links", {method: "PUT", body: {links: pending}}), "Collegamenti scritti sul controller");
     if (!result) return false;
@@ -3374,18 +3414,22 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   }
   $("#sch-save").onclick = () => save();
   $("#sch-discard").onclick = () => { pending = saved.map((l) => ({...l})); selected = null; update(); };
-  pageGuard = {dirty: () => changes().length > 0, save: () => save(false)};
-  window.addEventListener("resize", draw);
+  // keep: chi ridisegna la pagina senza uscire (render) la chiama prima, così i collegamenti non salvati restano
+  pageGuard = {dirty: () => changes().length > 0, save: () => save(false), keep};
+  resize.observe(schema);
   update();
   requestAnimationFrame(draw);
 }
+// Collegamenti dello schema non ancora salvati, tenuti da un ridisegno all'altro della stessa pagina
+let schemaDraft = null;
 
+// Chiave, etichetta, suggerimento, minimo e massimo in secondi: gli stessi limiti di DOOR_TIMES nel server
 const DOOR_TIME_FIELDS = [
-  ["access_time", "Tempo di Apertura", "Quanto resta sbloccata dopo un accesso. Massimo 30 s, per non tenere alimentata a lungo la serratura.", 30],
-  ["extended_access_time", "Apertura Estesa", "Per chi ha bisogno di più tempo (es. Apri a Lungo). Massimo 60 s.", 60],
-  ["open_too_long_time", "Allarme Aperta Troppo a Lungo", "Dopo quanto la porta aperta va in allarme.", 3600],
-  ["extended_open_too_long_time", "Allarme con Apertura Estesa", "", 7200],
-  ["pre_alarm_time", "Preallarme", "Avviso prima dell'allarme.", 3600],
+  ["access_time", "Tempo di Apertura", "Quanto resta sbloccata dopo un accesso. Massimo 30 s, per non tenere alimentata a lungo la serratura.", 1, 30],
+  ["extended_access_time", "Apertura Estesa", "Per chi ha bisogno di più tempo (es. Apri a Lungo). Massimo 60 s.", 1, 60],
+  ["open_too_long_time", "Allarme Aperta Troppo a Lungo", "Dopo quanto la porta aperta va in allarme.", 1, 3600],
+  ["extended_open_too_long_time", "Allarme con Apertura Estesa", "", 1, 7200],
+  ["pre_alarm_time", "Preallarme", "Avviso prima dell'allarme. Con 0 non c'è preallarme.", 0, 3600],
 ];
 const configDetails = (items) => items.length ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici (${items.length})</summary>
   <div class="table-wrap"><table class="table"><tbody>${items.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td><code>${esc(c.value)}</code></td></tr>`).join("")}</tbody></table></div></details>` : "";
@@ -3395,12 +3439,12 @@ const saveProgramming = (path, payload, message) => run(() => api(path, {method:
 function controllerDoors(body, ctrl, p, errors, appDoor) {
   const appInfo = (d) => {
     const door = appDoor(d.token);
-    if (!door) return `<p class="muted small-text" style="margin:8px 0 0">Non gestita dall'app: niente registro per porta, pulsanti in Home Assistant o citofono.</p>`;
+    if (!door) return `<p class="muted small-text" style="margin:8px 0 0">Non gestita dall'app: niente registro per porta, pulsanti in Home Assistant o videocitofono.</p>`;
     return props([
       ["Nome nell'App", esc(door.name)],
       ["Telecamera", `${door.snapshot_camera ? `${esc(cameraName(door.snapshot_camera))}${door.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'} · <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a>`],
-      ["Citofono", `${door.intercom_name ? `${esc(door.intercom_name)} · relè ${door.intercom_relay}${door.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'} · <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a>`],
-      ["Pulsanti HA", door.ha_buttons ? "Apri e Apri a Lungo" : '<span class="muted">Nessuno</span>'],
+      ["Videocitofono", `${door.intercom_name ? `${esc(door.intercom_name)} · relè ${door.intercom_relay}${door.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'} · <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a>`],
+      ["Pulsanti in Home Assistant", door.ha_buttons ? "Apri e Apri a Lungo" : '<span class="muted">Nessuno</span>'],
     ]);
   };
   const missing = ctrl.doors.filter((d) => !p.doors.some((x) => x.token === d.door_token));
@@ -3415,7 +3459,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
         ${d.editable || d.name ? `<button type="button" class="small" data-pd="${esc(d.token)}">${icon("clock")}Nome e Tempi</button>` : ""}
         ${appDoor(d.token) ? `<button type="button" class="small ghost danger" data-app-del="${esc(d.token)}">Togli dall'App</button>` : ""}</div>
     </div>`).join("") || '<div class="card"><div class="empty">Nessuna porta letta dal controller.</div></div>'}</div>
-    ${missing.length ? `<div class="alert" style="margin-top:16px">${icon("alert")}<div class="grow"><b>Porte non trovate sul controller</b>${missing.map((d) => `${esc(d.name)} (<code>${esc(d.door_token)}</code>)`).join(", ")}: controlla la programmazione o toglile dall'app.
+    ${missing.length ? `<div class="alert" style="margin-top:16px">${icon("alert")}<div class="grow"><b>Porte Non Trovate sul Controller</b>${missing.map((d) => `${esc(d.name)} (<code>${esc(d.door_token)}</code>)`).join(", ")}: controlla la programmazione o toglile dall'app.
       ${missing.map((d) => `<button type="button" class="small ghost danger" data-app-del="${esc(d.door_token)}">Togli ${esc(d.name)}</button>`).join(" ")}</div></div>` : ""}`;
   paintIcons(body);
   body.onclick = async (e) => {
@@ -3425,17 +3469,18 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
     else if (b.dataset.appAdd) doorEditor(ctrl, null, b.dataset.appAdd, p.doors.find((d) => d.token === b.dataset.appAdd)?.name);
     else if (b.dataset.appDel) {
       const door = appDoor(b.dataset.appDel);
-      if (await confirmBox("Togli dall'App", `Togliere <b>${esc(door.name)}</b> dall'app? Spariscono anche i suoi pulsanti in Home Assistant e il collegamento al citofono. Sul controller non cambia niente.`, "Togli", true) &&
+      if (await confirmBox("Togli dall'App", `Togliere <b>${esc(door.name)}</b> dall'app? Spariscono anche i suoi pulsanti in Home Assistant e il collegamento al videocitofono. Sul controller non cambia niente.`, "Togli", true) &&
           await run(() => api(`api/doors/${door.id}`, {method: "DELETE"}), "Porta tolta dall'app")) { loadSummary(); render(); }
     } else if (b.dataset.pd) {
       const d = p.doors.find((x) => x.token === b.dataset.pd);
       const times = DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
       const ok = await modal({title: "Porta " + (d.name || d.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(d.name)}">`)}
         ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(d.description)}">`)}
-        ${times.length ? `<div class="fields-2">${times.map(([k, label, hint, max]) => field(label + " (Secondi)", `<input type="number" name="${k}" min="0" max="${Math.max(max, d[k])}" step="1" value="${d[k]}">`, hint)).join("")}</div>` : ""}`,
+        ${times.length ? `<div class="fields-2">${times.map(([k, label, hint, min, max]) => field(label + " (Secondi)", `<input type="number" name="${k}" min="${Math.min(min, d[k])}" max="${Math.max(max, d[k])}" step="1" value="${d[k]}" required>`, hint)).join("")}</div>` : ""}`,
         actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) => {
           const payload = {name: val(dlg, "name"), description: val(dlg, "description")};
-          times.forEach(([k]) => { payload[k] = Number(val(dlg, k)); });
+          // Un campo vuoto lascia il tempo com'è: Number("") darebbe 0, cioè niente preallarme
+          times.forEach(([k]) => { if (val(dlg, k) !== "") payload[k] = Number(val(dlg, k)); });
           return (await saveProgramming(`api/programming/doors/${encodeURIComponent(d.token)}`, payload, "Porta aggiornata sul controller")) || false;
         }}]});
       if (ok) render();
@@ -3450,7 +3495,7 @@ function controllerReaders(body, p, errors, doorName) {
       const mine = links.filter((l) => l.reader === r.token);
       return `<div class="card" style="margin:0">
       <h2>${icon("card")}${esc(r.name || r.token)}</h2>
-      ${props([["Comanda", mine.length ? mine.map((l) => `${esc(doorName(p.doors.find((d) => d.token === l.door) || {token: l.door}))} · ${DIRECTION_LABELS[l.direction]}${l.enabled ? "" : ' <span class="pill err">Spento</span>'}`).join("<br>") : '<span class="muted">Nessuna porta</span>'],
+      ${props([["Comanda", mine.length ? mine.map((l) => `${esc(doorName(p.doors.find((d) => d.token === l.door) || {token: l.door}))} · ${DIRECTION_LABELS[l.direction]}${l.enabled ? "" : ' <span class="pill warn">Disattivato</span>'}`).join("<br>") : '<span class="muted">Nessuna porta</span>'],
         ["Token", `<code>${esc(r.token)}</code>`], ["Posizione", esc(r.location || "—")], ["Attesa PIN", secs(r.timeout)]])}
       ${r.description ? `<p class="hint">${esc(r.description)}</p>` : ""}${configDetails(r.configuration)}
       <div class="row" style="margin-top:12px"><button type="button" class="small" data-pr="${esc(r.token)}">${icon("edit")}Nome e Descrizione</button></div>
@@ -3480,29 +3525,39 @@ async function controllerStatus(body, ctrl) {
   const connection = ` <a href="#impianti/c${ctrl.id}/connessione">Controlla la Connessione</a>`;
   const h = s.controllers.find((x) => x.id === ctrl.id);
   const ntp = h?.ntp || {};
-  const off = h?.clock_offset, tz = h?.time_zone ? ` · ${esc(h.time_zone)}` : "";
+  const off = h?.clock_offset, tz = h?.time_zone && !h.zone_differs ? ` · ${esc(h.time_zone)}` : "";
+  // Fuso con ore diverse da Home Assistant: fasce orarie e festività scattano sfasate anche con l'ora giusta
+  const zone = h?.zone_differs ? `${statusDot("warn")} Fuso orario ${esc(h.time_zone || "sconosciuto")} diverso da Home Assistant (${esc(h.ha_time_zone)})` : "";
   // Lo scarto dice solo che i due orologi non concordano: se il controller è sincronizzato via NTP, l'ora giusta è la sua
-  const clock = !h || off === null || off === undefined ? "—"
-    : Math.abs(off) < 2 ? `${statusDot("ok")} Allineato a Home Assistant${tz}`
+  const offsetLine = !h || off === null || off === undefined ? ""
+    : Math.abs(off) < 2 ? (zone ? "" : `${statusDot("ok")} Allineato a Home Assistant${tz}`)
     : h.clock_synced ? `${statusDot("ok")} Giusto, sincronizzato via NTP · <span${h.clock_fault ? ' style="color:var(--warn)"' : ""}>Home Assistant è ${offsetText(-off)}</span>${tz}`
-    : `${statusDot(h.clock_problem ? "err" : "ok")} ${offsetText(off)} rispetto a Home Assistant${tz}`;
-  const ntpText = ntp.servers?.length || ntp.source ? `${ntp.active === false ? statusDot("warn") + " Non sincronizzato · " : ntp.active ? statusDot("ok") + " " : ""}${esc((ntp.servers || []).join(", ") || "nessun server")}${ntp.source ? ` <span class="muted">(${esc(ntp.source)})</span>` : ""}${ntp.active && ntp.offset !== null && ntp.offset !== undefined ? ` <span class="muted">· scarto ${String(ntp.offset).replace(".", ",")} s</span>` : ""}` : "—";
+    : `${statusDot(h.clock_problem ? "warn" : "ok")} ${offsetText(off)} rispetto a Home Assistant${tz}`;
+  const clock = [offsetLine, zone].filter(Boolean).join("<br>") || "—";
+  const ntpSource = (source) => ({static: "impostato a mano", dhcp: "da DHCP"})[source.toLowerCase()] || source;
+  const ntpText = ntp.servers?.length || ntp.source ? `${ntp.active === false ? statusDot("warn") + " Non Sincronizzato · " : ntp.active ? statusDot("ok") + " " : ""}${esc((ntp.servers || []).join(", ") || "nessun server")}${ntp.source ? ` <span class="muted">(${esc(ntpSource(ntp.source))})</span>` : ""}${ntp.active && ntp.offset !== null && ntp.offset !== undefined ? ` <span class="muted">· scarto ${String(ntp.offset).replace(".", ",")} s</span>` : ""}` : "—";
   const ctrlInfo = c.ok ? props([
     ["Stato", `${statusDot("ok")} Raggiungibile${h?.latency_ms != null ? ` <span class="muted">· risponde in ${h.latency_ms} ms, controllato ${esc(relTime(h.checked_at))}</span>` : ""}`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
     ["Certificato", h?.cert_fingerprint ? `<code class="small-text" style="overflow-wrap:anywhere">${esc(h.cert_fingerprint)}</code>` : "—"],
     ["Orologio", clock], ["Server NTP", ntpText],
     ...(Math.abs(haVsDevice) >= 5 ? [["Ora di Home Assistant", `${statusDot("warn")} ${offsetText(haVsDevice)} rispetto a questo dispositivo`]] : []),
-    ["Indirizzo", `<code>${esc(ctrl.host)}</code>`], ["Porte sul Controller", c.doors.map((d, i) => `<span title="${esc(d)}">${esc(c.door_names?.[i] || d)}</span>`).join(", ")],
+    ["Indirizzo", `<code>${esc(ctrl.host)}</code>`], ["Porte sul Controller", c.doors.map((d, i) => `<span title="${esc(d)}">${esc(c.door_names?.[i] || d)}</span>`).join(", ") || "—"],
     ["Lettori", esc(c.readers ?? "—")], ["Tessere sul Controller", esc(c.credentials)],
-  ]) + (h?.clock_problem ? '<p class="hint" style="color:var(--err)">Le fasce orarie scattano con l\'ora del controller: imposta un server NTP raggiungibile nel controller (Sistema → Data e Ora).</p>' : "")
+    // Ingressi scritti solo in parte o con oggetti tolti fuori dall'app: si riparano dallo schema
+    ...(h?.input_problems?.length ? [["Ingressi", `${statusDot("warn")} Da Riscrivere: ${esc(h.input_problems.join(", "))} · <a href="#impianti/c${ctrl.id}">Apri lo Schema</a>`]] : []),
+  ]) + (h?.clock_problem ? '<p class="hint" style="color:var(--warn)">Le fasce orarie scattano con l\'ora del controller: imposta un server NTP raggiungibile nel controller (Sistema → Data e Ora).</p>' : "")
+    + (h?.zone_differs ? `<p class="hint" style="color:var(--warn)">Le fasce orarie e le festività scattano con l'ora locale del controller: imposta nel controller lo stesso fuso orario di Home Assistant.</p>
+      <div class="row" style="margin-top:8px"><button type="button" class="small" id="ctl-zone">${icon("clock")}Usa il Fuso di Home Assistant</button></div>` : "")
     + (h?.clock_fault === "home_assistant" ? '<p class="hint">A essere sbagliata è l\'ora di Home Assistant: controlla il suo server NTP. Le fasce orarie non ne risentono, perché le applica il controller con la sua ora.</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
   const cats = Object.entries(m.categories || {});
-  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta mqtt_host nelle opzioni dell'add-on.</div></div>` : props([
-    ["Broker", m.connected ? `${statusDot("ok")} Collegato` : `${statusDot("err")} Non Collegato ${esc(m.error)}`],
+  const unknown = `${statusDot("")} Sconosciuto <span class="muted">· broker non collegato</span>`;
+  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta Broker MQTT nella Configurazione dell'add-on.</div></div>` : props([
+    ["Broker", m.connected ? `${statusDot("ok")} Collegato` : `${statusDot("err")} Non Collegato${m.error ? ` <span class="muted">· ${esc(m.error)}</span>` : ""}`],
     ["Prefisso", `<code>${esc(m.prefix)}</code>`],
-    ["Controller", m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? `${statusDot("ok")} Online` : `${statusDot("err")} Offline`],
+    // Senza broker gli ultimi valori ricevuti non dicono com'è adesso
+    ["Controller", !m.connected ? unknown : m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? `${statusDot("ok")} Collegato al Broker` : `${statusDot("err")} Non Collegato al Broker`],
     ["Ultima Tessera Letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
-    ["Eventi AccessControl", m.access_events_seen ? `${statusDot("ok")} Ricevuti` : `${statusDot("warn")} Non Ancora Ricevuti`],
+    ["Eventi AccessControl", !m.connected ? unknown : m.access_events_seen ? `${statusDot("ok")} Ricevuti` : `${statusDot("warn")} Non Ancora Ricevuti`],
     ["Eventi Persi", s.recovery ? `${s.recovery.events ? `${plural(s.recovery.events, "recuperato", "recuperati")}` : "nessuno"} dal registro del controller, controllato ${esc(relTime(s.recovery.at))}` : "si controllano all'avvio e dopo ogni interruzione"],
   ]) + (m.connected && !m.access_events_seen ? '<p class="hint">Se dopo il passaggio di una tessera compare solo IdPoint, aggiungi gli eventi AccessControl (accesso concesso e negato) al filtro eventi MQTT dell\'A1210: servono per sapere se la porta si è aperta e perché un accesso è stato negato.</p>' : "")
     + (cats.length ? `<details style="margin-top:12px"><summary class="small-text muted" style="cursor:pointer">Eventi Ricevuti per Categoria (${cats.length})</summary><div class="table-wrap"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo Topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div></details>` : "");
@@ -3510,14 +3565,14 @@ async function controllerStatus(body, ctrl) {
   const doorList = doors.length ? `<div class="list">${doors.map((d) => `<a class="item door-row" href="#porte/${d.id}" style="padding-left:0;padding-right:0">
       <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
       <div class="grow"><div class="title">${esc(d.name)}</div>
-        <div class="meta">${d.camera ? `<span>telecamera ${esc(cameraName(d.camera))}</span>` : ""}${d.intercom ? `<span>citofono ${esc(d.intercom)}</span>` : ""}${d.ha_buttons ? "<span>pulsanti in Home Assistant</span>" : ""}</div></div>
+        <div class="meta"><span class="mode-meta">${esc(doorModeLabel(d.mode))}</span>${d.camera ? `<span>telecamera ${esc(cameraName(d.camera))}</span>` : ""}${d.intercom ? `<span>videocitofono ${esc(d.intercom)}</span>` : ""}${d.ha_buttons ? "<span>pulsanti in Home Assistant</span>" : ""}</div></div>
       <span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span></a>`).join("")}</div>`
     : `<p class="muted" style="margin:0">Nessuna porta gestita dall'app: aggiungile nella scheda <a href="#impianti/c${ctrl.id}/porte">Porte</a>.</p>`;
   const names = doors.map((d) => d.name);
   const intercoms = s.intercoms.filter((ic) => names.includes(ic.door));
-  const intercomCard = intercoms.length ? `<div class="card"><h2>${icon("phone")}Citofoni</h2>${intercoms.map((ic) => props([
-    ["Porta", esc(ic.door)], ["Nome", esc(ic.name)], ["Apertura dal Citofono", ic.open_door ? "Attiva" : "Disattivata"],
-    ["Stato Chiamata", esc(({idle: "Libero", ringing: "Sta Suonando", ring: "Sta Suonando", oncall: "In Conversazione", dismissed: "Chiusa"})[String(ic.call_state).toLowerCase()] || ic.call_state || "—")], ["Ultimo Messaggio", ic.last_message_at ? esc(relTime(ic.last_message_at)) : "—"],
+  const intercomCard = intercoms.length ? `<div class="card"><h2>${icon("phone")}Videocitofoni</h2>${intercoms.map((ic) => props([
+    ["Porta", esc(ic.door)], ["Nome", esc(ic.name)], ["Apertura dal Videocitofono", ic.open_door ? "Attiva" : "Disattivata"],
+    ["Stato Chiamata", esc(({idle: "Nessuna Chiamata", ringing: "Sta Suonando", ring: "Sta Suonando", oncall: "In Conversazione", dismissed: "Chiusa"})[String(ic.call_state).toLowerCase()] || ic.call_state || "—")], ["Ultimo Messaggio", ic.last_message_at ? esc(relTime(ic.last_message_at)) : "—"],
   ])).join('<hr style="border:none;border-top:1px solid var(--border);margin:12px 0">')}</div>` : "";
   body.innerHTML = `<div class="grid two">
       <div>
@@ -3531,17 +3586,28 @@ async function controllerStatus(body, ctrl) {
       </div>
     </div>`;
   paintIcons(body);
+  const zoneButton = $("#ctl-zone", body);
+  if (zoneButton) zoneButton.onclick = async () => {
+    if (!await confirmBox("Usa il Fuso di Home Assistant", `Scrivere nel controller il fuso orario di Home Assistant (<b>${esc(h.ha_time_zone)}</b>)? Fasce orarie e festività scatteranno con l'ora locale di Home Assistant.`, "Scrivi sul Controller")) return;
+    zoneButton.disabled = true;
+    if (await run(() => api(`api/controllers/${ctrl.id}/time-zone`, {method: "POST"}), "Fuso orario scritto sul controller")) render();
+    else zoneButton.disabled = false;
+  };
 }
 
 function controllerHistory(body, p) {
-  body.innerHTML = `<div class="card flush"><h2>Storico Modifiche<span class="spacer"></span><span class="muted small-text">annulla per riportare com'era</span></h2>
+  // Annullare riscrive l'oggetto intero com'era: per ogni oggetto si parte dalla modifica più recente non annullata
+  // (le modifiche sono dalla più recente)
+  const seen = new Set();
+  const undoable = (c) => { const key = `${c.kind}:${c.token}`; if (c.undone || seen.has(key)) return false; seen.add(key); return true; };
+  body.innerHTML = `<div class="card flush"><h2>Storico Modifiche<span class="spacer"></span><span class="muted small-text">annulla per riportare com'era, dalla modifica più recente</span></h2>
     <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Modifica</th><th></th></tr></thead><tbody>
-    ${p.changes.length ? p.changes.map((c) => `<tr><td>${esc(fmtDateTime(c.ts))}</td><td>${esc(c.user)}</td><td>${esc(c.summary)}</td><td style="text-align:right">${c.undone ? '<span class="pill">Annullata</span>' : `<button type="button" class="small" data-undo="${c.id}">Annulla</button>`}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">nessuna modifica fatta dall\'app</td></tr>'}</tbody></table></div></div>`;
+    ${p.changes.length ? p.changes.map((c) => `<tr><td>${esc(fmtDateTime(c.ts))}</td><td>${esc(c.user)}</td><td>${esc(c.summary)}</td><td style="text-align:right">${c.undone ? '<span class="pill">Annullata</span>' : undoable(c) ? `<button type="button" class="small" data-undo="${c.id}">Annulla</button>` : ""}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">Nessuna modifica fatta dall\'app.</td></tr>'}</tbody></table></div></div>`;
   body.onclick = async (e) => {
     const b = e.target.closest("[data-undo]");
     if (!b) return;
     const c = p.changes.find((x) => x.id === Number(b.dataset.undo));
-    if (await confirmBox("Annulla Modifica", `Riportare <b>${esc(c.summary)}</b> com'era prima della modifica del ${esc(fmtDateTime(c.ts))}?`, "Annulla Modifica") &&
+    if (await confirmBox("Annulla Modifica", `Riportare <b>${esc(c.summary)}</b> com'era prima della modifica del ${esc(fmtDateTime(c.ts))}?`, "Riporta Com'era") &&
         await run(() => api(`api/programming/changes/${c.id}/undo`, {method: "POST"}), "Modifica annullata sul controller")) render();
   };
 }
@@ -3550,7 +3616,7 @@ function controllerHistory(body, p) {
 async function viewSites(body, data) {
   let sites;
   try { sites = await api("api/locations"); } catch (err) { body.innerHTML = errorBox("Strutture Non Leggibili", err); return; }
-  const ctrlName = (id) => data.controllers.find((c) => c.id === id)?.name || `controller ${id}`;
+  const ctrlName = (id) => data.controllers.find((c) => c.id === id)?.name || `Controller ${id}`;
   const real = sites.filter((x) => x.id);
   const loose = sites.find((x) => !x.id);
   const chips = (a) => [...a.controllers.map((id) => `<a class="chip" href="#impianti/c${id}">${icon("chip")}${esc(ctrlName(id))}</a>`),
@@ -3634,12 +3700,12 @@ async function controllerCameras(body, ctrl) {
         <button type="button" class="small ghost danger" ${del}>Togli</button></div>`;
   const ctrlRow = ctrl.snapshot_camera ? cameraRow(ctrl.snapshot_camera, `coperchio di ${esc(ctrl.name)}`, "foto quando si apre il coperchio", 'data-cam-edit="ctrl"', 'data-cam-del="ctrl"') : "";
   body.innerHTML = `
-    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Una telecamera di Home Assistant per porta: l'app salva una foto nel registro su accessi negati, aperture a distanza, chiamate al citofono e allarmi. Se il controller è in un altro locale, può avere la sua telecamera per l'apertura del coperchio. Le foto sono anche in Media → axis_access_manager.</p>
+    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Una telecamera di Home Assistant per porta: l'app salva una foto nel registro su accessi negati, aperture remote, uscite dai pulsanti, chiamate al citofono, allarmi e manomissioni. Se il controller è in un altro locale, può avere la sua telecamera per l'apertura del coperchio. Le foto sono anche in Media → axis_access_manager.</p>
       <button type="button" class="primary" id="cam-new">${icon("plus")}Aggiungi Telecamera</button></div>
     ${rows.length || ctrlRow ? `<div class="card flush"><div class="list">${ctrlRow}${rows.map((d) => `<div class="item">
         <div class="ev-icon k-accent">${icon("camera")}</div>
         <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}${problem(d.snapshot_camera) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
-          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto solo sui rifiuti e le aperture a distanza"}</span></div>
+          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto su accessi negati, aperture remote, uscite, citofono e allarmi"}</span></div>
           ${problem(d.snapshot_camera) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(d.snapshot_camera))}</div>` : ""}</div>
         <button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
@@ -3670,12 +3736,13 @@ async function cameraEditor(ctrl, cameras, door, forController = false) {
   const editing = forController ? "ctrl" : door ? String(door.id) : "";
   const targetSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${String(d.id) === editing ? "selected" : ""}>Porta ${esc(d.name)}${d.snapshot_camera && String(d.id) !== editing ? ` (ora ${esc(camLabel(d.snapshot_camera))})` : ""}</option>`).join("")}
     <option value="ctrl" ${editing === "ctrl" ? "selected" : ""}>Coperchio del Controller${ctrl.snapshot_camera && editing !== "ctrl" ? ` (ora ${esc(camLabel(ctrl.snapshot_camera))})` : ""}</option></select>`;
+  let written = false;
   const result = await modal({
     title: door || forController ? "Modifica Telecamera" : "Aggiungi Telecamera",
     body: `${field("Telecamera", cameraInput, cameras.length ? "Le telecamere di Home Assistant, con il loro nome. Ferma: non trasmette (con Frigate anche se spenta), la foto potrebbe non riuscire." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
       ${field("Inquadra", targetSelect, "La porta: accessi, aperture, citofono e allarmi di quella porta. Il coperchio del controller: la sua apertura. Se c'è già una telecamera, viene sostituita.")}
-      <div data-granted><div class="field inline"><input type="checkbox" name="granted" id="f-cg" ${door?.snapshot_on_granted ? "checked" : ""}><label for="f-cg">Istantanea Anche sugli Accessi Concessi</label></div>
-      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su rifiuti, aperture a distanza, citofono e allarmi.</p></div>`,
+      <div data-granted><div class="field inline"><input type="checkbox" name="granted" id="f-cg" ${door?.snapshot_on_granted ? "checked" : ""}><label for="f-cg">Foto Anche sugli Accessi Concessi</label></div>
+      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su accessi negati, aperture remote, uscite dai pulsanti, citofono, allarmi e manomissioni.</p></div>`,
     onOpen: (dlg) => {
       const sync = () => { $("[data-granted]", dlg).hidden = val(dlg, "door") === "ctrl"; };
       $("[name=door]", dlg).addEventListener("change", sync);
@@ -3686,14 +3753,19 @@ async function cameraEditor(ctrl, cameras, door, forController = false) {
       const target = ctrl.doors.find((d) => String(d.id) === choice);
       const camera = val(dlg, "camera").trim();
       if (!camera) { toast("Scegli la telecamera", true); return false; }
-      // Spostata altrove: la porta o il controller di prima resta senza telecamera
+      // Prima la nuova posizione: se la rifiuta (entità non valida), quella di prima resta com'era
+      if (!await run(() => choice === "ctrl" ? api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera}})
+        : api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, {snapshot_camera: camera, snapshot_on_granted: val(dlg, "granted")})}))) return false;
+      written = true;
+      // Spostata altrove: solo ora la porta o il controller di prima resta senza telecamera
       if (door && String(door.id) !== choice && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}))) return false;
       if (forController && choice !== "ctrl" && !await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera: ""}}))) return false;
-      if (choice === "ctrl") return (await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera}}), "Telecamera salvata")) || false;
-      return (await run(() => api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, {snapshot_camera: camera, snapshot_on_granted: val(dlg, "granted")})}), "Telecamera salvata")) || false;
+      toast("Telecamera salvata");
+      return true;
     }}],
   });
-  if (result) { loadSummary(); render(); }
+  // Anche dopo un errore a metà, con Annulla: la scheda mostra quello che è stato davvero salvato
+  if (result || written) { loadSummary(); render(); }
 }
 
 // Scheda Videocitofoni: citofoni Hikvision collegati alle porte
@@ -3704,7 +3776,7 @@ async function controllerIntercoms(body, ctrl) {
   const rows = ctrl.doors.filter((d) => d.intercom_name);
   const seen = (d) => { const i = live(d); return i?.last_message_at ? `ultimo messaggio ${relTime(i.last_message_at)}` : "nessun messaggio dall'avvio"; };
   body.innerHTML = `
-    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Videocitofoni Hikvision collegati con l'add-on Hikvision Doorbell: le chiamate finiscono nel registro e, se vuoi, "Apri" dal citofono apre la porta con un'apertura a tempo.</p>
+    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Videocitofoni Hikvision collegati con l'add-on Hikvision Doorbell: le chiamate finiscono nel registro e, se vuoi, "Apri" dal videocitofono apre la porta con un'apertura a tempo.</p>
       ${ctrl.doors.length ? `<button type="button" class="primary" id="ic-new">${icon("plus")}Aggiungi Videocitofono</button>` : ""}</div>
     ${!ctrl.doors.length ? '<div class="card"><div class="empty">Prima aggiungi una porta all\'app nella scheda Porte.</div></div>'
       : rows.length ? `<div class="card flush"><div class="list">${rows.map((d) => `<div class="item">
@@ -3727,25 +3799,32 @@ async function controllerIntercoms(body, ctrl) {
 async function intercomEditor(ctrl, door) {
   const d = door || {intercom_relay: 1, intercom_mqtt_prefix: "hmd"};
   const doorSelect = `<select name="door">${ctrl.doors.map((x) => `<option value="${x.id}" ${x.id === door?.id ? "selected" : ""}>${esc(x.name)}${x.intercom_name && x.id !== door?.id ? ` (ora ${esc(x.intercom_name)})` : ""}</option>`).join("")}</select>`;
+  let written = false;
   const result = await modal({
     title: door ? "Modifica Videocitofono" : "Aggiungi Videocitofono",
     wide: true,
-    body: `<div class="fields-2">${field("Nome del Citofono", `<input name="intercom_name" value="${esc(d.intercom_name || "")}" required>`, "Lo stesso nome dato al citofono nell'add-on Hikvision Doorbell.")}
+    body: `<div class="fields-2">${field("Nome del Videocitofono", `<input name="intercom_name" value="${esc(d.intercom_name || "")}" required>`, "Lo stesso nome dato al videocitofono nell'add-on Hikvision Doorbell.")}
       ${field("Porta", doorSelect, "Se la porta ha già un videocitofono, viene sostituito.")}</div>
-      <div class="field inline"><input type="checkbox" name="intercom_open_door" id="f-iod" ${d.intercom_open_door ? "checked" : ""}><label for="f-iod">"Apri" dal Citofono Apre Questa Porta</label></div>
+      <div class="field inline"><input type="checkbox" name="intercom_open_door" id="f-iod" ${d.intercom_open_door ? "checked" : ""}><label for="f-iod">"Apri" dal Videocitofono Apre Questa Porta</label></div>
       <p class="hint" style="margin-top:-8px">Dall'app Hik-Connect o dal monitor: l'add-on manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Spento = le chiamate finiscono solo nel registro.</p>
       <div class="fields-2">${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}
-      ${field("Prefisso MQTT del Citofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}</div>`,
+      ${field("Prefisso MQTT del Videocitofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}</div>`,
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
       const target = ctrl.doors.find((x) => String(x.id) === val(dlg, "door"));
       const name = val(dlg, "intercom_name").trim();
-      if (!name) { toast("Scrivi il nome del citofono", true); return false; }
-      if (door && door.id !== target.id && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}))) return false;
+      if (!name) { toast("Scrivi il nome del videocitofono", true); return false; }
       const changes = {intercom_name: name, intercom_open_door: val(dlg, "intercom_open_door"), intercom_relay: Number(val(dlg, "intercom_relay")), intercom_mqtt_prefix: val(dlg, "intercom_mqtt_prefix")};
-      return (await run(() => api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, changes)}), "Videocitofono salvato")) || false;
+      // Prima la porta nuova: se la rifiuta (prefisso non valido), la porta di prima tiene il suo videocitofono
+      if (!await run(() => api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, changes)}))) return false;
+      written = true;
+      // Spostato su un'altra porta: solo ora la porta di prima resta senza
+      if (door && door.id !== target.id && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}))) return false;
+      toast("Videocitofono salvato");
+      return true;
     }}],
   });
-  if (result) { loadSummary(); render(); }
+  // Anche dopo un errore a metà, con Annulla: la scheda mostra quello che è stato davvero salvato
+  if (result || written) { loadSummary(); render(); }
 }
 
 // Impostazioni della porta nell'app; l'area viene dal controller
