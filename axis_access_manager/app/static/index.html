@@ -2612,19 +2612,19 @@ async function viewHolidays(body) {
 }
 
 // ---------- Notifiche ----------
-const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", clock: "clock", missing_cards: "card", backup: "history"};
+const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", programming: "lock", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", clock: "clock", missing_cards: "card", backup: "history", database: "history"};
 const SEVERITY = {crit: "Critica", warn: "Media", low: "Bassa"};
 // Schede del registro delle notifiche: eventi che possono diventare una notifica
 const NOTIF_TABS = {tutte: ["Tutte", "negato,allarme,manomissione"], negati: ["Accessi Negati", "negato"], allarmi: ["Allarmi e Manomissioni", "allarme,manomissione"]};
 const NOTIF_PAGE = 50;
 const notifFilters = {q: "", door: "", tab: "tutte", onlyOpen: false};
 let notifData = null, notifEvents = [];
-// "oggi 13:34", "ieri 13:34" o "24/10 13:34"
+// "oggi 13:34", "ieri 13:34" o "24/10/2026 13:34"
 function dayTime(iso) {
   const d = new Date(iso), today = new Date();
-  const yesterday = new Date(Date.now() - 86400000);
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
   const day = d.toDateString() === today.toDateString() ? "oggi" : d.toDateString() === yesterday.toDateString() ? "ieri"
-    : d.toLocaleDateString("it-IT", {day: "2-digit", month: "2-digit"});
+    : d.toLocaleDateString("it-IT", {day: "2-digit", month: "2-digit", year: "numeric"});
   return `${day} ${fmtTime(iso)}`;
 }
 const notifSince = () => new Date(Date.now() - 86400000).toISOString();
@@ -2633,7 +2633,8 @@ function notifCard(i) {
   const minutes = Math.max(1, Math.round((new Date(i.ts) - new Date(i.first_ts)) / 60000));
   const meta = [
     i.door ? esc(i.door) : "",
-    i.count > 1 ? `${i.count} tentativi in ${plural(minutes, "minuto", "minuti")}` : "",
+    // Allarmi e manomissioni accorpati non sono tentativi
+    i.count > 1 ? `${i.count} ${i.type === "door_alarm" ? "volte" : "tentativi"} in ${plural(minutes, "minuto", "minuti")}` : "",
     i.count > 1 ? `${esc(dayTime(i.first_ts))} – ${esc(fmtTime(i.ts))}` : i.type === "expiring" ? "" : `<span title="${esc(fmtFull(i.ts))}">${esc(dayTime(i.ts))}</span>`,
   ].filter(Boolean).join(" · ");
   const link = i.link && (!i.link.startsWith("#impianti") || can("impianti")) && (i.link !== "#da-registrare" || can("persone")) ? i.link : "";
@@ -2647,7 +2648,7 @@ function notifCard(i) {
     <div class="n-body"><div class="n-title"><b>${esc(i.title)}</b><span class="n-sev">${SEVERITY[i.severity]}</span></div>
       ${i.text ? `<div class="n-line">${esc(i.text)}</div>` : ""}${meta ? `<div class="n-meta">${meta}</div>` : ""}</div>
     ${snap}
-    <div class="n-actions">${details}<button type="button" class="primary" data-seen="${esc(i.id)}">${icon("check")}Presa Visione</button></div>
+    <div class="n-actions">${details}${i.seen ? '<span class="pill">Visto</span>' : `<button type="button" class="primary" data-seen="${esc(i.id)}">${icon("check")}Presa Visione</button>`}</div>
   </article>`;
 }
 function notifMatches(i) {
@@ -2658,10 +2659,14 @@ function notifMatches(i) {
 function renderNotifCards() {
   const open = notifData.items.filter((i) => !i.seen);
   const shown = open.filter(notifMatches);
+  // Guasti già visti ma non risolti: restano nella barra in alto finché durano, qui sotto Da Gestire
+  const faults = notifData.items.filter((i) => i.seen && i.fault);
+  const ongoing = faults.filter(notifMatches);
   $("#n-open").textContent = `· ${shown.length}`;
   $("#n-all").hidden = !open.length;
-  morph($("#n-cards"), shown.length ? shown.map(notifCard).join("")
-    : `<div class="n-empty">${icon("check")}${open.length ? "Nessuna notifica da gestire con questi filtri." : "Nessun evento da gestire. Tutto sotto controllo."}</div>`);
+  const empty = open.length ? "Nessuna notifica da gestire con questi filtri." : faults.length ? "Nessuna notifica da gestire." : "Tutto in Ordine · nessuna notifica da gestire";
+  morph($("#n-cards"), (shown.length ? shown.map(notifCard).join("") : `<div class="n-empty">${icon("check")}${empty}</div>`)
+    + (ongoing.length ? `<h3 class="section-title" style="margin:10px 0 0">Guasti Ancora in Corso</h3>${ongoing.map(notifCard).join("")}` : ""));
 }
 // Evento → notifica a cui appartiene, per la colonna Stato del registro
 function notifOfEvent(id) {
@@ -2675,7 +2680,7 @@ function notifRow(e) {
   return `<tr data-event="${e.id}" tabindex="0" title="${esc(fmtFull(e.ts))}">
     <td class="n-time">${esc(new Date(e.ts).toDateString() === new Date().toDateString() ? fmtTime(e.ts) : dayTime(e.ts))}</td>
     <td><span class="n-ev"><span class="dot ${e.kind === "negato" ? "warn" : "err"}"></span>${esc(label)}</span></td>
-    <td>${who}${unknown && e.card ? ' <span class="n-unk">sconosciuta</span>' : ""}</td>
+    <td>${who}${unknown && e.card ? ' <span class="n-unk">Sconosciuta</span>' : ""}</td>
     <td class="n-reason">${esc(e.detail || "")}</td>
     ${multiDoor() ? `<td>${esc(eventPlace(e))}</td>` : ""}
     <td>${n ? (n.seen ? '<span class="muted small-text">Visto</span>' : '<span class="n-state">Da Gestire</span>') : '<span class="muted small-text" title="Non è diventato una notifica: tipo disattivato o già passato">—</span>'}</td>
@@ -2746,14 +2751,14 @@ async function viewNotifications(el) {
     </section>
     ${log ? `<section class="card n-log">
       <div class="n-sec-head"><h2 style="margin:0">Registro Eventi</h2>
-        <label class="n-chk"><input type="checkbox" id="n-only" ${notifFilters.onlyOpen ? "checked" : ""}> Solo da gestire</label></div>
+        <label class="n-chk"><input type="checkbox" id="n-only" ${notifFilters.onlyOpen ? "checked" : ""}> Solo da Gestire</label></div>
       <div class="n-tabs" role="tablist" aria-label="Categoria">${Object.entries(NOTIF_TABS).map(([k, [label]]) => `<button type="button" role="tab" class="n-tab" data-n-tab="${k}" aria-selected="${notifFilters.tab === k}">${esc(label)}<span></span></button>`).join("")}</div>
       <div class="table-wrap" id="n-table" hidden><table class="table n-table"><thead><tr>
         <th>Ora</th><th>Evento</th><th>Persona / Tessera</th><th>Motivo</th>${multiDoor() ? "<th>Porta</th>" : ""}<th>Stato</th><th aria-label="Dettagli"></th>
       </tr></thead><tbody id="n-rows"></tbody></table></div>
       <p class="muted" id="n-norows" hidden style="margin:0;padding:20px 4px">Nessun evento in questa vista.</p>
       <div class="n-more"><button type="button" class="ghost" id="n-more" hidden>Carica Altri</button>
-        <a class="small-text" href="#registro" id="n-older">Eventi precedenti nel Registro</a></div>
+        <a class="small-text" href="#registro" id="n-older">Eventi Precedenti nel Registro</a></div>
     </section>` : ""}`;
   paintIcons(el);
   renderNotifCards();
@@ -2814,7 +2819,8 @@ async function viewNotificationSettings(body) {
 
 // ---------- Impianti ----------
 const secs = (v) => v === null || v === undefined ? "—" : `${v} s`;
-const DIRECTION_LABELS = {in: "Ingresso", out: "Uscita", "": "Senza Direzione"};
+// Direzione del passaggio dalla porta: "ingresso" è solo un morsetto del controller
+const DIRECTION_LABELS = {in: "Entrata", out: "Uscita", "": "Senza Direzione"};
 const loadingBox = () => '<div class="loading"><span class="spinner"></span></div>';
 const errorBox = (title, err) => `<div class="alert err">${icon("alert")}<div class="grow"><b>${esc(title)}</b>${esc(err.message || err)}</div></div>`;
 
@@ -2854,7 +2860,7 @@ async function viewInstallation(el, sub) {
 // Elenco dei controller per struttura e area: tocca la scheda per lo schema, l'ingranaggio per la connessione
 async function viewControllers(body, data) {
   if (!data.controllers.length) {
-    body.innerHTML = `<div class="card"><div class="empty">${icon("chip")}<br><b>Nessun controller configurato</b><br>Aggiungi il controller Axis con indirizzo, utente e password: poi colleghi lettori e porte.<br><br>
+    body.innerHTML = `<div class="card"><div class="empty">${icon("chip")}<br><b>Nessun Controller Configurato</b><br>Aggiungi il controller Axis con indirizzo, utente e password: poi colleghi lettori e porte.<br><br>
       <button type="button" class="primary" id="ctrl-new">${icon("plus")}Aggiungi Controller</button></div></div>`;
     $("#ctrl-new").onclick = () => controllerEditor();
     return;
@@ -2884,12 +2890,7 @@ async function viewControllers(body, data) {
     const c = data.controllers[0];
     const dot = $(`[data-ctl-state="${c.id}"]`);
     if (!dot) return;
-    // Verde: risponde e manda gli eventi; giallo: risponde ma gli eventi MQTT non arrivano; rosso: non risponde o è cambiato
-    const health = s.controllers.find((h) => h.id === c.id) || c.health;
-    let [cls, text] = healthState(health);
-    if (!health) [cls, text] = !s.controller.ok ? ["err", `Non raggiungibile: ${s.controller.error || "nessuna risposta"}`] : ["ok", "Collegato"];
-    if (cls === "ok" && !s.mqtt.connected) [cls, text] = ["warn", "Collegato, ma gli eventi MQTT non arrivano: registro e stato porta non si aggiornano"];
-    else if (cls === "ok") text = "Collegato, eventi in arrivo";
+    const [cls, text] = healthState(s.controllers.find((h) => h.id === c.id) || c.health, s);
     dot.className = `dot ${cls}`;
     dot.title = text;
     dot.setAttribute("aria-label", text);
@@ -2903,14 +2904,26 @@ async function viewControllers(body, data) {
   }).catch(() => {});
 }
 
-// Spia del controller dal controllo periodico (ogni 30 secondi): [classe, descrizione]
-function healthState(h) {
-  if (!h) return ["", "Verifica del collegamento…"];
-  if (h.identity_change) return ["err", "Controller cambiato: scritture sospese finché non confermi"];
-  if (h.unreachable) return ["err", `Non raggiungibile: ${h.error || "nessuna risposta"}`];
-  if (h.online === false) return ["warn", `Non ha risposto all'ultimo controllo: ${h.error || ""}`];
-  if (h.clock_problem) return ["warn", `Orologio sbagliato di ${offsetText(h.clock_offset)}`];
-  return ["ok", "Collegato"];
+// Spia del controller, la stessa nella scheda di Impianti, nell'intestazione e nella scheda Stato del controller:
+// [classe, descrizione, etichetta]. h è il controllo periodico (ogni 30 secondi); s, se c'è, è api/status, con la
+// lettura dal vivo e gli eventi MQTT. Come le notifiche: verde risponde e manda gli eventi, giallo risponde ma gli
+// eventi non arrivano o l'orologio è sbagliato, rosso non risponde o è cambiato.
+function healthState(h, s) {
+  if (h?.identity_change) return ["err", "Controller cambiato: scritture sospese finché non confermi", "Controller Cambiato"];
+  if (h?.unreachable) return ["err", `Non raggiungibile: ${h.error || "nessuna risposta"}`, "Non Raggiungibile"];
+  if (h?.online === false) return ["warn", `Non ha risposto all'ultimo controllo${h.error ? `: ${h.error}` : ""}`, "Non Ha Risposto"];
+  // Primo controllo non ancora concluso: decide la lettura dal vivo, se c'è
+  if (h?.online !== true) {
+    if (!s?.controller) return ["", "Verifica del collegamento…", "Verifica…"];
+    if (!s.controller.ok) return ["err", `Non raggiungibile: ${s.controller.error || "nessuna risposta"}`, "Non Raggiungibile"];
+  }
+  if (s) {
+    const why = !s.mqtt.configured ? "manca il broker MQTT" : !s.mqtt.connected ? "l'app non è collegata al broker MQTT"
+      : s.mqtt.controller_online === false ? "il controller non è collegato al broker MQTT" : "";
+    if (why) return ["warn", `Raggiungibile, ma gli eventi MQTT non arrivano (${why}): registro e stato porta non si aggiornano`, "Eventi Non in Arrivo"];
+  }
+  if (h?.clock_problem) return ["warn", `Orologio sbagliato di ${offsetText(h.clock_offset)}`, "Orologio Sbagliato"];
+  return ["ok", s ? "Raggiungibile, eventi in arrivo" : "Raggiungibile", "Raggiungibile"];
 }
 const offsetText = (sec) => {
   const way = sec > 0 ? "avanti" : "indietro", v = Math.abs(sec);
@@ -2942,37 +2955,58 @@ function areaSelect(sites, selected = 0, name = "area_id") {
   return `<select name="${name}"><option value="0">Nessuna Area</option>${sites.filter((x) => x.id).map((x) => `<optgroup label="${esc(x.name)}">${x.areas.map((a) => `<option value="${a.id}" ${a.id === selected ? "selected" : ""}>${esc(x.name)} › ${esc(a.name)}</option>`).join("")}</optgroup>`).join("")}</select>`;
 }
 
+// sites null: strutture non leggibili. Il campo resta fermo e l'area non si manda, così non cambia
+function controllerAreaField(ctrl, sites) {
+  const where = 'Porte e lettori del controller stanno qui. Si creano in <a href="#impianti/strutture">Strutture e Aree</a>.';
+  if (!sites) {
+    return field("Struttura e Area", `<select name="area_id" disabled><option>${esc(ctrl ? placeOf(ctrl.place) || "Nessuna Area" : "Area Predefinita")}</option></select>`,
+      `Strutture e aree non leggibili: ${ctrl ? "l'area resta quella di adesso" : "l'app sceglie quella predefinita, che puoi cambiare dopo dall'ingranaggio del controller"}.`);
+  }
+  if (ctrl) return field("Struttura e Area", areaSelect(sites, ctrl.area_id || 0), where);
+  // Controller nuovo: l'area che gli dà l'app se non se ne sceglie un'altra (installation._default_area)
+  const areas = sites.filter((x) => x.id).flatMap((x) => x.areas);
+  if (!areas.length) {
+    return field("Struttura e Area", '<select name="area_id"><option value="">Struttura Principale › Generale</option></select>',
+      'Porte e lettori del controller stanno qui. Non ci sono ancora strutture: l\'app crea questa, da rinominare in <a href="#impianti/strutture">Strutture e Aree</a>.');
+  }
+  return field("Struttura e Area", areaSelect(sites, areas.length === 1 ? areas[0].id : 0), where);
+}
+
 function controllerFields(ctrl, sites) {
   return `<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(ctrl?.name || "Controller A1210")}">`)}
-      ${field("Struttura e Area", areaSelect(sites, ctrl?.area_id || 0), 'Porte e lettori del controller stanno qui. Si creano in <a href="#impianti/strutture">Strutture e Aree</a>.')}</div>
+      ${controllerAreaField(ctrl, sites)}</div>
     ${field("Descrizione della Posizione", `<input name="description" maxlength="200" value="${esc(ctrl?.description || "")}" placeholder="es. quadro elettrico sotto la scala">`)}
     <h3 class="section-title" style="margin-top:18px">${icon("cog")}Connessione</h3>
     ${field("Indirizzo", `<input name="host" class="mono" value="${esc(ctrl?.host || "")}" placeholder="es. 192.168.1.50">`, "IP o nome del controller, senza https://.")}
     <div class="fields-2">${field("Utente", `<input name="username" autocomplete="off" value="${esc(ctrl?.username || "")}">`)}
     ${field("Password", `<input name="password" type="password" autocomplete="new-password" placeholder="${ctrl?.has_password ? "lascia vuoto per non cambiarla" : ""}">`)}</div>
-    ${field("Prefisso MQTT", `<input name="mqtt_topic_prefix" class="mono" value="${esc(ctrl?.mqtt_topic_prefix || "")}" placeholder="es. accessi/controller_ingresso">`, "Lo stesso impostato nel client MQTT del controller: gli eventi arrivano sotto &lt;prefisso&gt;/eventi/…")}
+    ${field("Prefisso MQTT", `<input name="mqtt_topic_prefix" class="mono" value="${esc(ctrl?.mqtt_topic_prefix || "")}" placeholder="es. accessi/controller_ingresso">`, "Lo stesso impostato nel client MQTT del controller: eventi sotto &lt;prefisso&gt;/eventi/…, stato del controller su &lt;prefisso&gt;/stato (online o offline).")}
     <div class="field inline"><input type="checkbox" name="verify_ssl" id="f-ssl" ${ctrl?.verify_ssl ? "checked" : ""}><label for="f-ssl">Verifica Certificato HTTPS</label></div>
     <p class="hint" style="margin-top:-8px">Lascialo spento se il controller usa il certificato di fabbrica.</p>
     <div class="row"><button type="button" class="small" id="ctrl-test">${icon("refresh")}Prova Collegamento</button><span id="ctrl-test-result" class="small-text"></span></div>`;
 }
 
 function bindControllerFields(root, ctrl) {
+  // L'area si manda solo se l'utente la cambia: altrimenti il server tiene quella di prima (per un controller nuovo
+  // quella predefinita), anche quando le strutture non si sono potute leggere
+  const area = $("[name=area_id]", root), startArea = area.value;
   const read = () => ({name: val(root, "name"), host: val(root, "host"), username: val(root, "username"), password: $("[name=password]", root).value,
-    mqtt_topic_prefix: val(root, "mqtt_topic_prefix"), verify_ssl: val(root, "verify_ssl"), area_id: Number(val(root, "area_id")), description: val(root, "description")});
+    mqtt_topic_prefix: val(root, "mqtt_topic_prefix"), verify_ssl: val(root, "verify_ssl"),
+    area_id: area.disabled || area.value === startArea ? null : Number(area.value), description: val(root, "description")});
   $("#ctrl-test", root).onclick = async () => {
     const out = $("#ctrl-test-result", root);
     out.innerHTML = '<span class="spinner"></span>';
     const f = read();
     try {
       const r = await api("api/controllers/test", {method: "POST", body: {host: f.host, username: f.username, password: f.password, verify_ssl: f.verify_ssl, controller_id: ctrl?.id || null}});
-      out.innerHTML = `<span class="pill ok">${esc(r.model)} · firmware ${esc(r.firmware)}</span> ${plural(r.doors.length, "porta", "porte")}: ${r.doors.map((d) => esc(d.name)).join(", ")}`;
+      out.innerHTML = `<span class="pill ok">${esc(r.model)} · Firmware ${esc(r.firmware)}</span> ${plural(r.doors.length, "porta", "porte")}: ${r.doors.map((d) => esc(d.name)).join(", ")}`;
     } catch (err) { out.innerHTML = `<span class="pill err">${esc(err.message)}</span>`; }
   };
   return read;
 }
 
 async function controllerEditor() {
-  const sites = await api("api/locations").catch(() => []);
+  const sites = await api("api/locations").catch(() => null);
   let read;
   const result = await modal({
     title: "Nuovo Controller", wide: true,
@@ -2997,26 +3031,32 @@ function controllerHeader(ctrl, tab) {
     ${tab === "connessione" ? "" : `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impianti/c${ctrl.id}${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`}`;
 }
 
-function paintControllerState() {
+// Etichetta dell'intestazione: stessa regola e stesso colore della spia in Impianti
+function paintControllerState(ctrl) {
   api("api/status").then((s) => {
     const pill = $("#ctl-state");
     if (!pill) return;
-    const changed = s.controllers.some((h) => h.identity_change);
-    pill.className = "pill " + (changed || !s.controller.ok ? "err" : "ok");
-    pill.innerHTML = `<span class="dot"></span>${changed ? "Controller Cambiato" : s.controller.ok ? `Collegato · ${esc(s.controller.model)}` : "Non Raggiungibile"}`;
-    pill.title = s.controller.ok ? `firmware ${s.controller.firmware}` : s.controller.error || "";
+    const [cls, text, label] = healthState(s.controllers.find((h) => !ctrl || h.id === ctrl.id), s);
+    const live = cls !== "err" && s.controller?.ok;
+    pill.className = `pill ${cls}`;
+    pill.innerHTML = `<span class="dot"></span>${esc(label)}${live && cls === "ok" ? ` · ${esc(s.controller.model)}` : ""}`;
+    pill.title = live ? `${text} · Firmware ${s.controller.firmware}` : text;
   }).catch(() => {});
 }
 
 // Pagina Connessione: dati tecnici del controller, raggiunta dall'ingranaggio
 async function viewConnection(el, ctrl) {
-  const sites = await api("api/locations").catch(() => []);
+  const hash = location.hash;
+  // Strutture non leggibili (null): il campo dell'area resta fermo e salvando l'area non cambia
+  const sites = await api("api/locations").catch(() => null);
+  // Cambiata pagina mentre si leggeva: non scrive sopra la pagina nuova
+  if (location.hash !== hash) return;
   el.innerHTML = `${controllerHeader(ctrl, "connessione")}
     <form class="card" id="conn-form" style="max-width:760px">${controllerFields(ctrl, sites)}
-      <div class="row" style="margin-top:18px;justify-content:space-between"><button type="button" class="danger" id="ctrl-del">Rimuovi Controller</button>
+      <div class="row" style="margin-top:18px;justify-content:space-between"><button type="button" class="danger" id="ctrl-del">Togli Controller</button>
         <span class="row"><a class="btn" href="#impianti/c${ctrl.id}">Annulla</a><button type="submit" class="primary">Salva</button></span></div></form>`;
   paintIcons(el);
-  paintControllerState();
+  paintControllerState(ctrl);
   bindIdentityAlert(el, ctrl);
   const form = $("#conn-form");
   const read = bindControllerFields(form, ctrl);
@@ -3029,8 +3069,8 @@ async function viewConnection(el, ctrl) {
   }
   form.onsubmit = (e) => { e.preventDefault(); saveConnection(); };
   $("#ctrl-del").onclick = async () => {
-    if (await confirmBox("Rimuovi Controller", `Rimuovere <b>${esc(ctrl.name)}</b> e le sue porte dall'app? Sul controller non cambia niente: tessere, gruppi e programmazione restano dove sono.`, "Rimuovi", true) &&
-        await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller rimosso dall'app")) { pageGuard = null; loadSummary(); location.hash = "#impianti"; }
+    if (await confirmBox("Togli Controller", `Togliere <b>${esc(ctrl.name)}</b> e le sue porte dall'app? Sul controller non cambia niente: tessere, profili e programmazione restano dove sono.`, "Togli", true) &&
+        await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller tolto dall'app")) { pageGuard = null; loadSummary(); location.hash = "#impianti"; }
   };
 }
 
@@ -3039,7 +3079,7 @@ async function viewController(el, ctrl, tab) {
   tab = ["porte", "lettori", "telecamere", "citofoni", "stato", "storico", "backup"].includes(tab) ? tab : "";
   el.innerHTML = `${controllerHeader(ctrl, tab)}<div id="c-body">${loadingBox()}</div>`;
   paintIcons(el);
-  paintControllerState();
+  paintControllerState(ctrl);
   bindIdentityAlert(el, ctrl);
   const body = $("#c-body");
   // Lo storico dei backup vale per ogni controller, anche quando non risponde
@@ -3060,7 +3100,10 @@ async function viewController(el, ctrl, tab) {
   const unmanaged = p.unmanaged?.length ? `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${p.unmanaged.length === 1 ? "Punto di Accesso Non Gestito" : "Punti di Accesso Non Gestiti"}</b>${p.unmanaged.map((a) => esc(a.name)).join(", ")}: il controller legge tessere e pulsanti ma non decide, quindi la porta non si apre. Succede dopo un reset del controller.</div><button type="button" class="small primary" data-manage>Fai Gestire al Controller</button></div>` : "";
   // Pulsanti e relè senza il profilo che dà il permesso di aprire: il controller li nega
   const rexMissing = p.rex_missing?.length ? `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${p.rex_missing.length === 1 ? "Pulsante Senza Permesso di Apertura" : "Pulsanti Senza Permesso di Apertura"}</b>${p.rex_missing.map((i) => esc(i.name)).join(", ")}: il controller nega l'apertura, quindi la porta non si apre. Succede con gli ingressi programmati prima della 0.21.3.</div><button type="button" class="small primary" data-manage>Dai il Permesso</button></div>` : "";
-  const errors = unmanaged + rexMissing + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Alcune parti non sono leggibili</b>${p.errors.map(esc).join("<br>")}</div></div>` : "");
+  // Ingressi programmati a metà o con oggetti tolti fuori dall'app: scrivendoli di nuovo l'app completa il lavoro
+  const broken = (p.inputs || []).filter((i) => i.problem);
+  const rewrite = broken.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>${broken.length === 1 ? "Ingresso da Riscrivere" : "Ingressi da Riscrivere"}</b>${broken.map((i) => `${esc(i.name)}: ${esc(i.problem)}`).join("<br>")}<br>Apri l'ingresso e premi Scrivi sul Controller: anche con le stesse impostazioni l'app completa la programmazione.</div></div>` : "";
+  const errors = unmanaged + rexMissing + rewrite + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${p.errors.map(esc).join("<br>")}</div></div>` : "");
   // Le due riparazioni passano dalla stessa richiesta: ogni pulsante le fa tutte e due
   if (unmanaged || rexMissing) setTimeout(() => body.querySelectorAll("[data-manage]").forEach((button) => {
     const label = button.textContent;
@@ -3101,14 +3144,22 @@ const INPUT_ICONS = {"": "chip", rex: "arrow", intercom: "phone", door_monitor: 
 const DOOR_INPUT_ROLES = ["rex", "intercom", "door_monitor"];
 const INPUT_ROLE_HINTS = {
   "": "L'ingresso non fa niente; resta solo lo stato in Home Assistant, se il controller lo manda.",
-  rex: "Chiede l'apertura della porta, come un lettore in uscita: per il pulsante della portineria o di uscita.",
-  intercom: "Il contatto del relè del citofono: apre la porta anche con Home Assistant spento. Nel registro compare come Relè Citofono.",
+  rex: "Chiede l'apertura della porta, come un lettore in uscita: per il pulsante della portineria o di uscita. Nel registro le aperture compaiono come Uscita, con il nome dell'ingresso.",
+  intercom: "Il contatto del relè del citofono: apre la porta anche con Home Assistant spento. Nel registro le aperture compaiono come Apertura Remota, con il nome dell'ingresso.",
   door_monitor: "Il contatto magnetico della porta: in Home Assistant compare Contatto Porta (aperta o chiusa) e si attivano gli allarmi di porta forzata e aperta troppo a lungo.",
   alarm: "Nessuna azione sulla porta: lo stato arriva in Home Assistant con il nome scelto.",
 };
 // Al banco (firmware 10.12) gli AUX usati come pulsante sono rimasti attivi dopo la prima pressione fino al riavvio
 const inputRoleHint = (io, role) => INPUT_ROLE_HINTS[role] || "";
-const contactHint = (role) => role === "door_monitor" ? "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre." : "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.";
+// Cosa vuol dire il tipo di contatto scelto ("no" o "nc") per il ruolo dell'ingresso
+const CONTACT_HINTS = {
+  door_monitor: {no: "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre.",
+    nc: "Normalmente Chiuso: con la porta chiusa il contatto è chiuso e si apre quando la porta si apre."},
+  rex: {no: "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.",
+    nc: "Normalmente Chiuso: il contatto si apre quando si preme il pulsante o scatta il relè."},
+};
+const contactHint = (role, contact = "no") => role === "" || role === "alarm" ? "Con questo ruolo il tipo di contatto non ha effetto."
+  : (CONTACT_HINTS[role] || CONTACT_HINTS.rex)[contact] || CONTACT_HINTS.rex.no;
 
 function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   const saved = linksOf(p);
