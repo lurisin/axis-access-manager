@@ -149,6 +149,9 @@ def input_problem(
     points: list[dict] | None = None,
     idpoints: set[str] | None = None,
     assigned: list[dict] | None = None,
+    door_configs: list[dict] | None = None,
+    profiles: list[dict] | None = None,
+    access_controllers: list[dict] | None = None,
 ) -> str:
     """Perché un ingresso salvato nell'app non è così sul controller, "" se è a posto o non si sa (dati non letti):
     una scrittura rimasta a metà o oggetti tolti fuori dall'app. Si ripara scrivendo di nuovo l'ingresso."""
@@ -162,12 +165,32 @@ def input_problem(
             return "sul controller apre un'altra porta"
         if not idpoint or (idpoints is not None and idpoint not in idpoints):
             return "manca il suo punto di identificazione sul controller"
+        # Regola o collegamento tolti e scrittura interrotta prima di rimetterli: il pulsante non apre
+        if found is not None and profiles is not None and rex_uncovered(profiles, [point]):
+            return "sul controller non ha il permesso di aprire la porta"
+        if (
+            found is not None
+            and access_controllers is not None
+            and found.get("Enabled") is not False
+            and unlinked_points([found], access_controllers)
+        ):
+            return "il controller non gestisce il suo punto di accesso"
     elif role == "door_monitor":
         users = next((a.get("IoUser") or [] for a in assigned or [] if a.get("IoName") == io), [])
         if assigned is not None and not any(
             u.get("Usage") == DOOR_MONITOR_USAGES[0] and u.get("token") == row.get("door_token") for u in users
         ):
             return "sul controller non è collegato alla porta"
+        config = {
+            c.get("Name"): c.get("Value")
+            for c in _door_config(door_configs or [], row.get("door_token") or "").get("Configuration") or []
+        }
+        # Solo con la configurazione della porta letta: una porta che non c'è più la segnala il salvataggio
+        if config and config.get("DoorMonitor.Type") in (None, "", "None"):
+            return "sul controller la porta non usa il sensore"
+        other = DOOR_MONITOR_VALUES["nc" if row.get("contact") == "no" else "no"]
+        if config and all(config.get(name) == value for name, value in other.items()):
+            return "sul controller il tipo di contatto è diverso"
     elif point or idpoint:
         return "la programmazione di prima non è stata tolta del tutto dal controller"
     return ""
@@ -391,9 +414,14 @@ class ProgrammingService:
         unmanaged = unlinked_points(points, access_controllers) if access_controllers else []
         # Come il controllo di stato: un punto di accesso disattivato non apre comunque
         unmanaged = [p for p in unmanaged if p.get("Enabled") is not False]
-        rex_missing = [] if offline else await self._rex_missing(points, errors)
-        io_info, io_assigned = await safe("ingressi", self.controller.list_io, ([], []))
         saved = self.db.controller_inputs(self.controller_id)
+        # Profili letti solo se c'è un pulsante o un relè: servono a vedere se hanno il permesso di aprire
+        profiles = None
+        if rex_policies(saved.values()):
+            profiles = await safe("profili di accesso", self.controller.list_access_profiles)
+            profiles = None if "profili di accesso" in failed else profiles
+        rex_missing = self._rex_missing(points, profiles) if profiles is not None else []
+        io_info, io_assigned = await safe("ingressi", self.controller.list_io, ([], []))
         problems = {
             io: input_problem(
                 io,
@@ -401,6 +429,9 @@ class ProgrammingService:
                 None if "punti di accesso" in failed else points,
                 None if "lettori" in failed else {r.get("token") for r in readers},
                 None if "ingressi" in failed else io_assigned,
+                None if "configurazione porte" in failed else door_configs,
+                profiles,
+                access_controllers or None,
             )
             for io, row in saved.items()
         }
@@ -463,18 +494,11 @@ class ProgrammingService:
             "errors": list(dict.fromkeys(errors)),
         }
 
-    async def _rex_missing(self, points: list[dict], errors: list[str]) -> list[dict]:
+    def _rex_missing(self, points: list[dict], profiles: list[dict]) -> list[dict]:
         """Ingressi che aprono la porta ma su cui nessun profilo dà il permesso."""
         rows = self.db.controller_inputs(self.controller_id)
         existing = {p.get("token") for p in points}
-        wanted = [t for t in rex_policies(rows.values()) if t in existing]
-        if not wanted:
-            return []
-        try:
-            missing = set(rex_uncovered(await self.controller.list_access_profiles(), wanted))
-        except VapixError as err:
-            errors.append(f"profili di accesso: {err}")
-            return []
+        missing = set(rex_uncovered(profiles, [t for t in rex_policies(rows.values()) if t in existing]))
         return [
             {"io": io, "name": rows[io]["name"]}
             for io in CONTROLLER_INPUTS
@@ -495,7 +519,9 @@ class ProgrammingService:
             return 0
         async with self.lock:
             rows = self.db.controller_inputs(self.controller_id)
-            missing = {i["io"] for i in await self._rex_missing(await self.controller.list_access_points(), [])}
+            points = await self.controller.list_access_points()
+            profiles = await self.controller.list_access_profiles() if rex_policies(rows.values()) else []
+            missing = {i["io"] for i in self._rex_missing(points, profiles)}
             done = await sync_rex_profile(self.controller, rex_policies(rows.values()))
             if done and missing:
                 names = ", ".join(rows[io]["name"] for io in CONTROLLER_INPUTS if io in missing)
@@ -616,7 +642,10 @@ class ProgrammingService:
         role = data.get("role") or ""
         if role not in INPUT_ROLES:
             raise ServiceError("ruolo non valido")
-        if role not in ALLOWED_ROLES[io]:
+        # Sensore Porta impostato a mano su un AUX: resta sulla sua porta (si rinomina o si cambia il contatto),
+        # ma non si crea né si sposta su un'altra porta
+        manual = role == "door_monitor" and role not in ALLOWED_ROLES[io]
+        if role not in ALLOWED_ROLES[io] and not manual:
             raise ServiceError(f"{INPUT_ROLES[role]}: non disponibile su questo ingresso")
         door = (data.get("door") or "") if role in DOOR_ROLES else ""
         if role in DOOR_ROLES:
@@ -657,9 +686,16 @@ class ProgrammingService:
             if not current.get("role"):
                 # Contatto porta impostato a mano sul controller: l'app lo riconosce e lo può togliere, come la pagina
                 current = {**current, **(await self._door_monitor_on_controller(io) or {})}
+            if manual and (current.get("role") != "door_monitor" or current.get("door_token") != door):
+                raise ServiceError(f"{INPUT_ROLES[role]}: non disponibile su questo ingresso")
             before = {k: current.get(k) for k in INPUT_SETTINGS}
             # Stesse impostazioni: si riscrive solo se sul controller l'ingresso non è com'è salvato nell'app
-            if before == values and not await self._input_problem(io, current):
+            same = {**before, "name": values["name"]} == values
+            if same and (before == values or role == "door_monitor") and not await self._input_problem(io, current):
+                if before != values:
+                    # Sensore Porta rinominato: il nome c'è solo nell'app, sul controller non cambia niente
+                    self.db.save_controller_input(controller_id, io, {**current, **values})
+                    self.db.add_audit(user, "ingresso rinominato", f"{before['name']} → {values['name']}")
                 return values
             await self._apply_input(controller_id, io, current, values)
             default = CONTROLLER_INPUTS[io][0]
@@ -673,10 +709,21 @@ class ProgrammingService:
         """Come input_problem, con i dati letti ora dal controller (solo quelli che servono al ruolo)."""
         try:
             if row.get("role") in REX_ROLES:
-                points = await self.controller.list_access_points()
-                return input_problem(io, row, points, {i.get("token") for i in await self.controller.list_idpoints()})
+                return input_problem(
+                    io,
+                    row,
+                    await self.controller.list_access_points(),
+                    {i.get("token") for i in await self.controller.list_idpoints()},
+                    profiles=await self.controller.list_access_profiles(),
+                    access_controllers=await self.controller.list_access_controllers() or None,
+                )
             if row.get("role") == "door_monitor":
-                return input_problem(io, row, assigned=(await self.controller.list_io())[1])
+                return input_problem(
+                    io,
+                    row,
+                    assigned=(await self.controller.list_io())[1],
+                    door_configs=await self.controller.list_door_configurations(),
+                )
         except VapixError:
             pass
         return input_problem(io, row)
@@ -689,6 +736,7 @@ class ProgrammingService:
             "access_point_token": current.get("access_point_token", ""),
         }
         wanted = values["role"] in REX_ROLES
+        partial = current
         try:
             monitor = current.get("role") == "door_monitor"
             if monitor and (values["role"] != "door_monitor" or values["door_token"] != current.get("door_token")):
@@ -709,11 +757,14 @@ class ProgrammingService:
                 await self._write_rex(io, values, tokens)
                 await self._sync_rex(io, {**values, **tokens})
             if values["role"] == "door_monitor":
+                # Da qui la porta può avere già il sensore nuovo: resta salvato quello, così la pagina lo segnala e
+                # un nuovo salvataggio lo completa o, con un altro ruolo, lo toglie
+                partial = values
                 await self._write_door_monitor(io, values)
         except VapixError as err:
             # Resta il ruolo di prima con i token di adesso: la pagina segnala l'ingresso (input_problem) e un nuovo
             # salvataggio, anche con le stesse impostazioni, completa il lavoro
-            self.db.save_controller_input(controller_id, io, {**current, **tokens})
+            self.db.save_controller_input(controller_id, io, {**partial, **tokens})
             raise ServiceError(f"configurazione dell'ingresso non completata: {err}") from err
         self.db.save_controller_input(controller_id, io, {**values, **tokens})
 
@@ -749,12 +800,13 @@ class ProgrammingService:
         users = [
             {"Type": "doorcontrol", "token": door, "Usage": usage, "MultiIo": False} for usage in DOOR_MONITOR_USAGES
         ]
-        await self.controller.set_io_assignment(io, "in:pu/gnd", users)
+        await self.controller.set_io_assignment(io, _plain_mode(io), users)
 
     async def _clear_door_monitor(self, io: str, door: str) -> None:
         if door:
             await self._set_door_monitor(door, DOOR_MONITOR_OFF, required=False)
-        await self.controller.set_io_assignment(io, "in:pu/gnd", [])
+        # Un AUX (sensore messo a mano sul controller) ha solo i modi inout
+        await self.controller.set_io_assignment(io, _plain_mode(io), [])
 
     async def _release_io(self, io: str, idpoint: str, current: dict) -> None:
         """Libera l'I/O tornando al modo semplice. Senza utenti il firmware accetta il cambio di modo ma lo ignora:

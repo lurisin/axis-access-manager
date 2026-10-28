@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+from collections.abc import Collection
 
 from .db import Database
 from .installation import InstallationService
@@ -15,6 +16,7 @@ from .rules import (
     STANDARD_PREFIX,
     RuleError,
     describe_rules,
+    holiday_label,
     holidays_ical,
     italian_holidays,
     normalize_holiday,
@@ -22,7 +24,7 @@ from .rules import (
     parse_schedule_ical,
     schedule_ical,
 )
-from .service import AccessService, ServiceError, normalize_name, normalize_text
+from .service import AccessService, ServiceError, normalize_name, normalize_text, plural
 from .vapix import VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -257,7 +259,7 @@ class RulesService:
                             self.db.delete_holiday(other)
                 self.db.add_holiday(day, name, yearly)
             await self._write_holidays(before)
-        self.db.add_audit(user, "festività aggiunte", ", ".join(f"{d} {n}".strip() for d, n, _ in cleaned))
+        self.db.add_audit(user, "festività aggiunte", ", ".join(holiday_label(*holiday) for holiday in cleaned))
 
     async def add_italian_holidays(self, year: int, user: str) -> None:
         await self.add_holidays(italian_holidays([year, year + 1]), user)
@@ -272,7 +274,7 @@ class RulesService:
                 if holiday["day"] == day or (yearly and holiday["yearly"] and holiday["day"][5:] == day[5:]):
                     self.db.delete_holiday(holiday["day"])
             await self._write_holidays(before)
-        self.db.add_audit(user, "festività eliminata", f"{day} {gone['name'] if gone else ''}".strip())
+        self.db.add_audit(user, "festività eliminata", holiday_label(day, gone["name"] if gone else "", yearly))
 
     async def _write_holidays(self, before: list[dict]) -> None:
         """Porta sul controller le festività appena cambiate nell'app. Se non ci riesce rimette l'elenco di prima,
@@ -317,9 +319,8 @@ class RulesService:
             if "10-04" not in yearly and sum(1 for md in national if md in yearly) >= 5:
                 year = max(2026, min(int(h["day"][:4]) for h in yearly.values()))
                 self.db.add_holiday(f"{year}-10-04", national["10-04"], True)
-                self.db.add_audit(
-                    "sistema", "festività aggiunte", f"{year}-10-04 {national['10-04']} (festa nazionale dal 2026)"
-                )
+                label = holiday_label(f"{year}-10-04", national["10-04"], True)
+                self.db.add_audit("sistema", "festività aggiunte", f"{label}, festa nazionale dal 2026")
                 changed += 1
         return changed
 
@@ -507,10 +508,16 @@ class RulesService:
             raise ServiceError("è il gruppo predefinito: scegline prima un altro come predefinito")
         used_by = [c["name"] for c in self.db.list_categories() if c["group_token"] == token]
         if used_by:
-            raise ServiceError(f"gruppo usato dalle tipologie {', '.join(used_by)}: cambia prima il loro gruppo")
+            raise ServiceError(
+                f"gruppo usato {_categories(used_by)}: cambia prima {'il suo' if len(used_by) == 1 else 'il loro'} "
+                "gruppo"
+            )
         persons = self.db.profile_usage().get(token, 0)
         if persons:
-            raise ServiceError(f"gruppo assegnato a {persons} persone: spostale prima in un altro gruppo")
+            raise ServiceError(
+                f"gruppo assegnato a {plural(persons, 'persona', 'persone')}: "
+                f"{'spostala' if persons == 1 else 'spostale'} prima in un altro gruppo"
+            )
         async with self.lock:
             found = await self.controller.get_access_profiles([token])
             await self.controller.remove_access_profile(token)
@@ -570,19 +577,16 @@ class RulesService:
             "description": normalize_text(fields.get("description"), 200, "descrizione"),
         }
 
-    def _places(self, deleted_area: int = 0) -> tuple[list[dict], dict[int, int], dict[int, int]]:
+    def _places(self, deleted_areas: Collection[int] = ()) -> tuple[list[dict], dict[int, int], dict[int, int]]:
         """Porte del controller in uso, area di ogni porta e struttura di ogni area.
-        deleted_area: come sarebbero dopo l'eliminazione di quell'area (porte e controller restano senza)."""
+        deleted_areas: come sarebbero dopo l'eliminazione di quelle aree (porte e controller restano senza)."""
         installation = InstallationService(self.db)
         controllers = {
-            c["id"]: {**c, "area_id": 0} if deleted_area and c["area_id"] == deleted_area else c
-            for c in self.db.list_controllers()
+            c["id"]: {**c, "area_id": 0} if c["area_id"] in deleted_areas else c for c in self.db.list_controllers()
         }
-        doors = [
-            {**d, "area_id": 0} if deleted_area and d["area_id"] == deleted_area else d for d in installation.doors()
-        ]
+        doors = [{**d, "area_id": 0} if d["area_id"] in deleted_areas else d for d in installation.doors()]
         door_area = {d["id"]: installation.door_area(d, controllers) for d in doors}
-        area_site = {a["id"]: s["id"] for s in self.db.list_sites() for a in s["areas"] if a["id"] != deleted_area}
+        area_site = {a["id"]: s["id"] for s in self.db.list_sites() for a in s["areas"] if a["id"] not in deleted_areas}
         return doors, door_area, area_site
 
     def _check_access_rules(self, rows: list[dict] | None) -> list[dict]:
@@ -727,22 +731,52 @@ class RulesService:
             if any((r["target"], r["target_id"]) in places for r in rules.get(c["id"], []))
         ]
         if names:
-            raise ServiceError(f"è usata dalle tipologie {', '.join(names)}: toglila prima dalle loro righe di accesso")
-        if target == "area":
-            # Le porte dell'area (anche quelle che la prendono dal controller) restano senza: escono dalla struttura
-            # e le tipologie con una riga sulla struttura non le aprirebbero più
-            before, after = self._places(), self._places(deleted_area=target_id)
-            losing = [
-                c["name"]
-                for c in categories
-                if rules.get(c["id"])
-                and set(self._door_schedules(rules[c["id"]], before)) - set(self._door_schedules(rules[c["id"]], after))
-            ]
-            if losing:
-                raise ServiceError(
-                    f"le sue porte uscirebbero dalla struttura scelta nelle righe di accesso delle tipologie "
-                    f"{', '.join(losing)}: sposta prima porte e controller in un'altra area"
-                )
+            raise ServiceError(
+                f"è usata {_categories(names)}: toglila prima {'dalle sue' if len(names) == 1 else 'dalle loro'} "
+                "righe di accesso"
+            )
+        if target == "door":
+            return
+        # Porte e controller delle aree eliminate restano senza area: una porta con un'area sua passa a quella del
+        # controller (ed entra nelle righe sulla sua area o struttura), le altre escono dalla struttura.
+        # Nessuna tipologia deve aprire porte in più, né perderne, senza che lo si decida
+        before = self._places()
+        after = self._places(deleted_areas={place_id for kind, place_id in places if kind == "area"})
+        door_names = {d["door_token"]: d["name"] for d in before[0]}
+        gaining: list[str] = []
+        losing: list[str] = []
+        gained: set[str] = set()
+        lost: set[str] = set()
+        for category in categories:
+            if not rules.get(category["id"]):
+                continue
+            old = self._door_schedules(rules[category["id"]], before)
+            new = self._door_schedules(rules[category["id"]], after)
+            more = {door for door, schedules in new.items() if not set(schedules) <= set(old.get(door, []))}
+            less = {door for door, schedules in old.items() if not set(schedules) <= set(new.get(door, []))}
+            if more:
+                gaining.append(category["name"])
+                gained |= more
+            if less:
+                losing.append(category["name"])
+                lost |= less
+        if gained:
+            one = len(gained) == 1
+            doors = ", ".join(sorted(door_names.get(d) or d for d in gained))
+            raise ServiceError(
+                f"{'la porta' if one else 'le porte'} {doors} {'passerebbe' if one else 'passerebbero'} all'area "
+                f"del controller ed {'entrerebbe' if one else 'entrerebbero'} nelle righe di accesso "
+                f"{_categories(gaining, 'della', 'delle')}: sposta prima {'la porta' if one else 'le porte'} "
+                "in un'altra area"
+            )
+        if lost:
+            one = len(lost) == 1
+            doors = ", ".join(sorted(door_names.get(d) or d for d in lost))
+            raise ServiceError(
+                f"{'la porta' if one else 'le porte'} {doors} {'uscirebbe' if one else 'uscirebbero'} dalla "
+                f"struttura scelta nelle righe di accesso {_categories(losing, 'della', 'delle')}: "
+                "sposta prima porte e controller in un'altra area"
+            )
 
     async def save_category(self, category_id: int | None, fields: dict, user: str, new_id: int | None = None) -> dict:
         """Crea o modifica una tipologia e il suo profilo sul controller. Se il profilo era in comune con altri,
@@ -913,7 +947,7 @@ class RulesService:
             self.db.set_setting("default_category", str(category["id"]))
             fixed += 1
         if fixed:
-            self.db.add_audit("sistema", "gruppi passati alle tipologie", f"{fixed} modifiche")
+            self.db.add_audit("sistema", "gruppi passati alle tipologie", plural(fixed, "modifica", "modifiche"))
         return fixed
 
     def _category_for(self, token: str, profiles: dict[str, dict], points: dict[str, str]) -> dict:
@@ -960,6 +994,11 @@ def _policy_sig(profile: dict) -> tuple:
         tuple(profile.get("Schedule") or []),
         tuple(sorted((p.get("AccessPoint"), tuple(p.get("Schedule") or [])) for p in policies)),
     )
+
+
+def _categories(names: list[str], one: str = "dalla", many: str = "dalle") -> str:
+    """«dalla tipologia X» o «dalle tipologie X, Y», secondo quante sono."""
+    return f"{one} tipologia {names[0]}" if len(names) == 1 else f"{many} tipologie {', '.join(names)}"
 
 
 def _no_users() -> dict:

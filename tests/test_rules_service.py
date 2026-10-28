@@ -146,7 +146,7 @@ async def test_group_rules(rules, controller, db):
     groups = {g["token"]: g for g in (await rules.list_groups())["groups"]}
     assert groups[token]["persons"] == 1
     assert groups["profilo_sempre"]["default"] is True
-    with pytest.raises(ServiceError, match="assegnato a 1 persone"):
+    with pytest.raises(ServiceError, match="assegnato a 1 persona"):
         await rules.delete_group(token, "admin")
 
 
@@ -260,7 +260,7 @@ async def test_categories_own_a_profile_built_from_doors_areas_and_sites(rules, 
     person = await rules.align_person(anna["id"], "admin")
     assert person["cards"][0]["access_profile"] == clean["token"]
 
-    with pytest.raises(ServiceError, match="usata dalle tipologie"):
+    with pytest.raises(ServiceError, match="usata dalla tipologia Pulizie"):
         rules.check_place_unused("area", ids["rooms"])
     rules.set_default_category(guest["id"], "admin")
     assert rules.access.default_group == guest["token"]
