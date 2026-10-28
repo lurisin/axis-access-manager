@@ -41,10 +41,7 @@ def parse_event(prefix: str, topic: str, payload: bytes) -> Event | None:
         return None
     if not isinstance(body, dict):
         return None
-    millis = body.get("timestamp")
-    timestamp = (
-        datetime.fromtimestamp(millis / 1000, tz=UTC) if isinstance(millis, int | float) else datetime.now(tz=UTC)
-    )
+    timestamp = _timestamp(body.get("timestamp"))
     message = body.get("message")
     data: dict = {}
     # Le sorgenti (porta, punto di accesso, numero dell'I/O) l'A1210 le mette nel topic e non nei dati
@@ -54,6 +51,28 @@ def parse_event(prefix: str, topic: str, payload: bytes) -> Event | None:
         if isinstance(value, dict):
             data.update(value)
     return Event(category=path.split("/", 1)[0], topic=path, timestamp=timestamp, data=data)
+
+
+def _timestamp(millis) -> datetime:
+    """Ora del messaggio (millisecondi); se manca o è fuori scala (nanosecondi, NaN, 1e300) quella di adesso."""
+    if isinstance(millis, int | float) and not isinstance(millis, bool):
+        try:
+            return datetime.fromtimestamp(millis / 1000, tz=UTC)
+        except (ValueError, OverflowError, OSError):
+            _LOGGER.debug("Ora del messaggio non valida: %s", millis)
+    return datetime.now(tz=UTC)
+
+
+def mqtt_error_text(err: Exception) -> str:
+    """Motivo per cui il broker non è collegato, in italiano; il testo della libreria resta nel log."""
+    text = str(err).lower()
+    if any(s in text for s in ("user name or password", "username or password", "not authori", "code:134", "code:135")):
+        return "utente o password del broker non validi"
+    if any(s in text for s in ("refused", "unreachable", "unavailable", "timed out", "timeout", "errno")):
+        return "broker non raggiungibile"
+    if "disconnect" in text or "lost" in text:
+        return "collegamento con il broker interrotto"
+    return "collegamento con il broker non riuscito"
 
 
 def topic_sources(topic: str) -> dict[str, str]:
@@ -285,22 +304,34 @@ class EventMonitor:
                         except Exception:
                             _LOGGER.exception("Errore nella pubblicazione delle entità per Home Assistant")
                     async for message in client.messages:
-                        payload = message.payload
-                        if not isinstance(payload, bytes):
-                            payload = str(payload).encode()
-                        topic = message.topic.value
-                        if self.command_topic and topic == self.command_topic:
-                            if not message.retain:
-                                self._command(payload)
-                            continue
-                        if self._dispatch_extra(message.topic, payload, bool(message.retain)):
-                            continue
-                        self.handle(topic, payload, bool(message.retain))
-            except aiomqtt.MqttError as err:
+                        try:
+                            self._message(message)
+                        except Exception:
+                            # Un messaggio strano non deve fermare l'ascolto: eventi, pulsanti di HA e citofono
+                            _LOGGER.exception("Messaggio MQTT su %s non elaborato", message.topic.value)
+            except Exception as err:  # noqa: BLE001
+                # Errori del broker, ma anche imprevisti: si risulta scollegati e si riprova, così l'interruzione
+                # si vede nell'app e dopo si recuperano gli eventi persi
                 if self.connected:
                     self.outages += 1
                 self.client = None
                 self.connected = False
-                self.last_error = str(err)
-                _LOGGER.warning("MQTT non disponibile: %s; riprovo tra %s s", err, RECONNECT_DELAY)
+                self.last_error = mqtt_error_text(err)
+                if isinstance(err, aiomqtt.MqttError):
+                    _LOGGER.warning("MQTT non disponibile: %s; riprovo tra %s s", err, RECONNECT_DELAY)
+                else:
+                    _LOGGER.exception("Ascolto MQTT interrotto; riprovo tra %s s", RECONNECT_DELAY)
                 await asyncio.sleep(RECONNECT_DELAY)
+
+    def _message(self, message: aiomqtt.Message) -> None:
+        payload = message.payload
+        if not isinstance(payload, bytes):
+            payload = str(payload).encode()
+        topic = message.topic.value
+        if self.command_topic and topic == self.command_topic:
+            if not message.retain:
+                self._command(payload)
+            return
+        if self._dispatch_extra(message.topic, payload, bool(message.retain)):
+            return
+        self.handle(topic, payload, bool(message.retain))

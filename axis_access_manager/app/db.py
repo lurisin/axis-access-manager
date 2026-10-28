@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import UTC, datetime, timedelta
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
 from .backup_copy import recover, update_copy
@@ -241,15 +243,36 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
         # Con la 0.21.4 erano aperture remote, con ruolo e morsetto nel dettaglio
         ["UPDATE events SET kind = 'uscita' WHERE kind = 'apertura_remota' AND detail LIKE 'Pulsante Uscita · %'"],
     ),
+    (
+        7,
+        "indice degli eventi per porta, morsetti AUX in maiuscolo",
+        [
+            # Ultimo passaggio di ogni porta senza leggere e ordinare tutto il registro
+            "CREATE INDEX IF NOT EXISTS events_door_ts ON events(door, ts)",
+            "UPDATE events SET detail = replace(detail, ' · Aux ', ' · AUX ') "
+            "WHERE kind IN ('uscita', 'apertura_remota', 'negato') AND instr(detail, ' · Aux ') > 0",
+        ],
+    ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 SETTING_APP_VERSION = "app_version"
 # Numero più alto mai dato a una persona: i numeri delle persone eliminate non si riusano
 SETTING_LAST_PERSON = "persons_last_id"
+# Lo stesso per controller, porte, aree, strutture e tipologie: impostazione e righe che citano ancora i numeri
+# degli eliminati (righe di accesso delle tipologie, Storico Modifiche), che non devono passare a uno nuovo
+LAST_IDS = {
+    "controllers": ("controllers_last_id", "SELECT MAX(controller_id) FROM controller_changes"),
+    "doors": ("doors_last_id", "SELECT MAX(target_id) FROM category_rules WHERE target = 'door'"),
+    "areas": ("areas_last_id", "SELECT MAX(target_id) FROM category_rules WHERE target = 'area'"),
+    "sites": ("sites_last_id", "SELECT MAX(target_id) FROM category_rules WHERE target = 'site'"),
+    "categories": ("categories_last_id", "SELECT 0"),
+}
 
 
 # Campi degli eventi che servono alle pagine (il messaggio originale resta nel database)
 EVENT_COLUMNS = "id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door, recovered"
+# Origini fisse degli eventi: nel database il codice, per l'utente l'etichetta
+SOURCE_LABELS = {"lettore": "Lettore", "controller": "Controller", "porta": "Porta"}
 
 
 def now_iso() -> str:
@@ -257,10 +280,12 @@ def now_iso() -> str:
 
 
 def local_day_start(days_ago: int = 0, now: datetime | None = None) -> str:
-    """Mezzanotte locale di oggi (o di days_ago giorni fa), in UTC come i timestamp del log."""
-    local = (now or datetime.now(tz=UTC)).astimezone()
-    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days_ago)
-    return midnight.astimezone(UTC).isoformat(timespec="seconds")
+    """Mezzanotte locale di oggi (o di days_ago giorni fa), in UTC come i timestamp del log.
+
+    La mezzanotte senza fuso si converte con le regole del fuso locale di quel giorno: nei giorni del cambio
+    dell'ora ha uno scarto diverso da quello di adesso."""
+    day = (now or datetime.now(tz=UTC)).astimezone().date() - timedelta(days=days_ago)
+    return datetime.combine(day, time.min).astimezone(UTC).isoformat(timespec="seconds")
 
 
 class Database:
@@ -274,8 +299,13 @@ class Database:
         self._conn = sqlite3.connect(str(path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
+        # Scritture dentro batch(): il commit si fa una volta alla fine
+        self._batch = 0
         self.copied = ""
         with self._lock:
+            # Con il journal WAL chi legge non ferma chi scrive: la copia per il backup di Home Assistant
+            # (un altro processo, anche per molti secondi) non blocca più gli eventi e le pagine
+            self._conn.execute("PRAGMA journal_mode = WAL")
             self._conn.execute("PRAGMA foreign_keys = ON")
             version = self._conn.execute("PRAGMA user_version").fetchone()[0]
             previous = self._app_version() if existed else ""
@@ -335,8 +365,51 @@ class Database:
     def _execute(self, sql: str, params: tuple = ()) -> int:
         with self._lock:
             cursor = self._conn.execute(sql, params)
-            self._conn.commit()
+            self._commit()
             return cursor.lastrowid
+
+    def _commit(self) -> None:
+        if not self._batch:
+            self._conn.commit()
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """Molte scritture di seguito (sincronizzazione, recupero eventi) con un solo commit alla fine:
+        un commit per riga sulla scheda SD ferma l'add-on per secondi."""
+        self._batch += 1
+        try:
+            yield
+        finally:
+            self._batch -= 1
+            if not self._batch:
+                with self._lock:
+                    self._conn.commit()
+
+    def _insert_new(self, table: str, sql: str, params: tuple, new_id: int | None = None) -> int:
+        """Riga nuova con un numero mai dato prima nella tabella (o new_id); sql ha l'id come primo parametro."""
+        setting, cited = LAST_IDS[table]
+        with self._lock:
+            if new_id is None:
+                new_id = (
+                    self._conn.execute(
+                        f"SELECT MAX(m) FROM (SELECT MAX(id) AS m FROM {table} UNION ALL {cited} "
+                        "UNION ALL SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = ?)",
+                        (setting,),
+                    ).fetchone()[0]
+                    or 0
+                ) + 1
+            cursor = self._conn.execute(sql, (new_id, *params))
+            self._remember_last_id(setting, cursor.lastrowid)
+            self._commit()
+            return cursor.lastrowid
+
+    def _remember_last_id(self, setting: str, value: int) -> None:
+        # Il valore è testo: senza CAST anche sul nuovo, MAX tra numero e testo dà sempre il testo
+        self._conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER))",
+            (setting, str(value)),
+        )
 
     # Persone e tessere
 
@@ -387,12 +460,9 @@ class Database:
                 "INSERT INTO persons (id, name, axis_user_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 (person_id, name, axis_user_token, created_at or ts, ts),
             )
-            self._conn.execute(
-                "INSERT INTO app_settings (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(value AS INTEGER), excluded.value)",
-                (SETTING_LAST_PERSON, str(cursor.lastrowid)),
-            )
-            self._conn.commit()
+            # Una persona rimessa con un numero più basso non abbassa il contatore
+            self._remember_last_id(SETTING_LAST_PERSON, cursor.lastrowid)
+            self._commit()
             return cursor.lastrowid
 
     def rename_person(self, person_id: int, name: str) -> None:
@@ -419,7 +489,7 @@ class Database:
         with self._lock:
             self._conn.execute("UPDATE events SET person_id = NULL WHERE person_id = ?", (person_id,))
             self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
-            self._conn.commit()
+            self._commit()
 
     def cards_of(self, person_id: int) -> list[dict]:
         cards = self._query("SELECT * FROM cards WHERE person_id = ? ORDER BY id", (person_id,))
@@ -480,12 +550,12 @@ class Database:
         self, card_id: int, *, person_id: int, number: str, enabled: bool, access: dict | None = None
     ) -> None:
         # Una tessera ricomparsa sul controller non è più "non presente"
-        self._execute(
-            "UPDATE cards SET person_id = ?, number = ?, enabled = ?, missing_since = '' WHERE id = ?",
-            (person_id, number, int(enabled), card_id),
-        )
+        sql = "UPDATE cards SET person_id = ?, number = ?, enabled = ?, missing_since = ''"
+        params: tuple = (person_id, number, int(enabled))
         if access is not None:
-            self.set_card_access(card_id, access)
+            sql += ", access_profile = ?, valid_from = ?, valid_to = ?"
+            params += (access.get("access_profile", ""), access.get("valid_from", ""), access.get("valid_to", ""))
+        self._execute(f"{sql} WHERE id = ?", (*params, card_id))
 
     def set_card_access(self, card_id: int, access: dict) -> None:
         """Gruppo e validità della tessera: {access_profile, valid_from, valid_to}."""
@@ -506,7 +576,7 @@ class Database:
                 "UPDATE cards SET missing_since = ? WHERE id = ? AND missing_since = ''",
                 [(since, card_id) for card_id in card_ids],
             )
-            self._conn.commit()
+            self._commit()
 
     def missing_cards(self) -> list[dict]:
         """Tessere che l'app conosce ma che sul controller non ci sono più."""
@@ -555,7 +625,10 @@ class Database:
         self._execute("DELETE FROM schedule_rules WHERE schedule_token = ?", (token,))
 
     def list_holidays(self) -> list[dict]:
-        rows = self._query("SELECT * FROM holidays ORDER BY yearly DESC, substr(day, 6), day")
+        # Le ricorrenti per mese e giorno, le altre per data
+        rows = self._query(
+            "SELECT * FROM holidays ORDER BY yearly DESC, CASE WHEN yearly THEN substr(day, 6) ELSE day END, day"
+        )
         for row in rows:
             row["yearly"] = bool(row["yearly"])
         return rows
@@ -599,9 +672,11 @@ class Database:
             return category_id
         if new_id and self.get_category(new_id) is not None:
             new_id = None
-        return self._execute(
+        return self._insert_new(
+            "categories",
             "INSERT INTO categories (id, name, color, group_token, valid_days, description) VALUES (?, ?, ?, ?, ?, ?)",
-            (new_id, *values),
+            values,
+            new_id or None,
         )
 
     def category_rules(self, category_id: int) -> list[dict]:
@@ -648,7 +723,9 @@ class Database:
             self._execute("DELETE FROM hidden_items WHERE kind = ? AND token = ?", (kind, token))
 
     # Colonne con i token del controller: se un oggetto ricreato riceve un token nuovo, si cambiano ovunque
+    # (anche la porta degli eventi già nel registro, che restano della porta ricreata)
     TOKEN_COLUMNS = (
+        ("events", "door"),
         ("schedule_rules", "schedule_token"),
         ("category_rules", "schedule"),
         ("categories", "group_token"),
@@ -734,8 +811,10 @@ class Database:
             return controller_id
         columns = ", ".join(self.CONTROLLER_FIELDS)
         marks = ", ".join("?" * len(self.CONTROLLER_FIELDS))
-        return self._execute(
-            f"INSERT INTO controllers ({columns}, created_at, updated_at) VALUES ({marks}, ?, ?)", (*values, ts, ts)
+        return self._insert_new(
+            "controllers",
+            f"INSERT INTO controllers (id, {columns}, created_at, updated_at) VALUES (?, {marks}, ?, ?)",
+            (*values, ts, ts),
         )
 
     def set_controller_camera(self, controller_id: int, camera: str) -> None:
@@ -765,7 +844,11 @@ class Database:
         self._execute("UPDATE controllers SET identity_change = ? WHERE id = ?", (observed, controller_id))
 
     def delete_controller(self, controller_id: int) -> None:
-        self._execute("DELETE FROM controllers WHERE id = ?", (controller_id,))
+        """Porte e ingressi se ne vanno con il controller; il suo Storico Modifiche non si annulla su un altro."""
+        with self._lock:
+            self._conn.execute("DELETE FROM controller_changes WHERE controller_id = ?", (controller_id,))
+            self._conn.execute("DELETE FROM controllers WHERE id = ?", (controller_id,))
+            self._commit()
 
     def list_doors(self) -> list[dict]:
         doors = self._query("SELECT * FROM doors ORDER BY controller_id, id")
@@ -786,8 +869,10 @@ class Database:
             return door_id
         columns = ", ".join(self.DOOR_FIELDS)
         marks = ", ".join("?" * len(self.DOOR_FIELDS))
-        return self._execute(
-            f"INSERT INTO doors (controller_id, {columns}) VALUES (?, {marks})", (controller_id, *values)
+        return self._insert_new(
+            "doors",
+            f"INSERT INTO doors (id, controller_id, {columns}) VALUES (?, ?, {marks})",
+            (controller_id, *values),
         )
 
     def delete_door(self, door_id: int) -> None:
@@ -813,7 +898,9 @@ class Database:
         if site_id:
             self._execute("UPDATE sites SET name = ?, description = ? WHERE id = ?", (name, description, site_id))
             return site_id
-        return self._execute("INSERT INTO sites (name, description) VALUES (?, ?)", (name, description))
+        return self._insert_new(
+            "sites", "INSERT INTO sites (id, name, description) VALUES (?, ?, ?)", (name, description)
+        )
 
     def delete_site(self, site_id: int) -> None:
         with self._lock:
@@ -837,7 +924,7 @@ class Database:
         if area_id:
             self._execute("UPDATE areas SET name = ?, site_id = ? WHERE id = ?", (name, site_id, area_id))
             return area_id
-        return self._execute("INSERT INTO areas (site_id, name) VALUES (?, ?)", (site_id, name))
+        return self._insert_new("areas", "INSERT INTO areas (id, site_id, name) VALUES (?, ?, ?)", (site_id, name))
 
     def delete_area(self, area_id: int) -> None:
         with self._lock:
@@ -963,9 +1050,11 @@ class Database:
     # Tessere sconosciute
 
     def note_unknown_card(self, number: str, ts: str) -> None:
+        # Una lettura recuperata dal registro del controller può essere più vecchia di quelle già viste
         self._execute(
             "INSERT INTO unknown_cards (number, first_seen, last_seen, count) VALUES (?, ?, ?, 1) "
-            "ON CONFLICT(number) DO UPDATE SET last_seen = excluded.last_seen, count = count + 1",
+            "ON CONFLICT(number) DO UPDATE SET first_seen = MIN(first_seen, excluded.first_seen), "
+            "last_seen = MAX(last_seen, excluded.last_seen), count = count + 1",
             (number, ts, ts),
         )
 
@@ -1087,9 +1176,16 @@ class Database:
             clauses.append("person_id = ?")
             params.append(person_id)
         if search:
-            clauses.append("(person_name LIKE ? OR card LIKE ? OR detail LIKE ?)")
-            like = f"%{search}%"
-            params += [like, like, like]
+            # Anche chi ha aperto (Home Assistant, pulsanti, citofono: è l'origine, non la persona) e il nome
+            # della porta; non i codici delle origini fisse. % e _ si cercano come caratteri
+            clauses.append(
+                "(person_name LIKE ? ESCAPE '\\' OR card LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\' "
+                f"OR (source LIKE ? ESCAPE '\\' AND source NOT IN ({','.join('?' * len(SOURCE_LABELS))})) "
+                "OR door IN (SELECT door_token FROM doors WHERE name LIKE ? ESCAPE '\\'))"
+            )
+            escaped = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = f"%{escaped}%"
+            params += [like, like, like, like, *SOURCE_LABELS, like]
         return clauses, params
 
     def list_events(
@@ -1141,12 +1237,19 @@ class Database:
         return result
 
     def last_door_events(self, kinds: tuple[str, ...]) -> dict[str, dict]:
-        """Ultimo evento di ogni porta tra i tipi indicati."""
+        """Ultimo evento di ogni porta tra i tipi indicati.
+
+        Con l'indice per porta e ora: le porte si saltano da una all'altra e di ognuna si legge dalla fine,
+        senza leggere e ordinare tutto il registro (la pagina delle porte lo chiede ogni 15 secondi)."""
         marks = ",".join("?" * len(kinds))
         rows = self._query(
-            "SELECT door, ts, kind, person_name, card FROM (SELECT door, ts, kind, person_name, card, "
-            "ROW_NUMBER() OVER (PARTITION BY door ORDER BY ts DESC, id DESC) AS n "
-            f"FROM events WHERE kind IN ({marks})) WHERE n = 1",
+            "WITH RECURSIVE doors_seen(door) AS (SELECT MIN(door) FROM events UNION ALL "
+            "SELECT (SELECT MIN(door) FROM events WHERE door > doors_seen.door) FROM doors_seen "
+            "WHERE doors_seen.door IS NOT NULL) "
+            "SELECT door, ts, kind, person_name, card FROM events WHERE id IN ("
+            "SELECT (SELECT id FROM events WHERE events.door = doors_seen.door "
+            f"AND kind IN ({marks}) ORDER BY ts DESC, id DESC LIMIT 1) FROM doors_seen "
+            "WHERE doors_seen.door IS NOT NULL)",
             kinds,
         )
         return {row["door"]: row for row in rows}
@@ -1173,9 +1276,11 @@ class Database:
         return self._query("SELECT ts, kind FROM events WHERE ts >= ?", (since,))
 
     def last_accesses(self) -> dict[int, str]:
+        """Ultimo accesso concesso di ogni persona. Non le letture: la tessera sospesa, scaduta o fuori fascia
+        viene letta anche quando il controller poi rifiuta il passaggio."""
         rows = self._query(
             "SELECT person_id, MAX(ts) AS ts FROM events WHERE person_id IS NOT NULL "
-            "AND kind IN ('concesso', 'lettura') GROUP BY person_id"
+            "AND kind = 'concesso' GROUP BY person_id"
         )
         return {row["person_id"]: row["ts"] for row in rows}
 
