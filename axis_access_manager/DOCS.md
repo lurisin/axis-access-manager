@@ -2,100 +2,84 @@
 
 Gestione delle tessere e degli accessi per il controller Axis A1210, dentro Home Assistant.
 
-## Primo avvio e aggiornamento dalla 0.3
+## Prima installazione
 
-Dalla 0.5 controller, porte, citofono e telecamera si configurano **nell'app**, nella pagina **Impianti**, non più nella scheda Configurazione dell'add-on.
-Al primo avvio della 0.5 l'add-on importa da solo la configurazione che c'era nelle opzioni (indirizzo, utente e password del controller, porta, citofono, telecamera, gruppo predefinito): dopo l'aggiornamento non devi rifare niente.
-Dalla 0.8 le vecchie opzioni "Obsoleta" non ci sono più: chi aggiorna da una versione precedente alla 0.5 passi prima dalla 0.7.
+1. **Avvia l'add-on.** Nella pagina dell'add-on attiva *Mostra nella barra laterale* e avvialo: nella barra laterale di Home Assistant compare il pannello **Controllo Accessi**.
+2. **Aggiungi il controller.** Nel pannello apri **Impianti** e premi **Aggiungi Controller**: nome, struttura e area, indirizzo, utente e password dell'A1210 e **Prefisso MQTT**, un nome a scelta per i topic di questo controller (ad esempio `accessi/ingresso`). **Prova Collegamento** controlla indirizzo e credenziali prima di salvare; poi premi **Salva**.
+3. **Fai mandare gli eventi all'A1210.** Nella pagina web del controller, in Sistema → MQTT, collega il client MQTT al broker usato da Home Assistant (di solito l'add-on Mosquitto), attivalo e imposta, con il prefisso scelto al passo 2:
+   - il prefisso personalizzato dei topic degli eventi: `<prefisso>/eventi` (ad esempio `accessi/ingresso/eventi`), così gli eventi arrivano come `<prefisso>/eventi/AccessControl/…`, senza namespace nei topic;
+   - il messaggio di connessione sul topic `<prefisso>/stato` con contenuto `online` e il messaggio di ultime volontà (Last Will) sullo stesso topic con contenuto `offline`, tutti e due conservati sul broker (retain): così l'app sa se il controller è collegato;
+   - nel filtro eventi, gli eventi IdPoint, AccessControl, Door e Device (vedi Eventi MQTT dell'A1210, più sotto).
+4. **Scegli le porte.** Nella pagina del controller apri la scheda **Porte** e premi **Gestisci nell'App** su ogni porta da usare: nome nell'app e pulsanti di apertura in Home Assistant.
+5. **Se servono:** nelle schede **Telecamere** e **Videocitofoni** del controller associ alle porte le telecamere di Home Assistant e i videocitofoni Hikvision; nello **Schema** colleghi lettori e ingressi (pulsanti, relè del citofono, contatto porta).
+
+La scheda **Stato** del controller dice se tutto arriva: controller raggiungibile, broker collegato, stato del controller ricevuto e, dopo il passaggio di una tessera, gli eventi AccessControl.
 
 Il primo utente di Home Assistant che apre l'app diventa **amministratore**. Gli altri entrano con il ruolo "Solo Stato" finché un amministratore non dà loro altri permessi (Impostazioni → Utenti).
-Il pannello ora è visibile anche agli utenti di Home Assistant che non sono amministratori di Home Assistant: cosa possono fare lo decidono i permessi dell'app.
+Il pannello è visibile anche agli utenti di Home Assistant che non sono amministratori di Home Assistant: cosa possono fare lo decidono i permessi dell'app.
 
-### Novità della 0.10
-
-- **Gruppi e tipologie diventano una cosa sola: la tipologia**, in Persone → Tipologie. Ogni tipologia dice chi è la persona e, con le righe **Dove e Quando**, quali porte, aree o strutture apre e in quale fascia oraria. In Regole restano solo Fasce Orarie e Festività.
-- Al primo avvio i gruppi passano da soli alle tipologie, **senza cambiare chi entra dove**:
-  - una tipologia prende il gruppo che usava già;
-  - chi non aveva una tipologia entra in una tipologia con il nome del suo gruppo;
-  - il gruppo predefinito diventa la tipologia predefinita.
-- Una persona con un accesso diverso da quello della sua tipologia è segnalata come **Accesso Personalizzato**, con il tasto per allinearla.
-
-### Novità della 0.8
-
-- In Home Assistant arrivano anche lo stato del controller (**Controller Online**, **Coperchio Controller Aperto**, **Ultimo Avvio Controller**), gli **ingressi I/O** del controller e, per ogni porta, **Allarme**, **Preallarme** e **Manomissione** come sensori acceso/spento: tutto quello che serviva il vecchio package YAML.
-- Le vecchie opzioni "Obsoleta" (indirizzo, utente e password dell'A1210, porta, citofono...) sono sparite dalla scheda Configurazione dell'add-on.
-
-### Novità della 0.7
-
-- **Notifiche**: in fondo al menu c'è la campanella con il numero delle notifiche da gestire. Lo stato della porta non è più in alto: si vede nel dettaglio di ogni porta.
-- **Impianti** mostra i controller come schede per struttura e area. Toccando la scheda si apre la pagina del controller con lo **schema lettori ↔ porte**; l'ingranaggio apre la pagina **Connessione** (indirizzo, credenziali, area, descrizione della posizione).
-- L'area ora è del **controller**: porte e lettori la ereditano. Al primo avvio della 0.7 l'area che avevi dato alla porta passa al suo controller.
-- **Porte** è un elenco essenziale (nome, area, stato): il clic apre il dettaglio, anche con una porta sola.
-
-### Novità della 0.6
-
-- Il menu è una **barra laterale** sempre presente con le sole icone; il pulsante ☰ la allarga con i nomi delle pagine. Sul telefono si apre sopra la pagina e si richiude da sola dopo la scelta; sul computer resta come l'hai lasciata.
-- Le porte stanno in **strutture e aree** (ad esempio Teatro › Accesso Scala, Hotel › Ingresso, Villa 3 › Cancello). Al primo avvio la porta già configurata finisce in "Struttura Principale › Generale": rinominale in Impianti → Strutture e Aree.
-- Con una sola porta l'app resta semplice: colonne e filtri per porta compaiono solo quando le porte sono più di una.
+Le novità di ogni versione sono nel **Changelog** dell'add-on. Chi aggiorna da una versione molto vecchia trova le note in fondo a questa pagina (Aggiornare da versioni vecchie).
 
 ## Opzioni dell'add-on
 
-Restano solo quelle tecniche:
+Nella scheda Configurazione dell'add-on restano solo quelle tecniche (tra parentesi la chiave, se modifichi in YAML):
 
 | Opzione | Descrizione |
 | --- | --- |
-| `event_retention_days` | Giorni di conservazione del registro e delle istantanee (predefinito 365) |
-| `ha_integration` | Pubblica le entità in Home Assistant via MQTT Discovery (predefinito attivo) |
-| `ha_topic_prefix` | Topic MQTT delle entità dell'add-on (predefinito `axis_access_manager`) |
-| `mqtt_host`, `mqtt_port`, `mqtt_username`, `mqtt_password` | Facoltative: se vuote l'add-on usa il broker Mosquitto di Home Assistant |
-| `log_level` | Livello di dettaglio dei log |
+| **Conservazione Registro (Giorni)** (`event_retention_days`) | Giorni di conservazione del registro e delle foto (predefinito 365) |
+| **Entità in Home Assistant** (`ha_integration`) | Pubblica le entità in Home Assistant via MQTT Discovery (predefinito attivo) |
+| **Prefisso Topic per Home Assistant** (`ha_topic_prefix`) | Topic MQTT delle entità dell'add-on (predefinito `axis_access_manager`) |
+| **Broker MQTT**, **Porta MQTT**, **Utente MQTT**, **Password MQTT** (`mqtt_host`, `mqtt_port`, `mqtt_username`, `mqtt_password`) | Facoltative: se vuote l'add-on usa il broker Mosquitto di Home Assistant |
+| **Livello di Log** (`log_level`) | Livello di dettaglio dei log |
 
 ## Sezioni
 
-- **Barra in alto**: in ogni pagina compaiono **Guasti** (controller, MQTT, telecamere) e **Allarmi** (porte e manomissioni non ancora viste) solo quando ci sono, altrimenti **Sistema OK**. Un clic apre l'elenco. Se l'add-on non risponde compare **Add-on Non Raggiungibile**. Nel cruscotto, accanto al titolo, ci sono la data, l'ora e la matita per modificarlo.
+Il menu è una barra laterale sempre presente con le sole icone; il pulsante ☰ la allarga con i nomi delle pagine. Sul telefono si apre sopra la pagina e si richiude da sola dopo la scelta; sul computer resta come l'hai lasciata. Con una sola porta l'app resta semplice: colonne e filtri per porta compaiono solo quando le porte sono più di una.
+
+- **Barra in alto**: in ogni pagina compaiono **Guasti** (controller non raggiungibile o cambiato, punti di accesso non gestiti, pulsanti senza permesso di apertura, MQTT, telecamere, orologio, tessere non presenti sul controller, backup) e **Allarmi** (porte e manomissioni non ancora viste) solo quando ci sono, altrimenti **Sistema OK**. Un clic apre l'elenco. Se l'add-on non risponde compare **Add-on Non Raggiungibile**. Nel cruscotto, accanto al titolo, ci sono la data, l'ora e la matita per modificarlo.
 - **Cruscotto**: riquadri che ogni utente sceglie e dispone come vuole.
-  - Quelli disponibili sono: Da Gestire, Accessi, Negati e Allarmi di oggi, Persone, Porte, Ultimi 7 Giorni, Ultimi Eventi, Tessere in Scadenza, Tessere da Registrare e Stato Impianto.
+  - Quelli disponibili sono: Da Gestire, Accessi Oggi, Negati Oggi, Allarmi Oggi, Persone, Porte, Ultimi 7 Giorni, Ultimi Eventi, Tessere in Scadenza (nei prossimi 7 giorni), Tessere da Registrare, Stato Impianto e Backup.
   - Con la matita (**Modifica Cruscotto**) li sposti trascinandoli, li togli o li aggiungi. La maniglia nell'angolo in basso a destra cambia larghezza (a quarti di riga) e altezza (a righe da 64 px). I riquadri piccoli riempiono gli spazi vuoti e, se il contenuto non ci sta, scorre dentro il riquadro.
-  - **Ripristina Predefinito** torna al cruscotto predefinito, che dipende dai permessi: amministratore (tessere da sistemare, numeri del giorno, andamento, registro e cose da gestire), operatore che modifica le tessere (tessere da registrare e da gestire in alto), consultazione con il registro (numeri del giorno e registro in grande), solo stato (porte e stato dell'impianto).
-  - I riquadri che richiedono un permesso (registro, persone) compaiono solo a chi ce l'ha.
-- **Porte**: elenco essenziale per struttura e area, con nome, accessi di oggi e stato. Il clic apre il dettaglio: stato, numeri di oggi, dispositivi (lettori con direzione, citofono, telecamera, controller), le tipologie che la aprono e i suoi ultimi eventi.
-- **Persone**: elenco essenziale in ordine alfabetico, con il colore della tipologia e un'etichetta solo se c'è qualcosa da sistemare (tessera sospesa, scaduta, in scadenza, accesso personalizzato). Filtri rapidi per tipologia, ricerca per nome, ditta o tessera, filtro per stato. Un clic apre la scheda della persona: tipologia con le sue porte e fasce, validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi. La scheda **Tipologie** gestisce le tipologie (vedi Regole di accesso).
-- **Da Registrare**: tessere lette dal lettore ma non registrate, da assegnare a una persona nuova o esistente senza digitare il numero.
-- **Registro**: una riga per evento (ora, esito, chi, porta) e i dettagli al clic, a lato sul computer e in una finestra sul telefono. Le viste **Da Controllare** (rifiuti, tessere sconosciute, allarmi), Solo Negati, Solo Accessi, Allarmi e Tutto servono quando il passaggio è tanto: nelle viste filtrate un contatore dice quanti accessi riusciti non sono mostrati. Poi ricerca, porta, intervallo di date, istantanee ed esportazione CSV (con la colonna Recuperato per gli eventi arrivati dopo dal registro del controller). La vista scelta viene ricordata.
-- **Notifiche**: in alto **Da Gestire**, ordinate per gravità.
-  - Critica: allarmi, manomissioni, controller o MQTT non raggiungibili, tessera sconosciuta ripetuta.
-  - Media: tentativi ripetuti di una persona, tessera sconosciuta passata una volta.
-  - Bassa: singolo accesso negato, tessera in scadenza.
+  - **Ripristina Predefinito** torna al cruscotto predefinito, che dipende dai permessi: amministratore (tessere da sistemare, numeri del giorno, andamento, registro e cose da gestire), operatore che modifica le tessere (tessere da registrare e da gestire in alto), consultazione con il registro (numeri del giorno e registro in grande), solo stato (i numeri del giorno, Da Gestire, Porte, Ultimi 7 Giorni e Stato Impianto).
+  - I riquadri che richiedono un permesso (registro, persone, backup) compaiono solo a chi ce l'ha.
+- **Porte**: elenco essenziale per struttura e area, con nome, accessi di oggi e stato. Il clic apre il dettaglio: stato, numeri di oggi, dispositivi (lettori con direzione, videocitofono, telecamera, controller), le tipologie che la aprono e i suoi ultimi eventi.
+- **Persone**: elenco essenziale in ordine alfabetico, con il colore della tipologia e un'etichetta solo se c'è qualcosa da sistemare (tessera sospesa, scaduta, in scadenza nei prossimi 7 giorni, accesso personalizzato). Filtri rapidi per tipologia, ricerca per nome, ditta o tessera, filtro per stato. Un clic apre la scheda della persona: tipologia con le sue porte e fasce, validità, tessere (aggiungi, sospendi, elimina), dati e note, ultimi passaggi. La scheda **Tipologie** gestisce le tipologie (vedi Regole di accesso).
+- **Da Registrare**: tessere lette dal lettore ma non registrate. **Nuova Persona** e **A Persona Esistente** le assegnano senza digitare il numero; **Ignora** le toglie dall'elenco, e se la tessera viene ripassata ricompare.
+- **Registro**: una riga per evento (ora, esito, chi, porta) e i dettagli al clic, a lato sul computer e in una finestra sul telefono. Le viste **Da Controllare** (accessi negati, tessere sconosciute, allarmi e manomissioni), Solo Negati, Solo Accessi, Allarmi e Tutto servono quando il passaggio è tanto: nelle viste filtrate un contatore dice quanti accessi riusciti non sono mostrati. Poi ricerca, porta, intervallo di date, foto ed esportazione CSV (con la colonna Recuperato per gli eventi arrivati dopo dal registro del controller). La vista scelta viene ricordata.
+- **Notifiche**: nel menu la campanella mostra quante sono da gestire; nella pagina, in alto **Da Gestire**, ordinate per gravità.
+  - Critica: allarmi e manomissioni, controller non raggiungibile o cambiato, MQTT scollegato o eventi del controller che non arrivano, punti di accesso non gestiti, pulsanti senza permesso di apertura, molte tessere non presenti sul controller (tutte, o almeno 3 e più di una su dieci), tessera sconosciuta passata più volte.
+  - Media: tentativi ripetuti di una persona, tessera sconosciuta passata una volta, qualche tessera non presente sul controller, telecamera non disponibile, orologio del controller, backup non riuscito, incompleto o rovinato.
+  - Bassa: singolo accesso negato a una persona, pulsante o relè del citofono negato, orologio di Home Assistant, tessera che scade nei prossimi 3 giorni.
   - Gli eventi uguali (stessa persona o tessera, stessa porta, stesso motivo, a meno di 5 minuti l'uno dall'altro) diventano una sola notifica con il numero dei tentativi.
   - Ogni notifica ha la foto della porta, Dettagli e Presa Visione. Un nuovo tentativo la rimette da gestire.
   - Sotto c'è il **Registro Eventi** delle ultime 24 ore, con le schede per categoria e lo stato Da Gestire o Visto di ogni evento.
   - Allarmi ed eventi restano per 24 ore. I problemi di collegamento restano finché non si risolvono, e se tornano si ripresentano.
   - Quali tipi sono attivi lo sceglie l'amministratore in Impostazioni → Notifiche.
 - **Regole**: fasce orarie e festività (vedi sotto).
-- **Impianti**: controller, schema lettori ↔ porte, porte con citofono e telecamera, strutture e aree, programmazione del controller e backup (vedi sotto).
-- **Impostazioni**: solo l'applicazione, in fondo al menu insieme a Notifiche e all'utente collegato (che per l'amministratore apre la gestione degli utenti). Generale (Home Assistant, opzioni dell'add-on, esportazione e importazione CSV) e, per gli amministratori, **Notifiche**, **Backup**, **Utenti** e **Attività**. Lo stato di controller, porte, eventi MQTT e citofoni è nella scheda Stato del controller.
+- **Impianti**: controller, schema lettori ↔ porte, porte con videocitofono e telecamera, strutture e aree, programmazione del controller e backup (vedi sotto).
+- **Impostazioni**: solo l'applicazione, in fondo al menu insieme a Notifiche e all'utente collegato (che per l'amministratore apre la gestione degli utenti). Generale (Home Assistant, opzioni dell'add-on, esportazione e importazione CSV, **Database dell'Add-on** con la versione dello schema e le copie del database) e, per gli amministratori, **Notifiche**, **Backup**, **Utenti** e **Attività**. Lo stato di controller, porte, eventi MQTT e videocitofoni è nella scheda Stato del controller.
 
 **L'app non apre la porta**: l'apertura è nei pulsanti di Home Assistant, da mettere nelle dashboard, e passa comunque dall'add-on con i suoi controlli di sicurezza.
 
-Il controller resta la fonte di verità: all'avvio e ogni 15 minuti l'add-on rilegge utenti e tessere, quindi anche quelle create in altro modo compaiono in elenco.
+Il controller resta la fonte di verità: l'app rilegge utenti e tessere all'avvio, ogni 15 minuti, appena il controller torna raggiungibile e quando premi **Rileggi dal Controller** nella pagina Persone, quindi anche quelle create in altro modo compaiono in elenco.
 
 ## Impianti
 
 La pagina mostra i **controller** come schede, raggruppati per struttura e area, con modello, numero di porte e lettori e stato del collegamento.
 
-- **Ingranaggio → Connessione**: nome, struttura e area, descrizione della posizione (es. "quadro sotto la scala"), indirizzo, utente, password (non viene mai mostrata, lasciala vuota per non cambiarla), prefisso MQTT e verifica del certificato. Con **Prova Collegamento** controlli i dati prima di salvarli. Salvando, l'add-on si ricollega subito senza riavvio.
-- **Scheda del controller**: la configurazione di lettori e porte, nelle schede Schema, Porte, Lettori, Telecamere, Videocitofoni, Stato, Storico Modifiche e Backup (vedi sotto). **Stato** mostra se il controller risponde (modello, firmware, tessere, ultima sincronizzazione), lo stato delle sue porte, gli eventi MQTT ricevuti e i citofoni; funziona anche quando il controller non risponde.
+- **Ingranaggio → Connessione**: nome, struttura e area, descrizione della posizione (es. "quadro sotto la scala"), indirizzo, utente, password (non viene mai mostrata, lasciala vuota per non cambiarla), prefisso MQTT e verifica del certificato. Con **Prova Collegamento** controlli i dati prima di salvarli. Salvando, l'app si ricollega subito senza riavvio. **Togli Controller** toglie il controller e le sue porte dall'app: sul controller non cambia niente.
+- **Scheda del controller**: la configurazione di lettori e porte, nelle schede Schema, Porte, Lettori, Telecamere, Videocitofoni, Stato, Storico Modifiche e Backup (vedi sotto). **Stato** mostra se il controller risponde (modello, firmware, tessere, ultima sincronizzazione), lo stato delle sue porte, gli eventi MQTT ricevuti e i videocitofoni; funziona anche quando il controller non risponde.
 - **Strutture e Aree**: dove si trovano i controller. Crei strutture (Teatro Eliseo, Hotel Giulia, Villa 1…) e al loro interno aree (Via Consulta, Primo Piano…); poi nella Connessione del controller scegli la sua area. Porte e lettori del controller la ereditano.
 - **Backup**: salvataggio, confronto e ripristino dei dati dell'app e della configurazione dei controller (vedi Backup dell'app). Ogni controller ha anche la sua scheda Backup con lo storico della sola configurazione.
-- Per ora l'add-on gestisce un controller. Pagine e dati sono già organizzati per averne di più.
+- Per ora l'app gestisce un controller. Pagine e dati sono già organizzati per averne di più.
 
 ### Schema lettori ↔ porte
 
-A sinistra i lettori, a destra le porte del controller, uniti da un filo per ogni collegamento. **Tocca un lettore e poi una porta** per collegarli. L'**ingranaggio sul filo** apre direzione (ingresso o uscita), Collegamento Attivo e Scollega.
+A sinistra i lettori, a destra le porte del controller, uniti da un filo per ogni collegamento. **Tocca un lettore e poi una porta** per collegarli. L'**ingranaggio sul filo** apre direzione (entrata o uscita), Collegamento Attivo e Scollega.
 
-Le modifiche restano in sospeso, con il filo arancione tratteggiato, finché non premi **Salva**; Scarta le annulla. Se lasci la pagina con modifiche non salvate l'app chiede se salvarle o scartarle.
+Le modifiche restano in sospeso, con il filo giallo tratteggiato, finché non premi **Salva**; Scarta le annulla. Se lasci la pagina con modifiche non salvate l'app chiede se salvarle o scartarle.
 
-Sull'Axis un collegamento è un lettore dentro un **punto di accesso** della porta, che ha la sua direzione: lo schema sposta i lettori tra i punti di accesso già presenti sul controller, senza crearne di nuovi. Nel menu Direzione compaiono solo le direzioni che la porta ha già sul controller (sull'A1210 di prova c'è solo l'ingresso). La creazione di nuovi punti di accesso dall'app arriverà in una versione successiva: la pagina web dell'A1210 non la permette. Spegnere un collegamento spegne il suo punto di accesso, quindi vale per tutti i lettori che lo usano (l'app lo dice).
+Sull'Axis un collegamento è un lettore dentro un **punto di accesso** della porta, che ha la sua direzione: lo schema sposta i lettori tra i punti di accesso già presenti sul controller, senza crearne di nuovi. Nel menu Direzione compaiono solo le direzioni che la porta ha già sul controller. Per i lettori l'app non crea ancora nuovi punti di accesso (non lo permette nemmeno la pagina web dell'A1210): li crea solo per gli ingressi usati come Pulsante Uscita o Relè Citofono (vedi sotto) e nel Ripristino Completo. Spegnere un collegamento spegne il suo punto di accesso, quindi vale per tutti i lettori che lo usano (l'app lo dice).
 
 ### Ingressi del controller
 
@@ -128,18 +112,18 @@ Senza quella regola il controller riceve la pressione ma la nega (profilo di acc
 
 Togliendo il ruolo, l'app li rimuove. Ogni modifica compare nello Storico Modifiche e si può annullare. Lo schema dei lettori non mostra questi punti e non li tocca.
 
-Nel registro l'apertura compare con il nome dato all'ingresso, ad esempio "Pulsante Portineria", e nel dettaglio il ruolo e il morsetto, ad esempio "Pulsante Uscita · Aux 1". Un Pulsante Uscita compare come **Uscita**, un Relè Citofono come **Apertura Remota** (la porta aperta a distanza dal citofono). Una pressione che il controller non fa aprire compare come Accesso Negato, con il nome dell'ingresso e il motivo. Il nome resta quello che aveva al momento dell'apertura, anche se poi lo cambi. Più pressioni dello stesso ingresso entro 10 secondi (un contatto che rimbalza, un pulsante tenuto) fanno una riga sola, con "più pressioni" nel dettaglio.
+Nel registro l'apertura compare con il nome dato all'ingresso, ad esempio "Pulsante Portineria", e nel dettaglio il ruolo e il morsetto, ad esempio "Pulsante Uscita · AUX 1". Un Pulsante Uscita compare come **Uscita**, un Relè Citofono come **Apertura Remota** (la porta aperta dal citofono, senza tessera). Una pressione che il controller non fa aprire compare come Accesso Negato, con il nome dell'ingresso e il motivo. Il nome resta quello che aveva al momento dell'apertura, anche se poi lo cambi. Più pressioni dello stesso ingresso entro 10 secondi (un contatto che rimbalza, un pulsante tenuto) fanno una riga sola, con "più pressioni" nel dettaglio.
 
 Da sapere:
 - Sull'A1210 un ingresso, una volta assegnato, non torna mai "mai usato": togliendo il ruolo resta un ingresso semplice libero.
 - Dopo aver tolto la linea supervisionata, l'ingresso può risultare attivo finché non riavvii il controller.
-- Gli **AUX usati come pulsante** funzionano come l'ingresso REX: al banco il controller apre circa 50 millisecondi dopo la pressione.
+- Gli **AUX usati come pulsante** funzionano come l'ingresso REX: il controller apre circa 50 millisecondi dopo la pressione.
 
 ### Porte, lettori e storico
 
-- **Porte**: per ogni porta del controller le impostazioni dell'app (nome, pulsanti Apri e Apri a Lungo in Home Assistant) e, con **Nome e Tempi**, nome, descrizione e tempi sul controller (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme). L'apertura arriva al massimo a 30 secondi e quella estesa a 60, per non tenere alimentata a lungo la serratura. Una porta del controller non ancora usata dall'app si aggiunge con **Gestisci nell'App**.
-- **Telecamere** e **Videocitofoni**: schede del controller con le telecamere di Home Assistant per le istantanee e i videocitofoni Hikvision. Per ognuno scegli la porta; da qui li aggiungi, li sposti su un'altra porta o li togli. Una telecamera può inquadrare anche il coperchio del controller, se il controller è in un altro locale: la sua apertura viene fotografata da lì.
-- **Istantanee**: con una telecamera sulla porta l'app salva una foto su accessi negati, aperture a distanza (Home Assistant e citofono), chiamate al citofono e allarmi; con "Istantanea Anche sugli Accessi Concessi" anche a ogni tessera accettata. Una foto per passaggio, scattata sull'esito (accesso negato o concesso), non sulla lettura della tessera. Le foto si vedono nel registro e in Home Assistant in **Media → axis_access_manager** (cartella `/media/axis_access_manager`, raggiungibile anche con File editor o Samba); il nome del file è numero evento, data e ora dell'evento. Si cancellano insieme al registro dopo `event_retention_days` giorni e non entrano nel backup dell'add-on.
+- **Porte**: per ogni porta del controller le impostazioni dell'app (nome, pulsanti Apri e Apri a Lungo in Home Assistant) e, con **Nome e Tempi**, nome, descrizione e tempi sul controller (apertura, apertura estesa, allarme di porta aperta troppo a lungo, preallarme). L'apertura arriva al massimo a 30 secondi e quella estesa a 60, per non tenere alimentata a lungo la serratura. Una porta del controller non ancora usata dall'app si aggiunge con **Gestisci nell'App**. **Togli dall'App** toglie la porta dall'app, con i suoi pulsanti in Home Assistant e il videocitofono: sul controller non cambia niente.
+- **Telecamere** e **Videocitofoni**: schede del controller con le telecamere di Home Assistant per le foto e i videocitofoni Hikvision. Per ognuno scegli la porta; da qui li aggiungi, li sposti su un'altra porta o li togli. Una telecamera può inquadrare anche il coperchio del controller, se il controller è in un altro locale: la sua apertura viene fotografata da lì.
+- **Foto**: con una telecamera sulla porta l'app salva una foto su accessi negati (comprese le tessere sconosciute), aperture remote (Home Assistant e videocitofono), uscite dai pulsanti, chiamate al citofono, allarmi e manomissioni; con **Foto Anche sugli Accessi Concessi** anche a ogni tessera accettata. Una foto per passaggio, scattata sull'esito (accesso negato o concesso), non sulla lettura della tessera. Le foto si vedono nel registro e in Home Assistant in **Media → axis_access_manager** (cartella `/media/axis_access_manager`, raggiungibile anche con File editor o Samba); il nome del file è numero evento, data e ora dell'evento. Si cancellano insieme al registro, dopo i giorni scelti in **Conservazione Registro (Giorni)**, e non entrano nel backup dell'add-on.
 - **Lettori**: nome e descrizione sul controller, e quali porte comandano.
 - **Storico Modifiche**: ogni scrittura legge prima l'oggetto dal controller, cambia solo i campi scelti e salva la versione precedente; con **Annulla** la riporti com'era. Da qui non passano comandi di apertura.
 
@@ -157,6 +141,7 @@ La creazione da zero di porte e lettori (tipo di serratura, protocollo OSDP del 
 - **Accesso Personalizzato**: una persona le cui tessere usano un profilo diverso da quello della sua tipologia (rimasto dalle versioni precedenti, o scelto dall'importazione CSV). Ha un'etichetta nell'elenco e il tasto **Allinea alla Tipologia** nella scheda; salvando l'accesso della persona torna quello della tipologia.
 - La **tipologia predefinita** è proposta per le nuove tessere; si cambia con "Rendi Predefinita". Una tipologia con persone, o che è la predefinita, non si elimina. Una porta, un'area o una struttura usata in una riga non si elimina: toglila prima dalle righe.
 - Una **fascia oraria** è un insieme di intervalli settimanali (ad esempio lun-ven 8-18 e sab 9-12). Se è attiva l'opzione "Non Valida nei Giorni Festivi", nei giorni della scheda Festività la fascia non vale. Tutte le fasce si possono modificare, anche quelle predefinite del controller; quelle che non servono si **nascondono**.
+- Le **festività** si aggiungono in **Regole → Festività**, una per volta (con **Ogni Anno** per quelle che tornano ogni anno) o tutte insieme con **Aggiungi le Festività Nazionali Italiane** (quelle a data fissa, ogni anno, e Pasquetta dell'anno in corso e del successivo). Valgono solo per le fasce gestite dall'app con "Non Valida nei Giorni Festivi": le fasce mai modificate dall'app non cambiano.
 - La **validità** (dal/al) limita una persona a un periodo: utile per ospiti e imprese. Le date sono scritte sul controller, che rifiuta la tessera fuori periodo.
 
 ## Utenti e permessi
@@ -179,7 +164,7 @@ Ogni permesso mostra le sue sezioni: togliendo la spunta la sezione sparisce dal
 
 ## Home Assistant
 
-Con `ha_integration` attivo compare il dispositivo **Controllo Accessi** con queste entità:
+Con l'opzione **Entità in Home Assistant** attiva compare il dispositivo **Controllo Accessi** con queste entità:
 
 - sensori: Stato Porta, Ultimo Accesso (con persona, tessera ed esito negli attributi), Accessi Oggi, Accessi Negati Oggi, Tessere da Registrare, Persone Registrate;
 - per ogni porta, il sensore acceso/spento **Elettroserratura Porta** (classe lock: spento bloccata, acceso sbloccata, anche quando è aperta a tempo da una tessera), che nelle dashboard mostra il lucchetto;
@@ -187,7 +172,7 @@ Con `ha_integration` attivo compare il dispositivo **Controllo Accessi** con que
 - per ogni porta, sensori acceso/spento **Allarme Porta** (porta forzata o aperta troppo a lungo), **Preallarme Porta** e **Manomissione Porta**, con negli attributi il tipo e l'ora dell'ultimo cambio;
 - controller: **Controller Online**, **Coperchio Controller Aperto**, **Ultimo Avvio Controller** e gli ingressi **Ingresso AUX 1**, **Ingresso AUX 2**, **Ingresso Manomissione**, **Ingresso Allarme** (porte I/O 0-3), con il nome scelto nell'app. Un AUX collegato come Pulsante Uscita o Relè Citofono è acceso mentre si preme; dopo un riavvio del controller resta spento fino alla seconda pressione, perché fino ad allora il controller manda un valore che non è affidabile;
 - pulsanti **Apri Porta** e **Apri Porta a Lungo** per le porte che li hanno attivi in Impianti: aprono solo a serratura bloccata e solo con un'apertura a tempo;
-- per ogni porta oltre la prima: Stato, Apri e Apri a Lungo con il nome della porta (ad esempio "Apri Cantina");
+- per ogni porta oltre la prima le stesse entità hanno il nome della porta al posto di "Porta": per la porta Cantina, ad esempio, Stato Cantina, Elettroserratura Cantina, Contatto Cantina, Allarme Cantina, Preallarme Cantina, Manomissione Cantina, Apri Cantina e Apri Cantina a Lungo;
 - evento **Eventi Accessi**, con tipi `accesso_concesso`, `accesso_negato`, `tessera_letta`, `tessera_sconosciuta`, `apertura_remota`, `uscita`, `allarme_porta`, `manomissione`, `citofono` e attributi `persona`, `tessera`, `dettaglio`, `origine`, `ora`.
 
 Esempio di automazione: notifica quando una tessera sconosciuta viene passata sul lettore.
@@ -207,13 +192,13 @@ actions:
       message: "Tessera sconosciuta {{ state_attr(trigger.entity_id, 'tessera') }}"
 ```
 
-Il nome esatto dell'entità evento è visibile in Impostazioni → Dispositivi → Controllo Accessi. Gli identificativi delle entità restano quelli delle versioni precedenti: cambia solo il nome mostrato.
+Il nome esatto dell'entità evento è visibile in Impostazioni → Dispositivi e servizi → Dispositivi → Controllo Accessi. Gli identificativi delle entità restano quelli delle versioni precedenti: cambia solo il nome mostrato.
 
-Nel registro le aperture dai pulsanti mostrano chi ha premuto, ad esempio "Luca (Home Assistant)": l'add-on legge l'utente dallo stato del pulsante e il nome dalla **persona** di Home Assistant collegata a quell'utente (Impostazioni → Persone). Se l'utente non ha una persona compare solo "Home Assistant"; le aperture da automazioni compaiono come "Automazione (Home Assistant)".
+Nel registro le aperture dai pulsanti mostrano chi ha premuto, ad esempio "Luca (Home Assistant)": l'app legge l'utente dallo stato del pulsante e il nome dalla **persona** di Home Assistant collegata a quell'utente (Impostazioni → Persone). Se l'utente non ha una persona compare solo "Home Assistant"; le aperture da automazioni compaiono come "Automazione (Home Assistant)".
 
-## Istantanee
+## Foto delle telecamere
 
-Con una telecamera impostata sulla porta (Impianti), l'add-on chiede un'immagine alla telecamera tramite Home Assistant per accessi negati, tessere sconosciute, chiamate del citofono e allarmi di quella porta (e per gli accessi concessi, se attivato). Le immagini compaiono nel registro e vengono cancellate insieme agli eventi più vecchi di `event_retention_days`.
+Con una telecamera impostata sulla porta (Impianti → controller → Telecamere), l'app chiede un'immagine alla telecamera tramite Home Assistant per accessi negati (comprese le tessere sconosciute), aperture remote (Home Assistant e videocitofono), uscite dai pulsanti, chiamate al citofono, allarmi e manomissioni di quella porta (e per gli accessi concessi, se attivato). Le foto compaiono nel registro e si cancellano insieme agli eventi, dopo i giorni scelti in **Conservazione Registro (Giorni)**.
 
 ## Importazione CSV
 
@@ -223,39 +208,41 @@ Per le tessere **già registrate** il file aggiorna la persona: gruppo, validit�
 
 ## Eventi MQTT dell'A1210
 
-Per il registro servono gli eventi **AccessControl** (accesso concesso, negato, tessera sconosciuta). Se nella scheda Stato del controller la voce "Eventi AccessControl" resta gialla dopo il passaggio di una tessera, aggiungili al filtro eventi del client MQTT dell'A1210.
+Per il registro servono gli eventi **IdPoint** (tessera letta, anche sconosciuta) e **AccessControl** (accesso concesso o negato). Se nella scheda Stato del controller la voce "Eventi AccessControl" resta gialla dopo il passaggio di una tessera, aggiungili al filtro eventi del client MQTT dell'A1210.
 
 I sensori di Home Assistant usano anche **Door** (stato, contatto porta, allarmi, manomissione) e **Device** (coperchio, inclinazione, avvio, porte I/O). Un sensore resta "sconosciuto" finché il controller non manda il primo evento: se gli ingressi I/O restano sconosciuti anche cambiandoli, aggiungi `Device/IO/Port` al filtro eventi MQTT dell'A1210.
 
-## Citofono Hikvision
+## Videocitofono Hikvision
 
-Il citofono si associa a una porta in **Impianti**. L'add-on legge i suoi eventi dall'add-on **Hikvision Doorbell**, che li pubblica sullo stesso broker MQTT.
-Non parla direttamente con il citofono.
+Il videocitofono si associa a una porta in **Impianti → controller → Videocitofoni** (**Aggiungi Videocitofono**). L'app legge i suoi eventi dall'add-on **Hikvision Doorbell**, che li pubblica sullo stesso broker MQTT.
+Non parla direttamente con il videocitofono.
 
-- **Chiamate nel log**: "ha suonato", "risposta dopo N s", "nessuna risposta", "chiamata chiusa"
-  (con l'istantanea, se la porta ha una telecamera).
-- **Apri dal citofono**: quando si preme Apri sull'app Hik-Connect o sul monitor (in futuro anche dal centralino VoIP),
-  il citofono attiva il suo relè e lo segnala. L'add-on manda allora all'A1210 **una sola apertura a tempo**,
+- **Chiamate nel registro**: "ha suonato", "risposta dopo N s", "nessuna risposta", "chiamata chiusa"
+  (con la foto, se la porta ha una telecamera).
+- **Apri dal videocitofono**: serve la spunta **"Apri" dal Videocitofono Apre Questa Porta** in **Aggiungi Videocitofono** o **Modifica Videocitofono**, spenta di serie.
+  Con la spunta, quando si preme Apri sull'app Hik-Connect o sul monitor (in futuro anche dal centralino VoIP),
+  il videocitofono attiva il suo relè e lo segnala, e l'app manda all'A1210 **una sola apertura a tempo**,
   sulla porta associata: solo a serratura bloccata e al massimo una ogni 5 secondi.
-  Nel registro compare come apertura remota con il modo e il citofono, ad esempio "App Hik-Connect (Citofono)"
+  Senza la spunta l'apertura finisce solo nel registro e la porta non si apre.
+  Nel registro compare come apertura remota con il modo e il videocitofono, ad esempio "App Hik-Connect (Citofono)"
   o "Monitor Interno (Citofono)"; se c'era una chiamata, il dettaglio dice dopo quanti secondi si è aperto.
-  Il citofono non comunica quale account Hik-Connect ha aperto, quindi il nome della persona non c'è.
-- Le aperture fatte con tessere, PIN o volti salvati sul citofono **non** vengono inoltrate: chi può entrare lo decide solo l'A1210.
-- Il relè del citofono non va collegato alla serratura.
+  Il videocitofono non comunica quale account Hik-Connect ha aperto, quindi il nome della persona non c'è.
+- Le aperture fatte con tessere, PIN o volti salvati sul videocitofono **non** vengono inoltrate: chi può entrare lo decide solo l'A1210.
+- Il relè del videocitofono non va collegato alla serratura.
 
-Topic letti (con nome del citofono `Citofono` e relè 1):
+Topic letti (con nome del videocitofono `Citofono` e relè 1):
 `hmd/sensor/Citofono/Call-state/state`, `hmd/switch/Citofono/Door-1-relay/state` e `.../attributes`.
-La scheda Stato del controller mostra lo stato della chiamata e l'ora dell'ultimo messaggio ricevuto da ogni citofono.
-Al primo collegamento il citofono può scaricare lo storico degli eventi e bloccarsi fino a un riavvio: tienine conto nella prima prova.
-Se il citofono usa un firmware recente senza evento di chiamata, attiva `call_state_poll` nell'add-on Hikvision Doorbell.
+La scheda Stato del controller mostra lo stato della chiamata e l'ora dell'ultimo messaggio ricevuto da ogni videocitofono.
+Al primo collegamento il videocitofono può scaricare lo storico degli eventi e bloccarsi fino a un riavvio: tienine conto nella prima prova.
+Se il videocitofono usa un firmware recente senza evento di chiamata, attiva `call_state_poll` nell'add-on Hikvision Doorbell.
 
 ## Stabilità e backup
 
 - **Controller resettato o sostituito.** L'app memorizza numero di serie, modello, firmware e impronta del certificato del controller. Se all'indirizzo risponde un apparecchio diverso, smette di scrivere e di rileggere le tessere finché un amministratore non conferma il cambio nella pagina del controller.
-- **Tessere non presenti sul controller.** Le tessere che spariscono dal controller non vengono cancellate dall'app: restano in Persone con l'etichetta "Non Sul Controller", da riscrivere o togliere.
+- **Tessere non presenti sul controller.** Le tessere che spariscono dal controller non vengono cancellate dall'app: restano in Persone con l'etichetta "Non sul Controller", da riscrivere o togliere.
 - **Eventi persi.** Se Mosquitto, Home Assistant o l'add-on sono fermi, gli accessi di quel periodo vengono recuperati dal registro interno dell'A1210 (fino a 30.000 eventi, al massimo gli ultimi 7 giorni) appena il collegamento torna. Quelli già arrivati non si registrano di nuovo, anche se nel frattempo la tessera è stata tolta dall'app. Nel registro compaiono al loro orario, segnati come recuperati.
 - **Orologio.** Ogni 5 minuti l'app confronta l'ora del controller con quella di Home Assistant. Se il controller è sincronizzato via NTP l'ora giusta è la sua e uno scarto oltre un minuto segnala l'orologio di Home Assistant; altrimenti il guasto è "Orologio del Controller". Imposta un server NTP nel controller. Con il controller sincronizzato anche le aperture remote e le chiamate del citofono, che nascono in Home Assistant, si registrano con l'ora del controller: nel registro restano nell'ordine giusto rispetto ai passaggi con tessera anche se l'orologio di Home Assistant è indietro.
-- **Database.** Prima di ogni aggiornamento dell'add-on si fa una copia del database in `copie_database` (le ultime 3). Prima di ogni backup di Home Assistant si prepara una copia coerente in `copia_backup`; se all'avvio il database risultasse danneggiato, l'add-on riparte da quella.
+- **Database.** Prima di ogni aggiornamento dell'add-on si fa una copia del database in `copie_database` (le ultime 3). Prima di ogni backup di Home Assistant si prepara una copia coerente in `copia_backup`; se all'avvio il database risultasse danneggiato, l'add-on riparte da quella e mette da parte quello danneggiato (con `_danneggiato_` nel nome). Il backup di Home Assistant contiene il database e `copia_backup`, ma non le copie di `copie_database` né i database danneggiati, che servono solo sul posto. Versione dello schema e copie si vedono in Impostazioni → Generale, nel riquadro **Database dell'Add-on**.
 
 ## Backup dell'app
 
@@ -278,7 +265,7 @@ In **Impianti → Backup** (con il permesso Backup o da amministratore).
 
 ### Ripristino completo di un controller
 
-Per un controller **resettato** (ai valori di fabbrica) o **sostituito** con uno nuovo. Si fa dalla scheda **Backup** del controller: **Ripristina** sul backup scelto, poi **Ripristino Completo** (solo amministratori). Se quasi tutte le tessere risultano "Non Presenti Sul Controller", l'app lo propone già scelto e il riquadro delle tessere nella pagina Persone porta lì.
+Per un controller **resettato** (ai valori di fabbrica) o **sostituito** con uno nuovo. Si fa dalla scheda **Backup** del controller: **Ripristina** sul backup scelto, poi **Ripristino Completo** (solo amministratori). Se quasi tutte le tessere risultano "Non Presenti sul Controller", l'app lo propone già scelto e il riquadro delle tessere nella pagina Persone porta lì.
 
 Prima, dalla pagina web del controller:
 
@@ -309,17 +296,17 @@ Non si ripristinano l'indirizzo IP, gli utenti del controller e i certificati: s
 Si imposta in **Impostazioni → Backup** (solo amministratori). In cima alla pagina Backup c'è lo stato: frequenza, prossimo backup e ultima verifica.
 
 - **Backup Automatico** (attivo di serie), con tre frequenze:
-  - **Ogni Ora Se Cambiato** (predefinita): ogni ora l'app guarda se è cambiato qualcosa e solo in quel caso crea un backup.
-  - **Ogni 6 Ore Se Cambiato**.
+  - **Ogni Ora se Cambiato** (predefinita): ogni ora l'app guarda se è cambiato qualcosa e solo in quel caso crea un backup.
+  - **Ogni 6 Ore se Cambiato**.
   - **Solo Notturno**.
 - **Backup Notturno**, alle 03:00 se non scegli un altro orario. Si fa anche se non è cambiato niente: ogni giorno ha il suo punto di ripristino e si vede che il backup funziona. Se l'add-on era spento a quell'ora, si fa appena riparte e compare come Automatico.
-- **Backup Prima Delle Modifiche** (attivo di serie). Scatta in questi casi:
+- **Backup Prima delle Modifiche** (attivo di serie). Scatta in questi casi:
   - prima di programmare porte, lettori, ingressi e punti di accesso;
   - prima di cambiare tipologie, fasce orarie e festività;
   - prima di eliminare una porta o un controller.
 
-  Una serie di modifiche di seguito fa un solo backup ogni 10 minuti. Il backup si fa sempre prima di ogni importazione CSV e subito dopo ogni aggiornamento dell'add-on (compare come Aggiornamento, con la versione). Prima di un ripristino si fa sempre, anche con questa opzione spenta.
-- **Quanti backup tenere**, con le regole di restic. Si tengono:
+  Si fa solo se qualcosa è cambiato dall'ultimo backup, e una serie di modifiche di seguito fa un solo backup ogni 10 minuti. Con questa opzione attiva il backup si fa anche prima di ogni importazione CSV (senza la pausa dei 10 minuti) e subito dopo ogni aggiornamento dell'add-on (compare come Aggiornamento, con la versione): spegnendola, non si fanno nemmeno questi. Solo prima di un ripristino il backup si fa sempre, anche con questa opzione spenta.
+- **Quanti Backup Tenere**, con le regole di restic. Si tengono:
   - gli ultimi 24;
   - il più recente di ognuno degli ultimi 14 giorni;
   - il più recente di ognuna delle ultime 8 settimane;
@@ -330,7 +317,22 @@ Si imposta in **Impostazioni → Backup** (solo amministratori). In cima alla pa
 - **Verifica.** Una volta al giorno, e quando premi **Verifica Ora**, l'app rilegge tutti i file dei backup e ne ricontrolla l'impronta. Se trova backup rovinati compare il guasto "Backup Rovinati", con l'elenco nella pagina Backup. Elimina quei backup e premi Verifica Ora: gli altri sono a posto.
 - **Controller cambiato o irraggiungibile.** Il backup non lo aspetta e tiene la sua configurazione dal backup precedente. Se all'indirizzo del controller risponde un apparecchio diverso non ancora confermato, il backup non mescola la configurazione nuova con quella vecchia.
 - **Riquadro Backup** nel cruscotto: ultimo backup, prossimo backup automatico e verifica. Si aggiunge con la matita del cruscotto.
-- **Privacy.** Una persona eliminata resta nei backup finché questi non scadono: con le regole di serie al massimo 3 anni (le impostazioni lo dicono per le regole scelte). Abbassa i giorni, le settimane, i mesi o gli anni se serve una scadenza più breve.
+- **Privacy.** Una persona eliminata resta nei backup finché questi non scadono: con le regole di serie e il backup automatico attivo al massimo 3 anni (le impostazioni lo dicono per le regole scelte). Per una scadenza più breve abbassa i giorni, le settimane, i mesi o gli anni, e anche gli **Ultimi**: quelli si tengono qualunque sia la loro età, quindi con pochi backup nuovi (backup automatico spento) restano a lungo. I backup bloccati restano finché non li sblocchi.
+
+## Aggiornare da versioni vecchie
+
+Qui restano solo i passaggi automatici delle versioni più vecchie, utili a chi aggiorna da lì. Le novità di ogni versione sono nel **Changelog** dell'add-on.
+
+- **Dalla 0.3 o dalla 0.4.** Dalla 0.5 controller, porte, citofono e telecamera si configurano nell'app, nella pagina **Impianti**, non più nella scheda Configurazione dell'add-on. Al primo avvio della 0.5 l'app importa da sola la configurazione che c'era nelle opzioni (indirizzo, utente e password del controller, porta, citofono, telecamera, gruppo predefinito): dopo l'aggiornamento non devi rifare niente. Dalla 0.8 le vecchie opzioni "Obsoleta" non ci sono più: chi aggiorna da una versione precedente alla 0.5 passi prima dalla 0.7.
+- **0.6.** Le porte stanno in strutture e aree: al primo avvio la porta già configurata finisce in "Struttura Principale › Generale". Rinominale in Impianti → Strutture e Aree.
+- **0.7.** L'area è del controller: porte e lettori la ereditano. Al primo avvio della 0.7 l'area che avevi dato alla porta passa al suo controller.
+- **0.8.** In Home Assistant arrivano anche lo stato del controller (**Controller Online**, **Coperchio Controller Aperto**, **Ultimo Avvio Controller**), gli ingressi I/O del controller e, per ogni porta, **Allarme**, **Preallarme** e **Manomissione** come sensori acceso/spento: tutto quello che faceva il vecchio package YAML.
+- **0.10.** Gruppi e tipologie diventano una cosa sola, la tipologia, in Persone → Tipologie. Al primo avvio i gruppi passano da soli alle tipologie, **senza cambiare chi entra dove**:
+  - una tipologia prende il gruppo che usava già;
+  - chi non aveva una tipologia entra in una tipologia con il nome del suo gruppo;
+  - il gruppo predefinito diventa la tipologia predefinita.
+
+  Una persona con un accesso diverso da quello della sua tipologia è segnalata come **Accesso Personalizzato**, con il tasto per allinearla.
 
 ## Sicurezza
 
