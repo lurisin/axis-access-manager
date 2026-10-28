@@ -13,6 +13,7 @@ import re
 import time
 from datetime import UTC, datetime, timedelta
 
+from .backup_copy import RESTORED
 from .db import Database
 from .service import ServiceError, plural
 
@@ -26,8 +27,8 @@ TYPES = {
     "controller": ("Controller Non Raggiungibile", "Il controller è offline o non risponde all'add-on.", "urgent"),
     "programming": (
         "Porte Che Non Si Aprono",
-        "Punti di accesso che il controller non gestisce o pulsanti senza il permesso di apertura, per esempio dopo "
-        "un reset del controller: la porta non si apre.",
+        "Punti di accesso che il controller non gestisce, pulsanti senza il permesso di apertura o ingressi rimasti "
+        "programmati a metà, per esempio dopo un reset del controller: la porta non si apre.",
         "urgent",
     ),
     "mqtt": ("Collegamento MQTT Perso", "L'add-on non riceve più gli eventi dal broker MQTT.", "urgent"),
@@ -61,9 +62,25 @@ TYPES = {
         "Tessere che l'app conosce ma che sul controller non ci sono più: da riscrivere o togliere dall'app.",
         "urgent",
     ),
+    "database": (
+        "Database dell'App",
+        "Database trovato danneggiato o mancante all'avvio, oppure copia del database per il backup di Home Assistant "
+        "non aggiornata.",
+        "urgent",
+    ),
 }
 # Guasti dell'impianto: restano finché non si risolvono, anche dopo la presa visione
-FAULT_TYPES = ("controller", "programming", "mqtt", "camera", "controller_changed", "clock", "missing_cards", "backup")
+FAULT_TYPES = (
+    "controller",
+    "programming",
+    "mqtt",
+    "camera",
+    "controller_changed",
+    "clock",
+    "missing_cards",
+    "backup",
+    "database",
+)
 # Tipi con nomi: permesso necessario per vederli. Gli allarmi delle porte li vede chi vede lo stato, eventi e
 # istantanee solo chi vede il registro.
 VISIBILITY = {
@@ -72,6 +89,7 @@ VISIBILITY = {
     "expiring": "persone",
     "missing_cards": "persone",
     "backup": "backup",
+    "database": "backup",
 }
 # Attiva: compare in Da Gestire e conta sulla campanella. "info" (fino alla 0.13) vale come attiva.
 LEVELS = {"urgent": "Attiva", "off": "Disattivata"}
@@ -102,6 +120,8 @@ class NotificationService:
     def __init__(self, db: Database, settle: timedelta = SETTLE) -> None:
         self.db = db
         self.settled_at = time.monotonic() + settle.total_seconds()
+        # Avvio dell'app: ora del controllo del database
+        self.started_at = datetime.now(tz=UTC).isoformat(timespec="seconds")
 
     # Impostazioni
 
@@ -150,9 +170,14 @@ class NotificationService:
         missing: dict | None = None,
         backup: dict | None = None,
         backup_verify: dict | None = None,
+        db_recovery: str = "",
+        ha_copy_error: str = "",
         now: datetime | None = None,
     ) -> list[dict]:
-        """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente."""
+        """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente.
+
+        db_recovery: cosa ha fatto all'avvio il controllo del database (backup_copy.recover), "" se era sano.
+        ha_copy_error: perché l'ultima copia per il backup di Home Assistant non è stata aggiornata."""
         now = now or datetime.now(tz=UTC)
         levels = self.levels()
         since = (now - RECENT).astimezone(UTC).isoformat(timespec="seconds")
@@ -180,6 +205,8 @@ class NotificationService:
                         "link": "",
                         # Quanto è grave il guasto: se cresce dopo la presa visione la notifica torna da gestire
                         "weight": 0,
+                        # Guasto in corso: dopo la presa visione resta nella barra in alto finché non si risolve
+                        "fault": kind in FAULT_TYPES,
                         **extra,
                     }
                 )
@@ -306,6 +333,21 @@ class NotificationService:
                         link=f"#impianti/c{c['id']}",
                         weight=len(names),
                     )
+                if c.get("input_problems") and not c.get("unreachable"):
+                    # Scrittura rimasta a metà o oggetti tolti fuori dall'app: si ripara scrivendo di nuovo l'ingresso
+                    names = c["input_problems"]
+                    add(
+                        "programming",
+                        f"inputs:{c['id']}",
+                        "warn",
+                        "Ingresso da Riscrivere" if len(names) == 1 else "Ingressi da Riscrivere",
+                        f"{c['name']} · {_names(names)}: sul controller la programmazione non è quella salvata "
+                        "nell'app. Rimedia aprendo l'ingresso nella pagina del controller e premendo Scrivi sul "
+                        "Controller, anche con le stesse impostazioni.",
+                        c.get("checked_at") or now.isoformat(timespec="seconds"),
+                        link=f"#impianti/c{c['id']}",
+                        weight=len(names),
+                    )
                 if c.get("zone_differs") and not c.get("unreachable"):
                     # Fasce orarie e festività sono scritte in ora locale del controller
                     add(
@@ -390,6 +432,29 @@ class NotificationService:
                 ),
                 backup_verify.get("at") or now.isoformat(timespec="seconds"),
                 link="#impianti/backup",
+            )
+        if db_recovery:
+            restored = RESTORED in db_recovery
+            add(
+                "database",
+                "database:avvio",
+                "crit",
+                "Database Ripristinato dalla Copia" if restored else "Database Non Ripristinato",
+                _sentence(db_recovery),
+                self.started_at,
+                link="#impostazioni/generale",
+                # Ripristinato: è successo all'avvio e non c'è altro da fare, dopo la presa visione non resta
+                fault=not restored,
+            )
+        if ha_copy_error:
+            add(
+                "database",
+                "database:copia",
+                "warn",
+                "Copia per il Backup Non Aggiornata",
+                _sentence(ha_copy_error),
+                now.isoformat(timespec="seconds"),
+                link="#impostazioni/generale",
             )
         titles = {"allarme": "Allarme Porta", "manomissione": "Manomissione"}
         if levels["door_alarm"] != "off":
@@ -503,8 +568,7 @@ class NotificationService:
             item = {
                 **i,
                 "seen": i["id"] in seen and i.get("weight", 0) <= (seen[i["id"]] or 0),
-                # Guasto in corso: dopo la presa visione resta nella barra in alto finché non si risolve
-                "fault": i["type"] in FAULT_TYPES,
+                "fault": i.get("fault", i["type"] in FAULT_TYPES),
             }
             if no_log:
                 item.update(events=[], event=None, snapshot=None)

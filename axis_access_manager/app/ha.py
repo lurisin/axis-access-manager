@@ -6,12 +6,14 @@ import asyncio
 import contextlib
 import logging
 import shutil
+import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 
 from .config import supervisor_token
+from .installation import valid_camera
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -74,10 +76,11 @@ class HomeAssistant:
 
     async def save_snapshot(self, camera: str, name: str) -> tuple[str, str]:
         """Salva un'immagine della telecamera; restituisce (nome del file, "") oppure ("", motivo dell'errore)."""
-        if not self.available or not camera:
+        # Solo entità camera.*: un valore salvato da una versione vecchia non deve chiamare altre API
+        if not self.available or not valid_camera(camera):
             return "", ""
         try:
-            response = await self._client.get(f"/camera_proxy/{camera}")
+            response = await self._client.get(f"/camera_proxy/{urllib.parse.quote(camera, safe='')}")
         except httpx.HTTPError as err:
             # Il testo di httpx (in inglese, spesso vuoto con i tempi scaduti) resta nel log
             _LOGGER.warning("Istantanea da %s non riuscita: %r", camera, err)
@@ -87,6 +90,9 @@ class HomeAssistant:
         if response.status_code != 200 or not response.content:
             _LOGGER.warning("Istantanea da %s non riuscita: risposta %s", camera, response.status_code)
             return "", f"telecamera non disponibile (risposta {response.status_code} di Home Assistant)"
+        if not response.headers.get("content-type", "").lower().startswith("image/"):
+            _LOGGER.warning("Istantanea da %s non riuscita: %s", camera, response.headers.get("content-type"))
+            return "", "la telecamera non ha mandato un'immagine"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         filename = f"{name}.jpg"
         await asyncio.to_thread((self.snapshot_dir / filename).write_bytes, response.content)

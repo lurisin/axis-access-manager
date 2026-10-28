@@ -497,12 +497,17 @@ async def test_rex_inputs_without_permission_are_a_fault(monitor, controller, co
     # Pulsante programmato fino alla 0.21.2: punto di accesso gestito, ma nessun profilo gli dà il permesso
     controller.access_points.append({"token": "ap-rex", "Entity": "porta", "Name": "Pulsante Portineria"})
     controller.access_controllers["Axis-x AccessController"]["AccessPoint"].append("ap-rex")
-    db.save_controller_input(
-        controller_row, "REX", {"name": "Pulsante Portineria", "role": "rex", "access_point_token": "ap-rex"}
-    )
+    row = {
+        "name": "Pulsante Portineria",
+        "role": "rex",
+        "door_token": "porta",
+        "access_point_token": "ap-rex",
+        "idpoint_token": "id-rex",
+    }
+    db.save_controller_input(controller_row, "REX", row)
     await monitor.check_all()
     state = monitor.states[controller_row]
-    assert state.rex_missing == ["Pulsante Portineria"] and state.unmanaged == []
+    assert state.rex_missing == ["Pulsante Portineria"] and state.unmanaged == [] and state.input_problems == []
 
     items = NotificationService(db).collect(
         mqtt_configured=True,

@@ -16,6 +16,8 @@ from .config import MqttSettings
 _LOGGER = logging.getLogger(__name__)
 
 RECONNECT_DELAY = 10
+# Filtro di iscrizione rifiutato dalla libreria MQTT (per esempio # o + nel prefisso): si riprova senza traceback
+INVALID_TOPIC = "topic MQTT non valido"
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,8 @@ def _timestamp(millis) -> datetime:
 def mqtt_error_text(err: Exception) -> str:
     """Motivo per cui il broker non è collegato, in italiano; il testo della libreria resta nel log."""
     text = str(err).lower()
+    if isinstance(err, ValueError) and any(s in text for s in ("topic", "filter", "wildcard")):
+        return INVALID_TOPIC
     if any(s in text for s in ("user name or password", "username or password", "not authori", "code:134", "code:135")):
         return "utente o password del broker non validi"
     if any(s in text for s in ("refused", "unreachable", "unavailable", "timed out", "timeout", "errno")):
@@ -317,7 +321,7 @@ class EventMonitor:
                 self.client = None
                 self.connected = False
                 self.last_error = mqtt_error_text(err)
-                if isinstance(err, aiomqtt.MqttError):
+                if isinstance(err, aiomqtt.MqttError) or self.last_error == INVALID_TOPIC:
                     _LOGGER.warning("MQTT non disponibile: %s; riprovo tra %s s", err, RECONNECT_DELAY)
                 else:
                     _LOGGER.exception("Ascolto MQTT interrotto; riprovo tra %s s", RECONNECT_DELAY)

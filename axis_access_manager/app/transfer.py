@@ -7,6 +7,7 @@ import io
 import re
 from datetime import datetime
 
+from .db import SOURCE_LABELS
 from .rules import RuleError, normalize_validity
 from .service import AccessService, ServiceError, normalize_card, normalize_name
 from .vapix import VapixError
@@ -98,7 +99,8 @@ def events_csv(events: list[dict], doors: dict[str, str] | None = None) -> str:
                 _text(event.get("person_name") or ""),
                 _card_text(event.get("card") or ""),
                 _text(event.get("detail") or ""),
-                _text(event.get("source") or ""),
+                # Lettore, controller o porta come nel registro; altrimenti il nome di chi ha aperto
+                _text(SOURCE_LABELS.get(event.get("source") or "", event.get("source") or "")),
                 # Arrivato dopo, dal registro interno del controller (MQTT o add-on fermi in quel momento)
                 "sì" if event.get("recovered") else "",
             ]
@@ -299,17 +301,6 @@ def _card_number(value: str) -> str:
     return normalize_card(value)
 
 
-async def _suspend_new(service: AccessService, person: dict, number: str, user: str) -> None:
-    """Sospende la tessera appena registrata; se non ci riesce lo dice, perché sul controller è attiva."""
-    card = next(c for c in person["cards"] if c["number"].lower() == number.lower())
-    try:
-        await service.set_card_enabled(card["id"], False, user)
-    except VapixError as err:
-        raise ServiceError(
-            f"tessera registrata ma ancora attiva: sospendila dalla scheda della persona (errore del controller: {err})"
-        ) from err
-
-
 async def import_persons(service: AccessService, text: str, groups: list[dict], user: str, apply: bool) -> dict:
     """Controlla (apply=False) o esegue l'importazione.
 
@@ -404,8 +395,9 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
             if state == "sospesa":
                 action += ", sospesa" if adds else ", tessera sospesa"
             if apply:
+                # Una tessera «sospesa» si scrive già sospesa: non resta mai attiva sul controller
                 if person:
-                    saved = await service.add_card(person["id"], number, user)
+                    await service.add_card(person["id"], number, user, enabled=state != "sospesa")
                 else:
                     saved = await service.create_person(
                         name,
@@ -417,10 +409,9 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
                         item.get("ditta", ""),
                         item.get("note", ""),
                         category["id"] if category else 0,
+                        enabled=state != "sospesa",
                     )
                     planned[saved["id"]] = wanted
-                if state == "sospesa":
-                    await _suspend_new(service, saved, number, user)
                 if changes:
                     await _update(service, person, card, changes, user)
             if changes:

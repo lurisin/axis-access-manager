@@ -16,7 +16,7 @@ from __future__ import annotations
 import copy
 import json
 
-from .backup import COMMON, FIELD_LABELS, context_of
+from .backup import COMMON, FIELD_LABELS, READ_LABELS, context_of
 from .programming import CONTROLLER_INPUTS, DOOR_TIMES, format_duration, link_access_points, parse_duration
 from .rules import describe_rules, holidays_ical
 from .service import ServiceError, plural
@@ -28,19 +28,7 @@ FULL_SECTIONS = {
     "tessere": "Tessere sul Controller",
 }
 UUID_FIELDS = ("DeviceUUID", "DoorDeviceUUID")
-# Voci degli errori di lettura del backup (controller_snapshot) per ogni elenco
-READ_LABELS = {
-    "schedules": "fasce orarie",
-    "doors": "porte",
-    "door_configurations": "configurazione delle porte",
-    "idpoints": "lettori",
-    "idpoint_configurations": "configurazione dei lettori",
-    "io_assignments": "ingressi e uscite",
-    "access_points": "punti di accesso",
-    "access_profiles": "profili di accesso",
-    "credentials": "tessere",
-}
-# Le stesse voci come titolo delle righe che non si possono ripristinare
+# Le voci degli errori di lettura del backup (READ_LABELS) come titolo delle righe che non si possono ripristinare
 READ_TITLES = {
     "schedules": "Fasce Orarie",
     "doors": "Porte",

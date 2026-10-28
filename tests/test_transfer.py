@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 
 from app.rules import normalize_validity
@@ -5,6 +7,11 @@ from app.service import AccessService, ServiceError
 from app.transfer import events_csv, import_persons, parse_date, persons_csv, read_import
 
 GROUPS = [{"token": "profilo_sempre", "name": "Sempre"}, {"token": "p2", "name": "Pulizie"}]
+
+
+def _local_day(value: str) -> str:
+    """Giorno locale di una validità salvata in UTC: il 31/12 a mezzanotte in UTC può essere già il 1° gennaio."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().date().isoformat()
 
 
 @pytest.fixture
@@ -61,7 +68,7 @@ async def test_import_preview_then_apply(service, controller, db):
     mario = next(p for p in db.list_persons() if p["name"] == "Mario")
     assert mario["company"] == "Brillante"
     assert mario["cards"][0]["access_profile"] == "p2"
-    assert mario["cards"][0]["valid_to"].startswith("2026-12-3")
+    assert _local_day(mario["cards"][0]["valid_to"]) == "2026-12-31"
     luca = next(p for p in db.list_persons() if p["name"] == "Luca")
     assert len(luca["cards"]) == 2
 
@@ -90,7 +97,7 @@ async def test_import_updates_registered_cards(service, controller, db):
     anna = db.list_persons()[0]
     assert anna["company"] == "Brillante"
     assert {c["access_profile"] for c in anna["cards"]} == {"p2"}
-    assert all(c["valid_to"].startswith("2026-12-3") for c in anna["cards"])
+    assert all(_local_day(c["valid_to"]) == "2026-12-31" for c in anna["cards"])
 
     # Reimportare lo stesso file non cambia più niente; valori diversi per la stessa persona sono un errore
     again = await import_persons(service, text, GROUPS, "admin", apply=False)

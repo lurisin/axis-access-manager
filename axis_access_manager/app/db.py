@@ -736,6 +736,7 @@ class Database:
         ("controller_inputs", "schedule"),
         ("controller_inputs", "idpoint_token"),
         ("controller_inputs", "access_point_token"),
+        ("controller_changes", "token"),
     )
 
     def replace_token(self, old: str, new: str) -> int:
@@ -745,7 +746,22 @@ class Database:
         statements = [
             (f"UPDATE {table} SET {column} = ? WHERE {column} = ?", (new, old)) for table, column in self.TOKEN_COLUMNS
         ]
-        statements.append(("UPDATE app_settings SET value = ? WHERE key = 'default_group' AND value = ?", (new, old)))
+        # Anche la porta che in Home Assistant ha gli identificativi di sempre (ha_mqtt.LEGACY_DOOR_SETTING)
+        statements.append(
+            (
+                "UPDATE app_settings SET value = ? WHERE key IN ('default_group', 'ha_legacy_door') AND value = ?",
+                (new, old),
+            )
+        )
+        # Storico Modifiche: Annulla riscrive l'oggetto salvato, che deve avere il token nuovo
+        quoted = (json.dumps(old), json.dumps(new))
+        statements.append(
+            (
+                "UPDATE controller_changes SET before = replace(before, ?1, ?2), after = replace(after, ?1, ?2) "
+                "WHERE instr(before, ?1) OR instr(after, ?1)",
+                quoted,
+            )
+        )
         with self._lock:
             changed = sum(self._conn.execute(sql, params).rowcount for sql, params in statements)
             self._conn.commit()

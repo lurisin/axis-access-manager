@@ -34,6 +34,7 @@ from .db import Database, now_iso
 from .programming import CONTACTS, DOOR_TIMES, INPUT_ROLES, parse_duration
 from .rules import describe_rules
 from .service import ServiceError, card_of_credential, plural
+from .users import role_label
 from .vapix import VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -734,7 +735,12 @@ def common_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
             {"name": s["name"], "description": s["description"], "areas": [a["name"] for a in s["areas"]]},
         )
     for u in part.get("app_users", []):
-        view["utenti"][u["username"]] = _item(u["name"] or u["username"], {"name": u["name"], "perms": u["perms"]})
+        view["utenti"][u["username"]] = _item(
+            u["name"] or u["username"],
+            {"name": u["name"], "perms": u["perms"]},
+            # Come nella pagina Utenti: "Operatore" o "Personalizzato: Stato, Persone", non le chiavi dei permessi
+            {"perms": role_label(list(u["perms"] or []))},
+        )
     for key, value in (part.get("settings") or {}).items():
         label = {
             "default_group": "Profilo Predefinito",

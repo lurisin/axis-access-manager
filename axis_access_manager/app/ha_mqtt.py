@@ -24,6 +24,9 @@ DISCOVERY_PREFIX = "homeassistant"
 NODE_ID = "axis_access_manager"
 # Identificativo del dispositivo in Home Assistant, salvato al primo avvio: non cambia con il token della porta
 DEVICE_ID_SETTING = "ha_device_id"
+# Porta che ha gli identificativi delle versioni precedenti (apri_porta, stato_porta...): token della porta sul
+# controller, salvato alla prima pubblicazione. Se la porta si toglie, quegli identificativi non passano a un'altra
+LEGACY_DOOR_SETTING = "ha_legacy_door"
 # Allo spegnimento: tempo massimo per dire a Home Assistant che le entità non sono più disponibili
 OFFLINE_TIMEOUT = 2
 
@@ -156,7 +159,7 @@ class HaBridge:
         self.settings = settings
         self.monitor = monitor
         self.db = db
-        # Porte configurate nell'app: la prima mantiene gli identificativi delle versioni precedenti
+        # Porte configurate nell'app: una tiene gli identificativi delle versioni precedenti (legacy_door)
         self.doors = (
             doors
             if doors is not None
@@ -207,6 +210,17 @@ class HaBridge:
             self.db.set_setting(DEVICE_ID_SETTING, device_id)
         return device_id
 
+    def legacy_door(self) -> str:
+        """Token della porta con gli identificativi di sempre ("" se nessuna porta dell'app lo ha più).
+
+        Fino alla 0.21 li aveva la prima porta dell'elenco: con un controller tolto e aggiunto di nuovo, con le porte
+        in un altro ordine, il pulsante Apri Porta di Home Assistant apriva un'altra porta."""
+        saved = self.db.get_setting(LEGACY_DOOR_SETTING)
+        if not saved and self.doors and self.doors[0]["door_token"]:
+            saved = self.doors[0]["door_token"]
+            self.db.set_setting(LEGACY_DOOR_SETTING, saved)
+        return saved if any(d["door_token"] == saved for d in self.doors) else ""
+
     def _device(self) -> dict:
         return {
             "identifiers": [self._device_id()],
@@ -238,11 +252,6 @@ class HaBridge:
         state = {"state_topic": self.state_topic}
         names = self._input_names()
         entities = [
-            (
-                "sensor",
-                "stato_porta",
-                {**state, "name": "Stato Porta", "icon": "mdi:door", "value_template": "{{ value_json.porta }}"},
-            ),
             (
                 "sensor",
                 "ultimo_accesso",
@@ -351,24 +360,27 @@ class HaBridge:
                 },
             ),
         ]
-        for index, door in enumerate(self.doors):
-            # Prima porta: nomi e identificativi di sempre; le altre hanno il loro nome e id
-            suffix, label, extra = (
-                ("", "Porta", "") if index == 0 else (f"_{door['id']}", door["name"], f":{door['door_token']}")
-            )
-            if index:
-                entities.append(
-                    (
-                        "sensor",
-                        f"stato_porta{suffix}",
-                        {
-                            **state,
-                            "name": f"Stato {label}",
-                            "icon": "mdi:door",
-                            "value_template": f"{{{{ value_json.porte['{door['door_token']}'] }}}}",
-                        },
-                    )
+        legacy = self.legacy_door()
+        for door in self.doors:
+            # Porta con gli identificativi di sempre: nomi e id delle versioni precedenti. Le altre hanno il loro
+            # nome e il loro id, che non passa mai a un'altra porta. Il comando senza porta va alla prima porta.
+            if legacy and door["door_token"] == legacy:
+                suffix, label = "", "Porta"
+                extra = "" if door["door_token"] == self.settings.door_token else f":{door['door_token']}"
+            else:
+                suffix, label, extra = f"_{door['id']}", door["name"], f":{door['door_token']}"
+            entities.append(
+                (
+                    "sensor",
+                    f"stato_porta{suffix}",
+                    {
+                        **state,
+                        "name": f"Stato {label}",
+                        "icon": "mdi:door",
+                        "value_template": f"{{{{ value_json.porte['{door['door_token']}'] }}}}",
+                    },
                 )
+            )
             # Bloccata (spento) o sbloccata (acceso): nelle dashboard prende il lucchetto
             entities.append(
                 (
