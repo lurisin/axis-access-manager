@@ -298,7 +298,7 @@ def _card_number(value: str) -> str:
     if re.fullmatch(r"\d+(?:[.,]\d+)?[eE][+-]\d+", value):
         raise ServiceError(
             f"numero tessera in notazione scientifica ({value}): il foglio di calcolo l'ha letto come un numero, "
-            "riesporta l'anagrafica o scrivi la tessera come testo"
+            "riesporta le persone o scrivi la tessera come testo"
         )
     return normalize_card(value)
 

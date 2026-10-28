@@ -1025,7 +1025,7 @@ def create_app(
         names = await _group_names(state)
         categories = {c["id"]: c["name"] for c in state.db.list_categories()}
         text = persons_csv(state.db.list_persons(), names, state.db.last_accesses(), categories)
-        return _csv_response(text, "anagrafica")
+        return _csv_response(text, "persone")
 
     @app.post("/api/import/persons", dependencies=[need("persone_modifica", "import_export")])
     async def import_csv(body: ImportIn, request: Request) -> dict:

@@ -223,7 +223,7 @@ File con separatore `;` o `,`, in UTF-8 o nel formato ANSI (Windows-1252) che Ex
 - **Stato.** La colonna stato è facoltativa: "sospesa" sospende la tessera, nuova o già registrata (una tessera nuova arriva sul controller già sospesa); "attiva" non riattiva mai una tessera sospesa: la riga lo dice e la tessera si riattiva dalla scheda della persona.
 - **Numeri di tessera.** Una tessera in notazione scientifica (per esempio `4,12E+15`), o una tessera registrata scritta senza i suoi zeri iniziali, dà un errore: il foglio di calcolo l'ha letta come un numero. Nei file esportati le tessere di sole cifre sono scritte come `="04123456"` e i testi che iniziano con `=`, `+`, `-` o `@` hanno un apostrofo davanti, così si reimportano intatti. Una riga con caratteri non leggibili dà un errore che chiede di salvare il file come CSV UTF-8.
 
-Il modo più semplice per una modifica in blocco: esporta le persone con **Anagrafica CSV** (Impostazioni → Generale), cambia le colonne nel foglio di calcolo e reimporta il file. Una persona con più tessere ha una riga per tessera, e le righe devono avere gli stessi valori. Il nome non si cambia dal file.
+Il modo più semplice per una modifica in blocco: esporta le persone con **Persone CSV** (Impostazioni → Generale), cambia le colonne nel foglio di calcolo e reimporta il file. Una persona con più tessere ha una riga per tessera, e le righe devono avere gli stessi valori. Il nome non si cambia dal file.
 
 ## Eventi MQTT dell'A1210
 

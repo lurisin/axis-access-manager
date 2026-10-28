@@ -46,7 +46,7 @@ DENIED_REASONS = {
     "NotPermittedAtThisTime": "fuori fascia oraria",
     "InvalidPIN": "PIN errato",
     "AntipassbackViolation": "passaggio ripetuto (antipassback)",
-    "Other": "rifiutata dal controller",
+    "Other": "negato dal controller",
 }
 
 DOOR_ALARMS = {
