@@ -432,7 +432,9 @@ class NotificationService:
                 "missing_cards",
                 f"missing:{missing['since']}",
                 "crit" if missing.get("mass") else "warn",
-                "Tessere Non Presenti sul Controller",
+                "Tessera Non Presente sul Controller"
+                if missing["count"] == 1
+                else "Tessere Non Presenti sul Controller",
                 (
                     f"{plural(missing['count'], 'tessera', 'tessere')} di "
                     f"{plural(missing['persons'], 'persona', 'persone')} "
@@ -465,7 +467,7 @@ class NotificationService:
                 "backup",
                 f"backup-verify:{backup_verify.get('at') or ''}",
                 "warn",
-                "Backup Rovinati",
+                "Backup Rovinato" if damaged == 1 else "Backup Rovinati",
                 (
                     f"{damaged} backup non si possono ripristinare: file mancanti o rovinati."
                     if damaged != 1

@@ -1,4 +1,4 @@
-"""Impianti configurati nell'app: controller (indirizzo e credenziali) e porte con citofono e telecamera."""
+"""Impianti configurati nell'app: controller (indirizzo e credenziali) e porte con videocitofono e telecamera."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from .config import Settings, normalize_host
 from .db import Database
 from .service import ServiceError, normalize_name
 
-# Per ora l'add-on gestisce un controller; il database è già pronto per averne di più
+# Per ora l'app gestisce un controller; il database è già pronto per averne di più
 MAX_CONTROLLERS = 1
 DEFAULT_SITE = "Struttura Principale"
 DEFAULT_AREA = "Generale"
@@ -291,7 +291,7 @@ class InstallationService:
         if controller_id and existing is None:
             raise ServiceError("controller non trovato")
         if not controller_id and len(self.db.list_controllers()) >= MAX_CONTROLLERS:
-            raise ServiceError("per ora l'add-on gestisce un solo controller")
+            raise ServiceError("per ora l'app gestisce un solo controller")
         fields = self.controller_fields(data, existing)
         controller_id = self.db.save_controller(controller_id, fields)
         if existing and existing["name"] and existing["name"] != fields["name"]:
@@ -387,13 +387,13 @@ class InstallationService:
         intercom = (data.get("intercom_name") or "").strip()
         prefix = (data.get("intercom_mqtt_prefix") or "hmd").strip().strip("/")
         if not TOPIC_PATTERN.match(prefix):
-            raise ServiceError("prefisso MQTT del citofono non valido")
+            raise ServiceError("prefisso MQTT del videocitofono non valido")
         try:
             relay = int(data.get("intercom_relay") or 1)
         except (TypeError, ValueError) as err:
-            raise ServiceError("relè del citofono non valido") from err
+            raise ServiceError("relè del videocitofono non valido") from err
         if relay not in (1, 2):
-            raise ServiceError("il relè del citofono è 1 o 2")
+            raise ServiceError("il relè del videocitofono è 1 o 2")
         camera = (data.get("snapshot_camera") or "").strip()
         if camera and not valid_camera(camera):
             raise ServiceError(CAMERA_ERROR)
@@ -436,7 +436,7 @@ class InstallationService:
         if clash:
             raise ServiceError(f"la porta del controller è già configurata come {clash['name']}")
         door_id = self.db.save_door(door_id, controller_id, fields)
-        detail = fields["name"] + (f", citofono {fields['intercom_name']}" if fields["intercom_name"] else "")
+        detail = fields["name"] + (f", videocitofono {fields['intercom_name']}" if fields["intercom_name"] else "")
         self.db.add_audit(user, "porta modificata" if existing else "porta aggiunta", detail)
         return {"id": door_id}
 

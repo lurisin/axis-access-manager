@@ -351,25 +351,6 @@ class RulesService:
             count += 1
         return count
 
-    def restore_schedule_rules(self, saved: list[dict], tokens: dict[str, str] | None = None) -> int:
-        """Ripristino Completo: le regole delle fasce dell'app dai Dati Comuni del backup (common["schedules"]),
-        per quelle che l'app non ricorda più (le versioni precedenti le cancellavano dopo un reset).
-        tokens: fasce ricreate con un token nuovo. Dopo, reapply_holidays(only_changed=True) riallinea le
-        festività. Restituisce quante fasce ha rimesso."""
-        known = self.db.schedule_rules()
-        restored = 0
-        for schedule in saved:
-            token = (tokens or {}).get(schedule.get("token"), schedule.get("token"))
-            if not token or token in known or not schedule.get("rules"):
-                continue
-            try:
-                rules = normalize_rules(schedule["rules"])
-            except RuleError:
-                continue
-            self.db.save_schedule_rules(token, rules, bool(schedule.get("holidays")))
-            restored += 1
-        return restored
-
     # Gruppi
 
     async def list_groups(self) -> dict:
