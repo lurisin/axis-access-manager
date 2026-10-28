@@ -210,9 +210,15 @@ async def test_delete_person_removes_everything(service, controller, db):
 
 async def test_open_door_only_when_locked(service, controller, db):
     service.monitor.door_mode = "Accessed"
+    controller.door = "Accessed"
     with pytest.raises(ServiceError, match="non è bloccata"):
         await service.open_door(False, "admin")
     assert not [c for c in controller.calls if c[0] == "access_door"]
+
+    # "Bloccata" perso via MQTT: in memoria resta "Aperta a Tempo", ma decide il controller
+    controller.door = "Locked"
+    await service.open_door(False, "admin")
+    assert ("access_door", "porta", False) in controller.calls
 
     service.monitor.door_mode = "Locked"
     await service.open_door(True, "admin")
@@ -222,7 +228,7 @@ async def test_open_door_only_when_locked(service, controller, db):
 
 async def test_open_door_asks_controller_when_state_unknown(service, controller):
     controller.door = "Unlocked"
-    with pytest.raises(ServiceError, match="Unlocked"):
+    with pytest.raises(ServiceError, match=r"\(Sbloccata\)"):
         await service.open_door(False, "admin")
 
 
@@ -400,14 +406,14 @@ async def test_exit_button_is_an_exit_and_intercom_relay_a_remote_opening(servic
     assert button["kind"] == "uscita" and button["source"] == "Pulsante Portineria"
     assert button["detail"] == "Pulsante Uscita · REX"
     assert relay["kind"] == "apertura_remota" and relay["source"] == "Relè Citofono"
-    assert relay["detail"] == "Relè Citofono · Aux 1"
+    assert relay["detail"] == "Relè Citofono · AUX 1"
 
     # Negato (al banco: InvalidAccessProfile): nel registro con il nome dell'ingresso, non come tessera anonima
     denied = event("AccessControl/Denied/Anonymous/z", {"AccessPointToken": "ap-relay", "Reason": "Boh"})
     service.record_event(dataclasses.replace(denied, timestamp=datetime(2026, 10, 25, 10, tzinfo=UTC)))
     row = db.list_events()[0]
     assert row["kind"] == "negato" and row["source"] == "Relè Citofono" and row["card"] == ""
-    assert row["detail"] == "Relè Citofono · Aux 1 · Boh"
+    assert row["detail"] == "Relè Citofono · AUX 1 · Boh"
 
 
 async def test_exit_button_from_mqtt_topic_is_logged_once_with_the_input_name(service, db):
@@ -422,13 +428,13 @@ async def test_exit_button_from_mqtt_topic_is_logged_once_with_the_input_name(se
     service.monitor.handle(topic, payload)
     [row] = db.list_events()
     assert row["kind"] == "uscita" and row["source"] == "Pulsante Portineria"
-    assert row["detail"] == "Pulsante Uscita · Aux 1"
+    assert row["detail"] == "Pulsante Uscita · AUX 1"
 
     # Al banco un ponticello tenuto a mano ha dato 4 REX in 5 secondi: una riga sola, segnata
     for millis in (1761479928000, 1761479930000, 1761479931000):
         service.monitor.handle(topic, payload.replace(b"1761479926000", str(millis).encode()))
     [row] = db.list_events()
-    assert row["detail"] == "Pulsante Uscita · Aux 1 · più pressioni"
+    assert row["detail"] == "Pulsante Uscita · AUX 1 · più pressioni"
     # Il recupero dal registro del controller non rifà le pressioni accorpate
     service._recovering = True
     try:

@@ -1,10 +1,13 @@
+import asyncio
+import dataclasses
 import json
+import time
 
 import pytest
 
 from app.config import parse_options
 from app.events import EventMonitor
-from app.ha_mqtt import HaBridge
+from app.ha_mqtt import HaBridge, seconds_to_midnight, topic_base
 
 
 class FakeClient:
@@ -101,6 +104,26 @@ def test_second_door_gets_its_own_entities_and_commands(settings, db):
     assert parse_command("sblocca") is None
 
 
+def test_old_entity_ids_stay_with_their_door(settings, db):
+    def buttons(doors, first_token):
+        bridge = HaBridge(dataclasses.replace(settings, door_token=first_token), EventMonitor(prefix="x"), db, doors)
+        return {
+            o: c["payload_press"] for _, o, c in bridge._entities() if o.startswith("apri_porta") and "lungo" not in o
+        }
+
+    ingresso = {"id": 1, "door_token": "porta", "name": "Ingresso", "ha_buttons": True}
+    cantina = {"id": 2, "door_token": "porta2", "name": "Cantina", "ha_buttons": True}
+    assert buttons([ingresso, cantina], "porta") == {"apri_porta": "apri", "apri_porta_2": "apri:porta2"}
+    # Controller tolto e aggiunto con le porte in un altro ordine: Apri Porta apre ancora l'ingresso
+    readded = [{**cantina, "id": 3}, {**ingresso, "id": 4}]
+    assert buttons(readded, "porta2") == {"apri_porta": "apri:porta", "apri_porta_3": "apri:porta2"}
+    # Token nuovo dal Ripristino Completo: stessa porta
+    db.replace_token("porta", "Axis-nuovo")
+    assert buttons([{**ingresso, "door_token": "Axis-nuovo"}], "Axis-nuovo") == {"apri_porta": "apri"}
+    # Porta tolta dall'app: i vecchi identificativi non passano a un'altra porta
+    assert buttons([cantina], "porta2") == {"apri_porta_2": "apri:porta2"}
+
+
 async def test_controller_and_door_condition_entities(bridge):
     client = FakeClient()
     monitor = bridge.monitor
@@ -181,3 +204,58 @@ async def test_renaming_an_input_republishes_only_input_entities(bridge, db, mon
     # Niente riconnessione: lo stato della porta e le altre entità non passano da "sconosciuto"
     assert len(sent) == 4 and all("/ingresso_" in topic for topic, _ in sent)
     assert ("homeassistant/binary_sensor/axis_access_manager/ingresso_aux_2/config", "Pulsante Magazzino") in sent
+
+
+async def test_stale_discovery_configs_are_cleared(db, settings, monkeypatch):
+    # Seconda porta tolta dall'app: le sue entità conservate dal broker si svuotano alla connessione
+    monitor = EventMonitor(prefix="accessi/x", door_token="porta")
+    HaBridge(settings, monitor, db, [{"id": 1, "door_token": "porta", "name": "Porta", "ha_buttons": True}])
+    sent = []
+
+    async def publish(topic, payload, retain=False):
+        sent.append((topic, payload, retain))
+        return True
+
+    monkeypatch.setattr(monitor, "publish", publish)
+    handler = monitor.extra_subscriptions["homeassistant/+/axis_access_manager/+/config"]
+    handler("homeassistant/button/axis_access_manager/apri_porta_2/config", b"{}", True)
+    handler("homeassistant/sensor/axis_access_manager/stato_porta_2/config", b"{}", True)
+    handler("homeassistant/button/axis_access_manager/apri_porta/config", b"{}", True)
+    # Pubblicate adesso (non conservate) o già vuote: niente da fare
+    handler("homeassistant/button/axis_access_manager/apri_porta_3/config", b"{}", False)
+    handler("homeassistant/button/axis_access_manager/apri_porta_4/config", b"", True)
+    await asyncio.sleep(0)
+    assert sorted(sent) == [
+        ("homeassistant/button/axis_access_manager/apri_porta_2/config", b"", True),
+        ("homeassistant/sensor/axis_access_manager/stato_porta_2/config", b"", True),
+    ]
+
+
+async def test_device_and_topics_stay_stable(db, settings, monkeypatch):
+    first = HaBridge(settings, EventMonitor(prefix="accessi/x", door_token="porta"), db)
+    device = first._device()["identifiers"]
+    # Token della prima porta cambiato: stesso dispositivo in Home Assistant
+    other = HaBridge(dataclasses.replace(settings, door_token="nuova"), EventMonitor(prefix="accessi/x"), db)
+    assert other._device()["identifiers"] == device == ["axis_access_manager_porta"]
+    # Stesso prefisso del controller: lo stato non può finire sul topic online/offline del controller
+    same = HaBridge(settings, EventMonitor(prefix="axis_access_manager"), db)
+    assert same.state_topic == "axis_access_manager/ha/stato"
+    assert HaBridge(settings, EventMonitor(prefix="accessi"), db).state_topic == "axis_access_manager/stato"
+    assert topic_base("accessi/eventi", "accessi") == "axis_access_manager"
+    # Allo spegnimento le entità diventano non disponibili: il broker scarta il messaggio di addio
+    sent = []
+
+    async def publish(topic, payload, retain=False):
+        sent.append((topic, payload, retain))
+        return True
+
+    monkeypatch.setattr(first.monitor, "publish", publish)
+    first.start()
+    await first.stop()
+    assert sent == [("axis_access_manager/disponibile", "offline", True)]
+    assert first._midnight is None
+
+
+def test_seconds_to_midnight():
+    noon = time.mktime((2026, 6, 10, 12, 0, 0, 0, 0, -1))
+    assert seconds_to_midnight(noon) == 12 * 3600 + 1

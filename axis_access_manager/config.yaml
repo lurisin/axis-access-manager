@@ -1,5 +1,5 @@
 name: Axis Access Manager
-version: "0.21.7"
+version: "0.22.0"
 slug: axis_access_manager
 description: Gestione tessere e controllo accessi per il controller Axis A1210
 url: https://github.com/lurisin/axis-access-manager
@@ -19,6 +19,10 @@ services:
   - mqtt:want
 # Copia coerente del database subito prima di ogni backup di Home Assistant
 backup_pre: python3 /opt/axis_access_manager/app/backup_copy.py
+# Fuori dal backup di Home Assistant: le copie prima degli aggiornamenti e i database danneggiati servono solo sul posto
+backup_exclude:
+  - copie_database/*
+  - "*_danneggiato_*"
 options:
   event_retention_days: 365
   ha_integration: true

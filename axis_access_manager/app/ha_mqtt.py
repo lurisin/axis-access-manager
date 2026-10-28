@@ -3,20 +3,32 @@ ultimo accesso, pulsanti, eventi."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import logging
+import time
+from datetime import datetime, timedelta
 
 import aiomqtt
 
-from .config import Settings
+from .config import DEFAULT_HA_TOPIC_PREFIX, Settings
 from .db import Database, local_day_start
 from .events import EventMonitor
+from .ha import BUTTON_COMMAND
 from .programming import CONTROLLER_INPUTS, REX_ROLES
 
 _LOGGER = logging.getLogger(__name__)
 
 DISCOVERY_PREFIX = "homeassistant"
 NODE_ID = "axis_access_manager"
+# Identificativo del dispositivo in Home Assistant, salvato al primo avvio: non cambia con il token della porta
+DEVICE_ID_SETTING = "ha_device_id"
+# Porta che ha gli identificativi delle versioni precedenti (apri_porta, stato_porta...): token della porta sul
+# controller, salvato alla prima pubblicazione. Se la porta si toglie, quegli identificativi non passano a un'altra
+LEGACY_DOOR_SETTING = "ha_legacy_door"
+# Allo spegnimento: tempo massimo per dire a Home Assistant che le entità non sono più disponibili
+OFFLINE_TIMEOUT = 2
 
 DOOR_MODES = {
     "Locked": "Bloccata",
@@ -91,7 +103,7 @@ def _anonymous_denied(row: dict) -> bool:
 
 
 def parse_command(command: str) -> tuple[bool, str] | None:
-    """Comando dei pulsanti: "apri" o "apri_lungo", seguito da ":<porta>" per le porte oltre la prima."""
+    """Comando dei pulsanti: "apri" o "apri_lungo", seguito da ":<porta>" (senza, la porta di HaBridge.legacy_door)."""
     action, _, door = command.partition(":")
     if action not in COMMANDS:
         return None
@@ -111,6 +123,35 @@ def on_off(value: bool | None) -> str:
     return "None" if value is None else "ON" if value else "OFF"
 
 
+def topic_base(prefix: str, controller_prefix: str) -> str:
+    """Prefisso dei topic delle entità che non finisce tra quelli letti dal controller.
+
+    Con lo stesso prefisso lo stato delle entità finirebbe su <prefisso>/stato, il topic online/offline del
+    controller: il controller sembrerebbe offline e lo stato si ripubblicherebbe senza fine.
+    """
+    for base in (prefix, DEFAULT_HA_TOPIC_PREFIX):
+        if not _overlaps(base, controller_prefix):
+            return base
+    # Il controller usa proprio il prefisso predefinito
+    return f"{DEFAULT_HA_TOPIC_PREFIX}/ha"
+
+
+def _overlaps(base: str, controller_prefix: str) -> bool:
+    if not controller_prefix:
+        return False
+    filters = (f"{controller_prefix}/stato", f"{controller_prefix}/eventi/#")
+    topics = [f"{base}/{name}" for name in ("disponibile", "stato", "ultimo", "evento", "comando")]
+    return any(aiomqtt.Topic(topic).matches(f) for topic in topics for f in filters)
+
+
+def seconds_to_midnight(now: float | None = None) -> float:
+    """Secondi alla prossima mezzanotte locale (giusti anche nei giorni del cambio d'ora), più un secondo."""
+    now = time.time() if now is None else now
+    day = datetime.fromtimestamp(now).date() + timedelta(days=1)
+    midnight = time.mktime((day.year, day.month, day.day, 0, 0, 0, 0, 0, -1))
+    return max(midnight - now, 0) + 1
+
+
 class HaBridge:
     def __init__(
         self, settings: Settings, monitor: EventMonitor, db: Database, doors: list[dict] | None = None
@@ -118,21 +159,33 @@ class HaBridge:
         self.settings = settings
         self.monitor = monitor
         self.db = db
-        # Porte configurate nell'app: la prima mantiene gli identificativi delle versioni precedenti
+        # Porte configurate nell'app: una tiene gli identificativi delle versioni precedenti (legacy_door)
         self.doors = (
             doors
             if doors is not None
             else [{"id": 0, "door_token": settings.door_token, "name": "Porta", "ha_buttons": settings.ha_door_buttons}]
         )
-        base = settings.ha_topic_prefix
+        base = topic_base(settings.ha_topic_prefix, monitor.prefix)
+        if base != settings.ha_topic_prefix:
+            _LOGGER.warning(
+                "Il prefisso MQTT di Home Assistant (%s) si sovrappone a quello del controller (%s): uso %s",
+                settings.ha_topic_prefix,
+                monitor.prefix,
+                base,
+            )
+        self.topic_prefix = base
         self.availability_topic = f"{base}/disponibile"
         self.state_topic = f"{base}/stato"
         self.last_topic = f"{base}/ultimo"
         self.event_topic = f"{base}/evento"
         self.command_topic = f"{base}/comando"
-        # Dal registro, così dopo un riavvio il sensore non torna a "nessuno"
+        # Dal registro, così dopo un riavvio il sensore non torna a "Nessuno"
         last = [r for r in db.list_events(kind=",".join(ACCESS_KINDS), limit=20) if not _anonymous_denied(r)]
         self.last_access: dict = access_payload(last[0]) if last else {}
+        # Configurazioni conservate dal broker, ricevute a ogni connessione: si svuotano quelle di entità tolte
+        monitor.extra_subscriptions[f"{DISCOVERY_PREFIX}/+/{NODE_ID}/+/config"] = self._on_discovery_config
+        self._tasks: set[asyncio.Task] = set()
+        self._midnight: asyncio.Task | None = None
 
     @property
     def enabled(self) -> bool:
@@ -147,9 +200,30 @@ class HaBridge:
             return None
         return aiomqtt.Will(self.availability_topic, "offline", qos=1, retain=True)
 
+    def _device_id(self) -> str:
+        """Fino alla 0.21 era legato al token della prima porta: con un token nuovo (porta cambiata in Impianti,
+        token rifiutato da un controller sostituito) Home Assistant creava un secondo dispositivo. Ora si salva
+        la prima volta, con il valore di prima, e non cambia più."""
+        device_id = self.db.get_setting(DEVICE_ID_SETTING)
+        if not device_id:
+            device_id = f"{NODE_ID}_{self.settings.door_token or 'porta'}"
+            self.db.set_setting(DEVICE_ID_SETTING, device_id)
+        return device_id
+
+    def legacy_door(self) -> str:
+        """Token della porta con gli identificativi di sempre ("" se nessuna porta dell'app lo ha più).
+
+        Fino alla 0.21 li aveva la prima porta dell'elenco: con un controller tolto e aggiunto di nuovo, con le porte
+        in un altro ordine, il pulsante Apri Porta di Home Assistant apriva un'altra porta."""
+        saved = self.db.get_setting(LEGACY_DOOR_SETTING)
+        if not saved and self.doors and self.doors[0]["door_token"]:
+            saved = self.doors[0]["door_token"]
+            self.db.set_setting(LEGACY_DOOR_SETTING, saved)
+        return saved if any(d["door_token"] == saved for d in self.doors) else ""
+
     def _device(self) -> dict:
         return {
-            "identifiers": [f"{NODE_ID}_{self.settings.door_token or 'porta'}"],
+            "identifiers": [self._device_id()],
             "name": "Controllo Accessi",
             "manufacturer": "Axis Access Manager",
             "model": "Axis A1210",
@@ -180,17 +254,12 @@ class HaBridge:
         entities = [
             (
                 "sensor",
-                "stato_porta",
-                {**state, "name": "Stato Porta", "icon": "mdi:door", "value_template": "{{ value_json.porta }}"},
-            ),
-            (
-                "sensor",
                 "ultimo_accesso",
                 {
                     "name": "Ultimo Accesso",
                     "icon": "mdi:card-account-details",
                     "state_topic": self.last_topic,
-                    "value_template": "{{ value_json.persona or value_json.tessera or 'nessuno' }}",
+                    "value_template": "{{ value_json.persona or value_json.tessera or 'Nessuno' }}",
                     "json_attributes_topic": self.last_topic,
                 },
             ),
@@ -239,7 +308,7 @@ class HaBridge:
                 "controller_online",
                 {
                     **state,
-                    "name": "Controller Online",
+                    "name": "Controller Collegato al Broker",
                     "device_class": "connectivity",
                     "entity_category": "diagnostic",
                     "value_template": "{{ value_json.controller.online }}",
@@ -291,24 +360,27 @@ class HaBridge:
                 },
             ),
         ]
-        for index, door in enumerate(self.doors):
-            # Prima porta: nomi e identificativi di sempre; le altre hanno il loro nome e id
-            suffix, label, extra = (
-                ("", "Porta", "") if index == 0 else (f"_{door['id']}", door["name"], f":{door['door_token']}")
-            )
-            if index:
-                entities.append(
-                    (
-                        "sensor",
-                        f"stato_porta{suffix}",
-                        {
-                            **state,
-                            "name": f"Stato {label}",
-                            "icon": "mdi:door",
-                            "value_template": f"{{{{ value_json.porte['{door['door_token']}'] }}}}",
-                        },
-                    )
+        legacy = self.legacy_door()
+        for door in self.doors:
+            # Porta con gli identificativi di sempre: nomi e id delle versioni precedenti. Le altre hanno il loro
+            # nome e il loro id, che non passa mai a un'altra porta. Il comando senza porta va a quella di sempre.
+            if legacy and door["door_token"] == legacy:
+                suffix, label = "", "Porta"
+                extra = "" if door["door_token"] == self.settings.door_token else f":{door['door_token']}"
+            else:
+                suffix, label, extra = f"_{door['id']}", door["name"], f":{door['door_token']}"
+            entities.append(
+                (
+                    "sensor",
+                    f"stato_porta{suffix}",
+                    {
+                        **state,
+                        "name": f"Stato {label}",
+                        "icon": "mdi:door",
+                        "value_template": f"{{{{ value_json.porte['{door['door_token']}'] }}}}",
+                    },
                 )
+            )
             # Bloccata (spento) o sbloccata (acceso): nelle dashboard prende il lucchetto
             entities.append(
                 (
@@ -363,6 +435,7 @@ class HaBridge:
                         "icon": "mdi:door-open",
                         "command_topic": self.command_topic,
                         "payload_press": f"apri{extra}",
+                        **self._command_attribute(f"apri{extra}"),
                     },
                 ),
                 (
@@ -373,6 +446,7 @@ class HaBridge:
                         "icon": "mdi:door-open",
                         "command_topic": self.command_topic,
                         "payload_press": f"apri_lungo{extra}",
+                        **self._command_attribute(f"apri_lungo{extra}"),
                     },
                 ),
             ]
@@ -381,6 +455,14 @@ class HaBridge:
             config = {**common, **config, "unique_id": f"{NODE_ID}_{object_id}"}
             result.append((component, object_id, config))
         return result
+
+    def _command_attribute(self, command: str) -> dict:
+        """Il comando del pulsante come attributo in Home Assistant: dice chi ha premuto proprio quel pulsante."""
+        attributes = json.dumps({BUTTON_COMMAND: command})
+        return {
+            "json_attributes_topic": self.state_topic,
+            "json_attributes_template": f"{{{{ {attributes} | tojson }}}}",
+        }
 
     def _all_object_ids(self) -> list[tuple[str, str]]:
         ids = [(c, o) for c, o, _ in self._entities()]
@@ -405,6 +487,53 @@ class HaBridge:
         await self._publish_state(client)
         await client.publish(self.last_topic, json.dumps(self._last_payload()), qos=1, retain=True)
         _LOGGER.info("Entità pubblicate in Home Assistant (MQTT Discovery)")
+
+    def _on_discovery_config(self, topic: str, payload: bytes, retained: bool = False) -> None:
+        """Configurazione conservata dal broker, ricevuta alla connessione. Se l'entità non c'è più (porta tolta
+        dall'app, pulsanti spenti, integrazione disattivata) si svuota, così sparisce anche da Home Assistant."""
+        parts = topic.split("/")
+        if not retained or not payload or len(parts) != 5:
+            return
+        current = {(c, o) for c, o, _ in self._entities()} if self.enabled else set()
+        if (parts[1], parts[3]) in current:
+            return
+        _LOGGER.info("Entità tolta da Home Assistant: %s", parts[3])
+        task = asyncio.get_running_loop().create_task(self.monitor.publish(topic, b"", retain=True))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def start(self) -> None:
+        """Avvia la ripubblicazione dello stato a mezzanotte; si ferma con stop()."""
+        if self.enabled and self._midnight is None:
+            self._midnight = asyncio.get_running_loop().create_task(self._midnight_loop())
+
+    async def stop(self, offline: bool = True) -> None:
+        """Da chiamare prima di chiudere la connessione al broker (spegnimento o nuova configurazione).
+
+        Con una chiusura ordinata il broker scarta il messaggio di addio: "offline" si pubblica qui, altrimenti in
+        Home Assistant le entità resterebbero disponibili con l'ultimo stato. offline=False quando la nuova
+        configurazione si ricollega subito con le stesse entità: non diventano non disponibili per un attimo.
+        """
+        if self._midnight is not None:
+            self._midnight.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._midnight
+            self._midnight = None
+        if not self.enabled or not offline:
+            return
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(
+                self.monitor.publish(self.availability_topic, "offline", retain=True), OFFLINE_TIMEOUT
+            )
+
+    async def _midnight_loop(self) -> None:
+        """Accessi Oggi e Accessi Negati Oggi tornano a zero a mezzanotte, anche senza eventi né sincronizzazioni."""
+        while True:
+            await asyncio.sleep(seconds_to_midnight())
+            try:
+                await self.publish_state()
+            except Exception:
+                _LOGGER.exception("Stato di mezzanotte non pubblicato in Home Assistant")
 
     async def publish_input_names(self) -> None:
         """Ripubblica solo le entità degli ingressi, con il nome scelto nell'app: le altre restano com'erano."""

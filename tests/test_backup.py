@@ -133,6 +133,20 @@ async def test_damaged_part_is_detected(plant):
         plant.backups.load(manifest["id"])
 
 
+async def test_damaged_compressed_stream_is_detected_and_repaired(plant):
+    # Un byte cambiato nel flusso compresso dà zlib.error, non BadGzipFile: create() e verify() andavano in eccezione
+    manifest = await plant.backup()
+    path = plant.backups.store.parts / f"{manifest['parts'][COMMON]['hash']}.json.gz"
+    data = path.read_bytes()
+    path.write_bytes(data[:10] + b"\x07" + data[11:])
+
+    with pytest.raises(BackupError, match="rovinato"):
+        plant.backups.load(manifest["id"])
+    assert (await plant.backups.verify_now())["damaged"] == 1
+    assert await plant.backup("automatico", skip=True) is None
+    assert path.read_bytes() == data and (await plant.backups.verify_now())["ok"]
+
+
 async def test_unreachable_controller_makes_an_incomplete_backup(plant, controller, db):
     first = await plant.backup()
     controller.offline = True
@@ -144,8 +158,8 @@ async def test_unreachable_controller_makes_an_incomplete_backup(plant, controll
     assert "non risponde" in manifest["errors"][0]
     error = plant.backups.last_error()
     items = NotificationService(db).collect(
-        mqtt_configured=False,
-        mqtt_connected=False,
+        mqtt_configured=True,
+        mqtt_connected=True,
         controller_configured=True,
         controller_online=None,
         sync={},
@@ -212,15 +226,18 @@ async def test_restore_changed_person_and_leave_new_ones(plant, controller, db):
 
     items, result = await plant.restore(backup["id"], ["persone"])
 
-    by_label = {i["label"]: i for i in items}
+    by_label = {i["label"]: i for i in items if i["key"].startswith("persona")}
     assert by_label["Anna"]["action"] == "riporta" and by_label["Anna"]["default"] is True
     labels = [c["label"] for c in by_label["Anna"]["changes"]]
-    assert labels == ["Nome", "Ditta o Reparto", "Tessera 04aa: stato", "Tessera 04bb"]
+    assert labels == ["Nome", "Ditta o Reparto", "Tessera 04aa: stato"]
+    # La tessera aggiunta dopo il backup ha la sua riga, non spuntata
+    new_card = next(i for i in items if i["key"] == "tessera-nuova:04bb")
+    assert new_card["action"] == "togli" and new_card["default"] is False
     assert by_label["Bruno"]["action"] == "togli" and by_label["Bruno"]["default"] is False
     assert not result["failed"]
     restored = db.get_person(anna["id"])
     assert restored["name"] == "Anna" and restored["company"] == ""
-    assert [(c["number"], c["enabled"]) for c in restored["cards"]] == [("04aa", True)]
+    assert [(c["number"], c["enabled"]) for c in restored["cards"]] == [("04aa", True), ("04bb", True)]
     assert controller.users[restored["axis_user_token"]]["Name"] == "Anna"
     assert db.get_person(bruno["id"]) is not None
 
@@ -258,6 +275,25 @@ async def test_restore_deleted_category_and_its_persons(plant, controller, db):
     person = db.get_person(anna["id"])
     assert person["category_id"] == category["id"]
     assert person["cards"][0]["access_profile"] == restored["group_token"]
+
+
+async def test_category_rules_on_doors_of_an_unread_controller(plant, controller, db):
+    # Senza la parte del controller le porte sembravano sparite: la riga era bloccata con un motivo sbagliato
+    rule = {"target": "door", "target_id": plant.scala, "schedule": "standard_always"}
+    category = await plant.rules.save_category(None, {"name": "Pulizie", "color": "teal", "rules": [rule]}, "admin")
+    backup = await plant.backup()
+    await plant.rules.delete_category(category["id"], "admin")
+    _, saved = plant.backups.load(backup["id"])
+    controller.offline = True
+    current, _ = await plant.backups.snapshot(plant.clients)
+    controller.offline = False
+
+    [item] = plan(saved, current, ["tipologie"], plant.controller_id)
+
+    assert item["action"] == "ricrea" and not item["blocked"] and "non risponde" in item["warnings"][0]
+    runtime = Runtime(db, plant.access, plant.rules, plant.programming, plant.controller_id)
+    assert not (await apply([item], [item["key"]], runtime, "admin"))["failed"]
+    assert db.all_category_rules()[category["id"]] == [rule]
 
 
 async def test_category_created_after_backup_is_offered_but_not_ticked(plant):
@@ -352,7 +388,7 @@ def test_backup_api_permissions_and_restore(client, controller):
     backups = client.get("/api/backups", headers=admin).json()["backups"]
     assert backups[0]["id"] == result["backup_before"] and backups[0]["kind_label"] == "Prima del Ripristino"
     # Con la data del backup di partenza: niente catene di nomi
-    assert backups[0]["name"].startswith("Prima del ripristino del backup del ")
+    assert backups[0]["name"].startswith("Prima del Ripristino del Backup del ")
     assert "Prima dei lavori" not in backups[0]["name"]
     actions = [a["action"] for a in client.get("/api/audit", headers=admin).json()]
     assert "ripristino da backup" in actions and "persona ricreata da backup" in actions
@@ -537,8 +573,8 @@ async def test_daily_verification_finds_damaged_backups(plant, db):
     assert not result["ok"] and result["damaged"] == 2
     assert result["errors"][0] == "indice 20260101-000000.json illeggibile"
     items = NotificationService(db).collect(
-        mqtt_configured=False,
-        mqtt_connected=False,
+        mqtt_configured=True,
+        mqtt_connected=True,
         controller_configured=True,
         controller_online=None,
         sync={},
@@ -546,7 +582,7 @@ async def test_daily_verification_finds_damaged_backups(plant, db):
         backup_verify=plant.backups.last_verify(),
     )
     assert [(i["title"], i["text"]) for i in items] == [
-        ("Backup Rovinati", "2 backup non si possono ripristinare: file mancanti o rovinati")
+        ("Backup Rovinati", "2 backup non si possono ripristinare: file mancanti o rovinati.")
     ]
 
 

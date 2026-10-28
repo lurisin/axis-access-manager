@@ -9,8 +9,11 @@ Si salvano solo i tipi scelti nelle impostazioni e quelle già viste.
 from __future__ import annotations
 
 import json
+import re
+import time
 from datetime import UTC, datetime, timedelta
 
+from .backup_copy import RESTORED
 from .db import Database
 from .service import ServiceError, plural
 
@@ -21,15 +24,30 @@ TYPES = {
         "Porta forzata, aperta troppo a lungo, manomissione del lettore o del controller.",
         "urgent",
     ),
-    "controller": ("Controller Non Raggiungibile", "Il controller è offline o non risponde all'add-on.", "urgent"),
-    "mqtt": ("Collegamento MQTT Perso", "L'add-on non riceve più gli eventi dal broker MQTT.", "urgent"),
+    "controller": (
+        "Controller Non Raggiungibile",
+        "Il controller non è raggiungibile o non risponde all'app.",
+        "urgent",
+    ),
+    "programming": (
+        "Porte Che Non Si Aprono",
+        "Punti di accesso che il controller non gestisce, pulsanti senza il permesso di apertura o ingressi rimasti "
+        "programmati a metà, per esempio dopo un reset del controller: la porta non si apre. Segnala anche "
+        "le tipologie non ancora aggiornate sul controller dopo una modifica a porte e aree.",
+        "urgent",
+    ),
+    "mqtt": (
+        "Collegamento MQTT Perso",
+        "L'app non riceve più gli eventi dal broker MQTT, oppure non c'è nessun broker MQTT.",
+        "urgent",
+    ),
     "unknown_card": ("Tessere Sconosciute", "Tessere non registrate passate sul lettore.", "urgent"),
     "denied": (
         "Accessi Negati",
         "Accessi negati a persone registrate: fuori fascia, porta non autorizzata, tessera scaduta.",
         "urgent",
     ),
-    "expiring": ("Tessere in Scadenza", "Persone con tessere che scadono nei prossimi tre giorni.", "urgent"),
+    "expiring": ("Tessere in Scadenza", "Persone con tessere che scadono nei prossimi 7 giorni.", "urgent"),
     "camera": ("Telecamere Non Disponibili", "L'ultima foto di una telecamera delle porte non è riuscita.", "urgent"),
     "controller_changed": (
         "Controller Cambiato",
@@ -38,8 +56,8 @@ TYPES = {
     ),
     "clock": (
         "Orologio Sbagliato",
-        "L'ora del controller o di Home Assistant è sbagliata di oltre un minuto. Se è quella del controller "
-        "le fasce orarie scattano all'ora sbagliata.",
+        "L'ora del controller o di Home Assistant è sbagliata di oltre un minuto, oppure il controller ha un fuso "
+        "orario diverso da Home Assistant. Se a sbagliare è il controller le fasce orarie scattano all'ora sbagliata.",
         "urgent",
     ),
     "backup": (
@@ -49,32 +67,57 @@ TYPES = {
         "urgent",
     ),
     "missing_cards": (
-        "Tessere Non Presenti Sul Controller",
+        "Tessere Non Presenti sul Controller",
         "Tessere che l'app conosce ma che sul controller non ci sono più: da riscrivere o togliere dall'app.",
+        "urgent",
+    ),
+    "database": (
+        "Database dell'Add-on",
+        "Database trovato danneggiato o mancante all'avvio, oppure copia del database per il backup di Home Assistant "
+        "non aggiornata.",
         "urgent",
     ),
 }
 # Guasti dell'impianto: restano finché non si risolvono, anche dopo la presa visione
-FAULT_TYPES = ("controller", "mqtt", "camera", "controller_changed", "clock", "missing_cards", "backup")
-# Tipi con nomi o eventi: permesso necessario per vederli
+FAULT_TYPES = (
+    "controller",
+    "programming",
+    "mqtt",
+    "camera",
+    "controller_changed",
+    "clock",
+    "missing_cards",
+    "backup",
+    "database",
+)
+# Tipi con nomi: permesso necessario per vederli. Gli allarmi delle porte li vede chi vede lo stato, eventi e
+# istantanee solo chi vede il registro.
 VISIBILITY = {
-    "door_alarm": "registro",
     "denied": "registro",
     "unknown_card": "persone",
     "expiring": "persone",
     "missing_cards": "persone",
     "backup": "backup",
+    "database": "backup",
 }
 # Attiva: compare in Da Gestire e conta sulla campanella. "info" (fino alla 0.13) vale come attiva.
 LEVELS = {"urgent": "Attiva", "off": "Disattivata"}
 OLD_LEVELS = {"info": "urgent"}
 RECENT = timedelta(hours=24)
-EXPIRING = timedelta(days=3)
+# Come il riquadro Tessere in Scadenza del cruscotto e l'etichetta In Scadenza in Persone
+EXPIRING = timedelta(days=7)
 GROUP_WINDOW = timedelta(minutes=5)
 MAX_EVENTS = 500
 SEVERITY_ORDER = {"crit": 0, "warn": 1, "low": 2}
 SETTING_LEVELS = "notifications"
 SETTING_SEEN = "notifications_seen"
+# Tipologie con il profilo sul controller ancora da aggiornare dopo una modifica a porte o aree ({"at", "error"}):
+# la scrive main._refresh_categories, che riprova dopo ogni sincronizzazione
+SETTING_CATEGORIES_PENDING = "categories_refresh_pending"
+# Dopo l'avvio i guasti tornano man mano (controllo dei controller, stato MQTT): fino ad allora le viste restano
+SETTLE = timedelta(minutes=5)
+# Id dei gruppi di eventi nelle versioni precedenti: g<primo evento>-<ultimo>
+OLD_GROUP_ID = re.compile(r"^g\d+-(\d+)$")
 
 
 def _parse(value: str) -> datetime | None:
@@ -86,8 +129,11 @@ def _parse(value: str) -> datetime | None:
 
 
 class NotificationService:
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, settle: timedelta = SETTLE) -> None:
         self.db = db
+        self.settled_at = time.monotonic() + settle.total_seconds()
+        # Avvio dell'app: ora del controllo del database
+        self.started_at = datetime.now(tz=UTC).isoformat(timespec="seconds")
 
     # Impostazioni
 
@@ -136,9 +182,14 @@ class NotificationService:
         missing: dict | None = None,
         backup: dict | None = None,
         backup_verify: dict | None = None,
+        db_recovery: str = "",
+        ha_copy_error: str = "",
         now: datetime | None = None,
     ) -> list[dict]:
-        """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente."""
+        """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente.
+
+        db_recovery: cosa ha fatto all'avvio il controllo del database (backup_copy.recover), "" se era sano.
+        ha_copy_error: perché l'ultima copia per il backup di Home Assistant non è stata aggiornata."""
         now = now or datetime.now(tz=UTC)
         levels = self.levels()
         since = (now - RECENT).astimezone(UTC).isoformat(timespec="seconds")
@@ -164,6 +215,10 @@ class NotificationService:
                         "snapshot": None,
                         "snapshot_error": "",
                         "link": "",
+                        # Quanto è grave il guasto: se cresce dopo la presa visione la notifica torna da gestire
+                        "weight": 0,
+                        # Guasto in corso: dopo la presa visione resta nella barra in alto finché non si risolve
+                        "fault": kind in FAULT_TYPES,
                         **extra,
                     }
                 )
@@ -180,9 +235,10 @@ class NotificationService:
         def add_group(kind: str, severity: str, title: str, text: str, group: list[dict], link: str = "") -> None:
             last = group[-1]
             shot = next((e for e in reversed(group) if e.get("snapshot")), None)
+            # Id dall'ultimo evento: resta lo stesso quando i primi escono dalle 24 ore, cambia con un nuovo tentativo
             add(
                 kind,
-                f"g{group[0]['id']}-{last['id']}",
+                f"g{last['id']}",
                 severity,
                 f"{title} ×{len(group)}" if len(group) > 1 else title,
                 text,
@@ -201,13 +257,26 @@ class NotificationService:
             )
 
         if controller_configured:
-            if mqtt_configured and not mqtt_connected:
+            if not mqtt_configured:
+                # Il broker si cerca di nuovo ogni minuto (main._wait_for_broker): la notifica sparisce da sola
+                add(
+                    "mqtt",
+                    "mqtt:none",
+                    "crit",
+                    "Nessun Broker MQTT",
+                    "Gli eventi del controller non arrivano all'app: registro e stato porta non si aggiornano. "
+                    "Installa l'add-on Mosquitto o imposta il broker nelle opzioni dell'add-on: l'app lo cerca di "
+                    "nuovo ogni minuto, senza riavvio.",
+                    now.isoformat(timespec="seconds"),
+                    link="#impianti/stato",
+                )
+            elif not mqtt_connected:
                 add(
                     "mqtt",
                     "mqtt",
                     "crit",
                     "Collegamento MQTT Perso",
-                    "Gli eventi del controller non arrivano all'add-on: registro e stato porta non si aggiornano.",
+                    "Gli eventi del controller non arrivano all'app: registro e stato porta non si aggiornano.",
                     now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
@@ -220,13 +289,14 @@ class NotificationService:
                     f"controller:{c['id']}",
                     "crit",
                     "Controller Non Raggiungibile",
-                    f"{c['name']} · {_capital(c.get('error') or 'non risponde')}",
+                    f"{c['name']} · {c.get('error') or 'non risponde'}",
                     c.get("checked_at") or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
-            reachable = bool(controllers) and not unreachable
+            # Solo con l'ultimo controllo riuscito: dopo il primo errore il controller potrebbe non rispondere
+            reachable = bool(controllers) and all(c.get("online") is True for c in controllers)
             if mqtt_connected and controller_online is False and reachable:
-                # Il controller risponde all'add-on ma non pubblica sul broker
+                # Il controller risponde all'app ma non pubblica sul broker
                 add(
                     "mqtt",
                     "mqtt:controller",
@@ -238,13 +308,13 @@ class NotificationService:
                     link="#impianti/stato",
                 )
             elif not unreachable and (sync.get("ok") is False or (controller_online is False and not controllers)):
-                detail = sync.get("error") if sync.get("ok") is False else "il controller risulta offline"
+                detail = sync.get("error") if sync.get("ok") is False else "il controller non è raggiungibile"
                 add(
                     "controller",
                     "controller",
                     "crit",
                     "Controller Non Raggiungibile",
-                    _capital(detail or ""),
+                    _sentence(detail or ""),
                     sync.get("at") or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
@@ -263,26 +333,57 @@ class NotificationService:
                 if c.get("unmanaged") and not c.get("unreachable"):
                     names = c["unmanaged"]
                     add(
-                        "controller",
+                        "programming",
                         f"unmanaged:{c['id']}",
                         "crit",
-                        "Punti di Accesso Non Gestiti",
-                        f"{c['name']} · {', '.join(names[:3])}{' e altri' if len(names) > 3 else ''}: il controller "
-                        "legge tessere e pulsanti ma non decide, la porta non si apre. Rimedia dalla programmazione",
+                        "Punto di Accesso Non Gestito" if len(names) == 1 else "Punti di Accesso Non Gestiti",
+                        f"{c['name']} · {_names(names)}: il controller legge tessere e pulsanti ma non decide, quindi "
+                        "la porta non si apre. Rimedia con Fai Gestire al Controller nella pagina del controller.",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link=f"#impianti/c{c['id']}",
+                        weight=len(names),
                     )
                 if c.get("rex_missing") and not c.get("unreachable"):
                     names = c["rex_missing"]
                     add(
-                        "controller",
+                        "programming",
                         f"rex:{c['id']}",
                         "crit",
-                        "Pulsanti Senza Permesso di Apertura",
-                        f"{c['name']} · {', '.join(names[:3])}{' e altri' if len(names) > 3 else ''}: il controller "
-                        "nega l'apertura, la porta non si apre. Rimedia dalla programmazione",
+                        "Pulsante Senza Permesso di Apertura"
+                        if len(names) == 1
+                        else "Pulsanti Senza Permesso di Apertura",
+                        f"{c['name']} · {_names(names)}: il controller nega l'apertura, quindi la porta non si apre. "
+                        "Rimedia con Dai il Permesso nella pagina del controller.",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link=f"#impianti/c{c['id']}",
+                        weight=len(names),
+                    )
+                if c.get("input_problems") and not c.get("unreachable"):
+                    # Scrittura rimasta a metà o oggetti tolti fuori dall'app: si ripara scrivendo di nuovo l'ingresso
+                    names = c["input_problems"]
+                    add(
+                        "programming",
+                        f"inputs:{c['id']}",
+                        "warn",
+                        "Ingresso da Riscrivere" if len(names) == 1 else "Ingressi da Riscrivere",
+                        f"{c['name']} · {_names(names)}: sul controller la programmazione non è quella salvata "
+                        "nell'app. Rimedia aprendo l'ingresso nella pagina del controller e premendo Scrivi sul "
+                        "Controller, anche con le stesse impostazioni.",
+                        c.get("checked_at") or now.isoformat(timespec="seconds"),
+                        link=f"#impianti/c{c['id']}",
+                        weight=len(names),
+                    )
+                if c.get("zone_differs") and not c.get("unreachable"):
+                    # Fasce orarie e festività sono scritte in ora locale del controller
+                    add(
+                        "clock",
+                        f"zone:{c['id']}",
+                        "warn",
+                        "Fuso Orario del Controller",
+                        f"{c['name']} · fuso orario {c.get('time_zone') or 'sconosciuto'}, diverso da quello di "
+                        f"Home Assistant ({c.get('ha_time_zone')}): le fasce orarie scattano all'ora sbagliata.",
+                        c.get("checked_at") or now.isoformat(timespec="seconds"),
+                        link=f"#impianti/c{c['id']}/stato",
                     )
                 offset = c.get("clock_offset")
                 if c.get("clock_fault") == "controller":
@@ -294,6 +395,7 @@ class NotificationService:
                         f"{c['name']} · {_offset_text(offset)} rispetto a Home Assistant, NTP non sincronizzato",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link="#impianti",
+                        weight=_offset_weight(offset),
                     )
                 elif c.get("clock_fault") == "home_assistant" and not ha_clock:
                     # Il controller è sincronizzato via NTP: è l'ora di Home Assistant a essere sbagliata
@@ -304,27 +406,48 @@ class NotificationService:
                         "low",
                         "Orologio di Home Assistant",
                         f"Home Assistant è {_offset_text(-offset)} rispetto a {c['name']}, "
-                        "che è sincronizzato via NTP: controlla il server NTP di Home Assistant",
+                        "che è sincronizzato via NTP: controlla il server NTP di Home Assistant.",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link="#impianti",
+                        weight=_offset_weight(offset),
                     )
+            pending = _json_dict(self.db.get_setting(SETTING_CATEGORIES_PENDING))
+            if pending is not None:
+                # Il controller applica ancora le righe di prima: chi doveva perdere una porta la apre ancora
+                error = str(pending.get("error") or "")
+                add(
+                    "programming",
+                    "categories",
+                    "crit",
+                    "Tipologie Non Aggiornate sul Controller",
+                    "Le ultime modifiche a porte e aree non sono ancora sul controller, che applica le tipologie "
+                    "com'erano prima. "
+                    + (f"{_sentence(error)} " if error else "")
+                    + "L'app riprova dopo ogni sincronizzazione con il controller.",
+                    str(pending.get("at") or "") or now.isoformat(timespec="seconds"),
+                    link="#persone/tipologie",
+                )
         if missing and missing.get("count"):
             add(
                 "missing_cards",
                 f"missing:{missing['since']}",
                 "crit" if missing.get("mass") else "warn",
-                "Tessere Non Presenti Sul Controller",
+                "Tessera Non Presente sul Controller"
+                if missing["count"] == 1
+                else "Tessere Non Presenti sul Controller",
                 (
                     f"{plural(missing['count'], 'tessera', 'tessere')} di "
                     f"{plural(missing['persons'], 'persona', 'persone')} "
                     + (
-                        "non è più sul controller: riscrivila o toglila dall'app"
+                        "non è più sul controller: riscrivila o toglila dall'app."
                         if missing["count"] == 1
-                        else "non sono più sul controller: riscrivile o toglile dall'app"
+                        else "non sono più sul controller: riscrivile o toglile dall'app."
                     )
                 ),
                 missing["since"],
                 link="#persone/mancanti",
+                # Altre tessere sparite dopo la presa visione (per esempio un reset): torna da gestire
+                weight=missing["count"],
             )
         if backup and backup.get("error"):
             # Con l'indice il backup c'è ma è incompleto; senza, non è stato salvato
@@ -333,7 +456,7 @@ class NotificationService:
                 f"backup:{backup.get('at') or ''}",
                 "warn",
                 "Backup Incompleto" if backup.get("id") else "Backup Non Riuscito",
-                _capital(backup["error"]),
+                _sentence(backup["error"]),
                 backup.get("at") or now.isoformat(timespec="seconds"),
                 link="#impianti/backup",
             )
@@ -344,14 +467,38 @@ class NotificationService:
                 "backup",
                 f"backup-verify:{backup_verify.get('at') or ''}",
                 "warn",
-                "Backup Rovinati",
+                "Backup Rovinato" if damaged == 1 else "Backup Rovinati",
                 (
-                    f"{damaged} backup non si possono ripristinare: file mancanti o rovinati"
+                    f"{damaged} backup non si possono ripristinare: file mancanti o rovinati."
                     if damaged != 1
-                    else "Un backup non si può ripristinare: file mancanti o rovinati"
+                    else "Un backup non si può ripristinare: file mancanti o rovinati."
                 ),
                 backup_verify.get("at") or now.isoformat(timespec="seconds"),
                 link="#impianti/backup",
+            )
+        if db_recovery:
+            restored = RESTORED in db_recovery
+            add(
+                "database",
+                # Un id per avvio: il database ripristinato di nuovo a un avvio successivo non risulta già visto
+                f"database:avvio:{self.started_at}",
+                "crit",
+                "Database Ripristinato dalla Copia" if restored else "Database Non Ripristinato",
+                _sentence(db_recovery),
+                self.started_at,
+                link="#impostazioni/generale",
+                # Ripristinato: è successo all'avvio e non c'è altro da fare, dopo la presa visione non resta
+                fault=not restored,
+            )
+        if ha_copy_error:
+            add(
+                "database",
+                "database:copia",
+                "warn",
+                "Copia per il Backup Non Aggiornata",
+                _sentence(ha_copy_error),
+                now.isoformat(timespec="seconds"),
+                link="#impostazioni/generale",
             )
         titles = {"allarme": "Allarme Porta", "manomissione": "Manomissione"}
         if levels["door_alarm"] != "off":
@@ -396,15 +543,20 @@ class NotificationService:
             )
         if levels["expiring"] != "off":
             for person in self.db.list_persons():
-                ends = [e for e in (_parse(c.get("valid_to") or "") for c in person["cards"]) if e]
+                ends = []
+                for card in person["cards"]:
+                    start, end = _parse(card.get("valid_from") or ""), _parse(card.get("valid_to") or "")
+                    # Come il cruscotto e In Scadenza in Persone: una tessera non ancora valida non è in scadenza
+                    if end and now < end <= now + EXPIRING and not (start and start > now):
+                        ends.append(end)
                 end = min(ends) if ends else None
-                if end and now < end <= now + EXPIRING:
+                if end:
                     add(
                         "expiring",
                         f"x{person['id']}:{end.isoformat()}",
                         "low",
                         "Tessera in Scadenza",
-                        f"{person['name']} · scade il {end.astimezone():%d/%m %H:%M}",
+                        f"{person['name']} · scade il {end.astimezone():%d/%m/%Y %H:%M}",
                         (end - EXPIRING).isoformat(timespec="seconds"),
                         person_id=person["id"],
                         link=f"#persone/{person['id']}",
@@ -415,27 +567,61 @@ class NotificationService:
 
     # Già viste
 
-    def seen(self) -> set[str]:
+    def seen(self) -> dict[str, int | None]:
+        """Notifiche viste, con il peso che avevano alla presa visione (None: viste quando il peso non si salvava)."""
         try:
-            return set(json.loads(self.db.get_setting(SETTING_SEEN) or "[]"))
+            saved = json.loads(self.db.get_setting(SETTING_SEEN) or "{}")
         except ValueError:
-            return set()
+            return {}
+        if isinstance(saved, list):
+            saved = dict.fromkeys(saved)
+        if not isinstance(saved, dict):
+            return {}
+        return {OLD_GROUP_ID.sub(r"g\1", str(k)): v if isinstance(v, int) else None for k, v in saved.items()}
+
+    def _still_seen(self, seen: dict[str, int | None], active: dict[str, dict]) -> dict[str, int | None]:
+        """Dimentica le viste che non ci sono più, così se il problema torna si rivede.
+
+        Appena avviato no: i guasti tornano solo dopo i primi controlli, e la presa visione andrebbe persa.
+        """
+        if time.monotonic() >= self.settled_at:
+            seen = {k: v for k, v in seen.items() if k in active}
+        # Viste senza peso: vale quello di adesso
+        return {k: active[k].get("weight", 0) if v is None and k in active else v for k, v in seen.items()}
+
+    def _save_seen(self, seen: dict[str, int | None]) -> None:
+        self.db.set_setting(SETTING_SEEN, json.dumps(dict(sorted(seen.items()))))
 
     def mark_seen(self, ids: list[str], current: list[dict]) -> None:
-        """Segna come viste; dimentica quelle che non ci sono più, così se il problema torna si rivede."""
-        active = {i["id"] for i in current}
-        seen = (self.seen() | set(ids)) & active
-        self.db.set_setting(SETTING_SEEN, json.dumps(sorted(seen)))
+        """Segna come viste con il peso di adesso: se poi il guasto peggiora, la notifica torna da gestire."""
+        active = {i["id"]: i for i in current}
+        seen = self._still_seen(self.seen(), active)
+        for item_id in ids:
+            if item_id in active:
+                seen[item_id] = max(seen.get(item_id) or 0, active[item_id].get("weight", 0))
+        self._save_seen(seen)
 
     def listing(self, current: list[dict], perms: set[str] | None = None) -> dict:
         """Notifiche per un utente: nomi, tessere ed eventi solo a chi ha il permesso di vederli."""
-        seen = self.seen()
-        active = {i["id"] for i in current}
-        if seen - active:
-            seen &= active
-            self.db.set_setting(SETTING_SEEN, json.dumps(sorted(seen)))
+        saved = self.seen()
+        active = {i["id"]: i for i in current}
+        seen = self._still_seen(saved, active)
+        if seen != saved:
+            self._save_seen(seen)
         hidden = {k for k, perm in VISIBILITY.items() if perms is not None and perm not in perms}
-        items = [{**i, "seen": i["id"] in seen} for i in current if i["type"] not in hidden]
+        no_log = perms is not None and "registro" not in perms
+        items = []
+        for i in current:
+            if i["type"] in hidden:
+                continue
+            item = {
+                **i,
+                "seen": i["id"] in seen and i.get("weight", 0) <= (seen[i["id"]] or 0),
+                "fault": i.get("fault", i["type"] in FAULT_TYPES),
+            }
+            if no_log:
+                item.update(events=[], event=None, snapshot=None)
+            items.append(item)
         return {
             "items": items,
             "open": sum(1 for i in items if not i["seen"]),
@@ -455,8 +641,35 @@ def _offset_text(seconds: float) -> str:
     return f"{round(value)} s {way}"
 
 
+def _offset_weight(seconds: float | None) -> int:
+    """Peso dello scarto dell'orologio: oltre 10 minuti e oltre un'ora la notifica vista torna da gestire."""
+    value = abs(seconds or 0)
+    return 2 if value >= 3600 else 1 if value >= 600 else 0
+
+
+def _json_dict(value: str | None) -> dict | None:
+    """Impostazione salvata come oggetto JSON; None se è vuota, {} se non si legge."""
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _names(names: list[str]) -> str:
+    return f"{', '.join(names[:3])}{' e altri' if len(names) > 3 else ''}"
+
+
 def _capital(text: str) -> str:
     return text[:1].upper() + text[1:]
+
+
+def _sentence(text: str) -> str:
+    """Messaggio del server come frase a sé: maiuscola iniziale e punto finale."""
+    text = _capital(text.strip())
+    return text if not text or text.endswith((".", "!", "?")) else text + "."
 
 
 def _groups(events: list[dict], key) -> list[list[dict]]:

@@ -98,7 +98,7 @@ async def test_removing_an_object_without_configuration_is_fine():
     def refused(request):
         return httpx.Response(400, json={"Fault": "env:Sender", "FaultCode": "ter:InvalidArgVal"})
 
-    with pytest.raises(VapixError, match="errore 400"):
+    with pytest.raises(VapixError, match=r"rifiutato la richiesta \(valore non accettato\)"):
         await client_with(refused).remove_idpoint("lettore-x")
 
 

@@ -35,7 +35,7 @@ REPEATED = {
     "negato": "più pressioni",
     "manomissione": "ripetuta",
 }
-INPUT_TERMINALS = {"REX": "REX", "IO1": "Aux 1", "IO2": "Aux 2"}
+INPUT_TERMINALS = {"REX": "REX", "IO1": "AUX 1", "IO2": "AUX 2"}
 DENIED_REASONS = {
     "CredentialNotEnabled": "tessera sospesa",
     "CredentialNotActive": "tessera non ancora valida",
@@ -46,7 +46,7 @@ DENIED_REASONS = {
     "NotPermittedAtThisTime": "fuori fascia oraria",
     "InvalidPIN": "PIN errato",
     "AntipassbackViolation": "passaggio ripetuto (antipassback)",
-    "Other": "rifiutata dal controller",
+    "Other": "negato dal controller",
 }
 
 DOOR_ALARMS = {
@@ -120,13 +120,22 @@ def normalize_name(value: str) -> str:
 
 
 def user_token_for(name: str, now: datetime | None = None) -> str:
-    """Stessa convenzione degli script di Home Assistant: utente_<nome>_<aammgghhmmss>."""
+    """Stessa convenzione degli script di Home Assistant: utente_<nome>_<aammgghhmmss>.
+    Non è per forza unico: per un utente nuovo AccessService lo controlla e, se serve, aggiunge _2, _3..."""
     ascii_name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
     slug = re.sub(r"[^a-z0-9]+", "_", ascii_name.lower()).strip("_")[:30] or "senza_nome"
     return f"utente_{slug}_{(now or datetime.now()).strftime('%y%m%d%H%M%S')}"
 
 
-USER_TOKEN = re.compile(r"utente_([a-z0-9_]+)_\d{12}")
+USER_TOKEN = re.compile(r"utente_([a-z0-9_]+)_\d{12}(?:_\d+)?")
+
+
+def local_time(value: str) -> str:
+    """Data e ora di Axis (in UTC) nell'ora locale, per i testi: 31/12/2026 23:59."""
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().strftime("%d/%m/%Y %H:%M")
+    except ValueError:
+        return value
 
 
 def event_ref(kind: str, door: str, card: str = "", detail: str = "") -> str:
@@ -146,7 +155,8 @@ def event_ref(kind: str, door: str, card: str = "", detail: str = "") -> str:
 def normalize_text(value: str | None, limit: int, label: str) -> str:
     text = (value or "").strip()
     if len(text) > limit:
-        raise ServiceError(f"{label} troppo lungo (massimo {limit} caratteri)")
+        # Senza accordo con l'etichetta, che può essere maschile o femminile ("descrizione")
+        raise ServiceError(f"{label} oltre il limite di {limit} caratteri")
     return text
 
 
@@ -183,8 +193,11 @@ class AccessService:
         self._tasks: set[asyncio.Task] = set()
         # Ultimi esiti del controller: lo stesso diniego arriva su più topic e va registrato una volta
         self._recent_decisions: deque[tuple] = deque(maxlen=20)
-        # Punto di accesso → porta, per sapere a quale porta si riferisce un evento
+        # Punto di accesso → porta e lettore → porta, per sapere a quale porta si riferisce un evento
         self.access_point_doors: dict[str, str] = {}
+        self.idpoint_doors: dict[str, str] = {}
+        # Un'apertura per volta per porta: il controllo "bloccata" e il comando non si accavallano
+        self._door_locks: dict[str, asyncio.Lock] = {}
         # Durante il recupero dal registro del controller: eventi segnati come recuperati, e quanti
         self._recovering = False
         self._recovered = 0
@@ -226,7 +239,9 @@ class AccessService:
         row.pop("raw", None)
         if self.after_event:
             self._spawn(self.after_event(row))
-        self._changed()
+        if not self._recovering:
+            # Nel recupero Home Assistant si aggiorna una volta per pagina, non per ognuna delle migliaia di righe
+            self._changed()
         return row
 
     # Sincronizzazione
@@ -247,48 +262,64 @@ class AccessService:
             names = {u.get("token"): (u.get("Name") or "").strip() for u in users}
             seen_cards: set[str] = set()
             added = 0
-            for credential in credentials:
-                token = credential.get("token") or ""
-                number = card_of_credential(credential)
-                if not token or not number:
-                    continue
-                user_token = credential.get("UserToken") or f"credenziale:{token}"
-                name = names.get(user_token) or (credential.get("Description") or "").strip() or "(Senza nome)"
-                person = self.db.person_by_user_token(user_token)
-                if person is None:
-                    person_id = self.db.add_person(name, user_token)
-                else:
-                    person_id = person["id"]
-                    if person["name"] != name:
-                        self.db.rename_person(person_id, name)
-                enabled = bool(credential.get("Enabled", True))
-                access = access_of_credential(credential)
-                existing = self.db.card_by_token(token)
-                if existing is None:
-                    other = self.db.card_by_number(number)
-                    if other is not None:
-                        self.db.delete_card(other["id"])
-                    self.db.add_card(person_id, number, token, enabled, access)
-                    added += 1
-                else:
-                    self.db.update_card(
-                        existing["id"], person_id=person_id, number=number, enabled=enabled, access=access
-                    )
-                seen_cards.add(token)
-            # Tessere sparite dal controller: mai cancellate da sole. Si segnano e decide l'utente
-            # (riscriverle o toglierle dall'app): un controller resettato o sostituito non svuota l'anagrafica.
-            cards = self.db.all_cards()
-            missing = [c for c in cards if c["axis_credential_token"] not in seen_cards]
-            new_missing = [c["id"] for c in missing if not c["missing_since"]]
-            if new_missing:
-                self.db.mark_cards_missing(new_missing, now_iso())
-                _LOGGER.warning("%s tessere non sono più sul controller: segnate, non cancellate", len(new_missing))
-            for person in self.db.all_persons():
-                if not self.db.cards_of(person["id"]):
-                    self.db.delete_person(person["id"])
+            # Una scrittura per tessera cambiata e un solo commit: con centinaia di tessere su una scheda SD
+            # un commit per riga fermava l'add-on (comandi di apertura compresi) per secondi
+            with self.db.batch():
+                for credential in credentials:
+                    token = credential.get("token") or ""
+                    number = card_of_credential(credential)
+                    if not token or not number:
+                        continue
+                    existing = self.db.card_by_token(token)
+                    holder = str(credential.get("UserToken") or "")
+                    user_token = holder or f"credenziale:{token}"
+                    person = self.db.person_by_user_token(user_token)
+                    if person is None and existing is not None and (not holder or holder.startswith("credenziale:")):
+                        # Tessera senza utente già nota: resta alla sua persona. Succede a chi era stato letto da
+                        # una tessera senza utente e ne ha ricevuto uno dall'app, se la tessera non è ancora passata
+                        # all'utente nuovo: senza, diventava una persona nuova e l'originale spariva
+                        person_id = existing["person_id"]
+                    else:
+                        name = names.get(user_token) or (credential.get("Description") or "").strip() or "(Senza nome)"
+                        if person is None:
+                            person_id = self.db.add_person(name, user_token)
+                        else:
+                            person_id = person["id"]
+                            if person["name"] != name:
+                                self.db.rename_person(person_id, name)
+                    enabled = bool(credential.get("Enabled", True))
+                    access = access_of_credential(credential)
+                    if existing is None:
+                        other = self.db.card_by_number(number)
+                        if other is not None:
+                            self.db.delete_card(other["id"])
+                        self.db.add_card(person_id, number, token, enabled, access)
+                        added += 1
+                    elif self._card_changed(existing, person_id, number, enabled, access):
+                        if number != existing["number"]:
+                            # Numero passato a questa tessera da un'altra (tessera riassegnata sul controller):
+                            # l'altra, rimasta nell'app come non presente, se ne va come per una tessera nuova
+                            other = self.db.card_by_number(number)
+                            if other is not None and other["id"] != existing["id"]:
+                                self.db.delete_card(other["id"])
+                            self.db.forget_unknown_card(number)
+                        self.db.update_card(
+                            existing["id"], person_id=person_id, number=number, enabled=enabled, access=access
+                        )
+                    seen_cards.add(token)
+                # Tessere sparite dal controller: mai cancellate da sole. Si segnano e decide l'utente
+                # (riscriverle o toglierle dall'app): un controller resettato o sostituito non svuota l'anagrafica.
+                cards = self.db.all_cards()
+                missing = [c for c in cards if c["axis_credential_token"] not in seen_cards]
+                new_missing = [c["id"] for c in missing if not c["missing_since"]]
+                if new_missing:
+                    self.db.mark_cards_missing(new_missing, now_iso())
+                    _LOGGER.warning("%s tessere non sono più sul controller: segnate, non cancellate", len(new_missing))
+                for person in self.db.all_persons():
+                    if not self.db.cards_of(person["id"]):
+                        self.db.delete_person(person["id"])
             try:
-                points = await self.controller.list_access_points()
-                self.access_point_doors = {p.get("token"): p.get("Entity") or "" for p in points if p.get("token")}
+                await self.load_access_points()
             except VapixError as err:
                 _LOGGER.debug("Punti di accesso non leggibili: %s", err)
             self._changed()
@@ -301,6 +332,29 @@ class AccessService:
                 "mass_missing": mass_missing(len(cards), len(missing)),
             }
 
+    @staticmethod
+    def _card_changed(card: dict, person_id: int, number: str, enabled: bool, access: dict) -> bool:
+        """La tessera nel database è diversa da come la legge il controller (o era segnata come non presente)."""
+        return (
+            card["person_id"] != person_id
+            or card["number"] != number
+            or bool(card["enabled"]) != enabled
+            or bool(card["missing_since"])
+            or any((card[key] or "") != value for key, value in access.items())
+        )
+
+    async def load_access_points(self) -> None:
+        """Porta di ogni punto di accesso e di ogni lettore, per assegnare gli eventi alla porta giusta."""
+        points = await self.controller.list_access_points()
+        self.access_point_doors = {p.get("token"): p.get("Entity") or "" for p in points if p.get("token")}
+        readers: dict[str, set[str]] = {}
+        for point in points:
+            for device in point.get("IdPointDevice") or []:
+                if device.get("IdPoint") and point.get("Entity"):
+                    readers.setdefault(device["IdPoint"], set()).add(point["Entity"])
+        # Un lettore di due porte non dice quale: resta la porta principale
+        self.idpoint_doors = {reader: next(iter(doors)) for reader, doors in readers.items() if len(doors) == 1}
+
     async def restore_missing(self, user: str, card_ids: list[int] | None = None) -> dict:
         """Riscrive sul controller le tessere non presenti (tutte o quelle indicate), con gruppo e validità salvati."""
         restored, failed = 0, []
@@ -309,11 +363,11 @@ class AccessService:
             known_users: set[str] = set()
             for card in cards:
                 person = self.db.get_person(card["person_id"])
-                user_token = person["axis_user_token"] or ""
                 try:
-                    if user_token.startswith("credenziale:") or not user_token:
-                        # Tessera importata senza utente: se ne crea uno
-                        user_token = user_token_for(person["name"])
+                    # Tessera importata senza utente: se ne crea uno, che prende anche le altre tessere della persona
+                    user_token = await self._ensure_user(person, "Riscritto da Axis Access Manager")
+                    if user_token != person["axis_user_token"]:
+                        known_users.add(user_token)
                     if user_token not in known_users and not await self.controller.get_users([user_token]):
                         await self.controller.set_user(
                             {
@@ -327,15 +381,11 @@ class AccessService:
                     access = {k: card[k] for k in ("access_profile", "valid_from", "valid_to")}
                     if not access["access_profile"]:
                         access["access_profile"] = self.default_group
-                    credential = self._credential(user_token, person["name"], card["number"], access)
-                    credential["Enabled"] = card["enabled"]
-                    credential["Status"] = "Enabled" if card["enabled"] else "Disabled"
+                    credential = self._credential(user_token, person["name"], card["number"], access, card["enabled"])
                     token = await self.controller.set_credential(credential)
                 except VapixError as err:
                     failed.append({"card": card["number"], "person": person["name"], "error": str(err)})
                     continue
-                if user_token != person["axis_user_token"]:
-                    self.db.set_person_user_token(person["id"], user_token)
                 self.db.set_card_token(card["id"], token)
                 restored += 1
             if restored:
@@ -345,6 +395,9 @@ class AccessService:
 
     def forget_missing(self, user: str, card_ids: list[int] | None = None) -> dict:
         """Toglie dall'app le tessere non presenti sul controller; le persone rimaste senza tessere spariscono."""
+        if self.lock.locked():
+            # Per esempio "Riscrivi" in corso: toglierle a metà le lascerebbe scritte sul controller senza persona
+            raise ServiceError("è in corso un'altra operazione sul controller: riprova tra qualche secondo")
         cards = [c for c in self.db.missing_cards() if card_ids is None or c["id"] in card_ids]
         persons = set()
         for card in cards:
@@ -403,14 +456,14 @@ class AccessService:
         ]
         return credential
 
-    def _credential(self, user_token: str, name: str, number: str, access: dict) -> dict:
+    def _credential(self, user_token: str, name: str, number: str, access: dict, enabled: bool = True) -> dict:
         return self._apply_access(
             {
                 "token": "",
                 "UserToken": user_token,
                 "Description": name,
-                "Enabled": True,
-                "Status": "Enabled",
+                "Enabled": bool(enabled),
+                "Status": "Enabled" if enabled else "Disabled",
                 "IdData": [{"Name": "Card", "Value": number}],
                 "Attribute": [],
                 "AuthenticationProfile": [],
@@ -434,7 +487,9 @@ class AccessService:
         company: str = "",
         notes: str = "",
         category_id: int = 0,
+        enabled: bool = True,
     ) -> dict:
+        """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»)."""
         name, number = normalize_name(name), normalize_card(card)
         company = normalize_text(company, 100, "ditta o reparto")
         notes = normalize_text(notes, 1000, "testo delle note")
@@ -450,13 +505,13 @@ class AccessService:
         access = self._access(group, valid_from, valid_to)
         async with self.lock:
             self._check_card_free(number)
-            user_token = user_token_for(name)
+            user_token = await self._new_user_token(name)
             await self.controller.set_user(
                 {"token": user_token, "Name": name, "Description": "Registrato da Axis Access Manager", "Attribute": []}
             )
             try:
                 credential_token = await self.controller.set_credential(
-                    self._credential(user_token, name, number, access)
+                    self._credential(user_token, name, number, access, enabled)
                 )
             except VapixError:
                 # Senza tessera l'utente resterebbe orfano sul controller
@@ -470,13 +525,15 @@ class AccessService:
                 self.db.update_person_details(person_id, company, notes)
             if category:
                 self.db.set_person_category(person_id, category["id"])
-            self.db.add_card(person_id, number, credential_token, access=access)
-            detail = f"{name}, tessera {number}" + (f", tipologia {category['name']}" if category else "")
+            self.db.add_card(person_id, number, credential_token, enabled, access)
+            detail = f"{name}, tessera {number}" + ("" if enabled else " sospesa")
+            detail += f", tipologia {category['name']}" if category else ""
             self.db.add_audit(user, "persona creata", detail)
             self._changed()
             return self.db.get_person(person_id)
 
-    async def add_card(self, person_id: int, card: str, user: str) -> dict:
+    async def add_card(self, person_id: int, card: str, user: str, enabled: bool = True) -> dict:
+        """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»)."""
         number = normalize_card(card)
         async with self.lock:
             person = self._person(person_id)
@@ -484,12 +541,15 @@ class AccessService:
             # La nuova tessera eredita gruppo e validità di quelle che la persona ha già
             first = person["cards"][0] if person["cards"] else {}
             access = self._access(first.get("access_profile"), first.get("valid_from"), first.get("valid_to"))
+            # Chi è stato letto da una tessera senza utente ne riceve uno: "credenziale:..." non è un utente
+            user_token = await self._ensure_user(person)
             credential_token = await self.controller.set_credential(
-                self._credential(person["axis_user_token"], person["name"], number, access)
+                self._credential(user_token, person["name"], number, access, enabled)
             )
-            self.db.add_card(person_id, number, credential_token, access=access)
+            self.db.add_card(person_id, number, credential_token, enabled, access)
             self._changed()
-            self.db.add_audit(user, "tessera aggiunta", f"{person['name']}, tessera {number}")
+            detail = f"{person['name']}, tessera {number}" + ("" if enabled else " sospesa")
+            self.db.add_audit(user, "tessera aggiunta", detail)
             return self.db.get_person(person_id)
 
     async def update_person(
@@ -546,24 +606,60 @@ class AccessService:
         access = self._access(group, valid_from, valid_to)
         async with self.lock:
             person = self._person(person_id)
-            if category_id is not None and category_id != person["category_id"]:
-                self.db.set_person_category(person_id, category_id)
-                self.db.add_audit(
-                    user, "tipologia cambiata", f"{person['name']}: {category['name'] if category else 'nessuna'}"
-                )
-            for card in person["cards"]:
+            # Prima si leggono tutte le tessere presenti: se ne manca una non si cambia niente. Quelle già segnate
+            # come non presenti prendono il nuovo accesso solo nell'app, e "Riscrivi" le riscrive con quello
+            present = [card for card in person["cards"] if not card["missing_since"]]
+            previous: list[dict] = []
+            for card in present:
                 credentials = await self.controller.get_credentials([card["axis_credential_token"]])
                 if not credentials:
                     raise ServiceError(
                         f"la tessera {card['number']} non è più sul controller: riscrivila o toglila dall'app"
                     )
-                await self.controller.set_credential(self._apply_access(credentials[0], access))
+                previous.append(credentials[0])
+            # Da riportare com'erano se una scrittura non riesce, compresa quella in corso: senza una risposta in
+            # tempo il controller può averla applicata lo stesso
+            attempted: list[dict] = []
+            try:
+                for credential in previous:
+                    attempted.append(credential)
+                    await self.controller.set_credential(self._apply_access(dict(credential), access))
+            except VapixError:
+                # Tutto o niente: le tessere già scritte tornano all'accesso di prima
+                for credential in attempted:
+                    try:
+                        await self.controller.set_credential(credential)
+                    except VapixError:
+                        _LOGGER.warning("Accesso della tessera %s non riportato com'era", credential.get("token"))
+                raise
+            for card in person["cards"]:
                 self.db.set_card_access(card["id"], access)
-            detail = f"{person['name']}: gruppo {access['access_profile']}"
-            if access["valid_from"] or access["valid_to"]:
-                detail += f", valida {access['valid_from'] or '…'} → {access['valid_to'] or '…'}"
+            if category_id is not None and category_id != person["category_id"]:
+                self.db.set_person_category(person_id, category_id)
+                self.db.add_audit(
+                    user, "tipologia cambiata", f"{person['name']}: {category['name'] if category else 'nessuna'}"
+                )
+            detail = f"{person['name']}: {await self._profile_label(access['access_profile'])}"
+            if access["valid_from"] and access["valid_to"]:
+                detail += f", valida dal {local_time(access['valid_from'])} al {local_time(access['valid_to'])}"
+            elif access["valid_from"]:
+                detail += f", valida dal {local_time(access['valid_from'])}"
+            elif access["valid_to"]:
+                detail += f", valida fino al {local_time(access['valid_to'])}"
             self.db.add_audit(user, "accesso modificato", detail)
             return self.db.get_person(person_id)
+
+    async def _profile_label(self, token: str) -> str:
+        """Accesso da mostrare nelle attività: la tipologia che usa il profilo, o il suo nome sul controller."""
+        category = next((c for c in self.db.list_categories() if c["group_token"] == token), None)
+        if category:
+            return f"tipologia {category['name']}"
+        try:
+            profiles = await self.controller.get_access_profiles([token])
+        except VapixError:
+            profiles = []
+        name = (profiles[0].get("Name") or "") if profiles else ""
+        return f"profilo {name}" if name else "accesso personalizzato"
 
     async def set_card_enabled(self, card_id: int, enabled: bool, user: str) -> dict:
         async with self.lock:
@@ -591,11 +687,13 @@ class AccessService:
                 await self.controller.remove_credential(card["axis_credential_token"])
             self.db.delete_card(card_id)
             self.db.add_audit(user, "tessera eliminata", f"{person['name']}, tessera {card['number']}")
-            self._changed()
             if len(person["cards"]) > 1:
+                self._changed()
                 return self.db.get_person(person["id"])
             await self._remove_axis_user(person)
             self.db.delete_person(person["id"])
+            # Dopo: Home Assistant conta le persone rimaste
+            self._changed()
             return None
 
     async def delete_person(self, person_id: int, user: str) -> None:
@@ -616,7 +714,8 @@ class AccessService:
     async def restore_person(self, saved: dict, cards: list[dict], category_id: int, user: str) -> dict:
         """Riporta una persona com'era in un backup: nome, ditta, note, tipologia e tessere con accesso e stato.
         Se non c'è più si ricrea, con lo stesso numero e la stessa data di creazione se il numero è libero.
-        cards: tessere del backup già controllate (numero libero o già della persona, profilo che esiste)."""
+        cards: tessere del backup già controllate (numero libero o già della persona, profilo che esiste); le altre
+        tessere della persona restano come sono."""
         current = self.db.get_person(saved["id"])
         if current is not None and current["created_at"] != saved["created_at"]:
             current = None
@@ -642,7 +741,15 @@ class AccessService:
                         self._credential(user_token, person["name"], card["number"], access)
                     )
                     if not card["enabled"]:
-                        await self.controller.disable_credential(token)
+                        try:
+                            await self.controller.disable_credential(token)
+                        except VapixError:
+                            # Come in _recreate_person: una tessera sospesa nel backup non resta attiva sul controller
+                            try:
+                                await self.controller.remove_credential(token)
+                            except VapixError:
+                                _LOGGER.warning("Tessera %s rimasta sul controller dopo un errore", token)
+                            raise
                     self.db.add_card(person_id, card["number"], token, card["enabled"], access)
                     continue
                 if {k: mine[k] for k in access} != access:
@@ -659,32 +766,49 @@ class AccessService:
                     else:
                         await self.controller.disable_credential(mine["axis_credential_token"])
                     self.db.set_card_enabled(mine["id"], card["enabled"])
-            # Tessere aggiunte dopo il backup: le tessere del backup ci sono già, la persona non resta senza
-            for number, mine in have.items():
-                if number in wanted:
-                    continue
-                if not mine["missing_since"]:
-                    await self.controller.remove_credential(mine["axis_credential_token"])
-                self.db.delete_card(mine["id"])
+            # Le tessere che non sono in cards (aggiunte dopo il backup) restano: il ripristino le elimina solo
+            # con la loro riga, scelta a parte nell'anteprima
             self.db.add_audit(user, "persona ripristinata da backup", person["name"])
             self._changed()
             return self.db.get_person(person_id)
 
-    async def _ensure_user(self, person: dict) -> str:
+    async def _new_user_token(self, name: str) -> str:
+        """Token per un utente nuovo del controller che nessuno ha: due persone con lo stesso nome (o lo stesso
+        inizio di un nome lungo) nello stesso secondo finivano sullo stesso utente, e con lui le tessere."""
+        base = user_token_for(name)
+        token, n = base, 1
+        while self.db.person_by_user_token(token) or await self.controller.get_users([token]):
+            n += 1
+            token = f"{base}_{n}"
+        return token
+
+    async def _ensure_user(self, person: dict, description: str = "Registrato da Axis Access Manager") -> str:
         """Utente del controller della persona; chi è stato letto da una tessera senza utente ne riceve uno."""
         token = person["axis_user_token"] or ""
         if token and not token.startswith("credenziale:"):
             return token
-        token = user_token_for(person["name"])
+        token = await self._new_user_token(person["name"])
         await self.controller.set_user(
             {
                 "token": token,
                 "Name": person["name"],
-                "Description": "Registrato da Axis Access Manager",
+                "Description": description,
                 "Attribute": [],
             }
         )
         self.db.set_person_user_token(person["id"], token)
+        # Le tessere che ha già sul controller passano al nuovo utente, come quelle registrate dall'app.
+        # Se una scrittura non riesce la persona non si spezza: la sincronizzazione lascia le tessere senza utente
+        # alla persona che le ha, e l'operazione chiesta va avanti
+        for card in person["cards"]:
+            if card["missing_since"]:
+                continue
+            try:
+                for credential in await self.controller.get_credentials([card["axis_credential_token"]]):
+                    credential["UserToken"] = token
+                    await self.controller.set_credential(credential)
+            except VapixError as err:
+                _LOGGER.warning("Tessera %s non passata all'utente %s: %s", card["number"], token, err)
         return token
 
     async def _recreate_person(self, saved: dict, cards: list[dict], category_id: int, user: str) -> dict:
@@ -692,7 +816,7 @@ class AccessService:
         async with self.lock:
             for card in cards:
                 self._check_card_free(card["number"])
-            user_token = user_token_for(name)
+            user_token = await self._new_user_token(name)
             await self.controller.set_user(
                 {"token": user_token, "Name": name, "Description": "Registrato da Axis Access Manager", "Attribute": []}
             )
@@ -758,20 +882,41 @@ class AccessService:
         door = door or self.settings.door_token
         if not door:
             raise ServiceError("nessuna porta configurata")
-        mode = self.monitor.door_modes.get(door) if self.monitor else None
-        if mode is None:
-            try:
-                mode = await self.controller.door_mode(door)
-            except VapixError as err:
-                _LOGGER.warning("Stato della porta non leggibile: %s", err)
-        if mode is None:
-            raise ServiceError("stato della porta sconosciuto: riprova tra qualche secondo")
-        if mode != "Locked":
-            raise ServiceError(f"la porta non è bloccata (stato {mode}): attendi che si richiuda")
-        await self.controller.access_door(door, extended)
-        if self.monitor and self.monitor.connected:
-            # Evita un secondo comando finché MQTT non segnala che la porta si è richiusa
-            self.monitor.door_modes[door] = "Accessed"
+        # Due comandi ravvicinati (doppio tocco, Home Assistant e citofono insieme): il secondo aspetta il primo
+        # e trova la porta già aperta, invece di passare anche lui il controllo e far ripartire il tempo
+        async with self._door_locks.setdefault(door, asyncio.Lock()):
+            mode = self.monitor.door_modes.get(door) if self.monitor else None
+            if mode != "Locked":
+                # In memoria può restare l'"Aperta a Tempo" di un'apertura il cui "Bloccata" via MQTT è andato perso
+                # (broker riavviato durante l'apertura): prima di rifiutare decide il controller
+                try:
+                    read = await self.controller.door_mode(door)
+                except VapixError as err:
+                    _LOGGER.warning("Stato della porta non leggibile: %s", err)
+                else:
+                    current = self.monitor.door_modes.get(door) if self.monitor else mode
+                    if current != mode:
+                        # Arrivata via MQTT mentre si leggeva: è più recente della lettura
+                        mode = current
+                    elif read:
+                        if self.monitor and read != mode:
+                            self.monitor.door_modes[door] = read
+                            self._changed()
+                        mode = read
+            if mode is None:
+                raise ServiceError("stato della porta sconosciuto: riprova tra qualche secondo")
+            if mode != "Locked":
+                # Import qui: ha_mqtt importa programming, che importa questo modulo
+                from .ha_mqtt import DOOR_MODES
+
+                label = DOOR_MODES.get(mode, mode)
+                raise ServiceError(f"la porta non è bloccata ({label}): attendi che si richiuda")
+            before = self.monitor.door_modes.get(door) if self.monitor else None
+            await self.controller.access_door(door, extended)
+            if self.monitor and self.monitor.door_modes.get(door) == before:
+                # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
+                # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
+                self.monitor.door_modes[door] = "Accessed"
         detail = ", ".join(x for x in ("tempo esteso" if extended else "", note) if x)
         self.log_event(ts=self.event_now(), kind="apertura_remota", detail=detail, source=user, door=door)
         self.db.add_audit(user, "porta aperta", detail)
@@ -794,7 +939,7 @@ class AccessService:
             # Anche il valore conservato dal broker aggiorna lo stato in Home Assistant
             self._changed()
             return
-        if event.topic.startswith(STATE_TOPICS):
+        if event.topic.startswith(STATE_TOPICS) and not self._recovering:
             # Sensori di Home Assistant: allarmi della porta, coperchio, avvio e ingressi del controller
             self._changed()
         if retained:
@@ -933,19 +1078,28 @@ class AccessService:
     async def recover_events(self, since: datetime) -> int:
         """Eventi persi (MQTT o add-on fermi) letti dal registro interno del controller; restituisce quanti."""
         start = since.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        if not self.access_point_doors:
+            # All'avvio il recupero viene prima della sincronizzazione: senza la mappa dei punti di accesso gli esiti
+            # delle altre porte finivano sulla principale (e due volte, con l'impronta diversa da quella live)
+            await self.load_access_points()
         self._recovered = 0
         row_id, read = None, 0
         while read < RECOVER_MAX:
             entries, more = await self.controller.fetch_events(start, RECOVER_PAGE, row_id)
             read += len(entries)
+            before = self._recovered
             self._recovering = True
             try:
-                for entry in entries:
-                    event = event_from_log(entry)
-                    if event and event.topic.startswith(RECOVER_TOPICS):
-                        self.record_event(event)
+                # Una pagina, un commit
+                with self.db.batch():
+                    for entry in entries:
+                        event = event_from_log(entry)
+                        if event and event.topic.startswith(RECOVER_TOPICS):
+                            self.record_event(event)
             finally:
                 self._recovering = False
+            if self._recovered > before:
+                self._changed()
             if not more or not entries:
                 break
             row_id = entries[-1].get("rowid")
@@ -957,7 +1111,7 @@ class AccessService:
 
     def _input_source(self, access_point: str) -> tuple[str, str, str] | None:
         """Sorgente, dettaglio e ruolo per il registro dell'ingresso del controller che usa questo punto di accesso:
-        il nome scelto nelle impostazioni ("Pulsante Portineria"), ruolo e morsetto ("Pulsante Uscita · Aux 1")."""
+        il nome scelto nelle impostazioni ("Pulsante Portineria"), ruolo e morsetto ("Pulsante Uscita · AUX 1")."""
         if not access_point:
             return None
         for row in self.db.all_controller_inputs():
@@ -971,10 +1125,13 @@ class AccessService:
         return None
 
     def _door_of(self, event: Event) -> str:
-        """Porta dell'evento: dal topic, dai dati o dal punto di accesso; altrimenti la porta principale."""
+        """Porta dell'evento: dal topic, dai dati, dal punto di accesso o dal lettore; se no la porta principale."""
         token = door_of_topic(event.topic) or str(event.data.get("DoorToken") or "")
         if not token and event.data.get("AccessPointToken"):
             token = self.access_point_doors.get(str(event.data["AccessPointToken"]), "")
+        if not token and event.data.get("IdPointToken"):
+            # Le letture delle tessere portano solo il lettore
+            token = self.idpoint_doors.get(str(event.data["IdPointToken"]), "")
         return token or self.settings.door_token
 
     def record_intercom(self, entity_id: str, name: str) -> dict:

@@ -14,24 +14,33 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
-from .backup_copy import ha_copy_path, update_copies
-from .config import Settings, load_settings, normalize_host, resolve_mqtt
+from .backup_copy import ha_copy_error, ha_copy_path, update_copies
+from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
-from .full_restore import FULL_SECTIONS
+from .full_restore import FULL_SECTIONS, renamed_tokens
 from .ha import HomeAssistant
-from .ha_mqtt import HaBridge, parse_command
-from .health import HEALTH_INTERVAL, HealthMonitor, clock_fault, clock_problem, controller_synced, paused_reason
-from .installation import MAX_CONTROLLERS, InstallationService
+from .ha_mqtt import HaBridge, parse_command, topic_base
+from .health import (
+    HEALTH_INTERVAL,
+    HealthMonitor,
+    clock_fault,
+    clock_problem,
+    controller_synced,
+    ha_time_zone,
+    paused_reason,
+)
+from .installation import MAX_CONTROLLERS, InstallationService, check_host, same_controller
 from .intercom import IntercomBridge, IntercomSettings
-from .notifications import FAULT_TYPES, NotificationService
-from .programming import INPUT_ROLES, REX_ROLES, ProgrammingService
+from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
+from .programming import DIRECTIONS, INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import RulesService
 from .service import (
@@ -44,9 +53,9 @@ from .service import (
     mass_missing,
     plural,
 )
-from .transfer import events_csv, import_persons, persons_csv
+from .transfer import events_csv, import_persons, persons_csv, read_import
 from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
-from .vapix import A1210Client, ControllerGuard, VapixError
+from .vapix import A1210Client, ControllerGuard, ControllerUnreachable, VapixError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,13 +72,16 @@ GRANTED_KINDS = {"concesso"}
 # Passaggi contati come accessi nei numeri del giorno: la lettura della tessera precede il concesso (sarebbe doppia)
 # e le chiamate al citofono non sono accessi; le aperture dal citofono arrivano come apertura remota.
 ACCESS_COUNT_KINDS = ("concesso", "apertura_remota", "uscita")
-EXPORT_LIMIT = 50000
+# Il CSV del registro si scrive a pagine: tutto il registro, senza tenerlo in memoria
+EXPORT_PAGE = 5000
 
 # Recupero degli eventi persi: da poco prima dell'ultimo registrato, al massimo degli ultimi 7 giorni
 RECOVER_OVERLAP = 10
 RECOVER_LIMIT = timedelta(days=7)
 
 SYNC_INTERVAL = 15 * 60
+# Senza broker MQTT all'avvio: ogni quanto chiederlo di nuovo al Supervisor
+MQTT_RETRY = 60
 SYNC_RETRY = 60
 PRUNE_INTERVAL = 24 * 3600
 # Ogni quanto si guarda se è ora di un backup pianificato o della verifica
@@ -134,7 +146,7 @@ class HolidayIn(BaseModel):
 
 
 class ItalianHolidaysIn(BaseModel):
-    year: int = Field(default_factory=lambda: date.today().year)
+    year: int = Field(default_factory=lambda: date.today().year, ge=2000, le=2100)
 
 
 class ImportIn(BaseModel):
@@ -343,6 +355,7 @@ def current_user(request: Request) -> AppUser:
         user = request.app.state.users.resolve(
             request.headers.get("X-Remote-User-Name") or "",
             request.headers.get("X-Remote-User-Display-Name") or "",
+            request.headers.get("X-Remote-User-Id") or "",
         )
         request.state.user = user
     return user
@@ -359,8 +372,15 @@ def need(*perms: str, any_of: bool = False) -> Any:
         user = current_user(request)
         allowed = any(user.can(p) for p in perms) if any_of else user.can(*perms)
         if not allowed:
-            missing = ", ".join(PERMISSIONS[p].lower() for p in perms if not user.can(p))
-            raise HTTPException(status_code=403, detail=f"il tuo utente non ha il permesso: {missing}")
+            # Le descrizioni contengono virgole: ognuna tra virgolette, separate dal punto e virgola
+            missing = [f"«{PERMISSIONS[p]}»" for p in perms if not user.can(p)]
+            if len(missing) == 1:
+                detail = f"il tuo utente non ha il permesso {missing[0]}"
+            elif any_of:
+                detail = f"al tuo utente serve almeno uno di questi permessi: {'; '.join(missing)}"
+            else:
+                detail = f"il tuo utente non ha questi permessi: {'; '.join(missing)}"
+            raise HTTPException(status_code=403, detail=detail)
         return user
 
     return Depends(check)
@@ -375,11 +395,104 @@ def before_change(kind: str = "prima_modifica") -> Any:
 
     async def backup(request: Request) -> None:
         state = request.app.state
-        await state.backups.before_change(
-            kind, request_user(request), _backup_clients(state), _offline_controllers(state)
-        )
+        async with _reading(state):
+            await state.backups.before_change(
+                kind, request_user(request), _backup_clients(state), _offline_controllers(state)
+            )
 
     return Depends(backup)
+
+
+# Dati rifiutati dalla validazione: nome del campo e motivo in parole per l'utente
+FIELD_LABELS = {
+    "name": "nome",
+    "card": "tessera",
+    "camera": "telecamera",
+    "widgets": "riquadri",
+    "size": "larghezza del riquadro",
+    "height": "altezza del riquadro",
+    "frequency": "frequenza dei backup",
+    "night": "ora del backup notturno",
+    "keep_last": "backup da tenere",
+    "keep_daily": "backup da tenere",
+    "keep_weekly": "backup da tenere",
+    "keep_monthly": "backup da tenere",
+    "keep_yearly": "backup da tenere",
+    "keys": "elementi da ripristinare",
+    "mqtt_password": "password del broker MQTT",
+    "year": "anno",
+    "limit": "numero di righe",
+    "schedule": "fascia oraria",
+    "host": "indirizzo del controller",
+    "category_id": "tipologia",
+}
+VALIDATION_REASONS = {
+    "missing": "valore mancante",
+    "string_too_long": "al massimo {max_length} caratteri",
+    "string_too_short": "almeno {min_length} caratteri",
+    "too_long": "al massimo {max_length} elementi",
+    "too_short": "almeno {min_length} elementi",
+    "greater_than_equal": "il minimo è {ge}",
+    "greater_than": "deve essere più di {gt}",
+    "less_than_equal": "il massimo è {le}",
+    "less_than": "deve essere meno di {lt}",
+    "string_pattern_mismatch": "formato non valido",
+    "literal_error": "valore non ammesso",
+    "int_parsing": "serve un numero intero",
+    "int_type": "serve un numero intero",
+    "float_parsing": "serve un numero",
+    "bool_parsing": "serve sì o no",
+    "json_invalid": "testo non leggibile",
+}
+
+
+def _validation_text(errors: list[dict]) -> str:
+    """Primo errore di validazione in parole; quello tecnico (campo, tipo, valore) resta nel log."""
+    _LOGGER.info("Dati non validi: %s", errors)
+    first = errors[0] if errors else {}
+    names = [str(p) for p in first.get("loc") or () if not isinstance(p, int) and p not in ("body", "query", "path")]
+    field = FIELD_LABELS.get(names[-1], "") if names else ""
+    try:
+        reason = VALIDATION_REASONS.get(first.get("type", ""), "valore non valido").format(**(first.get("ctx") or {}))
+    except (KeyError, IndexError):
+        reason = "valore non valido"
+    return f"dati non validi: {field}, {reason}" if field else f"dati non validi: {reason}"
+
+
+def _moment(value: str | None) -> datetime | None:
+    """Data del controller o dell'app come datetime locale; None se manca o non è valida."""
+    text = _iso(value or "")
+    return datetime.fromisoformat(text) if text else None
+
+
+async def _check_app_profile(state, token: str, categories: bool = False) -> None:
+    """Gli endpoint dei gruppi delle versioni precedenti non toccano i profili che l'app gestisce da sé: quello di
+    pulsanti e relè e, con categories, quelli delle tipologie (l'app li riscrive dalle righe di accesso)."""
+    if categories:
+        used_by = [c["name"] for c in state.db.list_categories() if c["group_token"] == token]
+        if used_by:
+            raise ServiceError(f"profilo gestito dall'app per la tipologia {used_by[0]}: si modifica da Tipologie")
+    found = await state.controller.get_access_profiles([token])
+    if found and is_rex_profile(found[0]):
+        raise ServiceError(
+            "profilo gestito dall'app per pulsanti e relè: si cambia dagli ingressi del controller in Impianti"
+        )
+
+
+async def _wait_for_broker(app: FastAPI) -> None:
+    """Nessun broker MQTT all'avvio (Mosquitto installato dopo, Supervisor lento): lo si chiede di nuovo finché non
+    c'è, poi l'ascolto degli eventi parte da solo, senza riavviare l'add-on."""
+    while app.state.mqtt is None:
+        await asyncio.sleep(MQTT_RETRY)
+        broker = await resolve_mqtt(app.state.options, quiet=True)
+        if broker is None:
+            continue
+        _LOGGER.info("Broker MQTT disponibile: parte l'ascolto degli eventi")
+        app.state.mqtt = broker
+        try:
+            await reload_runtime(app)
+        except Exception:  # noqa: BLE001 - l'app resta in piedi, l'errore va nel log
+            _LOGGER.exception("Avvio dell'ascolto MQTT non riuscito")
 
 
 def create_app(
@@ -402,8 +515,12 @@ def create_app(
         app.state.options = options
         app.state.injected_controller = controller
         app.state.db = Database(db_path or os.environ.get("AAM_DB_PATH") or DB_PATH, __version__)
+        # Database rovinato o mancante all'avvio: nel log, in Attività e in una notifica finché l'add-on non riparte
+        app.state.db_recovery = None
         if app.state.db.recovered:
             _LOGGER.error("All'avvio: %s", app.state.db.recovered)
+            app.state.db.add_audit("sistema", "database controllato all'avvio", app.state.db.recovered)
+            app.state.db_recovery = {"at": _now(), "text": app.state.db.recovered}
         if app.state.db.copied:
             _LOGGER.info("Copia del database prima dell'aggiornamento: %s", app.state.db.copied)
         app.state.users = UserDirectory(app.state.db, options.readonly_users)
@@ -439,11 +556,18 @@ def create_app(
         tasks = [maintenance, health]
         if scheduled_backups:
             tasks.append(asyncio.create_task(_backup_loop(app)))
+        if not app.state.mqtt and supervisor_token():
+            # Il broker del Supervisor può arrivare dopo (Mosquitto installato ora): lo si cerca di nuovo
+            tasks.append(asyncio.create_task(_wait_for_broker(app)))
         yield
         for task in tasks:
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - le chiusure qui sotto devono girare comunque
+                _LOGGER.exception("Attività in background terminata con un errore")
         await app.state.health.aclose()
         await _stop_runtime(app)
         await app.state.ha.aclose()
@@ -468,7 +592,15 @@ def create_app(
 
     @app.exception_handler(VapixError)
     async def vapix_error(request: Request, err: VapixError) -> JSONResponse:
-        return JSONResponse({"detail": f"errore del controller: {err}"}, status_code=502)
+        text = str(err)
+        # "il controller non risponde", "credenziali del controller…": il controller è già nominato.
+        # unreachable: nessuna risposta, l'interfaccia propone di riprovare
+        detail = text if "controller" in text else f"errore del controller: {text}"
+        return JSONResponse({"detail": detail, "unreachable": isinstance(err, ControllerUnreachable)}, 502)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, err: RequestValidationError) -> JSONResponse:
+        return JSONResponse({"detail": _validation_text(list(err.errors()))}, status_code=422)
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -489,6 +621,8 @@ def create_app(
             "default_category": request.app.state.rules.default_category,
             "door": request.app.state.settings.door_token,
             "version": __version__,
+            # Fuso di Home Assistant (per esempio Europe/Rome, vuoto se sconosciuto): ore e giorni come nel server
+            "time_zone": ha_time_zone(),
         }
 
     @app.get("/api/status", dependencies=[need("impianti", "import_export", "utenti", any_of=True)])
@@ -505,7 +639,8 @@ def create_app(
             "home_assistant": {
                 "api": state.ha.available,
                 "integration": cfg.ha_integration,
-                "topic_prefix": cfg.ha_topic_prefix,
+                # Quello in uso: se si sovrappone al prefisso del controller le entità vanno sotto un altro
+                "topic_prefix": state.bridge.topic_prefix,
                 "entities": [c["name"] for _, _, c in state.bridge._entities()] if cfg.ha_integration else [],
             },
             "doors": _doors_status(state),
@@ -523,6 +658,10 @@ def create_app(
                 "schema": state.db.schema_version,
                 "copies": await asyncio.to_thread(update_copies, state.db.path) if state.db.path else [],
                 "ha_copy": _file_time(ha_copy_path(state.db.path)) if state.db.path else "",
+                # Perché l'ultima copia per il backup di Home Assistant non è stata aggiornata ("" se è andata bene)
+                "ha_copy_error": ha_copy_error(state.db.path) if state.db.path else "",
+                # Database ripristinato dalla copia (o non ripristinabile) all'avvio: {"at", "text"} o None
+                "recovered": getattr(state, "db_recovery", None),
             },
             # Ultima voce, a risposta pronta: il browser la confronta con la sua ora
             "now": _now(),
@@ -550,7 +689,7 @@ def create_app(
             "sync": state.last_sync,
             "notifications": listing["open"] if listing else 0,
             # Barra in alto: guasti finché durano, allarmi finché non se ne prende visione
-            "faults": [_brief(i) for i in listing["items"] if i["type"] in FAULT_TYPES] if listing else [],
+            "faults": [_brief(i) for i in listing["items"] if i["fault"]] if listing else [],
             "alarms": [_brief(i) for i in listing["items"] if i["type"] == "door_alarm" and not i["seen"]]
             if listing
             else [],
@@ -566,16 +705,22 @@ def create_app(
     async def notifications_seen(body: SeenIn, request: Request) -> dict:
         """Segna come viste le notifiche indicate, o tutte quelle che l'utente vede."""
         listing = _notification_listing(request)
-        ids = body.ids if body.ids is not None else [i["id"] for i in listing["items"]]
+        # Solo quelle che l'utente vede: la presa visione vale per tutti, e ognuna resta nel registro attività
+        visible = {i["id"] for i in listing["items"]}
+        ids = [i for i in body.ids if i in visible] if body.ids is not None else list(visible)
         state = request.app.state
         state.notifications.mark_seen(ids, _current_notifications(state))
         # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche
-        marked = [i for i in listing["items"] if i["id"] in ids and not i["seen"]]
+        chosen = set(ids)
+        marked = [i for i in listing["items"] if i["id"] in chosen and not i["seen"]]
         if marked:
             titles = ", ".join(f"{i['title']} ({i['text']})" if i["text"] else i["title"] for i in marked[:3])
             more = f" e altre {len(marked) - 3}" if len(marked) > 3 else ""
-            action = "presa visione" if len(marked) == 1 else f"segnate come viste {len(marked)} notifiche"
-            state.db.add_audit(request_user(request), action, titles + more)
+            if len(marked) == 1:
+                state.db.add_audit(request_user(request), "notifica segnata come vista", titles)
+            else:
+                detail = f"{len(marked)} notifiche: {titles}{more}"
+                state.db.add_audit(request_user(request), "notifiche segnate come viste", detail)
         return {"open": _notification_listing(request)["open"]}
 
     @app.put("/api/notifications/settings", dependencies=[need("utenti")])
@@ -586,18 +731,35 @@ def create_app(
     @app.get("/api/dashboard", dependencies=[need("stato")])
     async def dashboard(request: Request) -> dict:
         user = current_user(request)
-        db = request.app.state.db
+        state = request.app.state
+        db = state.db
         today = db.count_events(local_day_start())
         week = _week_series(db.event_kinds_since(local_day_start(6)))
         persons = db.list_persons()
         cards = [c for p in persons for c in p["cards"]]
-        soon = (datetime.now().astimezone() + timedelta(days=7)).isoformat()
-        now = datetime.now().astimezone().isoformat()
+        now = datetime.now().astimezone()
         expiring = []
         for person in persons:
-            ends = [c["valid_to"] for c in person["cards"] if c.get("valid_to")]
-            if ends and now < _iso(min(ends)) <= soon:
-                expiring.append({"id": person["id"], "name": person["name"], "valid_to": min(ends)})
+            ends = []
+            for card in person["cards"]:
+                start, end = _moment(card.get("valid_from")), _moment(card.get("valid_to"))
+                # Come In Scadenza in Persone: una tessera non ancora valida non è in scadenza
+                if end and now < end <= now + EXPIRING and not (start and start > now):
+                    ends.append((end, card["valid_to"]))
+            if ends:
+                end, valid_to = min(ends)
+                expiring.append((end, {"id": person["id"], "name": person["name"], "valid_to": valid_to}))
+        expiring = [item for _, item in sorted(expiring, key=lambda e: e[0])]
+        # Come le notifiche: raggiungibile secondo il controllo periodico (prima del primo controllo, secondo il
+        # broker); eventi in arrivo solo con il broker collegato e il controller collegato al broker
+        monitor = state.monitor
+        primary = state.installation.primary
+        health = state.health.states.get(primary["id"]) if primary else None
+        if health is None or health.online is None:
+            reachable = monitor.controller_online
+        else:
+            # Dopo un solo controllo non riuscito non è ancora irraggiungibile: stato sconosciuto
+            reachable = False if health.unreachable else True if health.online else None
         return {
             "today": {
                 "granted": today.get("concesso", 0),
@@ -615,15 +777,17 @@ def create_app(
             "cards_suspended": sum(1 for c in cards if not c["enabled"]),
             "unknown_cards": len(db.list_unknown_cards()),
             # Nomi e passaggi solo a chi può vedere anagrafica e registro
-            "expiring": sorted(expiring, key=lambda e: e["valid_to"]) if user.can("persone") else [],
+            "expiring": expiring if user.can("persone") else [],
             "recent": db.list_events(limit=8) if user.can("registro") else [],
-            "backup": await asyncio.to_thread(request.app.state.backups.overview) if user.can("backup") else None,
+            "backup": await asyncio.to_thread(state.backups.overview) if user.can("backup") else None,
             "system": {
-                "controller_online": request.app.state.monitor.controller_online,
-                "mqtt_connected": request.app.state.monitor.connected if request.app.state.mqtt else None,
-                "casing_open": request.app.state.monitor.casing_open,
+                # Controller raggiungibile dall'add-on (None: non ancora noto)
+                "controller_online": reachable,
+                # Eventi del controller in arrivo: senza broker no
+                "mqtt_connected": bool(state.mqtt) and monitor.connected and monitor.controller_online is not False,
+                "casing_open": monitor.casing_open,
                 "last_event": next(iter(db.list_events(limit=1)), {}).get("ts"),
-                "configured": bool(request.app.state.settings.a1210_host),
+                "configured": bool(state.settings.a1210_host),
             },
         }
 
@@ -660,7 +824,9 @@ def create_app(
     async def sync(request: Request) -> dict:
         result = await request.app.state.service.sync_from_controller()
         request.app.state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
-        request.app.state.db.add_audit(request_user(request), "sincronizzazione", _sync_text(result))
+        request.app.state.db.add_audit(
+            request_user(request), "tessere sincronizzate dal controller", _sync_text(result)
+        )
         return result
 
     @app.get("/api/missing-cards", dependencies=[need("persone")])
@@ -674,6 +840,9 @@ def create_app(
 
     @app.post("/api/missing-cards/forget", dependencies=[need("persone_modifica")])
     async def forget_missing_cards(body: MissingCardsIn, request: Request) -> dict:
+        # Solo le tessere contate nella conferma: senza elenco toglierebbe anche quelle sparite nel frattempo
+        if body.ids is None:
+            raise HTTPException(400, "indica le tessere da togliere")
         return request.app.state.service.forget_missing(request_user(request), body.ids)
 
     # Persone e tessere
@@ -760,7 +929,7 @@ def create_app(
         q: str = "",
         before_id: int | None = None,
         before_ts: str = "",
-        limit: int = 100,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
         since: str = "",
         until: str = "",
         person_id: int | None = None,
@@ -771,7 +940,7 @@ def create_app(
             search=q,
             before_id=before_id,
             before_ts=_utc(before_ts),
-            limit=min(limit, 500),
+            limit=limit,
             since=_utc(since),
             until=_utc(until),
             person_id=person_id,
@@ -780,11 +949,17 @@ def create_app(
 
     @app.get("/api/events/count", dependencies=[need("registro")])
     async def count_events(
-        request: Request, kind: str = "", q: str = "", since: str = "", until: str = "", door: str = ""
+        request: Request,
+        kind: str = "",
+        q: str = "",
+        since: str = "",
+        until: str = "",
+        person_id: int | None = None,
+        door: str = "",
     ) -> dict:
         """Quanti eventi corrispondono ai filtri: serve per gli accessi nascosti dalle viste del registro."""
         count = request.app.state.db.count_matching_events(
-            kind=kind, search=q, since=_utc(since), until=_utc(until), door=door
+            kind=kind, search=q, since=_utc(since), until=_utc(until), person_id=person_id, door=door
         )
         return {"count": count}
 
@@ -799,10 +974,10 @@ def create_app(
     async def snapshot(event_id: int, request: Request) -> Response:
         event = request.app.state.db.get_event(event_id)
         if not event or not event.get("snapshot"):
-            return JSONResponse({"detail": "nessuna istantanea"}, status_code=404)
+            return JSONResponse({"detail": "nessuna foto"}, status_code=404)
         path = request.app.state.ha.snapshot_dir / Path(event["snapshot"]).name
         if not path.exists():
-            return JSONResponse({"detail": "istantanea cancellata"}, status_code=404)
+            return JSONResponse({"detail": "foto cancellata"}, status_code=404)
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/api/export/events.csv", dependencies=[need("registro", "import_export")])
@@ -816,17 +991,33 @@ def create_app(
         door: str = "",
     ) -> Response:
         state = request.app.state
-        rows = state.db.list_events(
-            kind=kind,
-            search=q,
-            since=_utc(since),
-            until=_utc(until),
-            person_id=person_id,
-            door=door,
-            limit=EXPORT_LIMIT,
-        )
+        filters = {
+            "kind": kind,
+            "search": q,
+            "since": _utc(since),
+            "until": _utc(until),
+            "person_id": person_id,
+            "door": door,
+        }
         names = {d["door_token"]: d["name"] for d in state.doors}
-        return _csv_response(events_csv(rows, names), "registro_accessi")
+        header = events_csv([], names)
+
+        async def pages():
+            # Tutto il registro che corrisponde ai filtri, dal più recente, a pagine: nessun evento lasciato fuori
+            # e senza tenerlo tutto in memoria. Ogni pagina riparte dall'ultimo evento scritto (ora e numero)
+            yield header.encode("utf-8")
+            before_id, before_ts = None, ""
+            while rows := state.db.list_events(**filters, before_id=before_id, before_ts=before_ts, limit=EXPORT_PAGE):
+                yield events_csv(rows, names)[len(header) :].encode("utf-8")
+                before_id, before_ts = rows[-1]["id"], rows[-1]["ts"]
+                await asyncio.sleep(0)
+
+        filename = f"registro_accessi_{datetime.now():%Y%m%d_%H%M}.csv"
+        return StreamingResponse(
+            pages(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/api/export/persons.csv", dependencies=[need("persone", "import_export")])
     async def export_persons(request: Request) -> Response:
@@ -834,7 +1025,7 @@ def create_app(
         names = await _group_names(state)
         categories = {c["id"]: c["name"] for c in state.db.list_categories()}
         text = persons_csv(state.db.list_persons(), names, state.db.last_accesses(), categories)
-        return _csv_response(text, "anagrafica")
+        return _csv_response(text, "persone")
 
     @app.post("/api/import/persons", dependencies=[need("persone_modifica", "import_export")])
     async def import_csv(body: ImportIn, request: Request) -> dict:
@@ -843,21 +1034,27 @@ def create_app(
             groups = (await state.rules.list_groups())["groups"]
         except VapixError as err:
             _LOGGER.warning("Gruppi non leggibili per l'importazione: %s", err)
+            # Ogni riga con un gruppo risulterebbe "gruppo sconosciuto": la causa vera vale per tutto il file
+            if any(item.get("gruppo") for item in read_import(body.csv)):
+                raise ServiceError(f"i gruppi del file non si possono controllare: {err}") from err
             groups = []
         if body.apply:
             # Un'importazione cambia molte persone insieme: il backup si fa sempre, non una volta ogni tanto
-            await state.backups.before_change(
-                "prima_importazione",
-                request_user(request),
-                _backup_clients(state),
-                _offline_controllers(state),
-                window=False,
-            )
+            async with _reading(state):
+                await state.backups.before_change(
+                    "prima_importazione",
+                    request_user(request),
+                    _backup_clients(state),
+                    _offline_controllers(state),
+                    window=False,
+                )
         return await import_persons(state.service, body.csv, groups, request_user(request), body.apply)
 
     @app.get("/api/audit", dependencies=[need("utenti")])
-    async def audit(request: Request, before_id: int | None = None, limit: int = 100) -> list[dict]:
-        return request.app.state.db.list_audit(limit=min(limit, 500), before_id=before_id)
+    async def audit(
+        request: Request, before_id: int | None = None, limit: Annotated[int, Query(ge=1, le=500)] = 100
+    ) -> list[dict]:
+        return request.app.state.db.list_audit(limit=limit, before_id=before_id)
 
     # Regole
 
@@ -873,12 +1070,15 @@ def create_app(
 
     @app.put("/api/groups/{token:path}", dependencies=[need("regole_modifica"), before_change()])
     async def update_group(token: str, body: GroupIn, request: Request) -> dict:
+        await _check_app_profile(request.app.state, token, categories=True)
         return await request.app.state.rules.update_group(
             token, body.name, body.description, body.schedule, request_user(request)
         )
 
     @app.delete("/api/groups/{token:path}", dependencies=[need("regole_modifica"), before_change()])
     async def delete_group(token: str, request: Request) -> dict:
+        # Quelli delle tipologie li rifiuta già delete_group
+        await _check_app_profile(request.app.state, token)
         await request.app.state.rules.delete_group(token, request_user(request))
         return {"ok": True}
 
@@ -934,6 +1134,8 @@ def create_app(
 
     @app.put("/api/default-group", dependencies=[need("regole_modifica")])
     async def set_default_group(body: DefaultGroupIn, request: Request) -> dict:
+        # Il profilo di una tipologia sì: è quello che diventa predefinito con la tipologia predefinita
+        await _check_app_profile(request.app.state, body.token)
         await request.app.state.rules.set_default_group(body.token, request_user(request))
         return {"ok": True}
 
@@ -980,9 +1182,11 @@ def create_app(
         for door in _doors_status(state):
             today = counts.get(door["token"], {})
             if len(state.doors) == 1:
-                # Eventi registrati prima della 0.5 senza porta: con una porta sola sono suoi
+                # Eventi registrati prima della 0.5 senza porta: con una porta sola sono suoi. Non la manomissione
+                # senza porta (coperchio aperto, controller inclinato): riguarda il controller
                 for kind, n in counts.get("", {}).items():
-                    today[kind] = today.get(kind, 0) + n
+                    if kind != "manomissione":
+                        today[kind] = today.get(kind, 0) + n
             event = last.get(door["token"])
             if len(state.doors) == 1 and last.get("") and (not event or last[""]["ts"] > event["ts"]):
                 event = last[""]
@@ -1037,7 +1241,7 @@ def create_app(
                         {
                             "name": (wired or {}).get("name") or reader.get("Name") or device.get("IdPoint") or "",
                             "description": reader.get("Description") or "",
-                            "direction": {"in": "Entrata", "out": "Uscita"}.get(direction, ""),
+                            "direction": DIRECTIONS.get(direction, ""),
                             # Ingresso del controller: ruolo e morsetto al posto del lato della porta
                             "role": INPUT_ROLES.get(wired["role"], "") if wired else "",
                             "role_key": wired["role"] if wired else "",
@@ -1049,34 +1253,39 @@ def create_app(
         except VapixError as err:
             errors.append(f"lettori: {err}")
         groups = None
-        if user.can("regole") or user.can("persone"):
+        # Senza i punti di accesso della porta non si sa chi la apre: resta solo l'errore dei lettori
+        if (user.can("regole") or user.can("persone")) and not errors:
             try:
-                listed = (await state.rules.list_groups())["groups"]
-                opening = {
-                    g["token"]: g
-                    for g in listed
-                    if not g["access_points"] or set(g["access_points"]) & set(points) or not points
-                }
-                # Chi entra da questa porta: le tipologie il cui profilo la comprende
-                groups = [
-                    {
-                        "name": c["name"],
-                        "color": c["color"],
-                        "schedule_names": opening[c["group_token"]]["schedule_names"],
-                        "persons": c["persons"],
-                        "default": c["default"],
-                        "enabled": opening[c["group_token"]]["enabled"],
-                    }
-                    for c in state.rules.list_categories()
-                    if c["group_token"] in opening
-                ]
+                profiles = {p.get("token"): p for p in await state.controller.list_access_profiles()}
+                names = {s["token"]: s["name"] for s in await state.rules.list_schedules(list(profiles.values()))}
+                # Chi entra da questa porta: le tipologie con una regola sui suoi punti di accesso, con le fasce
+                # di quelle regole
+                opening = []
+                for c in state.rules.list_categories():
+                    profile = profiles.get(c["group_token"])
+                    schedules = _policy_schedules(profile, points) if profile else None
+                    if schedules is None:
+                        continue
+                    opening.append(
+                        {
+                            "name": c["name"],
+                            "color": c["color"],
+                            "schedule_names": [names.get(t, t) for t in schedules],
+                            "persons": c["persons"],
+                            "default": c["default"],
+                            "enabled": profile.get("Enabled", True) is not False,
+                        }
+                    )
+                groups = opening
             except VapixError as err:
                 errors.append(f"tipologie: {err}")
         events = None
         if user.can("registro"):
-            # Con una porta sola valgono anche gli eventi registrati prima che avessero la porta
+            # Con una porta sola valgono anche gli eventi registrati prima che avessero la porta, ma non la
+            # manomissione senza porta (coperchio aperto, controller inclinato): riguarda il controller
             door_filter = config["door_token"] + ("," if len(state.doors) == 1 else "")
-            events = state.db.list_events(door=door_filter, limit=15)
+            listed = state.db.list_events(door=door_filter, limit=50)
+            events = [e for e in listed if e["door"] or e["kind"] != "manomissione"][:15]
         return {
             **door,
             "controller": {
@@ -1141,13 +1350,14 @@ def create_app(
     @app.post("/api/controllers/test", dependencies=[need("impianti")])
     async def test_controller(body: ControllerTestIn, request: Request) -> dict:
         """Prova indirizzo e credenziali senza salvarli; elenca le porte trovate."""
+        host = check_host(body.host)
         password = body.password
-        if not password and body.controller_id:
-            existing = request.app.state.db.get_controller(body.controller_id)
-            password = existing["password"] if existing else ""
-        host = normalize_host(body.host)
-        if not host:
-            raise ServiceError("manca l'indirizzo del controller")
+        existing = request.app.state.db.get_controller(body.controller_id) if body.controller_id else None
+        if not password and existing:
+            # La password salvata va solo all'indirizzo e all'utente salvati: mai a un indirizzo scritto qui
+            if not same_controller(host, body.username, existing):
+                raise ServiceError("indirizzo o utente cambiati: scrivi di nuovo la password del controller")
+            password = existing["password"]
         client = request.app.state.injected_controller or A1210Client(host, body.username, password, body.verify_ssl)
         try:
             info = await client.device_info()
@@ -1183,6 +1393,33 @@ def create_app(
         state.controller_camera = (primary or {}).get("snapshot_camera") or ""
         return result
 
+    @app.post("/api/controllers/{controller_id}/time-zone", dependencies=[need("impianti")])
+    async def set_controller_time_zone(controller_id: int, request: Request) -> list[dict]:
+        """Fuso orario di Home Assistant nel controller: fasce orarie e festività scattano all'ora giusta."""
+        state = request.app.state
+        row = state.db.get_controller(controller_id)
+        if row is None:
+            raise HTTPException(404, "controller non trovato")
+        zone = ha_time_zone()
+        if not zone:
+            raise ServiceError("fuso orario di Home Assistant sconosciuto: impostalo a mano nel controller")
+        primary = state.installation.primary
+        if primary and primary["id"] == controller_id:
+            client = state.controller
+        else:
+            # Un altro controller: il client del controllo, con le scritture sospese se è cambiato
+            client = ControllerGuard(state.health.client_for(row))
+            client.paused = paused_reason(row)
+        health = state.health.states.get(controller_id)
+        old = health.time_zone if health else ""
+        await client.set_time_zone(zone)
+        state.db.add_audit(
+            request_user(request), "fuso orario del controller impostato", f"{row['name']}: {old or '—'} → {zone}"
+        )
+        # L'avviso sparisce subito, non alla rilettura dei 5 minuti
+        await state.health.recheck_clock(row)
+        return _controllers_health(state)
+
     @app.post("/api/controllers/{controller_id}/identity/accept")
     async def accept_controller_identity(controller_id: int, request: Request, user: Admin) -> dict:
         """Un amministratore conferma il controller trovato all'indirizzo: le scritture ripartono."""
@@ -1196,10 +1433,20 @@ def create_app(
             if state.settings.a1210_host:
                 result = await state.service.sync_from_controller()
                 state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
+        # Profili delle tipologie rimasti indietro mentre le scritture erano sospese
+        if state.db.get_setting(SETTING_CATEGORIES_PENDING):
+            await _refresh_categories(request.app)
         return {"ok": True}
 
     @app.delete("/api/controllers/{controller_id}", dependencies=[need("impianti"), before_change()])
     async def delete_controller(controller_id: int, request: Request) -> dict:
+        # Come per porte, aree e strutture: non si toglie finché le sue porte sono nelle righe di una tipologia
+        controller = request.app.state.db.get_controller(controller_id)
+        for door in (controller or {}).get("doors", []):
+            try:
+                request.app.state.rules.check_place_unused("door", door["id"])
+            except ServiceError as err:
+                raise ServiceError(f"la sua porta {door['name']} {err}") from err
         request.app.state.installation.delete_controller(controller_id, request_user(request))
         await reload_runtime(request.app)
         return {"ok": True}
@@ -1263,11 +1510,7 @@ def create_app(
     async def program_input(io: str, body: ControllerInputIn, request: Request) -> dict:
         state = request.app.state
         saved = await state.programming.update_input(io, body.model_dump(), request_user(request))
-        # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
-        await state.bridge.publish_input_names()
-        await state.health.recheck_managed(state.installation.primary)
-        # Contatto porta appena collegato o tolto: Contatto Porta subito giusto in Home Assistant
-        await _read_door_states(state, force=True)
+        await _input_changed(state)
         return saved
 
     @app.put("/api/programming/access-points/{token:path}", dependencies=[need("impianti"), before_change()])
@@ -1293,8 +1536,7 @@ def create_app(
     @app.post("/api/programming/changes/{change_id}/undo", dependencies=[need("impianti"), before_change()])
     async def undo_change(change_id: int, request: Request) -> dict:
         if await request.app.state.programming.undo(change_id, request_user(request)) == "input":
-            await request.app.state.bridge.publish_input_names()
-            await request.app.state.health.recheck_managed(request.app.state.installation.primary)
+            await _input_changed(request.app.state)
         return {"ok": True}
 
     @app.get("/api/cameras", dependencies=[need("impianti")])
@@ -1320,9 +1562,10 @@ def create_app(
     @app.post("/api/backups", dependencies=[need("backup")])
     async def create_backup(body: BackupIn, request: Request) -> dict:
         state = request.app.state
-        return await state.backups.create(
-            "manuale", body.name, request_user(request), _backup_clients(state), offline=_offline_controllers(state)
-        )
+        async with _reading(state):
+            return await state.backups.create(
+                "manuale", body.name, request_user(request), _backup_clients(state), offline=_offline_controllers(state)
+            )
 
     @app.put("/api/backups/policy")
     async def backup_policy(body: BackupPolicyIn, request: Request, user: Admin) -> dict:
@@ -1338,10 +1581,17 @@ def create_app(
     async def compare_backup(request: Request, backup_id: str, other: str = "precedente", part: str = "") -> dict:
         """Differenze con il backup precedente, con lo stato attuale ("attuale") o con un altro backup."""
         state = request.app.state
-        return await state.backups.compare(backup_id, other, _backup_clients(state), part or None)
+        # Un controller che non risponde non si aspetta e non risulta tolto: il confronto dice che non è letto
+        async with _reading(state):
+            return await state.backups.compare(
+                backup_id, other, _backup_clients(state), part or None, offline=_offline_controllers(state)
+            )
 
     @app.put("/api/backups/{backup_id}/lock", dependencies=[need("backup")])
     async def lock_backup(backup_id: str, body: BackupLockIn, request: Request) -> dict:
+        # Sbloccato, il backup può scadere al backup successivo: sbloccare vale come eliminare, da amministratori
+        if not body.locked and not current_user(request).can("utenti"):
+            raise HTTPException(status_code=403, detail="sbloccare un backup è riservato agli amministratori")
         return await request.app.state.backups.set_locked(backup_id, body.locked, request_user(request))
 
     @app.delete("/api/backups/{backup_id}")
@@ -1354,8 +1604,10 @@ def create_app(
         """Cosa cambierebbe ripristinando le sezioni scelte: una riga da spuntare per ogni oggetto diverso."""
         state = request.app.state
         _, saved = await asyncio.to_thread(state.backups.load, backup_id)
-        # Un controller che non risponde non ha la sua parte nello stato attuale: porte e lettori restano bloccati
-        current, _ = await state.backups.snapshot(_backup_clients(state))
+        # Un controller che non risponde non ha la sua parte nello stato attuale: porte e lettori restano bloccati.
+        # Quelli già irraggiungibili per il controllo di stato non si aspettano, come nel ripristino
+        async with _reading(state):
+            current, _ = await state.backups.snapshot(_backup_clients(state), offline=_offline_controllers(state))
         items = _restore_plan(state, saved, current, body)
         return {"items": public(items), "sections": ALL_SECTIONS, "paused": state.controller.paused}
 
@@ -1369,11 +1621,12 @@ def create_app(
         if not body.keys:
             raise ServiceError("scegli almeno una riga da ripristinare")
         label = manifest.get("name") or _local_text(manifest["created_at"])
-        # Con la data e non con il nome: "Prima del ripristino di Prima del ripristino di …" non si legge
-        name = f"Prima del ripristino del backup del {_local_text(manifest['created_at'])}"
-        before = await state.backups.create(
-            "prima_ripristino", name, user.label, _backup_clients(state), offline=_offline_controllers(state)
-        )
+        # Con la data e non con il nome: "Prima del Ripristino di Prima del Ripristino di …" non si legge
+        name = f"Prima del Ripristino del Backup del {_local_text(manifest['created_at'])}"
+        async with _reading(state):
+            before = await state.backups.create(
+                "prima_ripristino", name, user.label, _backup_clients(state), offline=_offline_controllers(state)
+            )
         _, current = await asyncio.to_thread(state.backups.load, before["id"])
         stale = {k for k, info in before["parts"].items() if info.get("stale")}
         current = {k: v for k, v in current.items() if k not in stale}
@@ -1396,6 +1649,8 @@ def create_app(
             + (f", {plural(len(result['failed']), 'non riuscita', 'non riuscite')}" if result["failed"] else ""),
         )
         if result.pop("reload"):
+            # Profili riscritti dal backup: se dopo le tipologie non si aggiornano, l'aggiornamento resta da fare
+            state.places_key = None
             await reload_runtime(request.app)
         if full:
             # Backup di prima della 0.21.3: il permesso dei pulsanti non c'era, lo si rimette
@@ -1404,6 +1659,8 @@ def create_app(
             except (VapixError, ServiceError) as err:
                 _LOGGER.warning("Permesso dei pulsanti non rimesso dopo il ripristino: %s", err)
             await state.health.recheck_managed(state.installation.primary)
+            # Le regole delle fasce tornano solo con le righe delle fasce spuntate (anche «Riporta le regole della
+            # fascia nell'app»), che le scrivono già con le festività di oggi: le altre fasce non si toccano
         return {**result, "backup_before": before["id"]}
 
     @app.get("/api/users", dependencies=[need("utenti")])
@@ -1430,9 +1687,30 @@ def create_app(
     return app
 
 
+# Operazioni ancora in corso sul client del controller (comandi di Home Assistant e del citofono, sincronizzazione,
+# scritture a più passi): quanto si aspetta prima di chiuderlo allo spegnimento e con una nuova configurazione
+STOP_GRACE = 5
+RELOAD_GRACE = 30
+# Stato del monitor che il controller manda solo quando cambia: con una nuova configurazione si tiene
+MONITOR_STATE = (
+    "controller_online",
+    "door_modes",
+    "door_physical",
+    "door_conditions",
+    "casing_open",
+    "system_ready",
+    "io_ports",
+    "io_changed",
+    "categories",
+    "last_card",
+)
+
+
 async def _start_runtime(app: FastAPI) -> None:
     """Crea client del controller, ascolto MQTT e servizi con la configurazione degli impianti."""
     state = app.state
+    old_monitor = getattr(state, "monitor", None)
+    old_service = getattr(state, "service", None)
     cfg = state.installation.effective_settings(state.options)
     state.settings = cfg
     state.raw_controller = state.injected_controller or A1210Client(
@@ -1444,12 +1722,30 @@ async def _start_runtime(app: FastAPI) -> None:
     state.doors = state.installation.doors()
     state.controller_camera = (state.installation.primary or {}).get("snapshot_camera") or ""
     state.monitor = EventMonitor(prefix=cfg.mqtt_topic_prefix, door_token=cfg.door_token)
+    if old_monitor is not None and old_monitor.prefix == state.monitor.prefix:
+        # Nuova configurazione (telecamera, nome di una porta…): allarmi, coperchio, ingressi e contatto porta
+        # arrivano solo quando cambiano, e un monitor vuoto li mostrava sconosciuti in Home Assistant
+        for name in MONITOR_STATE:
+            setattr(state.monitor, name, getattr(old_monitor, name))
     # Eventi persi da recuperare dal registro del controller: all'avvio e dopo ogni interruzione
     state.recover_pending = True
     state.recover_outages = 0
+    if getattr(state, "recover_from", None) is None:
+        # Da dove recuperare: l'ultimo evento del registro quando era completo. Una nuova configurazione tiene
+        # quello di prima, che può essere di prima di un'interruzione non ancora recuperata
+        state.recover_from = _recover_mark(state)
     # Stato delle porte letto dal controller: interruzioni del broker e porte di quella lettura
     state.door_states_key = None
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
+    if old_service is not None:
+        # Le operazioni ancora in corso con la configurazione di prima e le nuove non si accavallano
+        state.service.lock = old_service.lock
+        # Porta di ogni punto di accesso e lettore: dal controller, non dalla configurazione dell'app
+        state.service.access_point_doors = old_service.access_point_doors
+        state.service.idpoint_doors = old_service.idpoint_doors
+    elif not state.controller.paused and cfg.a1210_host:
+        # Eventi in diretta prima della prima sincronizzazione: senza la mappa finivano sulla porta principale
+        state.points_task = asyncio.create_task(_load_access_points(state.service))
     state.service.clock_offset = lambda: _controller_clock_offset(state)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
         _LOGGER.info("Motivi di %s dinieghi tradotti in italiano", translated)
@@ -1460,29 +1756,108 @@ async def _start_runtime(app: FastAPI) -> None:
         state.db, state.controller, primary["id"] if primary else None, state.service.lock
     )
     state.bridge = HaBridge(cfg, state.monitor, state.db, state.doors)
+    # Letture in corso con il client di questa configurazione fuori dal lock del servizio (vedi _reading)
+    state.readers = set()
     _wire(app)
     state.mqtt_configured = bool(state.mqtt)
     state.monitor_task = (
         asyncio.create_task(state.monitor.run(state.mqtt)) if state.mqtt and cfg.mqtt_topic_prefix else None
     )
+    # Contatori di oggi in Home Assistant ripubblicati a mezzanotte
+    state.bridge.start()
+    if not hasattr(state, "places_key"):
+        # All'avvio: porte e aree di cui i profili delle tipologie sul controller tengono già conto (un aggiornamento
+        # rimasto da fare è in SETTING_CATEGORIES_PENDING). None: non si sa, vedi _refresh_categories
+        state.places_key = _places_key(state)
+
+
+async def _load_access_points(service: AccessService) -> None:
+    try:
+        await service.load_access_points()
+    except VapixError as err:
+        # Li caricano poi il recupero degli eventi e la sincronizzazione
+        _LOGGER.debug("Punti di accesso non letti all'avvio: %s", err)
 
 
 async def _stop_runtime(app: FastAPI) -> None:
+    """Allo spegnimento: ascolto fermato, poi il client del controller chiuso quando nessuno lo usa più."""
+    await _close_runtime(app, await _stop_listening(app), STOP_GRACE)
+
+
+async def _stop_listening(app: FastAPI, offline: bool = True) -> tuple:
+    """Ferma l'ascolto MQTT. Restituisce client, lock, sorgenti di comandi e letture in corso di questa
+    configurazione, da chiudere con _close_runtime quando hanno finito. offline=False se la nuova configurazione
+    ripubblica subito le stesse entità di Home Assistant (vedi _stays_online)."""
     state = app.state
+    bridge = getattr(state, "bridge", None)
+    if bridge:
+        # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
+        # ordinata il broker scarta il messaggio di addio)
+        await bridge.stop(offline)
     task = getattr(state, "monitor_task", None)
     if task:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-    if state.injected_controller is None:
-        await state.raw_controller.aclose()
+    return state.raw_controller, state.service.lock, [state.monitor, *state.intercoms], state.readers
+
+
+async def _close_runtime(app: FastAPI, old: tuple, grace: float) -> None:
+    """Chiude il client del controller di una configurazione quando i comandi di Home Assistant e del citofono, le
+    operazioni sotto il lock (sincronizzazione, scritture a più passi) e le letture di backup, confronti e recupero
+    degli eventi hanno finito, al massimo dopo grace secondi. Chiuso sotto i loro piedi, la porta non si apriva e
+    restava solo un errore nel log; un backup risultava incompleto."""
+    client, lock, sources, readers = old
+    tasks = {task for source in sources for task in source._tasks}
+    try:
+        async with asyncio.timeout(grace):
+            if tasks:
+                await asyncio.wait(tasks)
+            async with lock:
+                pass
+            for done in list(readers):
+                await done.wait()
+    except TimeoutError:
+        _LOGGER.warning("Operazioni sul controller ancora in corso dopo %s s: il collegamento si chiude", grace)
+    if app.state.injected_controller is None:
+        await client.aclose()
+
+
+@contextlib.asynccontextmanager
+async def _reading(state):
+    """Letture del controller fuori dal lock del servizio (backup, confronti, anteprima del ripristino, recupero
+    degli eventi): una nuova configurazione chiude il client di adesso solo quando hanno finito. Il client va
+    preso dentro il blocco, e dentro il blocco non si ricarica la configurazione."""
+    done = asyncio.Event()
+    readers = getattr(state, "readers", set())
+    readers.add(done)
+    try:
+        yield
+    finally:
+        readers.discard(done)
+        done.set()
+
+
+def _stays_online(app: FastAPI) -> bool:
+    """La nuova configurazione si ricollega al broker e pubblica la disponibilità delle entità sullo stesso topic:
+    le entità di Home Assistant non passano per «non disponibile» (le automazioni ripartirebbero da sole)."""
+    state = app.state
+    bridge = getattr(state, "bridge", None)
+    if bridge is None or getattr(state, "monitor_task", None) is None or not state.mqtt:
+        return False
+    cfg = state.installation.effective_settings(state.options)
+    if not cfg.ha_integration or not cfg.mqtt_topic_prefix:
+        return False
+    return f"{topic_base(cfg.ha_topic_prefix, cfg.mqtt_topic_prefix)}/disponibile" == bridge.availability_topic
 
 
 async def reload_runtime(app: FastAPI) -> None:
     """Riparte con la nuova configurazione dopo una modifica a controller o porte."""
     async with app.state.reload_lock:
-        await _stop_runtime(app)
+        old = await _stop_listening(app, offline=not _stays_online(app))
         await _start_runtime(app)
+    # Il client di prima si chiude dopo le operazioni che lo stanno ancora usando; le nuove usano già quello nuovo
+    await _close_runtime(app, old, RELOAD_GRACE)
     # Indirizzo cambiato: prima di leggere o scrivere si controlla chi risponde
     try:
         await app.state.health.check_all()
@@ -1496,15 +1871,45 @@ async def reload_runtime(app: FastAPI) -> None:
     await _refresh_categories(app)
 
 
+def _places_key(state) -> tuple:
+    """Controller in uso e porte con area e struttura: quello che decide le porte coperte dalle tipologie."""
+    installation = state.installation
+    area_site = {a["id"]: s["id"] for s in state.db.list_sites() for a in s["areas"]}
+    doors = []
+    for door in installation.doors():
+        area = installation.door_area(door)
+        doors.append((door["id"], door["door_token"], area, area_site.get(area, 0)))
+    return state.settings.a1210_host, tuple(doors)
+
+
 async def _refresh_categories(app: FastAPI) -> None:
-    """Porte spostate tra aree e strutture: le tipologie che le comprendono aggiornano il loro profilo."""
-    if not app.state.settings.a1210_host:
+    """Porte spostate tra aree e strutture: le tipologie che le comprendono aggiornano il loro profilo.
+    Se il controller non risponde o le scritture sono sospese, il controller applicherebbe ancora le righe di prima:
+    si ricorda e si riprova dopo ogni sincronizzazione riuscita e dopo la conferma di un controller cambiato."""
+    state = app.state
+    if not state.settings.a1210_host:
         return
+    places = _places_key(state)
     try:
-        if changed := await app.state.rules.refresh_category_profiles():
+        if changed := await state.rules.refresh_category_profiles():
             _LOGGER.info("Profili di %s tipologie aggiornati dopo una modifica alle porte", changed)
-    except VapixError as err:
-        _LOGGER.warning("Profili delle tipologie non aggiornati: %s", err)
+    except (VapixError, ServiceError) as err:
+        if (
+            places == state.places_key
+            and not state.controller.paused
+            and not state.db.get_setting(SETTING_CATEGORIES_PENDING)
+        ):
+            # Porte e aree come all'ultimo aggiornamento riuscito (cambiati solo telecamera, nome, videocitofono…):
+            # sul controller non manca niente e l'errore resta nel log. Con le scritture sospese invece l'errore può
+            # essere un profilo diverso non scritto
+            _LOGGER.warning("Profili delle tipologie non controllati: %s", err)
+            return
+        _LOGGER.warning("Profili delle tipologie non aggiornati, si riprova: %s", err)
+        state.db.set_setting(SETTING_CATEGORIES_PENDING, json.dumps({"at": _now(), "error": str(err)}))
+        return
+    state.places_key = places
+    if state.db.get_setting(SETTING_CATEGORIES_PENDING):
+        state.db.set_setting(SETTING_CATEGORIES_PENDING, "")
 
 
 def _wire(app: FastAPI) -> None:
@@ -1524,6 +1929,9 @@ def _wire(app: FastAPI) -> None:
             # Recuperato dal registro del controller: la foto di adesso non c'entra, e le automazioni
             # di Home Assistant non devono scattare in ritardo
             return
+        # Prima Home Assistant: l'istantanea può aspettare la telecamera fino a 10 s, e anche se non si salva
+        # l'evento (allarme, rifiuto, citofono) deve arrivare alle automazioni
+        await bridge.publish_event(row)
         door = doors.get(row.get("door") or cfg.door_token) or {}
         camera = door.get("snapshot_camera") or ""
         if row.get("kind") == "manomissione" and not row.get("door"):
@@ -1531,14 +1939,7 @@ def _wire(app: FastAPI) -> None:
             camera = state.controller_camera
         kinds = SNAPSHOT_KINDS | (GRANTED_KINDS if door.get("snapshot_on_granted") else set())
         if camera and row.get("kind") in kinds:
-            filename, error = await state.ha.save_snapshot(camera, f"{row['id']}_{_file_stamp(row.get('ts') or '')}")
-            if filename or error:
-                state.db.set_event_snapshot(row["id"], filename, error)
-            # Ultimo esito per telecamera, mostrato nella scheda Telecamere del controller
-            state.snapshot_errors.pop(camera, None)
-            if error:
-                state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}
-        await bridge.publish_event(row)
+            await _save_snapshot(state, camera, row)
 
     async def on_change() -> None:
         await bridge.publish_state()
@@ -1562,9 +1963,13 @@ def _wire(app: FastAPI) -> None:
             ),
         )
         intercom.door = door
+        # Stesso citofono di una porta precedente: la chiamata la segue quella (vedi sotto)
+        intercom.call = next((i for i in state.intercoms if i.call_topic == intercom.call_topic), None)
         state.intercoms.append(intercom)
         for topic in intercom.topics:
-            monitor.extra_subscriptions[topic] = intercom.handle
+            # Stesso citofono su due porte (relè 1 e 2): la chiamata è una e la tiene la prima porta, invece di
+            # passare all'ultima; ogni relè resta della sua porta
+            monitor.extra_subscriptions.setdefault(topic, intercom.handle)
     if cfg.ha_integration:
         monitor.will = bridge.will()
         monitor.on_connect = bridge.on_connect
@@ -1574,14 +1979,15 @@ def _wire(app: FastAPI) -> None:
 
             async def on_command(command: str) -> None:
                 parsed = parse_command(command)
-                door = (parsed[1] or cfg.door_token) if parsed else ""
+                # Senza porta (automazioni delle versioni precedenti): la porta con gli identificativi di sempre
+                door = (parsed[1] or bridge.legacy_door()) if parsed else ""
                 if parsed is None or door not in allowed:
                     _LOGGER.warning("Comando sconosciuto da Home Assistant: %s", command)
                     return
                 # Chi ha premuto il pulsante, se Home Assistant lo sa: "Luca (Home Assistant)"
                 # Al massimo 2 secondi, per non ritardare l'apertura se Home Assistant è lento
                 try:
-                    who = await asyncio.wait_for(app.state.ha.button_presser(), 2)
+                    who = await asyncio.wait_for(app.state.ha.button_presser(command), 2)
                 except TimeoutError:
                     who = None
                 source = (
@@ -1593,13 +1999,59 @@ def _wire(app: FastAPI) -> None:
                 )
                 try:
                     await service.open_door(parsed[0], source, door)
+                    return
                 except (ServiceError, VapixError) as err:
-                    _LOGGER.warning("Apertura da Home Assistant non eseguita: %s", err)
+                    reason = str(err)
+                except Exception:  # noqa: BLE001 - per esempio il collegamento chiuso da una nuova configurazione
+                    _LOGGER.exception("Apertura da Home Assistant non eseguita")
+                    reason = "errore imprevisto, dettagli nel log dell'add-on"
+                _LOGGER.warning("Apertura da Home Assistant non eseguita: %s", reason)
+                # Nel Registro e in Home Assistant, come un rifiuto con chi ha premuto: la porta è rimasta chiusa
+                service.log_event(
+                    ts=service.event_now(),
+                    kind="negato",
+                    detail=f"apertura non eseguita: {reason}",
+                    source=source,
+                    door=door,
+                )
 
             monitor.on_command = on_command
     else:
         # Rimuove le entità pubblicate in precedenza
         monitor.on_connect = bridge.on_connect
+
+
+async def _save_snapshot(state, camera: str, row: dict) -> None:
+    """Istantanea di un evento. L'ultimo esito per telecamera va nella scheda Telecamere del controller."""
+    try:
+        filename, error = await state.ha.save_snapshot(camera, f"{row['id']}_{_file_stamp(row.get('ts') or '')}")
+    except OSError:
+        # Disco di Home Assistant pieno o cartella Media in sola lettura
+        _LOGGER.exception("Istantanea da %s non salvata", camera)
+        filename, error = "", "spazio esaurito o cartella Media non scrivibile"
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Istantanea da %s non salvata", camera)
+        filename, error = "", "errore imprevisto, dettagli nel log dell'add-on"
+    if filename or error:
+        state.db.set_event_snapshot(row["id"], filename, error)
+    state.snapshot_errors.pop(camera, None)
+    if error:
+        state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}
+
+
+def _policy_schedules(profile: dict, points: list[str]) -> list[str] | None:
+    """Fasce con cui un profilo apre una porta, dalle sue regole sui punti di accesso della porta; None se non la
+    apre. La fascia del profilo vale solo per le regole senza fascia: con fasce diverse per porta l'app ci mette
+    Sempre, perché l'A1210 le valuta insieme a quelle delle regole."""
+    found = None
+    for policy in profile.get("AccessPolicy") or []:
+        if policy.get("AccessPoint") not in points:
+            continue
+        found = found if found is not None else []
+        for token in policy.get("Schedule") or profile.get("Schedule") or []:
+            if token not in found:
+                found.append(token)
+    return found
 
 
 def _doors_status(state) -> list[dict]:
@@ -1668,6 +2120,9 @@ def _current_notifications(state) -> list[dict]:
         missing=_missing_summary(state.db),
         backup=state.backups.last_error(),
         backup_verify=state.backups.last_verify(),
+        # Database ripristinato all'avvio e copia per il backup di Home Assistant non aggiornata ("" se tutto bene)
+        db_recovery=(getattr(state, "db_recovery", None) or {}).get("text", ""),
+        ha_copy_error=ha_copy_error(state.db.path) if state.db.path else "",
     )
 
 
@@ -1685,7 +2140,10 @@ def _intercom_status(intercom: IntercomBridge) -> dict:
         "open_door": intercom.settings.open_door,
         "topics": intercom.topics,
         "call_state": intercom.call_state,
-        "last_message_at": intercom.last_message_at,
+        # I messaggi della chiamata arrivano alla prima porta dello stesso citofono
+        "last_message_at": max(
+            (i.last_message_at for i in (intercom, intercom.call) if i and i.last_message_at), default=None
+        ),
     }
 
 
@@ -1746,7 +2204,8 @@ def _week_series(rows: list[dict]) -> list[dict]:
 
 def _sync_text(result: dict) -> str:
     text = f"{plural(result['cards'], 'tessera', 'tessere')}, {plural(result['added'], 'nuova', 'nuove')}"
-    return text + (f", {result['missing']} non presenti sul controller" if result.get("missing") else "")
+    missing = result.get("missing") or 0
+    return text + (f", {plural(missing, 'non presente', 'non presenti')} sul controller" if missing else "")
 
 
 def _health_client(app: FastAPI, row: dict):
@@ -1791,21 +2250,37 @@ async def _recover_if_needed(state) -> None:
     si recuperano quelli persi dal registro interno del controller."""
     monitor = state.monitor
     pending = state.recover_pending or monitor.outages != state.recover_outages
+    if not pending:
+        # Nessuna interruzione da recuperare: il registro è completo fin qui. Il punto da cui recuperare si fissa
+        # adesso e non al recupero, quando gli eventi arrivati in diretta dopo l'interruzione lo avrebbero già
+        # spostato oltre quelli persi
+        state.recover_from = _recover_mark(state)
+        return
     primary = state.installation.primary
     health = state.health.states.get(primary["id"]) if primary else None
-    if not pending or not health or not health.online or state.controller.paused:
+    if not health or not health.online or state.controller.paused:
         return
     if state.mqtt and (not monitor.connected or monitor.controller_online is False):
         return
     outages = monitor.outages
-    last = state.db.last_controller_event(CONTROLLER_KINDS)
+    last, marked_at = state.recover_from
     if not last:
         # Primo avvio: niente da recuperare, gli eventi arrivano da ora
         state.recover_pending, state.recover_outages = False, outages
         return
-    since = max(datetime.fromisoformat(last) - timedelta(seconds=RECOVER_OVERLAP), datetime.now(tz=UTC) - RECOVER_LIMIT)
     try:
-        recovered = await state.service.recover_events(since)
+        start = datetime.fromisoformat(last)
+    except ValueError:
+        start = marked_at
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
+    # Un evento con l'ora nel futuro (orologio del controller avanti, poi corretto) non porta l'inizio oltre il
+    # momento in cui il punto è stato fissato: i recuperi successivi non leggerebbero più niente
+    since = min(start, marked_at) - timedelta(seconds=RECOVER_OVERLAP)
+    since = max(since, datetime.now(tz=UTC) - RECOVER_LIMIT)
+    try:
+        async with _reading(state):
+            recovered = await state.service.recover_events(since)
     except VapixError as err:
         _LOGGER.warning("Eventi persi non recuperati dal controller: %s", err)
         return
@@ -1816,27 +2291,46 @@ async def _recover_if_needed(state) -> None:
         state.db.add_audit(
             "sistema",
             "eventi recuperati dal controller",
-            f"{plural(recovered, 'evento', 'eventi')} dal {since:%d/%m %H:%M}",
+            f"{plural(recovered, 'evento', 'eventi')} dal {since.astimezone():%d/%m/%Y %H:%M}",
         )
 
 
+def _recover_mark(state) -> tuple[str, datetime]:
+    """Ultimo evento del controller nel registro e ora di adesso: con il registro completo, il punto da cui
+    recuperare dopo la prossima interruzione."""
+    return state.db.last_controller_event(CONTROLLER_KINDS), datetime.now(tz=UTC)
+
+
+async def _input_changed(state) -> None:
+    """Dopo aver programmato un ingresso, o annullato la sua programmazione dallo Storico Modifiche."""
+    # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
+    await state.bridge.publish_input_names()
+    await state.health.recheck_managed(state.installation.primary)
+    # Contatto porta appena collegato o tolto: Contatto Porta subito giusto in Home Assistant
+    await _read_door_states(state, force=True)
+
+
 async def _read_door_states(state, force: bool = False) -> None:
-    """Contatto porta (e modalità, se manca) letti dal controller all'avvio, dopo ogni interruzione e dopo la
-    programmazione di un ingresso. Via MQTT arrivano solo ai cambi: senza un messaggio conservato dal broker,
-    al banco Contatto Porta restava sconosciuto fino alla prima apertura."""
+    """Contatto porta e modalità letti dal controller all'avvio, dopo ogni interruzione e dopo la programmazione di
+    un ingresso; senza broker, o con il broker non collegato, a ogni controllo. Via MQTT arrivano solo ai cambi:
+    senza un messaggio conservato dal broker, al banco Contatto Porta restava sconosciuto fino alla prima apertura."""
     monitor = state.monitor
     doors = [d["door_token"] for d in state.installation.doors()]
-    key = (monitor.outages, tuple(doors))
-    if not doors or (key == state.door_states_key and not force):
+    # Senza broker collegato nessun evento le tiene aggiornate (un'apertura dall'app restava «Aperta a Tempo» fino al
+    # ritorno del broker): si rileggono a ogni controllo, e una volta ancora quando torna
+    listening = state.mqtt and monitor.connected
+    key = (monitor.outages, tuple(doors)) if listening else None
+    if not doors or (key is not None and key == state.door_states_key and not force):
         return
     primary = state.installation.primary
     health = state.health.states.get(primary["id"]) if primary else None
     if not health or not health.online or state.controller.paused:
         return
-    if state.mqtt and (not monitor.connected or monitor.controller_online is False):
+    if listening and monitor.controller_online is False:
         return
     changed = False
     for token in doors:
+        mode_before = monitor.door_modes.get(token)
         try:
             door = await state.controller.door_state(token)
         except VapixError as err:
@@ -1849,9 +2343,12 @@ async def _read_door_states(state, force: bool = False) -> None:
             else:
                 monitor.door_physical.pop(token, None)
             changed = True
-        # La modalità arriva anche dal broker; quella di MQTT, più recente, resta
-        if door.get("DoorMode") and token not in monitor.door_modes:
-            monitor.door_modes[token] = str(door["DoorMode"])
+        # Dopo un'interruzione vale la modalità del controller: quella in memoria può essere l'"Aperta a Tempo" di
+        # un'apertura il cui "Bloccata" è andato perso, e le aperture da Home Assistant e dal citofono venivano
+        # rifiutate. Resta quella arrivata via MQTT, o messa da un'apertura, mentre si leggeva
+        mode = str(door.get("DoorMode") or "")
+        if mode and mode != mode_before and monitor.door_modes.get(token) == mode_before:
+            monitor.door_modes[token] = mode
             changed = True
     state.door_states_key = key
     if changed:
@@ -1885,7 +2382,8 @@ def _controller_clock_offset(state) -> float | None:
     health = state.health.states.get(primary["id"]) if primary else None
     if not health or health.clock_offset is None or not controller_synced(health):
         return None
-    return health.clock_offset
+    # Orologio di Home Assistant spostato dopo la misura: lo scarto si corregge subito, non alla rilettura
+    return health.clock_offset_now()
 
 
 def _offline_controllers(state) -> dict[int, str]:
@@ -1897,7 +2395,7 @@ def _offline_controllers(state) -> dict[int, str]:
         if row.get("identity_change"):
             offline[row["id"]] = "controller cambiato, in attesa di conferma"
         elif health and health.unreachable:
-            offline[row["id"]] = f"non raggiungibile ({health.error or 'nessuna risposta'})"
+            offline[row["id"]] = f"non raggiungibile, {health.error}" if health.error else "non raggiungibile"
     return offline
 
 
@@ -1908,13 +2406,19 @@ async def _backup_loop(app: FastAPI) -> None:
         # Prima il controllo di stato: dice quali controller non rispondono o sono cambiati
         await asyncio.wait_for(state.health_ready.wait(), HEALTH_INTERVAL)
     try:
-        if made := await state.backups.after_update(_backup_clients(state), _offline_controllers(state)):
+        async with _reading(state):
+            made = await state.backups.after_update(_backup_clients(state), _offline_controllers(state))
+        if made:
             _LOGGER.info("Backup dopo l'aggiornamento: %s", made["summary"])
     except BackupError as err:
         _LOGGER.warning("Backup dopo l'aggiornamento non riuscito: %s", err)
+    except Exception:  # noqa: BLE001 - i backup pianificati partono lo stesso
+        _LOGGER.exception("Backup dopo l'aggiornamento non riuscito")
     while True:
         try:
-            if made := await state.backups.run_scheduled(_backup_clients(state), _offline_controllers(state)):
+            async with _reading(state):
+                made = await state.backups.run_scheduled(_backup_clients(state), _offline_controllers(state))
+            if made:
                 _LOGGER.debug("Backup %s: %s", made["kind"], made["summary"])
             if state.backups.verify_due():
                 result = await state.backups.verify_now()
@@ -1949,7 +2453,8 @@ def _restore_plan(state, saved: dict, current: dict, body: RestorePreviewIn) -> 
         raise BackupError("per ora si ripristinano porte e lettori solo del controller in uso")
     if any(s in FULL_SECTIONS for s in sections) and body.part != f"controller:{primary}":
         raise BackupError("il ripristino completo si fa dalla scheda Backup del controller")
-    return plan(saved, current, sections, primary, set(_mqtt_known(state)))
+    # Token già cambiati dai ripristini completi: il backup ha ancora quelli che il controller aveva rifiutato
+    return plan(saved, current, sections, primary, set(_mqtt_known(state)), renamed_tokens(state.db))
 
 
 def _mqtt_known(state) -> dict[str, str]:
@@ -2005,49 +2510,113 @@ async def _maintenance(app: FastAPI) -> None:
     """Importa periodicamente le tessere dal controller e cancella ogni giorno gli eventi vecchi."""
     state = app.state
     last_prune = 0.0
-    groups_checked = False
+    # Riparazioni di una volta per avvio già riuscite
+    repaired: set[str] = set()
     loop = asyncio.get_running_loop()
     with contextlib.suppress(TimeoutError):
         await asyncio.wait_for(state.health_ready.wait(), HEALTH_INTERVAL)
     while True:
-        delay = SYNC_INTERVAL
-        if state.controller.paused:
-            # Controller cambiato: niente sincronizzazione finché un amministratore non conferma
-            state.last_sync = {"ok": None, "error": "", "result": None, "at": _now(), "paused": state.controller.paused}
-            delay = SYNC_RETRY
-        elif state.settings.a1210_host:
+        try:
+            synced, delay = await _sync(state)
+        except Exception:  # noqa: BLE001 - un errore imprevisto non deve fermare per sempre sincronizzazione e pulizia
+            _LOGGER.exception("Sincronizzazione non riuscita")
+            state.last_sync = {
+                "ok": False,
+                "error": "errore imprevisto: dettagli nel log dell'add-on",
+                "result": None,
+                "at": _now(),
+            }
+            synced, delay = False, SYNC_RETRY
+        if synced:
+            await _startup_repairs(state, repaired)
             try:
-                result = await state.service.sync_from_controller()
-                state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
-                _LOGGER.debug("Tessere sincronizzate dal controller: %s", result)
-                if not groups_checked:
-                    # Una volta per avvio: gruppi delle versioni precedenti con la fascia solo nelle regole
-                    groups_checked = True
-                    if repaired := await state.rules.repair_group_schedules():
-                        _LOGGER.info("Fascia oraria aggiunta al profilo di %s gruppi", repaired)
-                    # Festività che le versioni precedenti non riuscivano a scrivere (BYMONTHDAY rifiutato)
-                    if rewritten := await state.rules.reapply_holidays(only_changed=True):
-                        _LOGGER.info("Festività riscritte in %s fasce orarie", rewritten)
-                    # Dalla 0.10 i gruppi sono dentro le tipologie
-                    if adopted := await state.rules.adopt_groups():
-                        _LOGGER.info("Gruppi passati alle tipologie: %s modifiche", adopted)
-                    # Fino alla 0.21.2 pulsanti e relè non avevano il permesso di aprire: il controller li negava
-                    try:
-                        if permitted := await state.programming.repair_rex_profile():
-                            _LOGGER.info("Permesso di apertura dato a %s ingressi", permitted)
-                            await state.health.recheck_managed(state.installation.primary)
-                    except (VapixError, ServiceError) as err:
-                        _LOGGER.warning("Permesso dei pulsanti non controllato: %s", err)
-            except (VapixError, ServiceError) as err:
-                state.last_sync = {"ok": False, "error": str(err), "result": None, "at": _now()}
-                _LOGGER.warning("Sincronizzazione non riuscita: %s", err)
-                delay = SYNC_RETRY
+                # Profili delle tipologie rimasti indietro (controller che non rispondeva, scritture sospese)
+                if state.db.get_setting(SETTING_CATEGORIES_PENDING):
+                    await _refresh_categories(app)
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("Profili delle tipologie non aggiornati")
         if loop.time() - last_prune >= PRUNE_INTERVAL or last_prune == 0.0:
-            state.ha.delete_snapshots(state.db.prune_events(state.settings.event_retention_days))
+            try:
+                state.ha.delete_snapshots(state.db.prune_events(state.settings.event_retention_days))
+            except Exception:  # noqa: BLE001 - si riprova il giorno dopo
+                _LOGGER.exception("Pulizia del registro non riuscita")
             last_prune = loop.time()
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(state.sync_wake.wait(), delay)
         state.sync_wake.clear()
+
+
+async def _sync(state) -> tuple[bool, int]:
+    """Un giro di sincronizzazione delle tessere: se è riuscita e fra quanti secondi il prossimo."""
+    primary = state.installation.primary
+    if state.settings.a1210_host and primary and primary["host"] and not state.controller.paused:
+        # Chi risponde all'indirizzo, subito prima di leggere: dopo un'interruzione il nuovo tentativo può arrivare
+        # prima del controllo di stato, e un controller sostituito non si legge finché non lo si conferma
+        health = await state.health.check(primary)
+        _apply_pause(state)
+        if state.controller.paused:
+            state.service.notify_change()
+        if not health.online and not state.controller.paused:
+            state.last_sync = {"ok": False, "error": health.error, "result": None, "at": _now()}
+            _LOGGER.warning("Sincronizzazione non riuscita: %s", health.error)
+            return False, SYNC_RETRY
+    if state.controller.paused:
+        # Controller cambiato: niente sincronizzazione finché un amministratore non conferma
+        state.last_sync = {"ok": None, "error": "", "result": None, "at": _now(), "paused": state.controller.paused}
+        return False, SYNC_RETRY
+    if not state.settings.a1210_host:
+        return False, SYNC_INTERVAL
+    try:
+        result = await state.service.sync_from_controller()
+    except (VapixError, ServiceError) as err:
+        state.last_sync = {"ok": False, "error": str(err), "result": None, "at": _now()}
+        _LOGGER.warning("Sincronizzazione non riuscita: %s", err)
+        return False, SYNC_RETRY
+    state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
+    _LOGGER.debug("Tessere sincronizzate dal controller: %s", result)
+    return True, SYNC_INTERVAL
+
+
+async def _startup_repairs(state, done: set[str]) -> None:
+    """Una volta per avvio, dopo una sincronizzazione riuscita. Ognuna per conto suo: una che non riesce (profilo
+    rifiutato dal controller, rete) non ferma le altre, non tocca l'esito della sincronizzazione e si ritenta dopo
+    la sincronizzazione successiva."""
+
+    async def schedules() -> None:
+        # Gruppi delle versioni precedenti con la fascia solo nelle regole
+        if repaired := await state.rules.repair_group_schedules():
+            _LOGGER.info("Fascia oraria aggiunta al profilo di %s gruppi", repaired)
+
+    async def holidays() -> None:
+        # Festività doppie o con i nomi di prima; poi quelle che le versioni precedenti non riuscivano a scrivere
+        # (BYMONTHDAY rifiutato) e quelle appena cambiate
+        if upgraded := state.rules.upgrade_holidays():
+            _LOGGER.info("Festività aggiornate: %s righe", upgraded)
+        if rewritten := await state.rules.reapply_holidays(only_changed=True):
+            _LOGGER.info("Festività riscritte in %s fasce orarie", rewritten)
+
+    async def groups() -> None:
+        # Dalla 0.10 i gruppi sono dentro le tipologie
+        if adopted := await state.rules.adopt_groups():
+            _LOGGER.info("Gruppi passati alle tipologie: %s modifiche", adopted)
+
+    async def rex() -> None:
+        # Fino alla 0.21.2 pulsanti e relè non avevano il permesso di aprire: il controller li negava
+        if permitted := await state.programming.repair_rex_profile():
+            _LOGGER.info("Permesso di apertura dato a %s ingressi", permitted)
+            await state.health.recheck_managed(state.installation.primary)
+
+    for name, repair in (("fasce", schedules), ("festività", holidays), ("gruppi", groups), ("pulsanti", rex)):
+        if name in done:
+            continue
+        try:
+            await repair()
+        except (VapixError, ServiceError) as err:
+            _LOGGER.warning("Riparazione all'avvio (%s) non riuscita, si riprova: %s", name, err)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Riparazione all'avvio (%s) non riuscita, si riprova", name)
+        else:
+            done.add(name)
 
 
 async def _controller_status(controller: A1210Client, settings: Settings, inputs: list[dict]) -> dict:

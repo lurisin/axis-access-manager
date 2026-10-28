@@ -8,6 +8,20 @@ from datetime import UTC, date, datetime, timedelta
 DAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 DAY_NAMES = {"MO": "lun", "TU": "mar", "WE": "mer", "TH": "gio", "FR": "ven", "SA": "sab", "SU": "dom"}
 TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$|^24:00$")
+MONTH_NAMES = [
+    "gennaio",
+    "febbraio",
+    "marzo",
+    "aprile",
+    "maggio",
+    "giugno",
+    "luglio",
+    "agosto",
+    "settembre",
+    "ottobre",
+    "novembre",
+    "dicembre",
+]
 
 # Fasce predefinite del controller (Sempre, Orario d'ufficio, Fine settimana)
 STANDARD_PREFIX = "standard_"
@@ -16,9 +30,11 @@ ITALIAN_HOLIDAYS = [
     ("01-01", "Capodanno"),
     ("01-06", "Epifania"),
     ("04-25", "Festa della Liberazione"),
-    ("05-01", "Festa dei lavoratori"),
+    ("05-01", "Festa dei Lavoratori"),
     ("06-02", "Festa della Repubblica"),
     ("08-15", "Ferragosto"),
+    # Festa nazionale dal 2026 (legge 151 del 2025)
+    ("10-04", "San Francesco d'Assisi"),
     ("11-01", "Ognissanti"),
     ("12-08", "Immacolata Concezione"),
     ("12-25", "Natale"),
@@ -47,16 +63,16 @@ def normalize_rules(rules: list[dict]) -> list[dict]:
         if not TIME_PATTERN.match(end):
             raise RuleError(f"ora di fine non valida: {end or 'vuota'}")
         if end <= start:
-            raise RuleError(f"l'intervallo {start}-{end} deve finire dopo l'inizio, nello stesso giorno")
+            raise RuleError(f"l'intervallo {start}–{end} deve finire dopo l'inizio, nello stesso giorno")
         result.append({"days": days, "start": start, "end": end})
     return result
 
 
 def describe_rules(rules: list[dict]) -> str:
-    """Testo breve, ad esempio "lun-ven 08:00-18:00; sab 09:00-12:00"."""
+    """Testo breve, ad esempio "lun-ven 08:00–18:00; sab 09:00–12:00"."""
     parts = []
     for rule in rules:
-        parts.append(f"{_describe_days(rule['days'])} {rule['start']}-{rule['end']}")
+        parts.append(f"{_describe_days(rule['days'])} {rule['start']}–{rule['end']}")
     return "; ".join(parts)
 
 
@@ -176,6 +192,16 @@ def italian_holidays(years: list[int]) -> list[dict]:
             {"day": (easter(year) + timedelta(days=1)).isoformat(), "name": "Lunedì dell'Angelo", "yearly": False}
         )
     return holidays
+
+
+def holiday_label(day: str, name: str = "", yearly: bool = False) -> str:
+    """Festività come la mostra la pagina: «Natale (25 dicembre, ogni anno)», «Lunedì dell'Angelo (6 aprile 2026)»."""
+    try:
+        parsed = date.fromisoformat(day)
+    except ValueError:
+        return " ".join(filter(None, [name, day]))
+    when = f"{parsed.day} {MONTH_NAMES[parsed.month - 1]}" + (", ogni anno" if yearly else f" {parsed.year}")
+    return f"{name} ({when})" if name else when
 
 
 def normalize_holiday(day: str, name: str) -> tuple[str, str]:

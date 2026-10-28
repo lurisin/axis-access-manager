@@ -35,7 +35,7 @@ def test_describe_rules():
         {"days": ["SA", "SU"], "start": "09:00", "end": "12:00"},
         {"days": ["MO", "TU", "WE", "TH", "FR", "SA", "SU"], "start": "00:00", "end": "24:00"},
     ]
-    assert describe_rules(rules) == "lun-ven 08:00-18:00; sab, dom 09:00-12:00; tutti i giorni 00:00-24:00"
+    assert describe_rules(rules) == "lun-ven 08:00–18:00; sab, dom 09:00–12:00; tutti i giorni 00:00–24:00"
 
 
 def test_schedule_ical_uses_weekly_local_events():

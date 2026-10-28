@@ -194,7 +194,7 @@ def test_rules_and_dashboard_endpoints(client):
     person = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": group}).json()
     assert client.put(f"/api/persons/{person['id']}/access", json={"group": "profilo_sempre"}).status_code == 200
     assert client.post("/api/holidays/italia", json={"year": 2026}).status_code == 200
-    assert len(client.get("/api/holidays").json()) == 12
+    assert len(client.get("/api/holidays").json()) == 13
 
     groups = client.get("/api/groups").json()
     assert {g["name"] for g in groups["groups"]} == {"Sempre", "Dipendenti"}
@@ -358,6 +358,8 @@ def test_summary_gives_camera_friendly_names(controller, tmp_path, monkeypatch):
         settings, allow_any_client=True, controller=controller, db_path=tmp_path / "n.db", home_assistant=ha
     )
     with TestClient(app) as client:
+        # Nel test non c'è il broker: il suo guasto non c'entra
+        app.state.notifications.set_levels({"mqtt": "off"}, "test")
         assert client.get("/api/summary").json()["camera_names"] == {"camera.x": "Ingresso Teatro"}
         # Il riepilogo si legge a ogni evento: i nomi restano in memoria per qualche minuto
         summary = client.get("/api/summary").json()
@@ -382,7 +384,7 @@ def test_missing_cards_through_api(client, controller):
     [card] = client.get("/api/missing-cards").json()
     assert card["person_name"] == "Anna"
     titles = [i["title"] for i in client.get("/api/notifications").json()["items"]]
-    assert "Tessere Non Presenti Sul Controller" in titles
+    assert "Tessera Non Presente sul Controller" in titles
 
     assert client.post("/api/missing-cards/restore", json={}).json() == {"restored": 1, "failed": []}
     assert client.get("/api/missing-cards").json() == []

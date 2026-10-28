@@ -19,7 +19,7 @@ async def test_create_schedule_writes_calendar_and_remembers_rules(rules, contro
     assert schedule["ExceptionScheduleDefinition"] is None
     listed = {s["token"]: s for s in await rules.list_schedules()}
     assert listed[token]["managed"] is True
-    assert listed[token]["summary"] == "lun-ven 08:00-18:00"
+    assert listed[token]["summary"] == "lun-ven 08:00–18:00"
     assert listed["standard_always"]["name"] == "Sempre"
     assert listed["standard_always"]["groups"] == ["Sempre"]
 
@@ -56,7 +56,7 @@ async def test_standard_and_external_schedules_can_be_edited_and_hidden(rules, c
     }
     listed = {s["token"]: s for s in await rules.list_schedules()}
     assert listed["altra"]["managed"] is False
-    assert listed["altra"]["summary"] == "lun 20:00-23:00"
+    assert listed["altra"]["summary"] == "lun 20:00–23:00"
 
     await rules.update_schedule("standard_office_hours", "Ufficio", "", OFFICE, False, "admin")
     listed = {s["token"]: s for s in await rules.list_schedules()}
@@ -70,8 +70,8 @@ async def test_standard_and_external_schedules_can_be_edited_and_hidden(rules, c
     assert listed[-1]["token"] == "altra" and listed[-1]["hidden"] is True
     await rules.delete_schedule("altra", "admin")
     assert "altra" not in controller.schedules
-    # Usata dal gruppo predefinito
-    with pytest.raises(ServiceError, match="usata dai gruppi"):
+    # La fascia dei profili con fasce diverse per porta
+    with pytest.raises(ServiceError, match="non si può eliminare"):
         await rules.delete_schedule("standard_always", "admin")
 
 
@@ -88,7 +88,7 @@ async def test_create_group_copies_default_profile_with_new_schedule(rules, cont
     assert profile["Schedule"] == [schedule]
     # Il profilo predefinito non cambia
     assert controller.profiles["profilo_sempre"]["AccessPolicy"][0]["Schedule"] == ["standard_always"]
-    with pytest.raises(ServiceError, match="usata dai gruppi Dipendenti"):
+    with pytest.raises(ServiceError, match="usata dal profilo Dipendenti"):
         await rules.delete_schedule(schedule, "admin")
 
 
@@ -146,7 +146,7 @@ async def test_group_rules(rules, controller, db):
     groups = {g["token"]: g for g in (await rules.list_groups())["groups"]}
     assert groups[token]["persons"] == 1
     assert groups["profilo_sempre"]["default"] is True
-    with pytest.raises(ServiceError, match="assegnato a 1 persone"):
+    with pytest.raises(ServiceError, match="assegnato a 1 persona"):
         await rules.delete_group(token, "admin")
 
 
@@ -260,7 +260,7 @@ async def test_categories_own_a_profile_built_from_doors_areas_and_sites(rules, 
     person = await rules.align_person(anna["id"], "admin")
     assert person["cards"][0]["access_profile"] == clean["token"]
 
-    with pytest.raises(ServiceError, match="usata dalle tipologie"):
+    with pytest.raises(ServiceError, match="usata dalla tipologia Pulizie"):
         rules.check_place_unused("area", ids["rooms"])
     rules.set_default_category(guest["id"], "admin")
     assert rules.access.default_group == guest["token"]

@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -11,9 +12,16 @@ from app.health import (
     clock_problem,
     ntp_summary,
     paused_reason,
+    zone_differs,
 )
 from app.notifications import NotificationService
 from app.vapix import ControllerGuard, VapixError
+
+
+@pytest.fixture(autouse=True)
+def home_assistant_time_zone(monkeypatch):
+    """Home Assistant con lo stesso fuso del controller finto, qualunque sia quello di chi esegue i test."""
+    monkeypatch.setenv("TZ", "Europe/Rome")
 
 
 @pytest.fixture
@@ -169,6 +177,107 @@ async def test_clock_offset_written_after_ntp(monitor, controller, controller_ro
     assert clock_fault(monitor.states[controller_row]) == "home_assistant"
 
 
+async def test_controller_time_zone_compared_with_home_assistant(monitor, controller, controller_row, db, monkeypatch):
+    # Come dopo un reset: controller su UTC, Home Assistant su Europe/Rome, orologio giusto
+    controller.time_zone = "UTC"
+    await monitor.check_all()
+    state = monitor.states[controller_row]
+    assert state.zone_differs and clock_fault(state) == ""
+    items = NotificationService(db).collect(
+        mqtt_configured=True,
+        mqtt_connected=True,
+        controller_configured=True,
+        controller_online=True,
+        sync={"ok": True},
+        door_names={},
+        controllers=[{**state.as_dict(), "id": controller_row}],
+    )
+    assert [(i["type"], i["title"]) for i in items] == [("clock", "Fuso Orario del Controller")]
+    assert "UTC, diverso da quello di Home Assistant (Europe/Rome)" in items[0]["text"]
+
+    controller.time_zone = "Europe/Berlin"
+    await monitor.recheck_clock(db.get_controller(controller_row))
+    assert not state.zone_differs
+    # Senza il fuso di Home Assistant non si segnala niente
+    monkeypatch.delenv("TZ")
+    assert not zone_differs({"timeZone": "UTC"}, "")
+    # Fuso POSIX senza nome: vale lo scarto dell'ora locale
+    winter = datetime(2026, 1, 10, tzinfo=UTC)
+    assert not zone_differs({"localDateTime": "2026-01-10T13:00:00+01:00"}, "Europe/Rome", winter)
+    assert zone_differs({"localDateTime": "2026-01-10T12:00:00+00:00"}, "Europe/Rome", winter)
+    # Stesse ore d'inverno ma non d'estate
+    assert zone_differs({"timeZone": "UTC"}, "Europe/London", winter)
+
+
+def test_seen_faults_come_back_only_when_they_get_worse(db):
+    service = NotificationService(db, settle=timedelta(0))
+
+    def collect(count, mass=False):
+        return service.collect(
+            mqtt_configured=True,
+            mqtt_connected=True,
+            controller_configured=True,
+            controller_online=True,
+            sync={"ok": True},
+            door_names={},
+            missing={"count": count, "persons": count, "since": "2026-10-25T09:00:00+00:00", "mass": mass},
+        )
+
+    items = collect(1)
+    service.mark_seen([i["id"] for i in items], items)
+    assert service.listing(collect(1))["open"] == 0
+    # Reset del controller: spariscono tutte le tessere, la notifica torna da gestire
+    assert service.listing(collect(40, mass=True))["open"] == 1
+    service.mark_seen([i["id"] for i in items], collect(40, mass=True))
+    # Riscritte in parte: migliora, resta vista
+    assert service.listing(collect(5))["open"] == 0
+
+
+def test_seen_kept_while_faults_come_back_after_a_restart(db):
+    def collect(service, offline):
+        return service.collect(
+            mqtt_configured=True,
+            mqtt_connected=True,
+            controller_configured=True,
+            controller_online=True,
+            sync={"ok": True},
+            door_names={},
+            controllers=[{"id": 1, "name": "Quadro", "unreachable": offline, "online": not offline}],
+        )
+
+    service = NotificationService(db, settle=timedelta(0))
+    service.mark_seen(["controller:1"], collect(service, True))
+    # Riavvio: per i primi minuti il controller non risulta ancora irraggiungibile, la presa visione resta
+    restarted = NotificationService(db)
+    assert restarted.listing(collect(restarted, False))["open"] == 0
+    assert restarted.listing(collect(restarted, True))["open"] == 0
+
+
+def test_seen_group_stays_seen_when_first_events_leave_the_window(db):
+    service = NotificationService(db, settle=timedelta(0))
+    base = datetime(2026, 10, 27, 10, 0, tzinfo=UTC)
+    for minutes in (0, 2, 4):
+        ts = (base + timedelta(minutes=minutes)).isoformat()
+        db.add_event(ts=ts, kind="allarme", door="porta", detail="porta forzata")
+
+    def collect(now):
+        return service.collect(
+            mqtt_configured=True,
+            mqtt_connected=True,
+            controller_configured=True,
+            controller_online=True,
+            sync={"ok": True},
+            door_names={"porta": "Ingresso"},
+            now=now,
+        )
+
+    items = collect(base + timedelta(minutes=10))
+    service.mark_seen([i["id"] for i in items], items)
+    # Il giorno dopo il primo allarme esce dalle 24 ore: il gruppo si accorcia ma resta visto
+    listing = service.listing(collect(base + timedelta(hours=24, minutes=1)))
+    assert [(i["title"], i["seen"]) for i in listing["items"]] == [("Allarme Porta ×2", True)]
+
+
 def test_ntp_summary_variants():
     assert ntp_summary({}) == {"enabled": None, "source": "", "servers": [], "active": None, "offset": None}
     dhcp = {
@@ -204,7 +313,7 @@ def test_fault_notifications(db):
         missing={"count": 3, "persons": 2, "since": "2026-10-25T09:00:00+00:00", "mass": True},
     )
     by_type = {i["type"]: i for i in items}
-    assert by_type["controller"]["text"] == "Villa 1 · Il controller non risponde"
+    assert by_type["controller"]["text"] == "Villa 1 · il controller non risponde"
     assert by_type["controller_changed"]["title"] == "Controller Cambiato"
     assert by_type["clock"]["title"] == "Orologio del Controller"
     assert by_type["clock"]["text"] == (
@@ -215,16 +324,21 @@ def test_fault_notifications(db):
 
 
 def test_controller_mqtt_offline_but_reachable(db):
-    items = NotificationService(db).collect(
-        mqtt_configured=True,
-        mqtt_connected=True,
-        controller_configured=True,
-        controller_online=False,
-        sync={"ok": True},
-        door_names={},
-        controllers=[{"id": 1, "name": "Quadro", "unreachable": False}],
-    )
-    assert [i["title"] for i in items] == ["Eventi del Controller Non Arrivano"]
+    def titles(**health):
+        items = NotificationService(db).collect(
+            mqtt_configured=True,
+            mqtt_connected=True,
+            controller_configured=True,
+            controller_online=False,
+            sync={"ok": True},
+            door_names={},
+            controllers=[{"id": 1, "name": "Quadro", **health}],
+        )
+        return [i["title"] for i in items]
+
+    assert titles(online=True, unreachable=False) == ["Eventi del Controller Non Arrivano"]
+    # Primo controllo fallito: non si dice che il controller risponde
+    assert titles(online=False, unreachable=False) == []
 
 
 def test_home_assistant_clock_notification(db):
@@ -325,7 +439,9 @@ async def test_access_points_the_controller_does_not_manage_are_a_fault(monitor,
         door_names={},
         controllers=[{**state.as_dict(), "id": controller_row}],
     )
-    assert [(i["title"], i["severity"]) for i in items] == [("Punti di Accesso Non Gestiti", "crit")]
+    assert [(i["title"], i["type"], i["severity"]) for i in items] == [
+        ("Punto di Accesso Non Gestito", "programming", "crit")
+    ]
     assert items[0]["text"].startswith("Quadro Teatro · Ingresso: il controller legge tessere e pulsanti")
 
     controller.access_controllers["Axis-x AccessController"]["AccessPoint"] = ["ap-in"]
@@ -381,12 +497,17 @@ async def test_rex_inputs_without_permission_are_a_fault(monitor, controller, co
     # Pulsante programmato fino alla 0.21.2: punto di accesso gestito, ma nessun profilo gli dà il permesso
     controller.access_points.append({"token": "ap-rex", "Entity": "porta", "Name": "Pulsante Portineria"})
     controller.access_controllers["Axis-x AccessController"]["AccessPoint"].append("ap-rex")
-    db.save_controller_input(
-        controller_row, "REX", {"name": "Pulsante Portineria", "role": "rex", "access_point_token": "ap-rex"}
-    )
+    row = {
+        "name": "Pulsante Portineria",
+        "role": "rex",
+        "door_token": "porta",
+        "access_point_token": "ap-rex",
+        "idpoint_token": "id-rex",
+    }
+    db.save_controller_input(controller_row, "REX", row)
     await monitor.check_all()
     state = monitor.states[controller_row]
-    assert state.rex_missing == ["Pulsante Portineria"] and state.unmanaged == []
+    assert state.rex_missing == ["Pulsante Portineria"] and state.unmanaged == [] and state.input_problems == []
 
     items = NotificationService(db).collect(
         mqtt_configured=True,
@@ -397,7 +518,7 @@ async def test_rex_inputs_without_permission_are_a_fault(monitor, controller, co
         door_names={},
         controllers=[{**state.as_dict(), "id": controller_row}],
     )
-    assert [(i["title"], i["severity"]) for i in items] == [("Pulsanti Senza Permesso di Apertura", "crit")]
+    assert [(i["title"], i["severity"]) for i in items] == [("Pulsante Senza Permesso di Apertura", "crit")]
     assert items[0]["text"].startswith("Quadro Teatro · Pulsante Portineria: il controller nega l'apertura")
 
     # Con il profilo per le aperture senza tessera l'avviso sparisce al controllo successivo

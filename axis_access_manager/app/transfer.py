@@ -7,6 +7,7 @@ import io
 import re
 from datetime import datetime
 
+from .db import SOURCE_LABELS
 from .rules import RuleError, normalize_validity
 from .service import AccessService, ServiceError, normalize_card, normalize_name
 from .vapix import VapixError
@@ -20,11 +21,38 @@ EVENT_LABELS = {
     "uscita": "Uscita",
     "allarme": "Allarme Porta",
     "manomissione": "Manomissione",
-    "citofono": "Citofono",
+    "citofono": "Chiamata Citofono",
 }
 
-IMPORT_COLUMNS = ["nome", "tessera", "gruppo", "valida_dal", "valida_al", "ditta", "note", "tipologia"]
-DATE_FORMATS = ["%d/%m/%Y %H:%M", "%d/%m/%Y", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y-%m-%d"]
+IMPORT_COLUMNS = ["nome", "tessera", "gruppo", "valida_dal", "valida_al", "ditta", "note", "tipologia", "stato"]
+# Con i secondi come nel file esportato, o senza come lo risalva spesso un foglio di calcolo
+DATE_FORMATS = [
+    "%d/%m/%Y %H:%M:%S",
+    "%d/%m/%Y %H:%M",
+    "%d/%m/%Y",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%d",
+]
+DATE_COLUMNS = (("valida_dal", "valid_from"), ("valida_al", "valid_to"))
+CARD_STATES = ("attiva", "sospesa")
+# Esito della riga (l'interfaccia lo usa per i colori) → etichetta da mostrare
+OUTCOME_LABELS = {
+    "da importare": "Da Importare",
+    "ok": "Importata",
+    "da aggiornare": "Da Aggiornare",
+    "aggiornata": "Aggiornata",
+    "saltata": "Saltata",
+    "errore": "Errore",
+}
+# Testi che un foglio di calcolo leggerebbe come formule
+FORMULA_START = ("=", "+", "-", "@")
+# Tessere che un foglio di calcolo convertirebbe in numero: perdono gli zeri iniziali o le ultime cifre
+NUMERIC_CARD = re.compile(r"\d+(?:[eE]\d+)?")
+# Carattere che sostituisce i byte non leggibili: file in un'altra codifica (per esempio Excel in ANSI) letto come UTF-8
+UNREADABLE = "\ufffd"
 
 
 def _local(ts: str) -> str:
@@ -44,6 +72,16 @@ def _csv(rows: list[list]) -> str:
     return "﻿" + buffer.getvalue()
 
 
+def _text(value: str) -> str:
+    """Testo che il foglio di calcolo non prende per una formula: apostrofo davanti, tolto all'importazione."""
+    return "'" + value if value.startswith(FORMULA_START) else value
+
+
+def _card_text(number: str) -> str:
+    """Tessera come formula di testo (="04123456") se il foglio di calcolo la convertirebbe in numero."""
+    return f'="{number}"' if NUMERIC_CARD.fullmatch(number) else number
+
+
 def events_csv(events: list[dict], doors: dict[str, str] | None = None) -> str:
     """Registro in CSV; con più porte aggiunge la colonna Porta (nomi dati da doors: token → nome)."""
     doors = doors or {}
@@ -54,16 +92,17 @@ def events_csv(events: list[dict], doors: dict[str, str] | None = None) -> str:
         + ["Persona", "Tessera", "Dettaglio", "Origine", "Recuperato"]
     ]
     for event in events:
-        door = [doors.get(event.get("door") or "", event.get("door") or "")] if with_door else []
+        door = [_text(doors.get(event.get("door") or "", event.get("door") or ""))] if with_door else []
         rows.append(
             [
                 _local(event["ts"]),
                 EVENT_LABELS.get(event["kind"], event["kind"]),
                 *door,
-                event.get("person_name") or "",
-                event.get("card") or "",
-                event.get("detail") or "",
-                event.get("source") or "",
+                _text(event.get("person_name") or ""),
+                _card_text(event.get("card") or ""),
+                _text(event.get("detail") or ""),
+                # Lettore, controller o porta come nel registro; altrimenti il nome di chi ha aperto
+                _text(SOURCE_LABELS.get(event.get("source") or "", event.get("source") or "")),
                 # Arrivato dopo, dal registro interno del controller (MQTT o add-on fermi in quel momento)
                 "sì" if event.get("recovered") else "",
             ]
@@ -77,21 +116,21 @@ def persons_csv(
     last_access: dict[int, str],
     categories: dict[int, str] | None = None,
 ) -> str:
-    """Stesse colonne dell'importazione, più stato e ultimo accesso: il file si può reimportare."""
+    """Stesse colonne dell'importazione, più l'ultimo accesso: il file si può reimportare."""
     categories = categories or {}
-    rows = [IMPORT_COLUMNS + ["stato", "ultimo_accesso"]]
+    rows = [IMPORT_COLUMNS + ["ultimo_accesso"]]
     for person in persons:
         for card in person["cards"]:
             rows.append(
                 [
-                    person["name"],
-                    card["number"],
-                    group_names.get(card.get("access_profile") or "", card.get("access_profile") or ""),
+                    _text(person["name"]),
+                    _card_text(card["number"]),
+                    _text(group_names.get(card.get("access_profile") or "", card.get("access_profile") or "")),
                     _local(card.get("valid_from") or ""),
                     _local(card.get("valid_to") or ""),
-                    person.get("company") or "",
-                    person.get("notes") or "",
-                    categories.get(person.get("category_id") or 0, ""),
+                    _text(person.get("company") or ""),
+                    _text(person.get("notes") or ""),
+                    _text(categories.get(person.get("category_id") or 0, "")),
                     "attiva" if card["enabled"] else "sospesa",
                     _local(last_access.get(person["id"], "")),
                 ]
@@ -118,25 +157,45 @@ def parse_date(value: str, end_of_day: bool = False) -> str:
     raise ServiceError(f"data non riconosciuta: {value} (usa gg/mm/aaaa)")
 
 
+def _cell(value: str) -> str:
+    """Cella del CSV senza le protezioni dell'esportazione: ="…" attorno alla tessera, apostrofo davanti al testo."""
+    value = value.strip()
+    if match := re.fullmatch(r'="(.*)"', value, re.DOTALL):
+        value = match[1].strip()
+    if value.startswith("'") and value[1:].startswith(FORMULA_START):
+        value = value[1:]
+    return value
+
+
 def read_import(text: str) -> list[dict]:
-    """Righe del CSV come dizionari con le colonne di IMPORT_COLUMNS."""
+    """Righe del CSV come dizionari con le colonne dell'intestazione, o di IMPORT_COLUMNS se manca.
+
+    Senza intestazione una colonna c'è solo dove la cella ha un valore: le celle vuote lasciano i valori attuali.
+    """
     text = text.lstrip("﻿").strip()
     if not text:
         raise ServiceError("il file è vuoto")
     first_line = text.splitlines()[0]
     delimiter = ";" if first_line.count(";") >= first_line.count(",") else ","
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
-    rows = [row for row in reader if any(cell.strip() for cell in row)]
-    header = [re.sub(r"\s+", "_", cell.strip().lower()) for cell in rows[0]]
-    if "nome" in header and "tessera" in header:
+    rows = [cells for cells in ([_cell(cell) for cell in row] for row in reader) if any(cells)]
+    if not rows:
+        # Solo separatori: un foglio svuotato e risalvato
+        raise ServiceError("il file è vuoto")
+    header = [re.sub(r"\s+", "_", cell.lower()) for cell in rows[0]]
+    with_header = "nome" in header and "tessera" in header
+    if with_header:
         columns, rows = header, rows[1:]
     else:
         columns = IMPORT_COLUMNS
     if len(rows) > 2000:
         raise ServiceError("massimo 2000 righe per importazione")
     result = []
-    for index, row in enumerate(rows, start=2 if columns is header else 1):
-        item = {column: (row[i].strip() if i < len(row) else "") for i, column in enumerate(columns)}
+    for index, row in enumerate(rows, start=2 if with_header else 1):
+        if with_header:
+            item = {column: (row[i] if i < len(row) else "") for i, column in enumerate(columns)}
+        else:
+            item = {column: row[i] for i, column in enumerate(columns) if i < len(row) and row[i]}
         item["riga"] = index
         result.append(item)
     return result
@@ -149,19 +208,44 @@ def _validity(value: str) -> str:
         raise ServiceError(str(err)) from err
 
 
+def _requested_date(item: dict, column: str, current: str) -> str | None:
+    """Data chiesta dalla riga nel formato del controller; None se la colonna non c'è.
+
+    Un foglio di calcolo può risalvare le date senza secondi: una cella senza secondi che coincide al minuto con
+    la data attuale non è una modifica.
+    """
+    if column not in item:
+        return None
+    value = _validity(parse_date(item[column], end_of_day=column == "valida_al"))
+    if value and value[:16] == current[:16] and not re.search(r"\d:\d\d:\d\d", item[column]):
+        return current
+    return value
+
+
+def _wanted(item: dict, card: dict, group: str, category: dict | None) -> tuple:
+    """Valori della persona chiesti dalla riga: le righe della stessa persona devono essere d'accordo."""
+    return (
+        group,
+        category["id"] if category else 0,
+        item.get("ditta"),
+        item.get("note"),
+        *(_requested_date(item, column, card.get(field) or "") for column, field in DATE_COLUMNS),
+    )
+
+
 def _changes(item: dict, person: dict, card: dict, group: str, category: dict | None, names: dict) -> dict:
     """Cosa cambia per una persona già registrata, solo per le colonne presenti nel file.
 
     Gruppo e tipologia vuoti lasciano quelli attuali; date, ditta e note vuote li svuotano (come nel file esportato).
+    Gruppo e validità attuali sono quelli di card, una tessera della persona.
     """
     changes: dict = {}
     if group and group != card.get("access_profile"):
         changes["gruppo"] = group
-    for column, field in (("valida_dal", "valid_from"), ("valida_al", "valid_to")):
-        if column in item:
-            value = _validity(parse_date(item[column], end_of_day=column == "valida_al"))
-            if value != (card.get(field) or ""):
-                changes[column] = value
+    for column, field in DATE_COLUMNS:
+        value = _requested_date(item, column, card.get(field) or "")
+        if value is not None and value != (card.get(field) or ""):
+            changes[column] = value
     for column, field in (("ditta", "company"), ("note", "notes")):
         if column in item and item[column] != (person.get(field) or ""):
             changes[column] = item[column]
@@ -181,7 +265,10 @@ def _changes(item: dict, person: dict, card: dict, group: str, category: dict | 
 
 
 async def _update(service: AccessService, person: dict, card: dict, changes: dict, user: str) -> None:
-    """Applica le modifiche a una persona: ditta e note solo nell'add-on, gruppo e validità anche sul controller."""
+    """Applica le modifiche a una persona: prima la sospensione della tessera card (se chiesta), poi ditta e note
+    solo nell'add-on, gruppo e validità anche sul controller."""
+    if "stato" in changes:
+        await service.set_card_enabled(card["id"], False, user)
     if "ditta" in changes or "note" in changes:
         await service.update_person(
             person["id"],
@@ -205,25 +292,48 @@ async def _update(service: AccessService, person: dict, card: dict, changes: dic
         )
 
 
+def _card_number(value: str) -> str:
+    """Numero della tessera; quello in notazione scientifica viene da un foglio di calcolo che l'ha convertito."""
+    value = value.removeprefix("'")
+    if re.fullmatch(r"\d+(?:[.,]\d+)?[eE][+-]\d+", value):
+        raise ServiceError(
+            f"numero tessera in notazione scientifica ({value}): il foglio di calcolo l'ha letto come un numero, "
+            "riesporta le persone o scrivi la tessera come testo"
+        )
+    return normalize_card(value)
+
+
 async def import_persons(service: AccessService, text: str, groups: list[dict], user: str, apply: bool) -> dict:
     """Controlla (apply=False) o esegue l'importazione.
 
-    Le tessere nuove si aggiungono; per quelle già registrate si aggiornano gruppo, validità, ditta, note e
-    tipologia della persona se nel file sono diversi, altrimenti la riga è saltata.
+    Le tessere nuove si aggiungono; per le persone già registrate si aggiornano gruppo, validità, ditta, note e
+    tipologia se nel file sono diversi, altrimenti la riga è saltata. Lo stato "sospesa" sospende la tessera,
+    "attiva" non riattiva una tessera sospesa.
     """
     names = {g["token"]: g["name"] for g in groups}
-    # Persone già viste in una riga precedente (una persona ha una riga per tessera): id → valori chiesti
-    planned: dict[int, tuple] = {}
+    # Persone già viste in una riga precedente (una persona ha una riga per tessera) → valori chiesti.
+    # Chiave: id della persona, o il nome di una persona nuova finché non è creata (nell'anteprima non lo è mai)
+    planned: dict[int | str, tuple] = {}
     by_name = {g["name"].lower(): g["token"] for g in groups}
     tokens = {g["token"] for g in groups}
     categories = {c["name"].lower(): c for c in service.db.list_categories()}
+    # Tessere registrate di sole cifre con zeri iniziali, per il numero senza gli zeri: un foglio di calcolo le
+    # riduce così
+    zeroless = {
+        c["number"].lstrip("0"): c["number"]
+        for c in service.db.all_cards()
+        if c["number"].isdigit() and c["number"].startswith("0")
+    }
     seen_cards: set[str] = set()
     results = []
     for item in read_import(text):
         outcome = {"riga": item["riga"], "nome": item.get("nome", ""), "tessera": item.get("tessera", "")}
         try:
+            # Lettere accentate perse: nomi, ditta e note andrebbero storpiati nell'app e sul controller
+            if any(UNREADABLE in value for value in item.values() if isinstance(value, str)):
+                raise ServiceError("caratteri non leggibili: salva il file come CSV UTF-8 e riprova")
             name = normalize_name(item.get("nome", ""))
-            number = normalize_card(item.get("tessera", ""))
+            number = _card_number(item.get("tessera", ""))
             group_text = item.get("gruppo", "")
             group = ""
             if group_text:
@@ -234,6 +344,9 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
             category = categories.get(category_text.lower()) if category_text else None
             if category_text and category is None:
                 raise ServiceError(f"tipologia sconosciuta: {category_text}")
+            state = item.get("stato", "").lower()
+            if state and state not in CARD_STATES:
+                raise ServiceError(f"stato sconosciuto: {item['stato']} (usa attiva o sospesa)")
             valid_from = parse_date(item.get("valida_dal", ""))
             valid_to = parse_date(item.get("valida_al", ""), end_of_day=True)
             if number.lower() in seen_cards:
@@ -242,42 +355,56 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
             existing = service.db.card_by_number(number)
             if existing:
                 person = service.db.get_person(existing["person_id"])
-                # Valori chiesti dalla riga: le righe della stessa persona devono essere d'accordo
-                wanted = (
-                    group,
-                    category["id"] if category else 0,
-                    *(item.get(c) for c in ("ditta", "note")),
-                    *(
-                        _validity(parse_date(item[c], end_of_day=c == "valida_al")) if c in item else None
-                        for c in ("valida_dal", "valida_al")
-                    ),
-                )
-                if person["id"] in planned:
-                    if wanted != planned[person["id"]]:
-                        raise ServiceError("valori diversi da un'altra riga della stessa persona")
-                    changes = {}
-                else:
-                    planned[person["id"]] = wanted
-                    changes = _changes(item, person, existing, group, category, names)
+                card = existing
+            else:
+                if number in zeroless:
+                    raise ServiceError(
+                        f"la tessera {number} è la {zeroless[number]} senza gli zeri iniziali: il foglio di calcolo "
+                        "l'ha letta come un numero (se è un'altra tessera aggiungila dalla scheda della persona)"
+                    )
+                matches = [p for p in service.db.all_persons() if p["name"].lower() == name.lower()]
+                if len(matches) > 1:
+                    raise ServiceError("più persone con questo nome: aggiungi la tessera dall'elenco")
+                person = service.db.get_person(matches[0]["id"]) if matches else None
+                # Gruppo e validità attuali della persona: quelli della sua prima tessera
+                card = person["cards"][0] if person and person["cards"] else {}
+            key = person["id"] if person else name.lower()
+            wanted = _wanted(item, card, group, category)
+            repeated = key in planned
+            if repeated:
+                if wanted != planned[key]:
+                    raise ServiceError("valori diversi da un'altra riga della stessa persona")
+                changes = {}
+            else:
+                planned[key] = wanted
+                changes = _changes(item, person, card, group, category, names) if person else {}
+            if existing:
+                if state == "sospesa" and existing["enabled"]:
+                    changes = {"stato": (False, "tessera sospesa"), **changes}
+                # Un file esportato prima non riapre una tessera sospesa nel frattempo
+                kept = state == "attiva" and not existing["enabled"]
+                note = "; la tessera resta sospesa: riattivala dalla scheda della persona" if kept else ""
                 if not changes:
-                    outcome.update(esito="saltata", dettaglio=f"già registrata a {existing['person_name']}")
+                    outcome.update(esito="saltata", dettaglio=f"già registrata a {existing['person_name']}{note}")
                     results.append(outcome)
                     continue
                 if apply:
                     await _update(service, person, existing, changes, user)
-                detail = "; ".join(label for _, label in changes.values())
+                detail = "; ".join(label for _, label in changes.values()) + note
                 outcome.update(esito="aggiornata" if apply else "da aggiornare", dettaglio=detail)
                 results.append(outcome)
                 continue
-            matches = [p for p in service.db.all_persons() if p["name"].lower() == name.lower()]
-            if len(matches) > 1:
-                raise ServiceError("più persone con questo nome: aggiungi la tessera dall'elenco")
-            action = "tessera aggiunta" if matches else "nuova persona"
+            # Tessera nuova: va alla persona con lo stesso nome, anche se la crea una riga precedente del file
+            adds = person is not None or (repeated and not apply)
+            action = "tessera aggiunta" if adds else "nuova persona"
+            if state == "sospesa":
+                action += ", sospesa" if adds else ", tessera sospesa"
             if apply:
-                if matches:
-                    await service.add_card(matches[0]["id"], number, user)
+                # Una tessera «sospesa» si scrive già sospesa: non resta mai attiva sul controller
+                if person:
+                    await service.add_card(person["id"], number, user, enabled=state != "sospesa")
                 else:
-                    await service.create_person(
+                    saved = await service.create_person(
                         name,
                         number,
                         user,
@@ -287,13 +414,27 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
                         item.get("ditta", ""),
                         item.get("note", ""),
                         category["id"] if category else 0,
+                        enabled=state != "sospesa",
                     )
-            outcome.update(esito="ok" if apply else "da importare", dettaglio=action)
+                    planned[saved["id"]] = wanted
+                if changes:
+                    await _update(service, person, card, changes, user)
+            if changes:
+                # La riga cambia anche la persona: si mostra come un aggiornamento
+                detail = "; ".join([action, *(label for _, label in changes.values())])
+                outcome.update(esito="aggiornata" if apply else "da aggiornare", dettaglio=detail)
+            else:
+                outcome.update(esito="ok" if apply else "da importare", dettaglio=action)
         except ServiceError as err:
             outcome.update(esito="errore", dettaglio=str(err))
         except VapixError as err:
-            outcome.update(esito="errore", dettaglio=f"errore del controller: {err}")
+            # Come il gestore degli errori del controller in main: niente prefisso se il messaggio lo nomina già
+            text = str(err)
+            outcome.update(esito="errore", dettaglio=text if "controller" in text else f"errore del controller: {text}")
         results.append(outcome)
+    for outcome in results:
+        # Etichetta da mostrare; esito resta il valore su cui ragiona l'interfaccia
+        outcome["etichetta"] = OUTCOME_LABELS[outcome["esito"]]
     summary = {
         "righe": len(results),
         "ok": sum(1 for r in results if r["esito"] in ("ok", "da importare")),

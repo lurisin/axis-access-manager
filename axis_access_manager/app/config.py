@@ -17,6 +17,9 @@ SUPERVISOR_MQTT_URL = "http://supervisor/services/mqtt"
 # Con s6-overlay il processo principale non eredita le variabili del container:
 # il Supervisor token si trova anche qui
 S6_ENV_DIR = Path("/run/s6/container_environment")
+# Prefissi MQTT: senza caratteri jolly (# +) né spazi, come quelli di controller e citofono in Impianti
+TOPIC_PATTERN = re.compile(r"^[A-Za-z0-9_\-/]+$")
+DEFAULT_HA_TOPIC_PREFIX = "axis_access_manager"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,7 +46,7 @@ class Settings:
     event_retention_days: int = 365
     ha_integration: bool = True
     ha_door_buttons: bool = True
-    ha_topic_prefix: str = "axis_access_manager"
+    ha_topic_prefix: str = DEFAULT_HA_TOPIC_PREFIX
     snapshot_camera: str = ""
     snapshot_on_granted: bool = False
     readonly_users: tuple[str, ...] = ()
@@ -110,7 +113,7 @@ def parse_options(options: dict) -> Settings:
         event_retention_days=int(options.get("event_retention_days") or 365),
         ha_integration=bool(options.get("ha_integration", True)),
         ha_door_buttons=bool(options.get("ha_door_buttons", True)),
-        ha_topic_prefix=(options.get("ha_topic_prefix") or "axis_access_manager").strip().strip("/"),
+        ha_topic_prefix=ha_topic_prefix(options.get("ha_topic_prefix")),
         snapshot_camera=(options.get("snapshot_camera") or "").strip(),
         snapshot_on_granted=bool(options.get("snapshot_on_granted", False)),
         readonly_users=tuple(u.lower() for u in _string_list(options.get("readonly_users"))),
@@ -119,6 +122,23 @@ def parse_options(options: dict) -> Settings:
         intercom_relay=int(options.get("intercom_relay") or 1),
         intercom_mqtt_prefix=(options.get("intercom_mqtt_prefix") or "hmd").strip().strip("/"),
     )
+
+
+def ha_topic_prefix(value) -> str:
+    """Prefisso delle entità di Home Assistant; uno non valido (vuoto, con # o +) torna al predefinito.
+
+    Con # o + l'iscrizione al topic dei comandi fallirebbe e si fermerebbe l'ascolto degli eventi.
+    """
+    prefix = str(value or "").strip().strip("/")
+    if TOPIC_PATTERN.match(prefix):
+        return prefix
+    if prefix:
+        _LOGGER.warning(
+            "Prefisso MQTT di Home Assistant non valido (%s): usa lettere, numeri, _ - e /. Uso %s",
+            prefix,
+            DEFAULT_HA_TOPIC_PREFIX,
+        )
+    return DEFAULT_HA_TOPIC_PREFIX
 
 
 def _string_list(value) -> tuple[str, ...]:
@@ -132,21 +152,26 @@ def load_settings(path: Path = OPTIONS_PATH) -> Settings:
 
 
 async def resolve_mqtt(
-    settings: Settings, client: httpx.AsyncClient | None = None, token: str | None = None
+    settings: Settings, client: httpx.AsyncClient | None = None, token: str | None = None, quiet: bool = False
 ) -> MqttSettings | None:
-    """Restituisce il broker da usare: quello nelle opzioni o quello del Supervisor."""
+    """Restituisce il broker da usare: quello nelle opzioni o quello del Supervisor.
+
+    quiet: nuovo tentativo dopo l'avvio, ogni minuto finché il broker non c'è; il motivo va nel log solo in debug,
+    perché l'avviso all'avvio c'è già e senza Mosquitto riempirebbe il log."""
     if settings.mqtt:
         return settings.mqtt
+    level = logging.DEBUG if quiet else logging.WARNING
     token = token or supervisor_token()
     if not token:
-        _LOGGER.warning("Token del Supervisor non disponibile: imposta mqtt_host nelle opzioni")
+        _LOGGER.log(level, "Token del Supervisor non disponibile: imposta mqtt_host nelle opzioni")
         return None
     owns_client = client is None
     client = client or httpx.AsyncClient(timeout=10)
     try:
         response = await client.get(SUPERVISOR_MQTT_URL, headers={"Authorization": f"Bearer {token}"})
         if response.status_code != 200:
-            _LOGGER.warning(
+            _LOGGER.log(
+                level,
                 "Il Supervisor non fornisce un broker MQTT (risposta %s): installa l'add-on Mosquitto "
                 "oppure imposta mqtt_host nelle opzioni",
                 response.status_code,
@@ -160,7 +185,7 @@ async def resolve_mqtt(
             password=data.get("password"),
         )
     except (httpx.HTTPError, KeyError, ValueError) as err:
-        _LOGGER.warning("Richiesta del broker MQTT al Supervisor non riuscita: %s", err)
+        _LOGGER.log(level, "Richiesta del broker MQTT al Supervisor non riuscita: %s", err)
         return None
     finally:
         if owns_client:

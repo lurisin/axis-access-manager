@@ -74,6 +74,12 @@ async def test_resolve_mqtt_when_supervisor_has_no_broker(caplog):
         assert await resolve_mqtt(parse_options(BASE), client, token="tok") is None
     assert "Mosquitto" in caplog.text
 
+    # I tentativi successivi, uno al minuto, non riempiono il log
+    caplog.clear()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await resolve_mqtt(parse_options(BASE), client, token="tok", quiet=True) is None
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
 
 def test_intercom_options():
     settings = parse_options({"intercom_name": " Citofono ", "intercom_open_door": True, "intercom_relay": 2})
@@ -82,3 +88,18 @@ def test_intercom_options():
     assert settings.intercom_relay == 2
     assert settings.intercom_mqtt_prefix == "hmd"
     assert parse_options({}).intercom_name == ""
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, "axis_access_manager"),
+        (" accessi/casa/ ", "accessi/casa"),
+        ("   ", "axis_access_manager"),
+        # Con # o + l'iscrizione ai comandi fallirebbe e si fermerebbe l'ascolto degli eventi
+        ("accessi#casa", "axis_access_manager"),
+        ("accessi/+", "axis_access_manager"),
+    ],
+)
+def test_ha_topic_prefix_is_validated(value, expected):
+    assert parse_options({"ha_topic_prefix": value}).ha_topic_prefix == expected

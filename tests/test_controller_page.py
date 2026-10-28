@@ -105,7 +105,8 @@ def _collect(service, **overrides):
 
 
 def test_notifications(db):
-    service = NotificationService(db)
+    # Come dopo i primi minuti dall'avvio: le viste che non ci sono più si dimenticano subito
+    service = NotificationService(db, settle=timedelta(0))
     now = datetime.now(tz=UTC)
     assert _collect(service) == []
 
@@ -126,8 +127,10 @@ def test_notifications(db):
 
     listing = service.listing(items)
     assert listing["open"] == 5
-    # Chi non vede il registro né le persone vede solo i collegamenti
-    assert {i["type"] for i in service.listing(items, set())["items"]} == {"mqtt", "controller"}
+    # Chi non vede il registro né le persone vede i collegamenti e gli allarmi, senza eventi e istantanee
+    status_only = service.listing(items, set())["items"]
+    assert {i["type"] for i in status_only} == {"mqtt", "controller", "door_alarm"}
+    assert next(i for i in status_only if i["type"] == "door_alarm")["events"] == []
 
     service.mark_seen(["mqtt", alarm["id"]], items)
     assert service.listing(items)["open"] == 3
@@ -271,6 +274,8 @@ def test_dashboard_layout(client):
 
 def test_seen_notifications_go_in_the_audit_log(client):
     db = client.app.state.db
+    # Nel test non c'è il broker: il suo guasto non c'entra
+    client.app.state.notifications.set_levels({"mqtt": "off"}, "test")
     now = datetime.now(tz=UTC)
     for minutes in (3, 2):
         db.add_event(ts=(now - timedelta(minutes=minutes)).isoformat(), kind="negato", card="04AA", door="porta")
@@ -279,10 +284,10 @@ def test_seen_notifications_go_in_the_audit_log(client):
     unknown = next(i for i in items if i["type"] == "unknown_card")
     client.post("/api/notifications/seen", json={"ids": [unknown["id"]]})
     [last] = db.list_audit(limit=1)
-    assert last["action"] == "presa visione" and last["detail"] == "Tessera Sconosciuta ×2 (Tessera 04AA)"
+    assert last["action"] == "notifica segnata come vista" and last["detail"] == "Tessera Sconosciuta ×2 (Tessera 04AA)"
     client.post("/api/notifications/seen", json={})
     [last] = db.list_audit(limit=1)
-    assert last["action"] == "presa visione" and last["detail"] == "Allarme Porta (Porta forzata)"
+    assert last["action"] == "notifica segnata come vista" and last["detail"] == "Allarme Porta (Porta forzata)"
     # Già viste: nessuna nuova riga
     count = len(db.list_audit())
     client.post("/api/notifications/seen", json={})
@@ -323,14 +328,15 @@ async def test_door_contact_is_read_from_the_controller_after_each_connection(co
     assert monitor.door_modes == {"porta": "Locked"}
     assert changes == [1]
 
-    # Una volta per connessione; dopo un'interruzione si rilegge, e la modalità arrivata via MQTT resta
+    # Una volta per connessione; dopo un'interruzione si rilegge, e vale anche la modalità del controller
+    # (il cambio arrivato via MQTT può essersi perso nell'interruzione)
     controller.door_physical, controller.door = "Open", "Accessed"
     await _read_door_states(state)
     assert monitor.door_physical == {"porta": "Closed"}
     monitor.outages += 1
     await _read_door_states(state)
     assert monitor.door_physical == {"porta": "Open"}
-    assert monitor.door_modes == {"porta": "Locked"}
+    assert monitor.door_modes == {"porta": "Accessed"}
 
     # Contatto tolto: il controller risponde Unknown, l'entità torna sconosciuta
     controller.door_physical = "Unknown"

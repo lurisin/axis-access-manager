@@ -11,13 +11,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database, now_iso
-from .programming import CONTROLLER_INPUTS, rex_policies, rex_uncovered, unlinked_points
+from .programming import CONTROLLER_INPUTS, input_problem, rex_policies, rex_uncovered, unlinked_points
 from .vapix import VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -48,12 +50,19 @@ class ControllerHealth:
     cert_fingerprint: str = ""
     # Secondi in più (o in meno) dell'orologio del controller rispetto a Home Assistant
     clock_offset: float | None = None
+    # time.time() - time.monotonic() alla misura: se poi l'orologio di Home Assistant salta, lo scarto si corregge
+    clock_reference: float | None = None
     time_zone: str = ""
+    # Fuso del controller con ore diverse da quello di Home Assistant: fasce orarie e festività sfasate
+    zone_differs: bool = False
+    ha_time_zone: str = ""
     ntp: dict = field(default_factory=dict)
     # Punti di accesso per cui il controller non decide (dopo un reset): lì tessere e pulsanti non aprono
     unmanaged: list[str] = field(default_factory=list)
     # Ingressi che aprono la porta senza il permesso di farlo: il controller li nega
     rex_missing: list[str] = field(default_factory=list)
+    # Ingressi programmati solo in parte o con oggetti tolti fuori dall'app: si riparano scrivendoli di nuovo
+    input_problems: list[str] = field(default_factory=list)
     # Controlli riusciti da quando risponde: decide quando rileggere ora e NTP
     answered: int = 0
 
@@ -64,7 +73,14 @@ class ControllerHealth:
     def as_dict(self) -> dict:
         data = asdict(self)
         data.pop("answered")
+        data.pop("clock_reference")
         return {**data, "unreachable": self.unreachable}
+
+    def clock_offset_now(self) -> float | None:
+        """Scarto dell'orologio corretto per i salti dell'orologio di Home Assistant dopo la misura."""
+        if self.clock_offset is None or self.clock_reference is None:
+            return self.clock_offset
+        return round(self.clock_offset - ((time.time() - time.monotonic()) - self.clock_reference), 1)
 
 
 def parse_utc(value: str) -> datetime | None:
@@ -73,6 +89,44 @@ def parse_utc(value: str) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def ha_time_zone() -> str:
+    """Fuso orario di Home Assistant (per esempio Europe/Rome), vuoto se l'add-on non lo conosce."""
+    return os.environ.get("TZ") or ""
+
+
+def _zone(name: str) -> ZoneInfo | None:
+    try:
+        return ZoneInfo(name) if name else None
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
+def zone_differs(info: dict, ha_zone: str, now: datetime | None = None) -> bool:
+    """Il fuso del controller ha ore diverse da quello di Home Assistant, adesso o in un altro periodo dell'anno.
+
+    Fasce orarie e festività si scrivono in ora locale del controller: con un fuso diverso scattano all'ora sbagliata,
+    anche se l'orologio è giusto. Nomi diversi con le stesse ore (Europe/Rome ed Europe/Berlin) vanno bene.
+    Se uno dei due fusi non si conosce non si segnala niente.
+    """
+    ha = _zone(ha_zone)
+    if ha is None:
+        return False
+    now = now or datetime.now(tz=UTC)
+    # Ora locale del controller con lo scarto da UTC, se la dà: vale anche per un fuso POSIX senza nome
+    try:
+        local = datetime.fromisoformat(str(info.get("localDateTime") or "").replace("Z", "+00:00"))
+    except ValueError:
+        local = None
+    if local is not None and local.tzinfo is not None and local.utcoffset() != local.astimezone(ha).utcoffset():
+        return True
+    controller = _zone(str(info.get("timeZone") or ""))
+    if controller is None:
+        return False
+    # Oggi, in inverno e in estate: un fuso senza ora legale (UTC) si distingue anche quando oggi coincide
+    moments = (now, datetime(now.year, 1, 15, 12, tzinfo=UTC), datetime(now.year, 7, 15, 12, tzinfo=UTC))
+    return any(m.astimezone(controller).utcoffset() != m.astimezone(ha).utcoffset() for m in moments)
 
 
 def ntp_summary(info: dict) -> dict:
@@ -169,10 +223,12 @@ class HealthMonitor:
             state.latency_ms = None
             state.answered = 0
             return state
-        except Exception as err:  # noqa: BLE001 - un controller che risponde male non deve fermare gli altri
+        except Exception:  # noqa: BLE001 - un controller che risponde male non deve fermare gli altri
+            # Il dettaglio (in inglese) solo nel log
             _LOGGER.exception("Controllo del controller %s non riuscito", row["name"])
-            state.online, state.error = False, str(err)
+            state.online, state.error = False, "risposta del controller non riconosciuta"
             state.failures += 1
+            state.latency_ms = None
             state.answered = 0
             return state
         state.latency_ms = round((time.monotonic() - started) * 1000)
@@ -204,7 +260,8 @@ class HealthMonitor:
             answered = time.time()
         except VapixError as err:
             _LOGGER.debug("Ora del controller %s non letta: %s", state.name, err)
-            state.clock_offset = None
+            state.clock_offset = state.clock_reference = None
+            state.zone_differs = False
             return
         controller_time = parse_utc(info.get("utcDateTime") or info.get("dateTime") or "")
         ntp = getattr(client, "ntp_info", None)
@@ -217,7 +274,16 @@ class HealthMonitor:
         # se il controller è sincronizzato ("36 s avanti" invece di "Home Assistant è 36 s indietro").
         # A metà della richiesta: il ritardo della rete non conta come scarto
         state.clock_offset = round(controller_time.timestamp() - (asked + answered) / 2, 1) if controller_time else None
+        state.clock_reference = time.time() - time.monotonic() if controller_time else None
         state.time_zone = str(info.get("timeZone") or info.get("posixTimeZone") or "")
+        state.ha_time_zone = ha_time_zone()
+        state.zone_differs = zone_differs(info, state.ha_time_zone)
+
+    async def recheck_clock(self, row: dict | None) -> None:
+        """Dopo aver scritto il fuso orario nel controller: l'avviso sparisce subito, non al giro dei 5 minuti."""
+        state = self.states.get(row["id"]) if row else None
+        if state is not None:
+            await self._clock(self._client(row), state)
 
     async def recheck_managed(self, row: dict | None) -> None:
         """Dopo averli fatti gestire (programmazione, ripristino): l'avviso sparisce subito, non al giro dell'ora."""
@@ -238,6 +304,13 @@ class HealthMonitor:
             p.get("Name") or p["token"] for p in unlinked_points(points, controllers) if p.get("Enabled") is not False
         ]
         rows = self.db.controller_inputs(state.id)
+
+        def name(io: str) -> str:
+            return rows[io]["name"] or CONTROLLER_INPUTS[io][0]
+
+        state.input_problems = [
+            name(io) for io in CONTROLLER_INPUTS if io in rows and input_problem(io, rows[io], points)
+        ]
         existing = {p.get("token") for p in points}
         wanted = [t for t in rex_policies(rows.values()) if t in existing]
         try:
@@ -246,7 +319,7 @@ class HealthMonitor:
             _LOGGER.debug("Profili di accesso di %s non letti: %s", state.name, err)
             return
         state.rex_missing = [
-            rows[io]["name"] for io in CONTROLLER_INPUTS if io in rows and rows[io]["access_point_token"] in missing
+            name(io) for io in CONTROLLER_INPUTS if io in rows and rows[io]["access_point_token"] in missing
         ]
 
     def check_identity(self, row: dict, state: ControllerHealth) -> None:

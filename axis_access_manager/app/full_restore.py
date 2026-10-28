@@ -1,9 +1,9 @@
 """Ripristino completo di un controller resettato o sostituito.
 
 Dal backup si ricrea la programmazione con i token di allora, così tessere, tipologie, eventi ed entità di
-Home Assistant restano collegati: fasce orarie, modi di identificazione, porte con la loro configurazione,
-lettori, morsetti (ingressi e uscite), punti di accesso e profili. Poi si riscrivono le tessere che il controller
-non ha più e, a parte, si rimettono fuso orario, NTP e MQTT.
+Home Assistant restano collegati: fasce orarie (con le regole dell'app e le festività di adesso), modi di
+identificazione, porte con la loro configurazione, lettori, morsetti (ingressi e uscite), punti di accesso e
+profili. Poi si riscrivono le tessere che il controller non ha più e, a parte, si rimettono fuso orario, NTP e MQTT.
 
 Valgono le regole di sempre: tempi di apertura entro i limiti della serratura, mai uno sblocco permanente
 (la programmazione oraria delle porte non si ripristina), nessuna password nei backup. Con un controller
@@ -16,8 +16,9 @@ from __future__ import annotations
 import copy
 import json
 
-from .backup import COMMON, FIELD_LABELS, context_of
+from .backup import COMMON, FIELD_LABELS, READ_LABELS, context_of
 from .programming import CONTROLLER_INPUTS, DOOR_TIMES, format_duration, link_access_points, parse_duration
+from .rules import describe_rules, holidays_ical
 from .service import ServiceError, plural
 from .vapix import VapixError
 
@@ -27,18 +28,22 @@ FULL_SECTIONS = {
     "tessere": "Tessere sul Controller",
 }
 UUID_FIELDS = ("DeviceUUID", "DoorDeviceUUID")
-# Voci degli errori di lettura del backup (controller_snapshot) per ogni elenco
-READ_LABELS = {
-    "schedules": "fasce orarie",
-    "doors": "porte",
-    "door_configurations": "configurazione delle porte",
-    "idpoints": "lettori",
-    "idpoint_configurations": "configurazione dei lettori",
-    "io_assignments": "ingressi e uscite",
-    "access_points": "punti di accesso",
-    "access_profiles": "profili di accesso",
-    "credentials": "tessere",
+# Le voci degli errori di lettura del backup (READ_LABELS) come titolo delle righe che non si possono ripristinare
+READ_TITLES = {
+    "schedules": "Fasce Orarie",
+    "doors": "Porte",
+    "door_configurations": "Configurazione delle Porte",
+    "idpoints": "Lettori",
+    "idpoint_configurations": "Configurazione dei Lettori",
+    "io_assignments": "Ingressi e Uscite",
+    "access_points": "Punti di Accesso",
+    "access_profiles": "Profili di Accesso",
+    "credentials": "Tessere",
 }
+NOT_READ = "dati non letti nel backup o adesso: restano come sono"
+# Token rifiutati da un controller, con quello nuovo che ha dato (JSON vecchio → nuovo): i backup di prima hanno
+# ancora i vecchi, e senza questa mappa un secondo ripristino ricreerebbe gli stessi oggetti una seconda volta
+SETTING_TOKENS = "restore_tokens"
 FIELD_NAMES = {
     **FIELD_LABELS,
     "Name": "Nome",
@@ -74,6 +79,20 @@ def _row(key: str, section: str, action: str, label: str, text: str, default: bo
         "default": default,
         **extra,
     }
+
+
+def _named(noun: str, name: str) -> str:
+    """ "Porta Scala", ma "Porta B" e non "Porta Porta B" se il nome comincia già così."""
+    return name if f"{name} ".lower().startswith(f"{noun} ".lower()) else f"{noun} {name}"
+
+
+def renamed_tokens(db) -> dict[str, str]:
+    """Token cambiati dai ripristini completi (vecchio → nuovo), da applicare ai backup prima dell'anteprima."""
+    try:
+        value = json.loads(db.get_setting(SETTING_TOKENS) or "{}")
+    except ValueError:
+        return {}
+    return {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
 
 
 def _norm(value):
@@ -195,9 +214,10 @@ def plan(
                 "completo",
                 sections[0],
                 "riporta",
-                "Ripristino completo",
+                "Ripristino Completo",
                 "",
                 blocked="questo backup non ha la configurazione del controller",
+                _covers=list(sections),
             )
         ]
     if current is None:
@@ -206,16 +226,20 @@ def plan(
                 "completo",
                 sections[0],
                 "riporta",
-                "Ripristino completo",
+                "Ripristino Completo",
                 "",
                 blocked="il controller non risponde: si ripristina quando torna raggiungibile",
+                # Le righe scelte nell'anteprima, sparite perché adesso non risponde, non sono "già come nel backup"
+                _covers=list(sections),
             )
         ]
     items: list[dict] = []
     if "dispositivo" in sections:
         items += _plan_device(saved.get("device") or {}, current.get("device") or {}, mqtt_users or set())
     if "controller" in sections:
-        items += _plan_programming(saved, current, context_of(saved_parts))
+        items += _plan_programming(
+            saved, current, context_of(saved_parts), saved_parts.get(COMMON) or {}, current_parts.get(COMMON) or {}
+        )
     if "tessere" in sections:
         items += _plan_cards(current, current_parts.get(COMMON) or {})
     return items
@@ -279,9 +303,13 @@ def _by(part: dict, key: str, field: str = "token") -> dict[str, dict]:
     return {str(o.get(field)): o for o in part.get(key) or [] if o.get(field)}
 
 
-def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
+def _plan_programming(saved: dict, current: dict, ctx: dict, saved_common: dict, current_common: dict) -> list[dict]:
     local, replaced, guess = _devices(saved, current)
-    fresh = not current.get("credentials") and bool(saved.get("credentials"))
+    # Appena resettato: nessuna tessera, purché l'elenco si sia letto davvero (un errore di lettura non è un elenco
+    # vuoto, e un controller che funziona non deve sembrare resettato)
+    fresh = (
+        not _read_problem(current, "credentials") and not current.get("credentials") and bool(saved.get("credentials"))
+    )
     names = {**ctx["doors"]}
     names.update({str(i.get("token")): i.get("Name") or i.get("token") for i in saved.get("idpoints") or []})
     for door in saved.get("doors") or []:
@@ -321,13 +349,32 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
 
     found = objects("schedules")
     if found:
+        # Regole e festività delle fasce fatte con l'app: sono nei Dati Comuni e tornano insieme alla fascia
+        app_rules = {s["token"]: s for s in saved_common.get("schedules") or [] if "rules" in s}
+        managed = {s["token"] for s in current_common.get("schedules") or [] if "rules" in s}
         for token, schedule in found[0].items():
-            label = f"Fascia Oraria {ctx['schedules'].get(token) or schedule.get('Name') or token}"
-            add("fascia", token, label, schedule, found[1].get(token))
+            label = _named("Fascia Oraria", ctx["schedules"].get(token) or schedule.get("Name") or token)
+            rules = app_rules.get(token)
+            extra = (
+                {"_rules": {"rules": rules["rules"] or [], "holidays": bool(rules.get("holidays"))}} if rules else {}
+            )
+            now = found[1].get(token)
+            if extra and extra["_rules"]["holidays"] and now is not None:
+                # Le eccezioni si scrivono con le festività di adesso: quelle del giorno del backup non contano
+                schedule = {**schedule, "ExceptionScheduleDefinition": now.get("ExceptionScheduleDefinition")}
+            # Fascia uguale sul controller, ma l'app ne ha perso le regole: si rimettono solo quelle
+            lost = bool(rules) and now is not None and token not in managed
+            item = add("fascia", token, label, schedule, now, force=lost, **extra)
+            if item is not None and lost and not item["changes"]:
+                item.update(text="Riporta le regole della fascia nell'app", _app_only=True)
+                item["changes"] = [
+                    {"label": "Regole nell'App", "old": "—", "new": describe_rules(rules["rules"] or []) or "—"}
+                ]
     if "authentication_profiles" in saved and "authentication_profiles" in current:
         now = _by(current, "authentication_profiles")
         for token, profile in _by(saved, "authentication_profiles").items():
-            add("modo", token, f"Modo di Identificazione {profile.get('Name') or token}", profile, now.get(token))
+            label = _named("Modo di Identificazione", profile.get("Name") or token)
+            add("modo", token, label, profile, now.get(token))
     doors = objects("doors")
     configs = objects("door_configurations") or ({}, {})
     if doors:
@@ -337,7 +384,7 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
             item = _plan_pair(
                 "porta",
                 token,
-                f"Porta {names.get(token) or token}",
+                _named("Porta", names.get(token) or token),
                 payload,
                 doors[1].get(token),
                 config,
@@ -355,7 +402,7 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
             _plan_pair(
                 "lettore",
                 token,
-                f"Lettore {reader.get('Name') or token}",
+                _named("Lettore", reader.get("Name") or token),
                 reader,
                 readers[1].get(token),
                 reader_configs[0].get(token),
@@ -383,7 +430,7 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
     points = objects("access_points")
     if points:
         for token, point in points[0].items():
-            add("punto", token, f"Punto di Accesso {point.get('Name') or token}", point, points[1].get(token))
+            add("punto", token, _named("Punto di Accesso", point.get("Name") or token), point, points[1].get(token))
         if current.get("access_controllers") is not None:
             item = _plan_managed(saved, current, points[0])
             if item is not None:
@@ -391,9 +438,10 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
     profiles = objects("access_profiles")
     if profiles:
         for token, profile in profiles[0].items():
-            add("profilo", token, f"Profilo di Accesso {profile.get('Name') or token}", profile, profiles[1].get(token))
+            label = _named("Profilo di Accesso", profile.get("Name") or token)
+            add("profilo", token, label, profile, profiles[1].get(token))
     # Quello che c'è sul controller e non nel backup: dopo un reset sono gli oggetti di fabbrica, e si tolgono
-    text = "Togli: non c'è nel backup" if fresh else "Togli: aggiunto dopo il backup"
+    text = "Togli: non c'è nel backup" if fresh else "Togli: non c'era nel backup"
     if io:
         for name, assignment in io[1].items():
             if assignment.get("IoUser") and not (io[0].get(name) or {}).get("IoUser"):
@@ -427,7 +475,7 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
                         f"prog-{prefix}-togli:{token}",
                         "controller",
                         "togli",
-                        f"{noun} {obj.get('Name') or token}",
+                        _named(noun, obj.get("Name") or token),
                         text,
                         fresh,
                         _kind=f"{prefix}-togli",
@@ -440,9 +488,9 @@ def _plan_programming(saved: dict, current: dict, ctx: dict) -> list[dict]:
                 f"prog-letto:{key}",
                 "controller",
                 "riporta",
-                READ_LABELS[key].capitalize(),
+                READ_TITLES[key],
                 "",
-                blocked="non lette nel backup o adesso: restano come sono",
+                blocked=NOT_READ,
             )
         )
     return items
@@ -624,22 +672,38 @@ def _swap(value, tokens: dict[str, str]):
     return tokens.get(value, value) if isinstance(value, str) else value
 
 
-async def _create(runtime, write, payload: dict) -> str:
+async def _create(runtime, item: dict, write, payload: dict, listing) -> str:
     """Scrive l'oggetto con il suo token. I token generati dal controller (Axis-<serie>:...) potrebbero non essere
-    accettati da un altro controller: in quel caso lo si crea senza e il token nuovo si cambia in tutta l'app."""
+    accettati da un altro controller: in quel caso lo si crea senza e il token nuovo si cambia in tutta l'app.
+    Solo per un oggetto da ricreare, e solo se dopo l'errore non c'è ancora: un errore arrivato a scrittura fatta
+    (per esempio un timeout) non deve lasciare un doppione sul controller."""
     token = payload.get("token") or ""
     try:
         written = await write(payload) or token
-    except VapixError:
-        if not token.startswith("Axis-"):
+    except VapixError as err:
+        if item["action"] != "ricrea" or not token.startswith("Axis-"):
             raise
+        try:
+            exists = token in {o.get("token") for o in await listing()}
+        except VapixError:
+            raise err from None
+        if exists:
+            return token
         written = await write({**payload, "token": ""})
         if not written:
             raise
     if written != token:
-        runtime.cache.setdefault("tokens", {})[token] = written
-        runtime.db.replace_token(token, written)
+        _rename(runtime, token, written)
     return written
+
+
+def _rename(runtime, old: str, new: str) -> None:
+    """Token nuovo dato dal controller: si cambia in tutta l'app e si ricorda per i ripristini dagli stessi backup."""
+    runtime.cache.setdefault("tokens", {})[old] = new
+    runtime.db.replace_token(old, new)
+    known = {k: new if v == old else v for k, v in renamed_tokens(runtime.db).items()}
+    known[old] = new
+    runtime.db.set_setting(SETTING_TOKENS, json.dumps(known))
 
 
 async def _apply_programming(item: dict, runtime, controller) -> None:
@@ -647,16 +711,25 @@ async def _apply_programming(item: dict, runtime, controller) -> None:
     tokens = runtime.cache.get("tokens") or {}
     saved = _swap(copy.deepcopy(item.get("_saved")), tokens)
     if kind == "fascia":
-        await _create(runtime, controller.set_schedule, saved)
+        rules = item.get("_rules")
+        if rules and rules["holidays"]:
+            # Le festività di adesso, non quelle del giorno del backup
+            saved["ExceptionScheduleDefinition"] = holidays_ical(runtime.db.list_holidays())
+        token = tokens.get(token, token)
+        if not item.get("_app_only") or saved != _swap(item["_saved"], tokens):
+            token = await _create(runtime, item, controller.set_schedule, saved, controller.list_schedules)
+        if rules:
+            # Regole nell'app: senza, la fascia risulta esterna e le festività cambiate dopo non le arrivano
+            runtime.db.save_schedule_rules(token, rules["rules"], rules["holidays"])
     elif kind == "modo":
         await controller.set_authentication_profile(saved)
     elif kind == "porta":
-        door = await _create(runtime, controller.set_door, saved)
+        door = await _create(runtime, item, controller.set_door, saved, controller.list_doors)
         if item.get("_config"):
             # Solo serratura, contatto e relè: la programmazione oraria della porta (sblocchi) non si tocca
             await controller.set_door_configuration(_config_payload(item["_config"], item, door))
     elif kind == "lettore":
-        reader = await _create(runtime, controller.create_idpoint, saved)
+        reader = await _create(runtime, item, controller.create_idpoint, saved, controller.list_idpoints)
         if item.get("_config"):
             payload = _config_payload(item["_config"], item, reader)
             values = {str(c.get("Name")): str(c.get("Value")) for c in payload["Configuration"]}
@@ -669,9 +742,9 @@ async def _apply_programming(item: dict, runtime, controller) -> None:
         for device in saved.get("IdPointDevice") or []:
             if _replaced(device.get("DeviceUUID") or "", item):
                 device["DeviceUUID"] = await _new_device(item, runtime, controller)
-        await _create(runtime, controller.create_access_point, saved)
+        await _create(runtime, item, controller.create_access_point, saved, controller.list_access_points)
     elif kind == "profilo":
-        await _create(runtime, controller.set_access_profile, saved)
+        await _create(runtime, item, controller.set_access_profile, saved, controller.list_access_profiles)
     elif kind == "io-libera":
         await controller.set_io_assignment(token, saved.get("IoMode") or "", [])
     elif kind == "gestiti":
