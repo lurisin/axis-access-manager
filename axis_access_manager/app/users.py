@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -18,8 +19,21 @@ PERMISSIONS = {
     "regole_modifica": "Modificare tipologie, fasce orarie e festività",
     "import_export": "Esportare e importare file CSV",
     "impianti": "Configurare controller, porte, citofoni e telecamere e programmare il controller",
-    "backup": "Vedere, creare e confrontare i backup (ripristinare resta agli amministratori)",
+    "backup": "Vedere, creare, bloccare e confrontare i backup (ripristinare ed eliminare restano agli amministratori)",
     "utenti": "Gestire gli utenti dell'app e vedere le attività (amministratore)",
+}
+# Nome breve di ogni permesso, per Registro Attività e confronto dei backup
+PERMISSION_NAMES = {
+    "stato": "Stato",
+    "persone": "Persone",
+    "persone_modifica": "Modifica Persone",
+    "registro": "Registro",
+    "regole": "Regole",
+    "regole_modifica": "Modifica Regole",
+    "import_export": "Importa ed Esporta",
+    "impianti": "Impianti",
+    "backup": "Backup",
+    "utenti": "Utenti",
 }
 
 # Permessi che ne richiedono altri per avere senso
@@ -42,6 +56,10 @@ ROLES = {
 ADMIN = "utenti"
 LOCAL_USER = "locale"
 SETTING_STATUS_ADDED = "perm_stato_added"
+# Id dell'utente di Home Assistant → nome utente nell'app: i permessi seguono la persona, non il nome utente
+SETTING_USER_IDS = "app_user_ids"
+# Nome utente nell'app di chi entra senza nome utente di Home Assistant (login LDAP, OIDC...)
+ID_PREFIX = "id:"
 
 
 class UserError(Exception):
@@ -88,17 +106,21 @@ class UserDirectory:
         self._lock = threading.Lock()
         self._seen: dict[str, float] = {}
 
-    def resolve(self, username: str, display_name: str) -> AppUser:
+    def resolve(self, username: str, display_name: str, user_id: str = "") -> AppUser:
         """Utente registrato; chi entra per la prima volta viene aggiunto.
 
         Il primo utente in assoluto diventa amministratore, gli altri partono con "Solo Stato"
-        (o "Consultazione" se elencati nell'opzione readonly_users).
+        (o "Consultazione" se elencati nell'opzione readonly_users). Con l'id di Home Assistant (user_id) l'utente
+        si riconosce anche se cambia nome utente, o se Home Assistant non lo manda.
         """
         username = username.strip().lower()
-        if not username:
+        user_id = user_id.strip()
+        if not username and not user_id:
             # Senza intestazioni di Ingress (sviluppo, vecchio Supervisor): accesso completo come prima della 0.4
             return AppUser(LOCAL_USER, "Accesso locale", set(PERMISSIONS))
         with self._lock:
+            if user_id:
+                username = self._follow_id(user_id, username)
             row = self.db.get_app_user(username)
             if row is None:
                 if not self._has_admin():
@@ -132,13 +154,58 @@ class UserDirectory:
             )
         return changed
 
+    def _follow_id(self, user_id: str, username: str) -> str:
+        """Nome utente nell'app della persona di Home Assistant con questo id; tiene aggiornato il legame."""
+        saved = self._ids()
+        ids = dict(saved)
+        bound = ids.get(user_id, "")
+        if bound and self.db.get_app_user(bound) is None:
+            bound = ""  # eliminato dall'app: chi torna riparte da capo
+        if not username:
+            # Home Assistant manda il nome utente solo per i suoi account, non per LDAP o OIDC: resta l'id
+            username = bound or f"{ID_PREFIX}{user_id}"
+        elif bound != username:
+            owner = next((i for i, name in ids.items() if name == username and i != user_id), "")
+            if owner and self.db.get_app_user(username) is not None and f"{ID_PREFIX}{owner}" != username:
+                # Il nome utente era di un'altra persona di Home Assistant: i permessi restano suoi
+                self._move(username, f"{ID_PREFIX}{owner}", "nome utente passato a un altro utente di Home Assistant")
+                ids[owner] = f"{ID_PREFIX}{owner}"
+            if bound and self.db.get_app_user(username) is None:
+                # Nome utente cambiato in Home Assistant: i permessi seguono la persona
+                self._move(bound, username, "nome utente cambiato in Home Assistant")
+        ids = {i: name for i, name in ids.items() if name != username}
+        ids[user_id] = username
+        if ids != saved:
+            self.db.set_setting(SETTING_USER_IDS, json.dumps(ids))
+        return username
+
+    def _ids(self) -> dict[str, str]:
+        try:
+            ids = json.loads(self.db.get_setting(SETTING_USER_IDS) or "{}")
+        except ValueError:
+            return {}
+        return ids if isinstance(ids, dict) else {}
+
+    def _unbind(self, username: str) -> None:
+        """Il nome utente non è più legato a nessuna persona di Home Assistant: il prossimo che entra lo prende."""
+        ids = self._ids()
+        if username in ids.values():
+            self.db.set_setting(SETTING_USER_IDS, json.dumps({i: n for i, n in ids.items() if n != username}))
+
+    def _move(self, old: str, new: str, reason: str) -> None:
+        row = self.db.get_app_user(old)
+        self.db.save_app_user(new, row["name"], row["perms"])
+        self.db.delete_app_user(old)
+        self.db.add_audit("sistema", reason, f"{row['name'] or old}: {old} → {new}")
+
     def _touch(self, username: str, display_name: str, row: dict) -> None:
         # Al massimo una scrittura al minuto per utente
         now = time.monotonic()
         if now - self._seen.get(username, -120) < 60 and row["name"]:
             return
         self._seen[username] = now
-        self.db.touch_app_user(username, display_name)
+        # Il nome scelto nella pagina Utenti resta: quello di Home Assistant serve solo se manca
+        self.db.touch_app_user(username, "" if row["name"] else display_name)
 
     def _has_admin(self) -> bool:
         return any(ADMIN in u["perms"] for u in self.db.list_app_users())
@@ -164,6 +231,9 @@ class UserDirectory:
                 raise UserError("utente non trovato")
             if existing and ADMIN in existing["perms"] and ADMIN not in perms and self._admins() <= 1:
                 raise UserError("serve almeno un amministratore: dai prima i permessi completi a un altro utente")
+            if create:
+                # Registrato prima del suo primo accesso: lo prende chi entra con questo nome utente
+                self._unbind(username)
             self.db.save_app_user(username, name or (existing or {}).get("name", ""), perms)
         action = "utente creato" if create else "utente modificato"
         saved = self.db.get_app_user(username)
@@ -181,6 +251,7 @@ class UserDirectory:
             if ADMIN in existing["perms"] and self._admins() <= 1:
                 raise UserError("è l'unico amministratore")
             self.db.delete_app_user(username)
+            self._unbind(username)
         self.db.add_audit(by.label, "utente eliminato", existing["name"] or username)
 
     def _admins(self) -> int:
@@ -191,4 +262,4 @@ def role_label(perms: list[str]) -> str:
     role = role_of(perms)
     if role in ROLES:
         return ROLES[role][0]
-    return "Personalizzato: " + ", ".join(perms)
+    return "Personalizzato: " + ", ".join(PERMISSION_NAMES[p] for p in normalize_perms(perms))
