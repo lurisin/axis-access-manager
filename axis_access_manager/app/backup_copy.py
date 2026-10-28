@@ -33,7 +33,7 @@ UPDATE_COPY_DIR = "copie_database"
 UPDATE_COPIES_KEPT = 3
 # Copia a blocchi di pagine: tra un blocco e l'altro l'add-on può scrivere (in un passo solo aspettava fino a
 # 5 s e poi la sua scrittura falliva). Ogni scrittura però fa ripartire la copia: dopo COPY_STEPS_FOR secondi
-# la si finisce in un passo solo, e dopo COPY_GIVE_UP secondi si rinuncia.
+# la si finisce tenendo ferma la lettura del database, sempre a blocchi, e dopo COPY_GIVE_UP secondi si rinuncia.
 COPY_STEP_PAGES = 1024
 COPY_STEPS_FOR = 30
 COPY_GIVE_UP = 120
@@ -46,7 +46,7 @@ class DamagedError(Exception):
 
 
 class _Slow(Exception):
-    """Copia a blocchi che non finisce: la si rifà in un passo solo."""
+    """Copia a blocchi che non finisce: la si rifà tenendo ferma la lettura del database."""
 
 
 def _sync_dir(folder: Path) -> None:
@@ -69,14 +69,22 @@ def _backup(src: sqlite3.Connection, dst: sqlite3.Connection) -> None:
         if status != sqlite3.SQLITE_DONE and time.monotonic() - start > COPY_STEPS_FOR:
             raise _Slow
 
-    def at_once(status: int, remaining: int, pages: int) -> None:
+    def held(status: int, remaining: int, pages: int) -> None:
         if status != sqlite3.SQLITE_DONE and time.monotonic() - start > COPY_GIVE_UP:
             raise TimeoutError("copia del database troppo lenta")
 
     try:
         src.backup(dst, pages=COPY_STEP_PAGES, progress=in_steps)
     except _Slow:
-        src.backup(dst, progress=at_once)
+        # Una transazione di lettura aperta tiene ferma la versione del database: le scritture non fanno più
+        # ripartire la copia e, con il WAL, non aspettano. In un passo solo il limite non scattava mai: SQLite
+        # avvisa dell'avanzamento solo a copia finita
+        src.execute("BEGIN")
+        src.execute("SELECT count(*) FROM sqlite_master").fetchall()
+        try:
+            src.backup(dst, pages=COPY_STEP_PAGES, progress=held)
+        finally:
+            src.rollback()
 
 
 def consistent_copy(source: Path, target: Path, check: bool = False) -> None:

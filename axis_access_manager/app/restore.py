@@ -32,6 +32,8 @@ ALL_SECTIONS = {
 }
 CARD_FIELDS = ("access_profile", "valid_from", "valid_to")
 MISSING_PLACES = "alcune regole indicano porte, aree o fasce orarie che non ci sono più o hanno cambiato nome"
+# Regole su porte di un controller che adesso non risponde: la fotografia non dice se sono ancora nell'app
+UNREAD_DOORS = "il controller non risponde: al ripristino si controlla che le porte delle regole siano ancora nell'app"
 # Configurazione della porta (serratura, contatto, relè): qui non si scrive
 LOCK_CONFIG = "la configurazione della serratura e del contatto porta si ripristina con il Ripristino Completo"
 
@@ -191,24 +193,30 @@ def _places(saved: dict, current: dict, saved_ctx: dict, current_ctx: dict, read
         "saved_doors": _door_keys(saved),
         "current_doors": {v: k for k, v in _door_keys(current).items()},
         "readded": readded,
+        # Controller letti adesso: le porte degli altri non sono nella fotografia
+        "read": {int(key.split(":", 1)[1]) for key in current if key != COMMON},
         "schedules": {s["token"] for s in (current.get(COMMON) or {}).get("schedules", [])},
         "saved_ctx": saved_ctx,
         "current_ctx": current_ctx,
     }
 
 
-def _map_rules(rules: list[dict], places: dict) -> tuple[list[dict], str, bool]:
-    """Regole del backup con i numeri di adesso, il testo da mostrare (con i nomi di adesso) e se qualche posto o
-    fascia non c'è più. Le porte si riconoscono dal token, aree e strutture dal nome."""
+def _map_rules(rules: list[dict], places: dict) -> tuple[list[dict], str, bool, bool]:
+    """Regole del backup con i numeri di adesso, il testo da mostrare (con i nomi di adesso), se qualche posto o
+    fascia non c'è più e se qualche porta è di un controller che non risponde. Le porte si riconoscono dal token,
+    aree e strutture dal nome."""
     saved_ctx, current_ctx = places["saved_ctx"], places["current_ctx"]
-    mapped, shown, missing = [], [], False
+    mapped, shown, missing, unread = [], [], False, False
     for rule in rules:
         target, schedule, door = rule["target"], rule["schedule"], None
         if target == "door":
             door = places["saved_doors"].get(rule["target_id"])
             now = places["current_doors"].get(door) if door else None
             name = current_ctx["doors"].get(now) or saved_ctx["doors"].get(rule["target_id"])
-            found = now is not None or door in places["readded"]
+            # Senza la parte del controller la porta sembrava sparita dall'app: la si cerca al ripristino
+            unknown = door is not None and door[0] not in places["read"]
+            unread |= unknown
+            found = now is not None or door in places["readded"] or unknown
         elif target in ("area", "site"):
             kind = "areas" if target == "area" else "sites"
             now = _same_place(rule["target_id"], saved_ctx[kind], current_ctx[kind])
@@ -229,7 +237,7 @@ def _map_rules(rules: list[dict], places: dict) -> tuple[list[dict], str, bool]:
         place = name or f"{target} {rule['target_id']}"
         when = current_ctx["schedules"].get(schedule) or saved_ctx["schedules"].get(schedule) or schedule
         shown.append(f"{place}: {when}")
-    return mapped, "; ".join(shown) or "—", missing
+    return mapped, "; ".join(shown) or "—", missing, unread
 
 
 def _plan_categories(
@@ -251,14 +259,14 @@ def _plan_categories(
         if now is not None and category["rules"] == current_rules.get(now["id"]):
             # Regole uguali, numero per numero: le aree e le porte che indicano non sono state eliminate (si può
             # solo se nessuna tipologia le usa), al massimo rinominate
-            rules = category["rules"]
+            rules, unread = category["rules"], False
             missing = any(r["schedule"] not in places["schedules"] for r in rules)
             saved_item = {
                 **saved_item,
                 "show": {**saved_item["show"], "rules": rules_label(current_view[str(now["id"])])},
             }
         else:
-            rules, shown, missing = _map_rules(category["rules"], places)
+            rules, shown, missing, unread = _map_rules(category["rules"], places)
             plain = [{k: r[k] for k in ("target", "target_id", "schedule")} for r in rules]
             saved_item = {
                 **saved_item,
@@ -272,6 +280,8 @@ def _plan_categories(
                 item.update(changes=changes, _fields=fields, _rules=rules)
                 if missing:
                     item["blocked"] = MISSING_PLACES
+                elif unread:
+                    item["warnings"].append(UNREAD_DOORS)
                 items.append(item)
             continue
         item = _new(
@@ -287,6 +297,8 @@ def _plan_categories(
         item["changes"] = [{"label": "Regole", "old": "—", "new": rules_label(saved_item)}]
         if missing:
             item["blocked"] = MISSING_PLACES
+        elif unread:
+            item["warnings"].append(UNREAD_DOORS)
         items.append(item)
     taken = {c["id"] for c in matched.values()}
     for category in current.get("categories", []):
