@@ -1590,7 +1590,7 @@ async function viewPersons(el, sub) {
       <select id="p-state">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
         <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
-        <option value="mancanti">Non Presenti Sul Controller</option>
+        <option value="mancanti">Non Presenti sul Controller</option>
       </select>
       <button type="button" class="primary w-persone" id="p-new">${icon("plus")}Nuova Persona</button>
     </div>
@@ -1610,9 +1610,11 @@ async function viewPersons(el, sub) {
   $("#p-state").addEventListener("change", (e) => { personFilters.state = e.target.value; renderPersonList(); });
   $("#p-new").addEventListener("click", () => newPerson());
   $("#p-sync").addEventListener("click", async (e) => {
-    e.target.disabled = true;
+    // Il pulsante e non l'icona su cui si è cliccato: resta disabilitato fino alla fine della rilettura
+    const button = e.currentTarget;
+    button.disabled = true;
     const r = await run(() => api("api/sync", {method: "POST"}));
-    e.target.disabled = false;
+    button.disabled = false;
     if (r) { toast(`Riletto dal controller: ${plural(r.cards, "tessera", "tessere")} (${plural(r.added, "nuova", "nuove")}${r.missing ? `, ${plural(r.missing, "non presente", "non presenti")} sul controller` : ""})`); await loadPersons(); renderPersonList(); }
   });
   $("#p-list").addEventListener("click", (e) => {
@@ -1625,6 +1627,17 @@ async function viewPersons(el, sub) {
   renderPersonList();
   if (sub) openPerson(Number(sub));
 }
+// Aggiornamento periodico della pagina: l'avviso delle tessere non presenti segue le riletture dal controller
+async function refreshPersons() {
+  if (!$("#p-list")) return;
+  const persons = await api("api/persons").catch(() => null);
+  if (!persons || !$("#p-list") || JSON.stringify(persons) === JSON.stringify(store.persons)) return;
+  store.persons = persons;
+  renderPersonList();
+}
+const missingCards = () => store.persons.flatMap((p) => p.cards.filter((c) => c.missing_since));
+// Tessera che oggi apre: abilitata, presente sul controller e nel suo periodo di validità
+const cardActive = (c) => c.enabled && !c.missing_since && !["scaduta", "futura"].includes(validityState(c.valid_from, c.valid_to));
 function renderPersonList() {
   const list = $("#p-list");
   if (!list) return;
@@ -1634,7 +1647,7 @@ function renderPersonList() {
     if (q && !(p.name.toLowerCase().includes(q) || (p.company || "").toLowerCase().includes(q) || p.cards.some((c) => c.number.toLowerCase().includes(q)))) return false;
     if (personFilters.category !== "" && (p.category_id || 0) !== Number(personFilters.category)) return false;
     const st = personFilters.state;
-    if (st === "attive" && !p.cards.some((c) => c.enabled)) return false;
+    if (st === "attive" && !p.cards.some(cardActive)) return false;
     if (st === "sospese" && !p.cards.some((c) => !c.enabled)) return false;
     if (["in_scadenza", "scaduta", "futura"].includes(st) && validityState(a.from, a.to) !== st) return false;
     if (st === "mancanti" && !p.cards.some((c) => c.missing_since)) return false;
@@ -1642,7 +1655,7 @@ function renderPersonList() {
   });
   renderMissingBanner();
   const cards = store.persons.reduce((n, p) => n + p.cards.length, 0);
-  $("#p-count").textContent = `${plural(store.persons.length, "persona", "persone")} · ${plural(cards, "tessera", "tessere")}` + (rows.length !== store.persons.length ? ` · ${rows.length} mostrate` : "");
+  $("#p-count").textContent = `${plural(store.persons.length, "persona", "persone")} · ${plural(cards, "tessera", "tessere")}` + (rows.length !== store.persons.length ? ` · ${plural(rows.length, "mostrata", "mostrate")}` : "");
   // Tipologie come filtri rapidi, con il numero di persone di ognuna
   const count = (id) => store.persons.filter((p) => (p.category_id || 0) === id).length;
   const chip = (value, label, n, color = "") => `<button type="button" class="chip-btn ${personFilters.category === value ? "on" : ""}" data-cat="${value}">${color ? `<span class="swatch c-${esc(color)}"></span>` : ""}${esc(label)} <span class="muted">${n}</span></button>`;
@@ -1655,56 +1668,66 @@ function renderPersonList() {
     const a = personAccess(p);
     const vs = validityState(a.from, a.to);
     const suspended = p.cards.length && !p.cards.some((c) => c.enabled);
-    const flag = p.cards.some((c) => c.missing_since) ? '<span class="pill err" title="Tessera sparita dal controller: riscrivila o toglila dall\'app">Non Sul Controller</span>'
+    const flag = p.cards.some((c) => c.missing_since) ? '<span class="pill err" title="Tessera sparita dal controller: riscrivila o toglila dall\'app">Non sul Controller</span>'
       : !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
     const c = categoryOf(p.category_id);
     const first = (p.name.trim()[0] || "#").toLocaleUpperCase("it");
     const head = sorted.length > 12 && first !== letter ? `<div class="day">${esc(first)}</div>` : "";
     letter = first;
     return `${head}<div class="person-row" data-person="${p.id}" role="button" tabindex="0">
-      <span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span>
+      <span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span>
       <span class="name">${esc(p.name)}</span>${flag}
     </div>`;
-  }).join("") : `<div class="empty">${store.persons.length ? "nessuna persona corrisponde ai filtri" : "nessuna persona registrata: passa una tessera sul lettore e registrala da \"Da registrare\""}</div>`;
+  }).join("") : `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : "Nessuna persona registrata: passa una tessera sul lettore e registrala dalla pagina Da Registrare."}</div>`;
 }
 
 // Tessere sparite dal controller (reset, sostituzione, cancellate a mano): l'app non le cancella da sola
 function renderMissingBanner() {
   const box = $("#p-missing");
   if (!box) return;
-  const cards = store.persons.flatMap((p) => p.cards.filter((c) => c.missing_since));
+  const cards = missingCards();
   if (!cards.length) { box.innerHTML = ""; return; }
   const persons = store.persons.filter((p) => p.cards.some((c) => c.missing_since)).length;
   // Quasi tutte sparite: di solito il controller è stato resettato o sostituito e manca anche la programmazione
   const total = store.persons.reduce((n, p) => n + p.cards.length, 0);
   const reset = cards.length * 2 > total && can("backup") && store.me.admin;
-  box.innerHTML = `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} Sul Controller</b>
-      ${plural(persons, "persona ha", "persone hanno")} tessere che l'app conosce ma che sul controller non ci sono più, per esempio dopo un reset o una sostituzione. L'app non le cancella da sola: riscrivile sul controller con gruppo e validità salvati, oppure toglile dall'app.
+  box.innerHTML = `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} sul Controller</b>
+      ${plural(persons, "persona ha", "persone hanno")} tessere che l'app conosce ma che sul controller non ci sono più, per esempio dopo un reset o una sostituzione. L'app non le cancella da sola: riscrivile sul controller con il profilo di accesso e la validità salvati, oppure toglile dall'app.
       ${reset ? "<br>Controller resettato o sostituito? Il Ripristino Completo rimette anche porte, lettori, ingressi e profili, poi le tessere." : ""}
       ${personFilters.state === "mancanti" ? "" : ' <a href="#persone/mancanti">Mostra Solo Queste</a>'}</div>
-    <div class="row w-persone">${reset ? '<a class="btn small primary" href="#impianti/ripristino">Ripristino Completo</a>' : ""}<button type="button" class="small${reset ? "" : " primary"}" id="m-restore">Riscrivi Sul Controller</button><button type="button" class="small danger" id="m-forget">Togli dall'App</button></div></div>`;
+    <div class="row w-persone">${reset ? '<a class="btn small primary" href="#impianti/ripristino">Ripristino Completo</a>' : ""}<button type="button" class="small${reset ? "" : " primary"}" id="m-restore">Riscrivi sul Controller</button><button type="button" class="small danger" id="m-forget">Togli dall'App</button></div></div>`;
   paintIcons(box);
-  $("#m-restore").onclick = () => restoreMissing();
+  // Solo le tessere contate nell'avviso, non anche quelle segnate dopo (reset con la pagina aperta)
+  $("#m-restore").onclick = () => restoreMissing(cards.map((c) => c.id));
   $("#m-forget").onclick = () => forgetMissing();
 }
-async function restoreMissing(ids = null) {
+async function restoreMissing(ids) {
   const r = await run(() => api("api/missing-cards/restore", {method: "POST", body: {ids}}));
   if (!r) return false;
   if (r.failed.length) {
     await modal({title: "Tessere Non Riscritte", body: `<p style="margin-top:0">${plural(r.restored, "tessera riscritta", "tessere riscritte")}, ${plural(r.failed.length, "non riuscita", "non riuscite")}:</p>
       <div class="list">${r.failed.map((f) => `<div class="item" style="padding-left:0"><div class="grow"><div class="title">${esc(f.person)} · <code>${esc(f.card)}</code></div><div class="meta">${esc(f.error)}</div></div></div>`).join("")}</div>
-      <p class="hint">Se manca il gruppo sul controller (dopo un reset) va ripristinata prima la configurazione del controller.</p>`, actions: [{label: "Chiudi", value: true}]});
+      <p class="hint">Se manca il profilo di accesso sul controller (dopo un reset), va ripristinata prima la configurazione del controller.</p>`, actions: [{label: "Chiudi", value: true}]});
   } else toast(`${plural(r.restored, "tessera riscritta", "tessere riscritte")} sul controller`);
   loadSummary();
   await loadPersons();
   renderPersonList();
   return true;
 }
-async function forgetMissing(ids = null) {
-  const n = ids ? ids.length : store.persons.reduce((k, p) => k + p.cards.filter((c) => c.missing_since).length, 0);
-  if (!await confirmBox("Togli dall'App", `Togliere dall'app ${n === 1 ? "la tessera non presente" : `le ${n} tessere non presenti`} sul controller? Le persone rimaste senza tessere spariscono con ditta, note e tipologia. Il registro dei passaggi resta.`, "Togli", true)) return false;
-  const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids}}), "Tessere tolte dall'app");
+async function forgetMissing() {
+  // Rilette subito prima di chiedere, e poi si mandano i loro numeri: si tolgono solo le tessere contate nella
+  // domanda, mai "tutte quelle non presenti" (con la pagina aperta un reset può averne segnate molte altre)
+  if (!await run(() => loadPersons())) return false;
+  renderPersonList();
+  const cards = missingCards();
+  if (!cards.length) return false;
+  const n = cards.length;
+  const total = store.persons.reduce((k, p) => k + p.cards.length, 0);
+  const reset = n * 2 > total ? " Manca più della metà delle tessere: se il controller è stato resettato o sostituito, serve invece il Ripristino Completo, che le rimette." : "";
+  if (!await confirmBox("Togli dall'App", `Togliere dall'app ${n === 1 ? "la tessera non presente" : `le ${n} tessere non presenti`} sul controller? Le persone rimaste senza tessere spariscono con ditta, note e tipologia. Il registro dei passaggi resta.${reset}`, "Togli", true)) return false;
+  const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids: cards.map((c) => c.id)}}));
   if (!r) return false;
+  toast(`${plural(r.cards, "tessera tolta", "tessere tolte")} dall'app`);
   loadSummary();
   await loadPersons();
   renderPersonList();
@@ -1717,7 +1740,7 @@ function validityFields(from = "", to = "") {
     <div id="f-validity" ${limited ? "" : "hidden"}>
       <div class="fields-2">${field("Valida dal", `<input type="datetime-local" name="valid_from" value="${esc(toLocalInput(from))}">`)}
       ${field("Valida fino al", `<input type="datetime-local" name="valid_to" value="${esc(toLocalInput(to))}">`)}</div>
-      <div class="presets"><span class="muted small-text">Da adesso:</span>
+      <div class="presets"><span class="muted small-text">Da Adesso:</span>
         <button type="button" class="small" data-preset="1">1 Giorno</button><button type="button" class="small" data-preset="7">1 Settimana</button>
         <button type="button" class="small" data-preset="30">1 Mese</button><button type="button" class="small" data-preset="365">1 Anno</button></div>
     </div>`;
@@ -1745,7 +1768,7 @@ async function newPerson(card = "") {
     title: "Nuova Persona",
     body: `${field("Nome e Cognome", `<input name="name" autocomplete="off" maxlength="100" required>`)}
       ${field("Ditta o Reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
-      ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="es. 04A1B2C3D4E5F6">`, card ? "" : "Più comodo: passa la tessera sul lettore e registrala da \"Da Registrare\".")}
+      ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="es. 04A1B2C3D4E5F6">`, card ? "" : "Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
       ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Persone → Tipologie.")}
       ${validityFields()}
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}`,
@@ -1771,35 +1794,43 @@ async function openPerson(id) {
   try { p = await api(`api/persons/${id}`); } catch (err) { toast(err.message, true); location.hash = "#persone"; return; }
   const a = personAccess(p);
   await loadGroups();
-  // Profilo creato dopo l'ultimo caricamento (altra scheda, importazione): rilegge gruppi e tipologie
-  if (a.group && !store.groups.some((g) => g.token === a.group)) await loadGroups(true);
+  // Profilo o tipologia creati dopo l'ultimo caricamento (altra scheda, importazione), o tipologie non lette: rilegge
+  if ((a.group && !(store.groups || []).some((g) => g.token === a.group)) || (p.category_id && !categoryOf(p.category_id))) await loadGroups(true);
   const vs = validityState(a.from, a.to);
   const category = categoryOf(p.category_id);
   const custom = customAccess(p);
+  const cardState = (c) => {
+    if (c.missing_since) return `<span class="pill err">Non sul Controller</span><span>sparita ${esc(relTime(c.missing_since))}</span>`;
+    if (!c.enabled) return '<span class="pill">Sospesa</span>';
+    const state = validityState(c.valid_from, c.valid_to);
+    return state === "scaduta" || state === "futura" ? VALIDITY_PILL[state] : '<span class="pill ok">Attiva</span>';
+  };
   sheet.innerHTML = `<div class="dlg">
     <div class="dlg-head"><div class="avatar big">${esc(initials(p.name))}</div>
       <div style="flex:1;min-width:0"><h2 style="margin:0">${esc(p.name)}</h2><div class="muted small-text">${esc(p.company || "")}${p.company ? " · " : ""}${p.last_access ? "ultimo accesso " + esc(relTime(p.last_access)) : "nessun accesso registrato"}</div></div>
       <button type="button" class="ghost icon-only" data-close aria-label="Chiudi">${icon("close")}</button></div>
-    <div class="dlg-body" tabindex="-1" autofocus>
+    <div class="dlg-body" tabindex="-1" autofocus style="outline:none">
       <div class="card"><h2>Accesso<span class="spacer"></span><button type="button" class="small w-persone" data-edit-access>${icon("edit")}Modifica</button></h2>
         <dl class="props">
-          <dt>Tipologia</dt><dd>${categoryPill(category) || '<span class="muted">Nessuna</span>'}</dd>
+          <dt>Tipologia</dt><dd>${categoryPill(category) || (p.category_id ? '<span class="muted" title="Le tipologie non sono state lette: riprova tra poco">Non letta</span>' : '<span class="muted">Nessuna</span>')}</dd>
           ${category && !custom ? `<dt>Dove e Quando</dt><dd>${ruleLines(category)}</dd>` : ""}
           <dt>Validità</dt><dd>${esc(validityText(a.from, a.to))} ${VALIDITY_PILL[vs] || ""}</dd>
         </dl>
-        ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b class="inline">${esc(owner.name)}</b>` : (store.groups.some((g) => g.token === a.group) ? `il profilo <b class="inline">${esc(groupName(a.group))}</b>` : "un profilo che non è più sul controller")}, non come ${esc(category.name)}.`; })()}</div>
+        ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b class="inline">${esc(owner.name)}</b>` : ((store.groups || []).some((g) => g.token === a.group) ? `il profilo <b class="inline">${esc(groupName(a.group))}</b>` : "un profilo che non è più sul controller")}, non come ${esc(category.name)}.`; })()}</div>
           <button type="button" class="small w-persone" data-align>Allinea alla Tipologia</button></div>` : ""}</div>
       <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
-          <div class="ev-icon ${c.enabled ? "k-accent" : "k-muted"}">${icon("card")}</div>
-          <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${c.missing_since ? `<span class="pill err">Non Sul Controller</span><span>sparita ${esc(relTime(c.missing_since))}</span>` : c.enabled ? '<span class="pill ok">Attiva</span>' : '<span class="pill">Sospesa</span>'}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
+          <div class="ev-icon ${cardActive(c) ? "k-accent" : "k-muted"}">${icon("card")}</div>
+          <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
           <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("")}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
         <dl class="props"><dt>Nome</dt><dd>${esc(p.name)}</dd><dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
-          <dt>Note</dt><dd style="white-space:pre-wrap">${esc(p.notes || "—")}</dd><dt>Utente Axis</dt><dd><code>${esc(p.axis_user_token || "")}</code></dd></dl></div>
-      ${can("registro") ? `<div class="card flush"><h2>Ultimi Passaggi<span class="spacer"></span><a class="small-text" href="#registro" data-person-log>Tutto il Registro</a></h2>
-        <div class="list" style="margin-top:6px">${p.events.length ? p.events.map((e) => eventItem(e)).join("") : '<div class="empty">nessun passaggio registrato</div>'}</div></div>` : ""}
+          <dt>Note</dt><dd style="white-space:pre-wrap">${esc(p.notes || "—")}</dd></dl>
+        ${p.axis_user_token ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici</summary>
+          <dl class="props" style="margin-top:8px"><dt>Codice sul Controller</dt><dd><code>${esc(p.axis_user_token)}</code></dd></dl></details>` : ""}</div>
+      ${can("registro") ? `<div class="card flush"><h2>Ultimi Passaggi<span class="spacer"></span><a class="small-text" href="#registro" data-person-log>Apri nel Registro</a></h2>
+        <div class="list" style="margin-top:6px">${p.events.length ? p.events.map((e) => eventItem(e)).join("") : '<div class="empty">Nessun passaggio registrato.</div>'}</div></div>` : ""}
       <div class="w-persone" style="text-align:center;margin:8px 0 20px"><button type="button" class="danger" data-del-person>${icon("trash")}Elimina Persona e Tessere</button></div>
     </div></div>`;
   const close = () => { sheet.close(); };
@@ -1807,16 +1838,29 @@ async function openPerson(id) {
   sheet.oncancel = (e) => { e.preventDefault(); close(); };
   $("[data-close]", sheet).onclick = close;
   const reload = async () => { await loadPersons(); renderPersonList(); await openPerson(id); };
-  if ($("[data-person-log]", sheet)) $("[data-person-log]", sheet).onclick = (e) => { e.preventDefault(); close(); Object.assign(logFilters, {q: p.name, view: "tutto"}); location.hash = "#registro"; };
+  // Per numero di persona, non per nome: anche gli eventi di prima di un cambio di nome, e non quelli di un omonimo
+  if ($("[data-person-log]", sheet)) $("[data-person-log]", sheet).onclick = (e) => { e.preventDefault(); close(); Object.assign(logFilters, {person_id: p.id, person_name: p.name, q: "", view: "tutto"}); location.hash = "#registro"; };
   $("[data-edit-access]", sheet).onclick = async () => {
+    // Tipologia della persona non letta: salvando la si perderebbe insieme al suo accesso
+    if (p.category_id && !category) { toast("Le tipologie non sono state lette: riprova tra qualche secondo", true); return; }
     const ok = await modal({
       title: "Accesso di " + p.name,
       body: `${field("Tipologia", categorySelect(p.category_id || 0), "Dove e quando apre la tessera.")}${validityFields(a.from, a.to)}<p class="hint">Vale per tutte le tessere della persona.${custom ? " Salvando, l'accesso torna quello della tipologia." : ""}</p>`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
-        const body = {category_id: Number(val(dlg, "category")), ...readValidity(dlg)};
+        const chosen = Number(val(dlg, "category"));
+        // Senza tipologia, se non se ne sceglie una, le tessere tengono il profilo di adesso e non prendono il predefinito
+        const body = {...(category || chosen ? {category_id: chosen} : {group: a.group}), ...readValidity(dlg)};
         return (await run(() => api(`api/persons/${id}/access`, {method: "PUT", body}), "Accesso aggiornato sul controller")) || false;
       }}],
-      onOpen: (dlg) => { bindValidity(dlg); bindCategory(dlg); },
+      onOpen: (dlg) => {
+        bindValidity(dlg);
+        bindCategory(dlg);
+        // Persona senza tipologia: resta "Nessuna" finché non se ne sceglie una, invece della predefinita già scelta
+        const select = $("[name=category]", dlg);
+        if (category || !select) return;
+        if (!$("option[value='0']", select)) select.prepend(new Option("Nessuna", "0"));
+        select.value = "0";
+      },
     });
     if (ok) reload();
   };
@@ -1837,7 +1881,7 @@ async function openPerson(id) {
   $("[data-add-card]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Aggiungi Tessera a " + p.name,
-      body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, "La nuova tessera avrà lo stesso accesso e la stessa validità. Puoi anche passarla sul lettore e assegnarla da \"Da Registrare\".")}`,
+      body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, "La nuova tessera avrà lo stesso accesso e la stessa validità. Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.")}`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
         (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card")}}), "Tessera aggiunta")) || false}],
     });
