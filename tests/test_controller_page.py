@@ -326,14 +326,15 @@ async def test_door_contact_is_read_from_the_controller_after_each_connection(co
     assert monitor.door_modes == {"porta": "Locked"}
     assert changes == [1]
 
-    # Una volta per connessione; dopo un'interruzione si rilegge, e la modalità arrivata via MQTT resta
+    # Una volta per connessione; dopo un'interruzione si rilegge, e vale anche la modalità del controller
+    # (il cambio arrivato via MQTT può essersi perso nell'interruzione)
     controller.door_physical, controller.door = "Open", "Accessed"
     await _read_door_states(state)
     assert monitor.door_physical == {"porta": "Closed"}
     monitor.outages += 1
     await _read_door_states(state)
     assert monitor.door_physical == {"porta": "Open"}
-    assert monitor.door_modes == {"porta": "Locked"}
+    assert monitor.door_modes == {"porta": "Accessed"}
 
     # Contatto tolto: il controller risponde Unknown, l'entità torna sconosciuta
     controller.door_physical = "Unknown"
