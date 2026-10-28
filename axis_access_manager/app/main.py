@@ -14,14 +14,15 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
-from .backup_copy import ha_copy_path, update_copies
-from .config import Settings, load_settings, normalize_host, resolve_mqtt
+from .backup_copy import ha_copy_error, ha_copy_path, update_copies
+from .config import Settings, load_settings, normalize_host, resolve_mqtt, supervisor_token
 from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS
@@ -30,8 +31,8 @@ from .ha_mqtt import HaBridge, parse_command
 from .health import HEALTH_INTERVAL, HealthMonitor, clock_fault, clock_problem, controller_synced, paused_reason
 from .installation import MAX_CONTROLLERS, InstallationService
 from .intercom import IntercomBridge, IntercomSettings
-from .notifications import FAULT_TYPES, NotificationService
-from .programming import INPUT_ROLES, REX_ROLES, ProgrammingService
+from .notifications import EXPIRING, FAULT_TYPES, NotificationService
+from .programming import INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import RulesService
 from .service import (
@@ -44,7 +45,7 @@ from .service import (
     mass_missing,
     plural,
 )
-from .transfer import events_csv, import_persons, persons_csv
+from .transfer import events_csv, import_persons, persons_csv, read_import
 from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
 from .vapix import A1210Client, ControllerGuard, VapixError
 
@@ -63,13 +64,16 @@ GRANTED_KINDS = {"concesso"}
 # Passaggi contati come accessi nei numeri del giorno: la lettura della tessera precede il concesso (sarebbe doppia)
 # e le chiamate al citofono non sono accessi; le aperture dal citofono arrivano come apertura remota.
 ACCESS_COUNT_KINDS = ("concesso", "apertura_remota", "uscita")
-EXPORT_LIMIT = 50000
+# Il CSV del registro si scrive a pagine: tutto il registro, senza tenerlo in memoria
+EXPORT_PAGE = 5000
 
 # Recupero degli eventi persi: da poco prima dell'ultimo registrato, al massimo degli ultimi 7 giorni
 RECOVER_OVERLAP = 10
 RECOVER_LIMIT = timedelta(days=7)
 
 SYNC_INTERVAL = 15 * 60
+# Senza broker MQTT all'avvio: ogni quanto chiederlo di nuovo al Supervisor
+MQTT_RETRY = 60
 SYNC_RETRY = 60
 PRUNE_INTERVAL = 24 * 3600
 # Ogni quanto si guarda se è ora di un backup pianificato o della verifica
@@ -134,7 +138,7 @@ class HolidayIn(BaseModel):
 
 
 class ItalianHolidaysIn(BaseModel):
-    year: int = Field(default_factory=lambda: date.today().year)
+    year: int = Field(default_factory=lambda: date.today().year, ge=2000, le=2100)
 
 
 class ImportIn(BaseModel):
@@ -343,6 +347,7 @@ def current_user(request: Request) -> AppUser:
         user = request.app.state.users.resolve(
             request.headers.get("X-Remote-User-Name") or "",
             request.headers.get("X-Remote-User-Display-Name") or "",
+            request.headers.get("X-Remote-User-Id") or "",
         )
         request.state.user = user
     return user
@@ -359,8 +364,15 @@ def need(*perms: str, any_of: bool = False) -> Any:
         user = current_user(request)
         allowed = any(user.can(p) for p in perms) if any_of else user.can(*perms)
         if not allowed:
-            missing = ", ".join(PERMISSIONS[p].lower() for p in perms if not user.can(p))
-            raise HTTPException(status_code=403, detail=f"il tuo utente non ha il permesso: {missing}")
+            # Le descrizioni contengono virgole: ognuna tra virgolette, separate dal punto e virgola
+            missing = [f"«{PERMISSIONS[p]}»" for p in perms if not user.can(p)]
+            if len(missing) == 1:
+                detail = f"il tuo utente non ha il permesso {missing[0]}"
+            elif any_of:
+                detail = f"al tuo utente serve almeno uno di questi permessi: {'; '.join(missing)}"
+            else:
+                detail = f"il tuo utente non ha questi permessi: {'; '.join(missing)}"
+            raise HTTPException(status_code=403, detail=detail)
         return user
 
     return Depends(check)
@@ -380,6 +392,98 @@ def before_change(kind: str = "prima_modifica") -> Any:
         )
 
     return Depends(backup)
+
+
+# Dati rifiutati dalla validazione: nome del campo e motivo in parole per l'utente
+FIELD_LABELS = {
+    "name": "nome",
+    "card": "tessera",
+    "camera": "telecamera",
+    "widgets": "riquadri",
+    "size": "larghezza del riquadro",
+    "height": "altezza del riquadro",
+    "frequency": "frequenza dei backup",
+    "night": "ora del backup notturno",
+    "keep_last": "backup da tenere",
+    "keep_daily": "backup da tenere",
+    "keep_weekly": "backup da tenere",
+    "keep_monthly": "backup da tenere",
+    "keep_yearly": "backup da tenere",
+    "keys": "elementi da ripristinare",
+    "mqtt_password": "password del broker MQTT",
+    "year": "anno",
+    "limit": "numero di righe",
+    "schedule": "fascia oraria",
+    "host": "indirizzo del controller",
+    "category_id": "tipologia",
+}
+VALIDATION_REASONS = {
+    "missing": "valore mancante",
+    "string_too_long": "al massimo {max_length} caratteri",
+    "string_too_short": "almeno {min_length} caratteri",
+    "too_long": "al massimo {max_length} elementi",
+    "too_short": "almeno {min_length} elementi",
+    "greater_than_equal": "il minimo è {ge}",
+    "greater_than": "deve essere più di {gt}",
+    "less_than_equal": "il massimo è {le}",
+    "less_than": "deve essere meno di {lt}",
+    "string_pattern_mismatch": "formato non valido",
+    "literal_error": "valore non ammesso",
+    "int_parsing": "serve un numero intero",
+    "int_type": "serve un numero intero",
+    "float_parsing": "serve un numero",
+    "bool_parsing": "serve sì o no",
+    "json_invalid": "testo non leggibile",
+}
+
+
+def _validation_text(errors: list[dict]) -> str:
+    """Primo errore di validazione in parole; quello tecnico (campo, tipo, valore) resta nel log."""
+    _LOGGER.info("Dati non validi: %s", errors)
+    first = errors[0] if errors else {}
+    names = [str(p) for p in first.get("loc") or () if not isinstance(p, int) and p not in ("body", "query", "path")]
+    field = FIELD_LABELS.get(names[-1], "") if names else ""
+    try:
+        reason = VALIDATION_REASONS.get(first.get("type", ""), "valore non valido").format(**(first.get("ctx") or {}))
+    except (KeyError, IndexError):
+        reason = "valore non valido"
+    return f"dati non validi: {field}, {reason}" if field else f"dati non validi: {reason}"
+
+
+def _moment(value: str | None) -> datetime | None:
+    """Data del controller o dell'app come datetime locale; None se manca o non è valida."""
+    text = _iso(value or "")
+    return datetime.fromisoformat(text) if text else None
+
+
+async def _check_app_profile(state, token: str, categories: bool = False) -> None:
+    """Gli endpoint dei gruppi delle versioni precedenti non toccano i profili che l'app gestisce da sé: quello di
+    pulsanti e relè e, con categories, quelli delle tipologie (l'app li riscrive dalle righe di accesso)."""
+    if categories:
+        used_by = [c["name"] for c in state.db.list_categories() if c["group_token"] == token]
+        if used_by:
+            raise ServiceError(f"profilo gestito dall'app per la tipologia {used_by[0]}: si modifica da Tipologie")
+    found = await state.controller.get_access_profiles([token])
+    if found and is_rex_profile(found[0]):
+        raise ServiceError(
+            "profilo gestito dall'app per pulsanti e relè: si cambia dagli ingressi del controller in Impianti"
+        )
+
+
+async def _wait_for_broker(app: FastAPI) -> None:
+    """Nessun broker MQTT all'avvio (Mosquitto installato dopo, Supervisor lento): lo si chiede di nuovo finché non
+    c'è, poi l'ascolto degli eventi parte da solo, senza riavviare l'add-on."""
+    while app.state.mqtt is None:
+        await asyncio.sleep(MQTT_RETRY)
+        broker = await resolve_mqtt(app.state.options)
+        if broker is None:
+            continue
+        _LOGGER.info("Broker MQTT disponibile: parte l'ascolto degli eventi")
+        app.state.mqtt = broker
+        try:
+            await reload_runtime(app)
+        except Exception:  # noqa: BLE001 - l'app resta in piedi, l'errore va nel log
+            _LOGGER.exception("Avvio dell'ascolto MQTT non riuscito")
 
 
 def create_app(
@@ -402,8 +506,12 @@ def create_app(
         app.state.options = options
         app.state.injected_controller = controller
         app.state.db = Database(db_path or os.environ.get("AAM_DB_PATH") or DB_PATH, __version__)
+        # Database rovinato o mancante all'avvio: nel log, in Attività e in una notifica finché l'add-on non riparte
+        app.state.db_recovery = None
         if app.state.db.recovered:
             _LOGGER.error("All'avvio: %s", app.state.db.recovered)
+            app.state.db.add_audit("sistema", "database controllato all'avvio", app.state.db.recovered)
+            app.state.db_recovery = {"at": _now(), "text": app.state.db.recovered}
         if app.state.db.copied:
             _LOGGER.info("Copia del database prima dell'aggiornamento: %s", app.state.db.copied)
         app.state.users = UserDirectory(app.state.db, options.readonly_users)
@@ -439,11 +547,18 @@ def create_app(
         tasks = [maintenance, health]
         if scheduled_backups:
             tasks.append(asyncio.create_task(_backup_loop(app)))
+        if not app.state.mqtt and supervisor_token():
+            # Il broker del Supervisor può arrivare dopo (Mosquitto installato ora): lo si cerca di nuovo
+            tasks.append(asyncio.create_task(_wait_for_broker(app)))
         yield
         for task in tasks:
             task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:  # noqa: BLE001 - le chiusure qui sotto devono girare comunque
+                _LOGGER.exception("Attività in background terminata con un errore")
         await app.state.health.aclose()
         await _stop_runtime(app)
         await app.state.ha.aclose()
@@ -468,7 +583,13 @@ def create_app(
 
     @app.exception_handler(VapixError)
     async def vapix_error(request: Request, err: VapixError) -> JSONResponse:
-        return JSONResponse({"detail": f"errore del controller: {err}"}, status_code=502)
+        text = str(err)
+        # "il controller non risponde", "credenziali del controller…": il controller è già nominato
+        return JSONResponse({"detail": text if "controller" in text else f"errore del controller: {text}"}, 502)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, err: RequestValidationError) -> JSONResponse:
+        return JSONResponse({"detail": _validation_text(list(err.errors()))}, status_code=422)
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -505,7 +626,8 @@ def create_app(
             "home_assistant": {
                 "api": state.ha.available,
                 "integration": cfg.ha_integration,
-                "topic_prefix": cfg.ha_topic_prefix,
+                # Quello in uso: se si sovrappone al prefisso del controller le entità vanno sotto un altro
+                "topic_prefix": state.bridge.topic_prefix,
                 "entities": [c["name"] for _, _, c in state.bridge._entities()] if cfg.ha_integration else [],
             },
             "doors": _doors_status(state),
@@ -523,6 +645,10 @@ def create_app(
                 "schema": state.db.schema_version,
                 "copies": await asyncio.to_thread(update_copies, state.db.path) if state.db.path else [],
                 "ha_copy": _file_time(ha_copy_path(state.db.path)) if state.db.path else "",
+                # Perché l'ultima copia per il backup di Home Assistant non è stata aggiornata ("" se è andata bene)
+                "ha_copy_error": ha_copy_error(state.db.path) if state.db.path else "",
+                # Database ripristinato dalla copia (o non ripristinabile) all'avvio: {"at", "text"} o None
+                "recovered": getattr(state, "db_recovery", None),
             },
             # Ultima voce, a risposta pronta: il browser la confronta con la sua ora
             "now": _now(),
@@ -566,16 +692,22 @@ def create_app(
     async def notifications_seen(body: SeenIn, request: Request) -> dict:
         """Segna come viste le notifiche indicate, o tutte quelle che l'utente vede."""
         listing = _notification_listing(request)
-        ids = body.ids if body.ids is not None else [i["id"] for i in listing["items"]]
+        # Solo quelle che l'utente vede: la presa visione vale per tutti, e ognuna resta nel registro attività
+        visible = {i["id"] for i in listing["items"]}
+        ids = [i for i in body.ids if i in visible] if body.ids is not None else list(visible)
         state = request.app.state
         state.notifications.mark_seen(ids, _current_notifications(state))
         # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche
-        marked = [i for i in listing["items"] if i["id"] in ids and not i["seen"]]
+        chosen = set(ids)
+        marked = [i for i in listing["items"] if i["id"] in chosen and not i["seen"]]
         if marked:
             titles = ", ".join(f"{i['title']} ({i['text']})" if i["text"] else i["title"] for i in marked[:3])
             more = f" e altre {len(marked) - 3}" if len(marked) > 3 else ""
-            action = "presa visione" if len(marked) == 1 else f"segnate come viste {len(marked)} notifiche"
-            state.db.add_audit(request_user(request), action, titles + more)
+            if len(marked) == 1:
+                state.db.add_audit(request_user(request), "notifica segnata come vista", titles)
+            else:
+                detail = f"{len(marked)} notifiche: {titles}{more}"
+                state.db.add_audit(request_user(request), "notifiche segnate come viste", detail)
         return {"open": _notification_listing(request)["open"]}
 
     @app.put("/api/notifications/settings", dependencies=[need("utenti")])
@@ -586,18 +718,35 @@ def create_app(
     @app.get("/api/dashboard", dependencies=[need("stato")])
     async def dashboard(request: Request) -> dict:
         user = current_user(request)
-        db = request.app.state.db
+        state = request.app.state
+        db = state.db
         today = db.count_events(local_day_start())
         week = _week_series(db.event_kinds_since(local_day_start(6)))
         persons = db.list_persons()
         cards = [c for p in persons for c in p["cards"]]
-        soon = (datetime.now().astimezone() + timedelta(days=7)).isoformat()
-        now = datetime.now().astimezone().isoformat()
+        now = datetime.now().astimezone()
         expiring = []
         for person in persons:
-            ends = [c["valid_to"] for c in person["cards"] if c.get("valid_to")]
-            if ends and now < _iso(min(ends)) <= soon:
-                expiring.append({"id": person["id"], "name": person["name"], "valid_to": min(ends)})
+            ends = []
+            for card in person["cards"]:
+                start, end = _moment(card.get("valid_from")), _moment(card.get("valid_to"))
+                # Come In Scadenza in Persone: una tessera non ancora valida non è in scadenza
+                if end and now < end <= now + EXPIRING and not (start and start > now):
+                    ends.append((end, card["valid_to"]))
+            if ends:
+                end, valid_to = min(ends)
+                expiring.append((end, {"id": person["id"], "name": person["name"], "valid_to": valid_to}))
+        expiring = [item for _, item in sorted(expiring, key=lambda e: e[0])]
+        # Come le notifiche: raggiungibile secondo il controllo periodico (prima del primo controllo, secondo il
+        # broker); eventi in arrivo solo con il broker collegato e il controller collegato al broker
+        monitor = state.monitor
+        primary = state.installation.primary
+        health = state.health.states.get(primary["id"]) if primary else None
+        if health is None or health.online is None:
+            reachable = monitor.controller_online
+        else:
+            # Dopo un solo controllo non riuscito non è ancora irraggiungibile: stato sconosciuto
+            reachable = False if health.unreachable else True if health.online else None
         return {
             "today": {
                 "granted": today.get("concesso", 0),
@@ -615,15 +764,17 @@ def create_app(
             "cards_suspended": sum(1 for c in cards if not c["enabled"]),
             "unknown_cards": len(db.list_unknown_cards()),
             # Nomi e passaggi solo a chi può vedere anagrafica e registro
-            "expiring": sorted(expiring, key=lambda e: e["valid_to"]) if user.can("persone") else [],
+            "expiring": expiring if user.can("persone") else [],
             "recent": db.list_events(limit=8) if user.can("registro") else [],
-            "backup": await asyncio.to_thread(request.app.state.backups.overview) if user.can("backup") else None,
+            "backup": await asyncio.to_thread(state.backups.overview) if user.can("backup") else None,
             "system": {
-                "controller_online": request.app.state.monitor.controller_online,
-                "mqtt_connected": request.app.state.monitor.connected if request.app.state.mqtt else None,
-                "casing_open": request.app.state.monitor.casing_open,
+                # Controller raggiungibile dall'add-on (None: non ancora noto)
+                "controller_online": reachable,
+                # Eventi del controller in arrivo: senza broker no
+                "mqtt_connected": bool(state.mqtt) and monitor.connected and monitor.controller_online is not False,
+                "casing_open": monitor.casing_open,
                 "last_event": next(iter(db.list_events(limit=1)), {}).get("ts"),
-                "configured": bool(request.app.state.settings.a1210_host),
+                "configured": bool(state.settings.a1210_host),
             },
         }
 
@@ -660,7 +811,9 @@ def create_app(
     async def sync(request: Request) -> dict:
         result = await request.app.state.service.sync_from_controller()
         request.app.state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
-        request.app.state.db.add_audit(request_user(request), "sincronizzazione", _sync_text(result))
+        request.app.state.db.add_audit(
+            request_user(request), "tessere sincronizzate dal controller", _sync_text(result)
+        )
         return result
 
     @app.get("/api/missing-cards", dependencies=[need("persone")])
@@ -760,7 +913,7 @@ def create_app(
         q: str = "",
         before_id: int | None = None,
         before_ts: str = "",
-        limit: int = 100,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
         since: str = "",
         until: str = "",
         person_id: int | None = None,
@@ -771,7 +924,7 @@ def create_app(
             search=q,
             before_id=before_id,
             before_ts=_utc(before_ts),
-            limit=min(limit, 500),
+            limit=limit,
             since=_utc(since),
             until=_utc(until),
             person_id=person_id,
@@ -816,17 +969,33 @@ def create_app(
         door: str = "",
     ) -> Response:
         state = request.app.state
-        rows = state.db.list_events(
-            kind=kind,
-            search=q,
-            since=_utc(since),
-            until=_utc(until),
-            person_id=person_id,
-            door=door,
-            limit=EXPORT_LIMIT,
-        )
+        filters = {
+            "kind": kind,
+            "search": q,
+            "since": _utc(since),
+            "until": _utc(until),
+            "person_id": person_id,
+            "door": door,
+        }
         names = {d["door_token"]: d["name"] for d in state.doors}
-        return _csv_response(events_csv(rows, names), "registro_accessi")
+        header = events_csv([], names)
+
+        async def pages():
+            # Tutto il registro che corrisponde ai filtri, dal più recente, a pagine: nessun evento lasciato fuori
+            # e senza tenerlo tutto in memoria. Ogni pagina riparte dall'ultimo evento scritto (ora e numero)
+            yield header.encode("utf-8")
+            before_id, before_ts = None, ""
+            while rows := state.db.list_events(**filters, before_id=before_id, before_ts=before_ts, limit=EXPORT_PAGE):
+                yield events_csv(rows, names)[len(header) :].encode("utf-8")
+                before_id, before_ts = rows[-1]["id"], rows[-1]["ts"]
+                await asyncio.sleep(0)
+
+        filename = f"registro_accessi_{datetime.now():%Y%m%d_%H%M}.csv"
+        return StreamingResponse(
+            pages(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/api/export/persons.csv", dependencies=[need("persone", "import_export")])
     async def export_persons(request: Request) -> Response:
@@ -843,6 +1012,9 @@ def create_app(
             groups = (await state.rules.list_groups())["groups"]
         except VapixError as err:
             _LOGGER.warning("Gruppi non leggibili per l'importazione: %s", err)
+            # Ogni riga con un gruppo risulterebbe "gruppo sconosciuto": la causa vera vale per tutto il file
+            if any(item.get("gruppo") for item in read_import(body.csv)):
+                raise ServiceError(f"i gruppi del file non si possono controllare: {err}") from err
             groups = []
         if body.apply:
             # Un'importazione cambia molte persone insieme: il backup si fa sempre, non una volta ogni tanto
@@ -856,8 +1028,10 @@ def create_app(
         return await import_persons(state.service, body.csv, groups, request_user(request), body.apply)
 
     @app.get("/api/audit", dependencies=[need("utenti")])
-    async def audit(request: Request, before_id: int | None = None, limit: int = 100) -> list[dict]:
-        return request.app.state.db.list_audit(limit=min(limit, 500), before_id=before_id)
+    async def audit(
+        request: Request, before_id: int | None = None, limit: Annotated[int, Query(ge=1, le=500)] = 100
+    ) -> list[dict]:
+        return request.app.state.db.list_audit(limit=limit, before_id=before_id)
 
     # Regole
 
@@ -873,12 +1047,15 @@ def create_app(
 
     @app.put("/api/groups/{token:path}", dependencies=[need("regole_modifica"), before_change()])
     async def update_group(token: str, body: GroupIn, request: Request) -> dict:
+        await _check_app_profile(request.app.state, token, categories=True)
         return await request.app.state.rules.update_group(
             token, body.name, body.description, body.schedule, request_user(request)
         )
 
     @app.delete("/api/groups/{token:path}", dependencies=[need("regole_modifica"), before_change()])
     async def delete_group(token: str, request: Request) -> dict:
+        # Quelli delle tipologie li rifiuta già delete_group
+        await _check_app_profile(request.app.state, token)
         await request.app.state.rules.delete_group(token, request_user(request))
         return {"ok": True}
 
@@ -934,6 +1111,8 @@ def create_app(
 
     @app.put("/api/default-group", dependencies=[need("regole_modifica")])
     async def set_default_group(body: DefaultGroupIn, request: Request) -> dict:
+        # Il profilo di una tipologia sì: è quello che diventa predefinito con la tipologia predefinita
+        await _check_app_profile(request.app.state, body.token)
         await request.app.state.rules.set_default_group(body.token, request_user(request))
         return {"ok": True}
 
@@ -980,9 +1159,11 @@ def create_app(
         for door in _doors_status(state):
             today = counts.get(door["token"], {})
             if len(state.doors) == 1:
-                # Eventi registrati prima della 0.5 senza porta: con una porta sola sono suoi
+                # Eventi registrati prima della 0.5 senza porta: con una porta sola sono suoi. Non la manomissione
+                # senza porta (coperchio aperto, controller inclinato): riguarda il controller
                 for kind, n in counts.get("", {}).items():
-                    today[kind] = today.get(kind, 0) + n
+                    if kind != "manomissione":
+                        today[kind] = today.get(kind, 0) + n
             event = last.get(door["token"])
             if len(state.doors) == 1 and last.get("") and (not event or last[""]["ts"] > event["ts"]):
                 event = last[""]
@@ -1074,9 +1255,11 @@ def create_app(
                 errors.append(f"tipologie: {err}")
         events = None
         if user.can("registro"):
-            # Con una porta sola valgono anche gli eventi registrati prima che avessero la porta
+            # Con una porta sola valgono anche gli eventi registrati prima che avessero la porta, ma non la
+            # manomissione senza porta (coperchio aperto, controller inclinato): riguarda il controller
             door_filter = config["door_token"] + ("," if len(state.doors) == 1 else "")
-            events = state.db.list_events(door=door_filter, limit=15)
+            listed = state.db.list_events(door=door_filter, limit=50)
+            events = [e for e in listed if e["door"] or e["kind"] != "manomissione"][:15]
         return {
             **door,
             "controller": {
