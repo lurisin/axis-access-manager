@@ -168,6 +168,8 @@
   .list.compact > .ev.sel { background: var(--accent-soft); }
   .ev .time { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 13px; }
   .ev .what { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* Fotocamera della riga alta come il testo: un'icona normale allungava le righe con la foto */
+  .ev .what svg.icon { width: 14px; height: 14px; vertical-align: -2px; }
   .ev .where { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; text-align: right; }
   @media (max-width: 600px) {
     /* Sul telefono la porta va sotto il nome: accanto toglierebbe spazio all'esito (concesso, negato…) */
@@ -320,17 +322,17 @@
   .n-empty svg { color: var(--ok); }
   .n-log { padding-bottom: 8px; }
   .n-chk { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; min-height: 32px; cursor: pointer; }
-  .n-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
-  .n-tab { height: 36px; padding: 0 12px; font-size: 14px; gap: 8px; color: var(--muted); }
-  .n-tab span { font-size: 12px; font-variant-numeric: tabular-nums; }
-  .n-tab[aria-selected=true] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  /* Schede del registro delle notifiche: come le viste del Registro, con il numero di eventi; sul telefono vanno a capo */
+  .segmented.n-tabs { margin-bottom: 8px; flex-wrap: wrap; }
+  .n-tabs a span { margin-left: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
   .n-table { min-width: 640px; }
   .n-table td { vertical-align: middle; height: 46px; padding-top: 4px; padding-bottom: 4px; }
   .n-table tbody tr { cursor: pointer; }
   .n-table tbody tr:hover td, .n-table tbody tr:focus-visible td { background: var(--surface-2); }
   .n-time { font-variant-numeric: tabular-nums; white-space: nowrap; width: 80px; }
   .n-ev { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
-  .n-unk { font-size: 12px; padding: 1px 6px; border-radius: 4px; background: var(--err-soft); color: var(--err); }
+  /* Gialla come la tessera sconosciuta nel registro, in Da Registrare e nel cruscotto */
+  .n-unk { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); }
   .n-reason { color: var(--muted); }
   .n-state { font-size: 13px; font-weight: 600; color: var(--warn); white-space: nowrap; }
   .n-go { width: 36px; color: var(--muted); padding-left: 0 !important; padding-right: 4px !important; }
@@ -417,7 +419,8 @@
           border-radius: 7px; padding: 1px 8px; font-size: 13px; color: var(--text); }
   a.chip:hover { background: var(--border); text-decoration: none; }
   .chip-btn { border-radius: 999px; padding: 4px 12px; font-size: 13px; gap: 6px; }
-  /* Filtro scelto: come le schede delle Notifiche */
+  .chip-btn svg.icon { width: 14px; height: 14px; }
+  /* Filtro scelto */
   .chip-btn.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
   .chip-btn.on .muted { color: inherit; }
   #p-list > .day { padding: 4px 18px; background: var(--surface-2); border-top: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--muted); }
@@ -764,24 +767,19 @@ const KINDS = {
 const inputDenied = (e) => e.kind === "negato" && !e.card && !e.person_name && !!e.source && e.source !== "controller";
 const DAYS = [["MO", "L", "lun"], ["TU", "M", "mar"], ["WE", "M", "mer"], ["TH", "G", "gio"], ["FR", "V", "ven"], ["SA", "S", "sab"], ["SU", "D", "dom"]];
 
-const fmtDateTime = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"}) : "";
+// "24/10/2026 13:34", senza la virgola che toLocaleString mette tra data e ora
+const fmtDateTime = (iso) => iso ? `${new Date(iso).toLocaleDateString("it-IT", {day: "2-digit", month: "2-digit", year: "numeric"})} ${fmtTime(iso)}` : "";
 const fmtFull = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {dateStyle: "medium", timeStyle: "medium"}) : "";
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", {day: "numeric", month: "short", year: "numeric"}) : "";
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("it-IT", {hour: "2-digit", minute: "2-digit"}) : "";
+// "adesso", "5 min fa", poi come dayTime: "oggi 13:34", "ieri 13:34" (dal calendario) o "24/10/2026 13:34".
+// Più avanti di adesso (orologio del controller avanti): l'ora vera, non "adesso"
 function relTime(iso) {
   if (!iso) return "";
-  const d = new Date(iso), now = new Date();
-  const diff = (now - d) / 1000;
-  const day = (offset) => new Date(now.getFullYear(), now.getMonth(), now.getDate() + offset);
-  // Più avanti di adesso (orologio del controller avanti): l'ora vera, non "adesso"
-  if (diff <= -60) return d < day(1) ? `oggi ${fmtTime(iso)}` : fmtDateTime(iso);
-  if (diff < 60) return "adesso";
-  if (diff < 3600) return `${Math.floor(diff / 60)} min fa`;
-  if (d >= day(0)) return `oggi ${fmtTime(iso)}`;
-  // Ieri dal calendario, non 24 ore prima: il giorno del cambio d'ora ne ha 23 o 25
-  if (d >= day(-1)) return `ieri ${fmtTime(iso)}`;
-  if (diff < 6 * 86400) return d.toLocaleDateString("it-IT", {weekday: "long"}) + " " + fmtTime(iso);
-  return fmtDate(iso);
+  const diff = (Date.now() - new Date(iso)) / 1000;
+  if (diff > -60 && diff < 60) return "adesso";
+  if (diff > 0 && diff < 3600) return `${Math.floor(diff / 60)} min fa`;
+  return dayTime(iso);
 }
 // Valori per <input type=datetime-local> e ritorno in UTC
 function toLocalInput(iso) {
@@ -795,6 +793,8 @@ const initials = (name) => (name || "?").split(/\s+/).filter(Boolean).slice(0, 2
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 // Maiuscola iniziale: i messaggi del server arrivano in minuscolo perché altrove si compongono dopo un prefisso
 const cap = (text) => text ? String(text)[0].toUpperCase() + String(text).slice(1) : text;
+// "Porta Scala A", ma "Porta 1" e non "Porta Porta 1" quando il nome comincia già così (come backup._named)
+const named = (noun, name) => `${name} `.toLowerCase().startsWith(`${noun} `.toLowerCase()) ? name : `${noun} ${name}`;
 
 let toastTimer;
 function toast(message, error = false) {
@@ -968,17 +968,26 @@ function categorySelect(selected) {
 }
 // Accesso della persona diverso da quello della sua tipologia (deciso a mano o dalle versioni precedenti)
 const customAccess = (p) => { const c = categoryOf(p.category_id); return Boolean(c && p.cards.length && p.cards[0].access_profile !== c.group_token); };
-// Strutture, aree e porte per le righe Dove e Quando delle tipologie
+// Strutture, aree e porte per le righe Dove e Quando delle tipologie. Se la lettura non riesce restano quelle lette
+// prima (store.placesError dice perché) e la chiamata successiva riprova: senza, le righe sembrerebbero su luoghi eliminati
 async function loadPlaces(force = false) {
-  if (!store.places || force) store.places = await api("api/locations").catch(() => []);
+  if (store.places && !force && !store.placesError) return store.places;
+  try {
+    store.places = await api("api/locations");
+    store.placesError = "";
+  } catch (err) {
+    store.places = store.places || [];
+    store.placesError = err.message;
+  }
   return store.places;
 }
 const realSites = () => (store.places || []).filter((x) => x.id);
 function placeLabel(r) {
-  if (r.target === "site") return realSites().find((x) => x.id === r.target_id)?.name || "struttura eliminata";
+  const gone = (what) => `${what} ${store.placesError ? "non letta" : "eliminata"}`;
+  if (r.target === "site") return realSites().find((x) => x.id === r.target_id)?.name || gone("struttura");
   if (r.target === "area") {
     for (const site of realSites()) { const area = site.areas.find((a) => a.id === r.target_id); if (area) return `${site.name} › ${area.name}`; }
-    return "area eliminata";
+    return gone("area");
   }
   return allDoors().find((d) => d.id === r.target_id)?.name || "porta eliminata";
 }
@@ -1152,6 +1161,9 @@ function viewNoAccess(el) {
 let viewBox = null;  // contenitore della pagina aperta, dentro #view
 async function render() {
   route = parseHash();
+  // Ridisegno della stessa pagina (un pulsante che chiama render): la pagina tiene da parte le modifiche non salvate,
+  // per esempio i collegamenti dello schema. Uscendo dalla pagina pageGuard è già stato chiesto o tolto
+  pageGuard?.keep?.();
   pageGuard = null;
   if ($("#sheet").open && !(route.name === "persone" && route.sub)) $("#sheet").close();
   const [title, view] = ROUTES[route.name];
@@ -1224,6 +1236,8 @@ async function refreshView() {
   // Solo i dati, senza ridisegnare la pagina: prima ogni 15 secondi la pagina lampeggiava e perdeva scroll e focus
   if (route.name === "cruscotto") await (dash.reload && $("#dash") ? dash.reload() : render());
   if (route.name === "da-registrare") await refreshUnknown();
+  // Elenco e avviso delle tessere non presenti seguono le riletture dal controller (niente da fare in Tipologie)
+  if (route.name === "persone") await refreshPersons();
   if (route.name === "notifiche") await refreshNotifications();
   if (route.name === "registro") await refreshLog();
 }
@@ -1316,7 +1330,7 @@ const WIDGET_BODY = {
     // I guasti già visti restano finché non si risolvono: con loro non è tutto in ordine
     const ongoing = (ctx.notif?.items || []).filter((i) => i.seen && i.fault).length;
     if (!rows.length && ongoing) return `<h2>Da Gestire<span class="spacer"></span><a class="small-text" href="#notifiche">Notifiche</a></h2><div class="empty">Nessuna notifica da gestire · ${plural(ongoing, "guasto", "guasti")} in corso, già ${ongoing === 1 ? "visto" : "visti"}.</div>`;
-    if (!rows.length) return `<h2>Da Gestire</h2><div class="all-ok" style="margin:0">${icon("check")}<span><b>Tutto in Ordine</b> · nessun evento da gestire</span></div>`;
+    if (!rows.length) return `<h2>Da Gestire</h2><div class="all-ok" style="margin:0">${icon("check")}<span><b>Tutto in Ordine</b> · nessuna notifica da gestire</span></div>`;
     return `<h2>Da Gestire <span class="muted">· ${open.length}</span><span class="spacer"></span><a class="small-text" href="#notifiche">${open.length > 5 ? `Tutte le Notifiche (${open.length})` : "Notifiche"}</a></h2><div class="list">${rows.join("")}</div>`;
   },
   accessi_oggi: ({d: {today: t}}) => {
@@ -1343,10 +1357,10 @@ const WIDGET_BODY = {
     return `<h2>Ultimi 7 Giorni</h2><div class="chart">${chart}</div>
       <div class="legend"><span><i style="background:var(--ok)"></i>concessi, aperture remote e uscite</span><span><i style="background:var(--warn)"></i>negati</span></div>`;
   },
-  ultimi_eventi: ({d}) => `<h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro Completo</a></h2>
+  ultimi_eventi: ({d}) => `<h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro" data-log-all>Registro Completo</a></h2>
     <div class="list compact" data-dash-events>${d.recent.length ? logRows(d.recent) : '<div class="empty">Nessun evento registrato.</div>'}</div>`,
   scadenze: ({d}) => `<h2>Tessere in Scadenza<span class="spacer"></span><a class="small-text" href="#persone">Persone</a></h2>
-    ${d.expiring.length ? `<div class="list">${d.expiring.slice(0, 6).map((e) => `<a class="item" href="#persone/${e.id}"><div class="ev-icon k-warn">${icon("clock")}</div><div class="grow"><div class="title">${esc(e.name)}</div><div class="meta">scade il ${esc(fmtDateTime(e.valid_to))}</div></div></a>`).join("")}</div>${d.expiring.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">e altre ${d.expiring.length - 6}</p>` : ""}`
+    ${d.expiring.length ? `<div class="list">${d.expiring.slice(0, 6).map((e) => `<a class="item" href="#persone/${e.id}"><div class="ev-icon k-warn">${icon("clock")}</div><div class="grow"><div class="title">${esc(e.name)}</div><div class="meta">scade il ${esc(fmtDateTime(e.valid_to))}</div></div></a>`).join("")}</div>${d.expiring.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">${d.expiring.length === 7 ? "e un'altra" : `e altre ${d.expiring.length - 6}`}</p>` : ""}`
       : '<div class="empty">Nessuna tessera scade nei prossimi 7 giorni.</div>'}`,
   // Come nella pagina Da Registrare: stessa icona, stesse parole
   da_registrare: ({unknown}) => `<h2>Tessere da Registrare<span class="spacer"></span><a class="small-text" href="#da-registrare">Tutte</a></h2>
@@ -1359,9 +1373,9 @@ const WIDGET_BODY = {
     const mqtt = (notif?.items || []).find((i) => i.type === "mqtt");
     const why = mqtt ? `${mqtt.title}: ${mqtt.text}` : s.controller_online === false ? "Il controller non è raggiungibile." : "";
     return `<h2>Stato Impianto${can("impianti") ? '<span class="spacer"></span><a class="small-text" href="#impianti/stato">Dettagli</a>' : ""}</h2>
-      ${row(s.controller_online === false ? "err" : s.controller_online ? "ok" : "", "Controller", s.controller_online === false ? "non raggiungibile" : s.controller_online ? "raggiungibile" : "stato sconosciuto")}
-      ${s.mqtt_connected === null ? "" : row(s.mqtt_connected ? "ok" : "err", "Eventi MQTT", s.mqtt_connected ? "in arrivo" : "non collegati", s.mqtt_connected ? "" : why)}
-      ${s.casing_open === null ? "" : row(s.casing_open ? "err" : "ok", "Coperchio del Controller", s.casing_open ? "aperto" : "chiuso")}
+      ${row(s.controller_online === false ? "err" : s.controller_online ? "ok" : "", "Controller", s.controller_online === false ? "Non Raggiungibile" : s.controller_online ? "Raggiungibile" : "Stato Sconosciuto")}
+      ${s.mqtt_connected === null ? "" : row(s.mqtt_connected ? "ok" : "err", "Eventi MQTT", s.mqtt_connected ? "In Arrivo" : "Non Collegati", s.mqtt_connected ? "" : why)}
+      ${s.casing_open === null ? "" : row(s.casing_open ? "err" : "ok", "Coperchio del Controller", s.casing_open ? "Aperto" : "Chiuso")}
       ${row("", "Ultimo Evento", s.last_event ? esc(relTime(s.last_event)) : "nessuno")}`;
   },
   backup({d: {backup: b}}) {
@@ -1370,12 +1384,13 @@ const WIDGET_BODY = {
     const last = b.last, v = b.verify;
     return `<h2>Backup<span class="spacer"></span><a class="small-text" href="#impianti/backup">Tutti i Backup</a></h2>
       ${row(!last || last.errors.length || b.error ? "warn" : "ok", "Ultimo Backup", last ? `${esc(relTime(last.created_at))} · ${esc(last.name || last.kind_label)}` : "nessuno", last?.summary || "")}
-      ${row(b.auto ? "ok" : "", "Automatico", b.auto ? esc(backupNext(b.next)) : "disattivato", b.auto ? b.frequency : "")}
-      ${row(!v ? "" : v.ok ? "ok" : "err", "Verifica dei File", !v ? "non ancora fatta" : v.ok ? `${esc(relTime(v.at))} · tutti leggibili` : plural(v.damaged, "backup rovinato", "backup rovinati"))}`;
+      ${row(b.auto ? "ok" : "", "Automatico", b.auto ? esc(backupNext(b.next)) : "Disattivato", b.auto ? b.frequency : "")}
+      ${row(!v ? "" : v.ok ? "ok" : "warn", "Verifica dei File", !v ? "Non Ancora Fatta" : v.ok ? `${esc(relTime(v.at))} · tutti leggibili` : plural(v.damaged, "backup rovinato", "backup rovinati"))}`;
   },
 };
 function kpi(label, value, sub, color = "") {
-  return `<div class="dw-kpi"><div class="label">${label}</div><div class="value"${color ? ` style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
+  // Il dettaglio resta su una riga: per intero nel suggerimento, senza il link (anagrafica)
+  return `<div class="dw-kpi"><div class="label">${label}</div><div class="value"${color ? ` style="color:${color}"` : ""}>${value}</div><div class="sub" title="${esc(String(sub).replace(/<[^>]*>/g, ""))}">${sub}</div></div>`;
 }
 
 // Dati dei riquadri del cruscotto
@@ -1389,6 +1404,10 @@ async function viewDashboard(el) {
   try {
     [ctx, saved] = await Promise.all([dashData(), api("api/dashboard/layout").catch(() => ({widgets: null}))]);
   } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  // Nel frattempo si è aperta un'altra pagina: titolo, data e matita sono suoi
+  if (!el.isConnected) return;
+  // Registro Completo: senza il filtro su una persona lasciato dalla sua scheda
+  el.onclick = (e) => { if (e.target.closest("[data-log-all]")) Object.assign(logFilters, {person_id: 0, person_name: ""}); };
   // Si arriva qui aprendo la pagina: una modifica lasciata a metà altrove non resta aperta
   dash.layout = (saved.widgets || defaultDash()).filter((w) => WIDGETS[w.type]).map(fitWidget);
   dash.editing = false;
@@ -1645,7 +1664,7 @@ function doorList(doors) {
     g.doors.push(d);
   }
   const row = (d) => `<a class="item door-row" href="#porte/${d.id}" data-door-row="${esc(`${d.name} ${placeOf(d)}`.toLowerCase())}">
-      <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
+      <div class="ev-icon k-${doorModeClass(d.mode) || "muted"}">${icon("door")}</div>
       <div class="grow"><div class="title">${esc(d.name)}</div><div class="meta">${groups.length > 1 ? "" : `<span>${esc(placeOf(d) || "Senza Area")}</span>`}<span class="mode-meta">${esc(doorModeLabel(d.mode))}</span><span>oggi ${plural(d.today.granted, "accesso", "accessi")}</span>${d.today.alarms ? `<span style="color:var(--err)">${plural(d.today.alarms, "allarme", "allarmi")}</span>` : ""}</div></div>
       <span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span>
       <span class="muted">${icon("arrow")}</span></a>`;
@@ -1656,6 +1675,8 @@ function doorList(doors) {
 async function viewDoorDetail(el, id, doors) {
   let d;
   try { d = await api(`api/door-detail/${id}`); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  // Nel frattempo si è aperta un'altra pagina: il titolo è suo
+  if (!el.isConnected) return;
   $("#page-title").textContent = d.name;
   document.title = `${d.name} · Controllo Accessi`;
   const place = placeOf(d);
@@ -1665,7 +1686,7 @@ async function viewDoorDetail(el, id, doors) {
   const off = (r) => (r.enabled ? null : ["warn", "Disattivato"]);
   const readerMeta = (r) => {
     if (r.role) return `${r.role} · morsetto ${r.terminal} del controller`;
-    const side = r.direction ? `Lettore tessere sul lato ${r.direction.toLowerCase()}` : "Lettore tessere";
+    const side = r.direction ? `Lettore tessere in ${r.direction.toLowerCase()}` : "Lettore tessere";
     return [side, r.description.includes("Axis Access Manager") ? "" : r.description].filter(Boolean).join(" · ");
   };
   const devices = [
@@ -1701,7 +1722,7 @@ async function viewDoorDetail(el, id, doors) {
       <div class="list compact" style="margin-top:8px" id="d-events">${d.events.length ? logRows(d.events, {place: false}) : '<div class="empty">Nessun evento registrato.</div>'}</div></div>` : ""}`;
   if ($("#d-switch")) $("#d-switch").onchange = (e) => { location.hash = `#porte/${e.target.value}`; };
   // Il registro mostra tutti gli eventi della porta, non la vista, la ricerca e le date dell'ultima visita
-  if ($("#d-log")) $("#d-log").onclick = () => { Object.assign(logFilters, {door: multiDoor() ? d.token : "", view: "tutto", q: "", from: "", to: ""}); };
+  if ($("#d-log")) $("#d-log").onclick = () => { Object.assign(logFilters, {door: multiDoor() ? d.token : "", view: "tutto", q: "", from: "", to: "", person_id: 0, person_name: ""}); };
   if ($("#d-events")) bindEventRows($("#d-events"), (id) => showEvent(d.events.find((x) => x.id === id)));
 }
 
@@ -1715,7 +1736,8 @@ const personTabs = (tab) => `<div class="segmented">${[["", "Persone"], ["tipolo
 async function viewPersons(el, sub) {
   if (sub === "tipologie") return viewCategories(el);
   if (sub === "mancanti") { personFilters.state = "mancanti"; sub = ""; history.replaceState(null, "", "#persone"); }
-  try { await Promise.all([loadPersons(), loadGroups()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
+  // Le tipologie dal database dell'app: l'elenco non aspetta il controller
+  try { await Promise.all([loadPersons(), loadCategories()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   el.innerHTML = `${personTabs("")}
     <div class="toolbar">
       <input type="search" id="p-q" placeholder="Cerca nome, ditta o numero tessera" value="${esc(personFilters.q)}">
@@ -1823,7 +1845,9 @@ function renderMissingBanner() {
   // Quasi tutte sparite: di solito il controller è stato resettato o sostituito e manca anche la programmazione
   const total = store.persons.reduce((n, p) => n + p.cards.length, 0);
   const reset = cards.length * 2 > total && can("backup") && store.me.admin;
-  box.innerHTML = `<div class="alert err stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} sul Controller</b>
+  // Rosso come la notifica di gravità Critica (service.mass_missing: tutte, o almeno 3 e più del 10%), altrimenti giallo
+  const mass = cards.length === total || (cards.length >= 3 && cards.length > total * 0.1);
+  box.innerHTML = `<div class="alert ${mass ? "err " : ""}stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} sul Controller</b>
       ${plural(persons, "persona ha", "persone hanno")} tessere che l'app conosce ma che sul controller non ci sono più, per esempio dopo un reset o una sostituzione. L'app non le cancella da sola: riscrivile sul controller con il profilo di accesso e la validità salvati, oppure toglile dall'app.
       ${reset ? "<br>Controller resettato o sostituito? Il Ripristino Completo rimette anche porte, lettori, ingressi e profili, poi le tessere." : ""}
       ${personFilters.state === "mancanti" ? "" : ' <a href="#persone/mancanti">Mostra Solo Queste</a>'}</div>
@@ -1895,7 +1919,7 @@ function readValidity(dlg) {
 }
 
 async function newPerson(card = "") {
-  await loadGroups();
+  await loadCategories();
   const created = await modal({
     title: "Nuova Persona",
     body: `${field("Nome e Cognome", `<input name="name" autocomplete="off" maxlength="100" required>`)}
@@ -1925,7 +1949,8 @@ async function openPerson(id) {
   let p;
   try { p = await api(`api/persons/${id}`); } catch (err) { toast(err.message, true); location.hash = "#persone"; return; }
   const a = personAccess(p);
-  await loadGroups();
+  // Strutture e aree per le righe Dove e Quando della tipologia
+  await Promise.all([loadGroups(), loadPlaces()]);
   // Profilo o tipologia creati dopo l'ultimo caricamento (altra scheda, importazione), o tipologie non lette: rilegge
   if ((a.group && !(store.groups || []).some((g) => g.token === a.group)) || (p.category_id && !categoryOf(p.category_id))) await loadGroups(true);
   const vs = validityState(a.from, a.to);
@@ -2098,7 +2123,9 @@ const LOG_VIEWS = {
 // Accessi riusciti, come li conta il server (ACCESS_COUNT_KINDS): la lettura precede il concesso e il citofono non apre
 const ACCESS_KINDS = "concesso,apertura_remota,uscita";
 const savedView = () => { try { return localStorage.getItem("aam-log-view") || "controllo"; } catch (err) { return "controllo"; } };
-const logFilters = {q: "", view: savedView(), door: "", from: "", to: ""};
+// person_id: gli eventi di una persona per numero (scheda persona, Tutti i Suoi Eventi), anche quelli di prima di un
+// cambio di nome; person_name è solo l'etichetta del filtro
+const logFilters = {q: "", view: savedView(), door: "", from: "", to: "", person_id: 0, person_name: ""};
 let logEvents = [];
 let logSelected = 0;
 // Vale solo la risposta dell'ultima richiesta: un cambio di vista o un aggiornamento lento non mescolano gli elenchi
@@ -2118,6 +2145,7 @@ function logParams(extra = {}) {
   const kinds = (LOG_VIEWS[logFilters.view] || LOG_VIEWS.tutto)[1];
   if (kinds) p.set("kind", kinds);
   if (logFilters.door) p.set("door", logFilters.door);
+  if (logFilters.person_id) p.set("person_id", logFilters.person_id);
   // Senza fuso: la mezzanotte la calcola il server con l'ora di Home Assistant, come per il CSV e il cruscotto
   if (logFilters.from) p.set("since", logFilters.from + "T00:00:00");
   if (logFilters.to) p.set("until", logShiftDay(logFilters.to, 1) + "T00:00:00");
@@ -2129,8 +2157,8 @@ const KIND_DOT = {"k-ok": "ok", "k-warn": "warn", "k-err": "err", "k-info": "inf
 const LOG_ROW_WHAT = {concesso: "accesso concesso", negato: "accesso negato", lettura: "tessera letta"};
 // Origine dell'evento come la scrive l'app (db.SOURCE_LABELS); gli altri valori sono già nomi
 const LOG_SOURCES = {lettore: "Lettore", controller: "Controller", porta: "Porta"};
-// Riga compatta: ora, colore dell'esito, chi, cosa, dove
-function logRow(e) {
+// Riga compatta: ora, colore dell'esito, chi, cosa, dove (place false: elenco di una porta sola, il dove è già nel titolo)
+function logRow(e, {place = true} = {}) {
   const [label, cls] = KINDS[e.kind] || [e.kind, "k-muted"];
   const who = e.person_name || (e.card ? `Tessera ${e.card}` : e.kind === "citofono" ? e.source || "Citofono" : e.kind === "apertura_remota" ? e.source || "Home Assistant" : e.kind === "uscita" ? e.source || "Pulsante" : inputDenied(e) ? e.source : "");
   let what = who ? LOG_ROW_WHAT[e.kind] || label.replace(/^Accesso /, "").replace(/^Tessera /, "") : label;
@@ -2138,7 +2166,7 @@ function logRow(e) {
   return `<div class="ev ${e.id === logSelected ? "sel" : ""}" data-event="${e.id}" role="button" tabindex="0" title="${esc(fmtFull(e.ts))}">
     <span class="time">${esc(fmtTime(e.ts))}</span><span class="dot ${KIND_DOT[cls] || ""}"></span>
     <span class="what">${who ? `<b>${esc(who)}</b> <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="Con foto">${icon("camera", "icon")}</span>` : ""}${e.recovered ? ' <span class="muted small-text" title="Recuperato dal registro interno del controller">· recuperato</span>' : ""}</span>
-    ${multiDoor() ? `<span class="where">${esc(eventPlace(e))}</span>` : "<span></span>"}
+    ${place && multiDoor() ? `<span class="where">${esc(eventPlace(e))}</span>` : "<span></span>"}
   </div>`;
 }
 function eventDetail(e) {
@@ -2160,7 +2188,7 @@ function eventDetail(e) {
     <div class="row" style="margin-top:14px">
       ${e.person_id && can("persone") ? `<a class="btn small" href="#persone/${e.person_id}">${icon("user")}Scheda Persona</a>` : ""}
       ${e.kind === "sconosciuta" && can("persone_modifica") ? `<a class="btn small primary" href="#da-registrare">${icon("cardplus")}Registra Tessera</a>` : ""}
-      ${e.person_name ? `<button type="button" class="small" data-same="${esc(e.person_name)}">Tutti i Suoi Eventi</button>` : ""}
+      ${e.person_name ? `<button type="button" class="small" data-same="${esc(e.person_name)}" data-same-id="${e.person_id || ""}">Tutti i Suoi Eventi</button>` : ""}
     </div>`;
 }
 function showEvent(e) {
@@ -2170,7 +2198,14 @@ function showEvent(e) {
   const panel = $("#l-detail");
   const bind = (root, close) => {
     const same = $("[data-same]", root);
-    if (same) same.onclick = () => { close(); Object.assign(logFilters, {q: same.dataset.same, view: "tutto"}); if (route.name === "registro") viewLog($("#view")); else location.hash = "#registro"; };
+    // Per numero di persona, come dalla scheda: anche gli eventi di prima di un cambio di nome, non quelli di un
+    // omonimo. Il nome nella ricerca solo per un evento senza persona registrata
+    if (same) same.onclick = () => {
+      close();
+      const id = Number(same.dataset.sameId) || 0;
+      Object.assign(logFilters, {person_id: id, person_name: id ? same.dataset.same : "", q: id ? "" : same.dataset.same, view: "tutto"});
+      if (route.name === "registro") render(); else location.hash = "#registro";
+    };
   };
   if (panel && window.matchMedia("(min-width: 1100px)").matches) {
     panel.hidden = false;
@@ -2199,6 +2234,7 @@ async function viewLog(el) {
       <input type="date" id="l-from" value="${esc(logFilters.from)}" title="Dal giorno" aria-label="Dal giorno">
       <input type="date" id="l-to" value="${esc(logFilters.to)}" title="Al giorno" aria-label="Al giorno">
       <input type="search" id="l-q" placeholder="Cerca nome, tessera o dettaglio" value="${esc(logFilters.q)}">
+      ${logFilters.person_id ? `<button type="button" class="chip-btn on" id="l-person" title="Solo gli eventi di questa persona: tocca per togliere il filtro" aria-label="Togli il filtro su ${esc(logFilters.person_name)}">${icon("user")}${esc(logFilters.person_name || "Persona")}${icon("close")}</button>` : ""}
       <a class="btn w-io" id="l-export" href="#" download title="Scarica gli eventi di questa vista">${icon("download")}CSV</a>
     </div>
     <div class="log-layout">
@@ -2221,6 +2257,12 @@ async function viewLog(el) {
   $("#l-from").addEventListener("change", (e) => { logFilters.from = e.target.value; loadLog(); });
   $("#l-to").addEventListener("change", (e) => { logFilters.to = e.target.value; loadLog(); });
   $("#l-more").addEventListener("click", () => loadLog(true));
+  // Filtro su una persona (scheda persona, Tutti i Suoi Eventi): indipendente dalla ricerca, si toglie da qui
+  if ($("#l-person")) $("#l-person").addEventListener("click", (e) => {
+    Object.assign(logFilters, {person_id: 0, person_name: ""});
+    e.currentTarget.remove();
+    loadLog();
+  });
   const list = $("#l-list");
   const pick = (e) => { const row = e.target.closest("[data-event]"); if (row) showEvent(logEvents.find((x) => x.id === Number(row.dataset.event))); };
   list.addEventListener("click", pick);
@@ -2276,7 +2318,7 @@ async function updateHiddenCount() {
   box.innerHTML = `<span class="pill ok">${r.count}</span><span style="flex:1">${r.count === 1 ? "accesso riuscito non mostrato" : "accessi riusciti non mostrati"} in questa vista${logFilters.from || logFilters.to ? "" : " (oggi)"}</span><a href="#registro" data-show-all>Mostra Tutto</a>`;
 }
 // Righe del registro con l'intestazione del giorno quando cambia
-function logRows(events) {
+function logRows(events, {place = true} = {}) {
   let lastDay = "";
   const before = new Date();
   before.setDate(before.getDate() - 1);
@@ -2287,12 +2329,12 @@ function logRows(events) {
     const day = d.toDateString() === today ? "Oggi" : d.toDateString() === yesterday ? "Ieri" : long[0].toUpperCase() + long.slice(1);
     const head = day !== lastDay ? `<div class="day">${esc(day)}</div>` : "";
     lastDay = day;
-    return head + logRow(e);
+    return head + logRow(e, {place});
   }).join("");
 }
 function renderLog() {
   logDay = new Date().toDateString();
-  $("#l-list").innerHTML = logEvents.length ? logRows(logEvents) : `<div class="empty">${logFilters.view === "controllo" && !logFilters.q ? "Niente da controllare: nessun accesso negato, nessuna tessera sconosciuta e nessun allarme." : "Nessun evento con questi filtri."}</div>`;
+  $("#l-list").innerHTML = logEvents.length ? logRows(logEvents) : `<div class="empty">${logFilters.view === "controllo" && !logFilters.q && !logFilters.person_id ? "Niente da controllare: nessun accesso negato, nessuna tessera sconosciuta e nessun allarme." : "Nessun evento con questi filtri."}</div>`;
 }
 async function refreshLog() {
   // Solo se si guarda la cima del registro senza ricerca né date, e non mentre arriva un'altra pagina
@@ -2375,18 +2417,18 @@ function bindHiddenToggle(kind) {
   if (box) box.onchange = () => { showHidden[kind] = box.checked; render(); };
 }
 async function setHidden(kind, token, hidden) {
-  return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosta: la ritrovi con \"Mostra Nascoste\"" : "Di nuovo visibile");
+  return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosta: la ritrovi con Mostra Nascoste" : "Di nuovo visibile");
 }
 
 // Tipologie: chi è la persona, dove e quando entra, quanto dura la tessera. L'app tiene il profilo sul controller.
 async function viewCategories(el) {
   el.innerHTML = `${personTabs("tipologie")}<div id="c-body">${loadingBox()}</div>`;
   const body = $("#c-body");
-  // Come loadPlaces, ma con l'errore: senza strutture e aree le righe sembrerebbero su luoghi eliminati
-  let placesError = "";
+  // Lette di nuovo: se la lettura non riesce restano quelle di prima, con l'avviso (store.placesError)
   store.groupsError = "";
-  await Promise.all([loadGroups(true), api("api/locations").then((x) => { store.places = x; }, (err) => { placesError = err.message; })]);
+  await Promise.all([loadGroups(true), loadPlaces(true)]);
   if (!body.isConnected) return;
+  const placesError = store.placesError;
   const groupsError = store.groupsError;
   store.groupsError = "";
   if (groupsError && !store.schedules.length) {
@@ -2416,7 +2458,8 @@ async function viewCategories(el) {
     const doors = allDoors().map((d) => [`door:${d.id}`, d.name + (placeOf(d) ? ` · ${placeOf(d)}` : "")]);
     // Un luogo che non c'è più resta scelto e lo si vede: il primo della lista lo coprirebbe senza cambiare la riga
     const known = [...sites.map((x) => `site:${x.id}`), ...areas.map(([v]) => v), ...doors.map(([v]) => v)];
-    const gone = selected && !known.includes(selected) ? `<option value="${esc(selected)}" selected>${{site: "Struttura Eliminata", area: "Area Eliminata"}[selected.split(":")[0]] || "Porta Eliminata"}</option>` : "";
+    const what = selected.split(":")[0];
+    const gone = selected && !known.includes(selected) ? `<option value="${esc(selected)}" selected>${what === "site" || what === "area" ? `${what === "site" ? "Struttura" : "Area"} ${store.placesError ? "Non Letta" : "Eliminata"}` : "Porta Eliminata"}</option>` : "";
     return `${gone}${sites.length ? `<optgroup label="Strutture">${sites.map((x) => opt(`site:${x.id}`, x.name)).join("")}</optgroup>` : ""}
       ${areas.length ? `<optgroup label="Aree">${areas.map(([v, label]) => opt(v, label)).join("")}</optgroup>` : ""}
       <optgroup label="Porte">${doors.map(([v, label]) => opt(v, label)).join("")}</optgroup>`;
@@ -2434,7 +2477,7 @@ async function viewCategories(el) {
       $("#c-rules", dlg).innerHTML = rows.map((r, i) => `<div class="rule-row access-row" data-i="${i}">
         <select data-k="place" aria-label="Dove">${placeOptions(r.place)}</select>
         <select data-k="schedule" aria-label="Quando">${scheduleOptions(r.schedule)}</select>
-        <button type="button" class="ghost icon-only danger" data-rm title="Togli la riga">${icon("trash")}</button></div>`).join("") || '<p class="muted">Nessuna riga: aggiungine almeno una.</p>';
+        <button type="button" class="ghost icon-only danger" data-rm title="Togli la riga" aria-label="Togli la riga">${icon("trash")}</button></div>`).join("") || '<p class="muted">Nessuna riga: aggiungine almeno una.</p>';
       paintIcons($("#c-rules", dlg));
     };
     const form = `${field("Nome", `<input name="name" maxlength="40" value="${esc(c?.name || "")}" placeholder="es. Manutentore, Pulizie, Ospite">`)}
@@ -2535,7 +2578,7 @@ async function scheduleEditor(s) {
     $("#rules", dlg).innerHTML = rules.map((r, i) => `<div class="rule-row" data-i="${i}">
       <span class="days">${DAYS.map(([code, letter, name]) => `<button type="button" class="${r.days.includes(code) ? "on" : ""}" data-day="${code}" title="${name}">${letter}</button>`).join("")}</span>
       <span class="row"><input type="time" data-k="start" value="${esc(r.start)}" step="300"> – <input type="time" data-k="end" value="${esc(r.end === "24:00" ? "23:59" : r.end)}" step="60"></span>
-      <button type="button" class="ghost icon-only danger" data-rm title="Rimuovi">${icon("trash")}</button></div>`).join("") || '<p class="muted">Nessun intervallo.</p>';
+      <button type="button" class="ghost icon-only danger" data-rm title="Togli la riga" aria-label="Togli la riga">${icon("trash")}</button></div>`).join("") || '<p class="muted">Nessun intervallo.</p>';
     $("#preview", dlg).innerHTML = weekPreview(rules.filter((r) => r.start && r.end && r.end > r.start));
   };
   const ok = await modal({
@@ -2587,7 +2630,7 @@ async function viewHolidays(body) {
   let list;
   try { list = await api("api/holidays"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   const year = new Date().getFullYear();
-  body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie gestite dall'app con l'opzione "Non Valida nei Giorni Festivi". Le fasce mai modificate qui non cambiano.</p>
+  body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie gestite dall'app con l'opzione Non Valida nei Giorni Festivi. Le fasce mai modificate qui non cambiano.</p>
     <div class="card w-regole"><h2>Aggiungi Festività</h2>
       <form class="row" id="h-form"><input type="date" name="day" required><input name="name" placeholder="Nome (es. Patrono)" maxlength="60" style="flex:1;min-width:160px">
       <label class="row small-text"><input type="checkbox" name="yearly" checked> Ogni Anno</label><button type="submit" class="primary">Aggiungi</button></form>
@@ -2633,15 +2676,18 @@ function notifCard(i) {
   const minutes = Math.max(1, Math.round((new Date(i.ts) - new Date(i.first_ts)) / 60000));
   const meta = [
     i.door ? esc(i.door) : "",
-    // Allarmi e manomissioni accorpati non sono tentativi
-    i.count > 1 ? `${i.count} ${i.type === "door_alarm" ? "volte" : "tentativi"} in ${plural(minutes, "minuto", "minuti")}` : "",
+    // Tentativi solo gli accessi negati e le tessere sconosciute: allarmi e manomissioni accorpati sono volte
+    i.count > 1 ? `${i.count} ${["denied", "unknown_card"].includes(i.type) ? "tentativi" : "volte"} in ${plural(minutes, "minuto", "minuti")}` : "",
     i.count > 1 ? `${esc(dayTime(i.first_ts))} – ${esc(fmtTime(i.ts))}` : i.type === "expiring" ? "" : `<span title="${esc(fmtFull(i.ts))}">${esc(dayTime(i.ts))}</span>`,
   ].filter(Boolean).join(" · ");
-  const link = i.link && (!i.link.startsWith("#impianti") || can("impianti")) && (i.link !== "#da-registrare" || can("persone")) ? i.link : "";
+  // Solo verso una pagina permessa (#persone/tipologie, #da-registrare, #impianti/stato…): le altre portano alla home.
+  // Di Impianti chi ha solo il permesso Backup vede solo la scheda Backup
+  const allowed = (l) => allowedRoute(l.slice(1).split("/")[0]) && (!l.startsWith("#impianti") || can("impianti") || l === "#impianti/backup");
+  const link = i.link && allowed(i.link) ? i.link : "";
   const details = i.event && can("registro") ? `<button type="button" data-n-event="${i.event}">Dettagli</button>`
     : link ? `<a class="btn" href="${esc(link)}">Dettagli</a>` : "";
   const snap = i.snapshot && can("registro")
-    ? `<img class="n-snap" loading="lazy" src="api/events/${i.snapshot}/snapshot" alt="istantanea" data-snap="${i.snapshot}" data-title="${esc(i.title + " · " + fmtFull(i.ts))}">`
+    ? `<img class="n-snap" loading="lazy" src="api/events/${i.snapshot}/snapshot" alt="Foto" data-snap="${i.snapshot}" data-title="${esc(i.title + " · " + fmtFull(i.ts))}">`
     : i.snapshot_error ? `<div class="n-snap none" title="${esc(i.snapshot_error)}">${icon("camera")}<span>Foto non scattata</span></div>` : "";
   return `<article class="n-card sev-${i.severity}" data-key="${esc(i.id)}">
     <div class="n-tile">${icon(ic)}</div>
@@ -2700,13 +2746,22 @@ function notifParams(kinds) {
   if (notifFilters.door) p.set("door", notifFilters.door);
   return p;
 }
+// Vale solo la risposta dell'ultima richiesta: un aggiornamento lento non sostituisce la scheda o il filtro scelti dopo
+let notifSeq = 0, notifBusy = false;
 async function loadNotifLog(more = false) {
   if (!$("#n-rows")) return;
+  const seq = ++notifSeq;
   const p = notifParams(NOTIF_TABS[notifFilters.tab][1]);
   p.set("limit", NOTIF_PAGE);
   if (more && notifEvents.length) setCursor(p, notifEvents);
+  // Un doppio clic su "Carica Altri" aggiungerebbe due volte la stessa pagina
+  if ($("#n-more")) $("#n-more").disabled = true;
+  notifBusy = true;
   const [data, ...counts] = await Promise.all([api("api/events?" + p).catch(() => []),
     ...(more ? [] : Object.values(NOTIF_TABS).map(([, kinds]) => api("api/events/count?" + notifParams(kinds)).then((r) => r.count).catch(() => 0)))]);
+  if (seq !== notifSeq) return;
+  notifBusy = false;
+  if ($("#n-more")) $("#n-more").disabled = false;
   if (!$("#n-rows")) return;
   notifEvents = more ? notifEvents.concat(data) : data;
   if (!more) {
@@ -2727,12 +2782,16 @@ async function refreshNotifications() {
   if (!fresh || !$("#n-cards")) return;
   notifData = fresh;
   renderNotifCards();
-  // Con "Carica Altri" l'elenco allungato resta com'è
-  if (notifEvents.length <= NOTIF_PAGE) await loadNotifLog();
+  // Con "Carica Altri" l'elenco allungato resta com'è; mentre arriva un'altra lettura (scheda, ricerca) non la si sostituisce
+  if (notifEvents.length <= NOTIF_PAGE && !notifBusy) await loadNotifLog();
   else renderNotifRows();
 }
 async function viewNotifications(el) {
-  try { notifData = await api("api/notifications"); } catch (err) { el.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }
+  let data;
+  try { data = await api("api/notifications"); } catch (err) { el.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }
+  // Nel frattempo si è aperta un'altra pagina: la riga accanto al titolo è sua
+  if (!el.isConnected) return;
+  notifData = data;
   const doors = allDoors();
   if (notifFilters.door && !doors.some((d) => d.token === notifFilters.door)) notifFilters.door = "";
   const log = can("registro");
@@ -2744,7 +2803,7 @@ async function viewNotifications(el) {
       <div class="n-tools">
       <input type="search" id="n-q" placeholder="Persona, tessera, porta…" value="${esc(notifFilters.q)}" aria-label="Cerca persona, tessera o porta">
       ${doors.length > 1 ? `<select id="n-door" aria-label="Porta"><option value="">Tutte le Porte</option>${doorOptionGroups(doors, notifFilters.door)}</select>` : ""}
-      <button type="button" id="n-all" hidden title="Segna Tutte Come Viste" aria-label="Segna Tutte Come Viste">${icon("check")}<span class="lbl">Segna Tutte Come Viste</span></button>
+      <button type="button" id="n-all" hidden title="Segna Tutte come Viste" aria-label="Segna Tutte come Viste">${icon("check")}<span class="lbl">Segna Tutte come Viste</span></button>
       ${store.me.admin ? `<a class="btn ghost" href="#impostazioni/notifiche" title="Quali notifiche ricevere" aria-label="Scegli Notifiche">${icon("cog")}<span class="lbl">Scegli Notifiche</span></a>` : ""}
       </div></div>
       <div id="n-cards" class="n-cards"></div>
@@ -2752,7 +2811,7 @@ async function viewNotifications(el) {
     ${log ? `<section class="card n-log">
       <div class="n-sec-head"><h2 style="margin:0">Registro Eventi</h2>
         <label class="n-chk"><input type="checkbox" id="n-only" ${notifFilters.onlyOpen ? "checked" : ""}> Solo da Gestire</label></div>
-      <div class="n-tabs" role="tablist" aria-label="Categoria">${Object.entries(NOTIF_TABS).map(([k, [label]]) => `<button type="button" role="tab" class="n-tab" data-n-tab="${k}" aria-selected="${notifFilters.tab === k}">${esc(label)}<span></span></button>`).join("")}</div>
+      <div class="segmented n-tabs" role="tablist" aria-label="Categoria">${Object.entries(NOTIF_TABS).map(([k, [label]]) => `<a href="#notifiche" role="tab" data-n-tab="${k}" class="${notifFilters.tab === k ? "active" : ""}" aria-selected="${notifFilters.tab === k}">${esc(label)}<span></span></a>`).join("")}</div>
       <div class="table-wrap" id="n-table" hidden><table class="table n-table"><thead><tr>
         <th>Ora</th><th>Evento</th><th>Persona / Tessera</th><th>Motivo</th>${multiDoor() ? "<th>Porta</th>" : ""}<th>Stato</th><th aria-label="Dettagli"></th>
       </tr></thead><tbody id="n-rows"></tbody></table></div>
@@ -2784,12 +2843,13 @@ async function viewNotifications(el) {
     if (det) return openEvent(Number(det.dataset.nEvent));
     const tab = e.target.closest("[data-n-tab]");
     if (tab) {
+      e.preventDefault();
       notifFilters.tab = tab.dataset.nTab;
-      $$("[data-n-tab]", el).forEach((t) => t.setAttribute("aria-selected", String(t === tab)));
+      $$("[data-n-tab]", el).forEach((t) => { t.classList.toggle("active", t === tab); t.setAttribute("aria-selected", String(t === tab)); });
       return loadNotifLog();
     }
     if (e.target.closest("#n-more")) return loadNotifLog(true);
-    if (e.target.closest("#n-older")) { Object.assign(logFilters, {view: "controllo", q: notifFilters.q, door: notifFilters.door}); return; }
+    if (e.target.closest("#n-older")) { Object.assign(logFilters, {view: "controllo", q: notifFilters.q, door: notifFilters.door, person_id: 0, person_name: ""}); return; }
     const row = e.target.closest("tr[data-event]");
     if (row && !e.target.closest("a, img")) openEvent(Number(row.dataset.event));
   };
@@ -2838,8 +2898,8 @@ async function viewInstallation(el, sub) {
   const hash = location.hash;
   el.innerHTML = loadingBox();
   try { data = await api("api/installation"); } catch (err) { el.innerHTML = errorBox("Impianti Non Leggibili", err); return; }
-  // Cambiata scheda mentre si leggeva (per esempio Backup): non scrive sopra la pagina nuova
-  if (location.hash !== hash) return;
+  // Cambiata scheda o pagina ridisegnata mentre si leggeva (per esempio Backup): non scrive sopra la pagina nuova
+  if (!el.isConnected || location.hash !== hash) return;
   if (first === "programmazione" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}`); return; }
   if (first === "stato" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}/stato`); return; }
   if (first === "ripristino" && data.controllers[0]) { location.replace(`#impianti/c${data.controllers[0].id}/backup`); return; }
@@ -2867,7 +2927,7 @@ async function viewControllers(body, data) {
   }
   const groups = {};
   data.controllers.forEach((c) => {
-    const label = placeOf(c.place) || "Senza Struttura";
+    const label = placeOf(c.place) || "Senza Area";
     (groups[label] = groups[label] || []).push(c);
   });
   const card = (c) => `<div class="card ctl-card" style="margin:0">
@@ -2884,7 +2944,7 @@ async function viewControllers(body, data) {
     <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Tocca un controller per collegare lettori e porte e per la programmazione. L'ingranaggio apre indirizzo, credenziali e posizione.</p>
       ${full ? "" : `<button type="button" class="primary" id="ctrl-new">${icon("plus")}Aggiungi Controller</button>`}</div>
     ${Object.entries(groups).map(([label, list]) => `<h2 class="section-title">${esc(label)}</h2><div class="grid cards" style="margin-bottom:20px">${list.map(card).join("")}</div>`).join("")}
-    ${full ? '<p class="hint">Per ora l\'add-on gestisce un controller; pagine e dati sono già pronti per averne di più.</p>' : ""}`;
+    ${full ? '<p class="hint">Per ora l\'app gestisce un controller; pagine e dati sono già pronti per averne di più.</p>' : ""}`;
   if ($("#ctrl-new")) $("#ctrl-new").onclick = () => controllerEditor();
   api("api/status").then((s) => {
     const c = data.controllers[0];
@@ -2952,14 +3012,14 @@ function bindIdentityAlert(root, ctrl) {
 
 // Struttura e area del controller: porte e lettori la ereditano
 function areaSelect(sites, selected = 0, name = "area_id") {
-  return `<select name="${name}"><option value="0">Nessuna Area</option>${sites.filter((x) => x.id).map((x) => `<optgroup label="${esc(x.name)}">${x.areas.map((a) => `<option value="${a.id}" ${a.id === selected ? "selected" : ""}>${esc(x.name)} › ${esc(a.name)}</option>`).join("")}</optgroup>`).join("")}</select>`;
+  return `<select name="${name}"><option value="0">Senza Area</option>${sites.filter((x) => x.id).map((x) => `<optgroup label="${esc(x.name)}">${x.areas.map((a) => `<option value="${a.id}" ${a.id === selected ? "selected" : ""}>${esc(x.name)} › ${esc(a.name)}</option>`).join("")}</optgroup>`).join("")}</select>`;
 }
 
 // sites null: strutture non leggibili. Il campo resta fermo e l'area non si manda, così non cambia
 function controllerAreaField(ctrl, sites) {
   const where = 'Porte e lettori del controller stanno qui. Si creano in <a href="#impianti/strutture">Strutture e Aree</a>.';
   if (!sites) {
-    return field("Struttura e Area", `<select name="area_id" disabled><option>${esc(ctrl ? placeOf(ctrl.place) || "Nessuna Area" : "Area Predefinita")}</option></select>`,
+    return field("Struttura e Area", `<select name="area_id" disabled><option>${esc(ctrl ? placeOf(ctrl.place) || "Senza Area" : "Area Predefinita")}</option></select>`,
       `Strutture e aree non leggibili: ${ctrl ? "l'area resta quella di adesso" : "l'app sceglie quella predefinita, che puoi cambiare dopo dall'ingranaggio del controller"}.`);
   }
   if (ctrl) return field("Struttura e Area", areaSelect(sites, ctrl.area_id || 0), where);
@@ -2979,7 +3039,8 @@ function controllerFields(ctrl, sites) {
     <h3 class="section-title" style="margin-top:18px">${icon("cog")}Connessione</h3>
     ${field("Indirizzo", `<input name="host" class="mono" value="${esc(ctrl?.host || "")}" placeholder="es. 192.168.1.50">`, "IP o nome del controller, senza https://.")}
     <div class="fields-2">${field("Utente", `<input name="username" autocomplete="off" value="${esc(ctrl?.username || "")}">`)}
-    ${field("Password", `<input name="password" type="password" autocomplete="new-password" placeholder="${ctrl?.has_password ? "lascia vuoto per non cambiarla" : ""}">`)}</div>
+    ${field("Password", `<input name="password" type="password" autocomplete="new-password" placeholder="${ctrl?.has_password ? "lascia vuoto per non cambiarla" : ""}">`,
+      ctrl?.has_password ? "Scrivi di nuovo la password se cambi indirizzo o utente." : "")}</div>
     ${field("Prefisso MQTT", `<input name="mqtt_topic_prefix" class="mono" value="${esc(ctrl?.mqtt_topic_prefix || "")}" placeholder="es. accessi/controller_ingresso">`, "Lo stesso impostato nel client MQTT del controller: eventi sotto &lt;prefisso&gt;/eventi/…, stato del controller su &lt;prefisso&gt;/stato (online o offline).")}
     <div class="field inline"><input type="checkbox" name="verify_ssl" id="f-ssl" ${ctrl?.verify_ssl ? "checked" : ""}><label for="f-ssl">Verifica Certificato HTTPS</label></div>
     <p class="hint" style="margin-top:-8px">Lascialo spento se il controller usa il certificato di fabbrica.</p>
@@ -3049,8 +3110,8 @@ async function viewConnection(el, ctrl) {
   const hash = location.hash;
   // Strutture non leggibili (null): il campo dell'area resta fermo e salvando l'area non cambia
   const sites = await api("api/locations").catch(() => null);
-  // Cambiata pagina mentre si leggeva: non scrive sopra la pagina nuova
-  if (location.hash !== hash) return;
+  // Cambiata pagina, o la stessa ridisegnata, mentre si leggeva: non scrive sopra la pagina nuova né il suo pageGuard
+  if (!el.isConnected || location.hash !== hash) return;
   el.innerHTML = `${controllerHeader(ctrl, "connessione")}
     <form class="card" id="conn-form" style="max-width:760px">${controllerFields(ctrl, sites)}
       <div class="row" style="margin-top:18px;justify-content:space-between"><button type="button" class="danger" id="ctrl-del">Togli Controller</button>
@@ -3069,7 +3130,7 @@ async function viewConnection(el, ctrl) {
   }
   form.onsubmit = (e) => { e.preventDefault(); saveConnection(); };
   $("#ctrl-del").onclick = async () => {
-    if (await confirmBox("Togli Controller", `Togliere <b>${esc(ctrl.name)}</b> e le sue porte dall'app? Sul controller non cambia niente: tessere, profili e programmazione restano dove sono.`, "Togli", true) &&
+    if (await confirmBox("Togli Controller", `Togliere <b>${esc(ctrl.name)}</b> e le sue porte dall'app? Sul controller non cambia niente: tessere, profili di accesso e programmazione restano dove sono.`, "Togli", true) &&
         await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller tolto dall'app")) { pageGuard = null; loadSummary(); location.hash = "#impianti"; }
   };
 }
@@ -3084,7 +3145,8 @@ async function viewController(el, ctrl, tab) {
   const body = $("#c-body");
   // Lo storico dei backup vale per ogni controller, anche quando non risponde
   if (tab === "backup") return viewBackups(body, `controller:${ctrl.id}`);
-  const primary = (await api("api/installation")).controllers[0];
+  let primary;
+  try { primary = (await api("api/installation")).controllers[0]; } catch (err) { if (body.isConnected) body.innerHTML = errorBox("Impianti Non Leggibili", err); return; }
   // Nel frattempo si è cambiata pagina o scheda: questa risposta non serve più
   if (!body.isConnected) return;
   if (!primary || primary.id !== ctrl.id) { body.innerHTML = '<div class="card"><div class="empty">La programmazione è disponibile per il controller in uso.</div></div>'; return; }
@@ -3216,7 +3278,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
           <span class="ev-icon ${i.problem ? "k-warn" : i.role ? "k-info" : "k-muted"}">${icon(INPUT_ICONS[i.role] || "chip")}</span><span class="grow"><b>${esc(i.name)}</b><span class="sch-meta">${esc(inputMeta(i))}</span>${i.problem ? `<span class="sch-meta" style="color:var(--warn)">Da riscrivere: ${esc(i.problem)}</span>` : ""}</span>${inputDot(i)}</button>`).join("")}` : ""}</div>
         <div class="sch-mid"></div>
         <div class="sch-col"><div class="sch-head" style="text-align:right">Porte</div>${p.doors.map((d) => `<button type="button" class="sch-node" data-door="${esc(d.token)}">
-          <span class="ev-icon k-muted">${icon("door")}</span><span class="grow"><b>${esc(doorName(d))}</b><span class="sch-meta">${appDoor(d.token) ? esc(d.name && d.name !== doorName(d) ? `sul controller: ${d.name}` : d.token) : "non gestita dall'app"}</span></span></button>`).join("")}</div>
+          <span class="ev-icon k-muted">${icon("door")}</span><span class="grow"><b>${esc(doorName(d))}</b><span class="sch-meta">${appDoor(d.token) ? (d.name && d.name !== doorName(d) ? esc(`sul controller: ${d.name}`) : "") : "non gestita dall'app"}</span></span></button>`).join("")}</div>
         <svg class="sch-lines" id="sch-svg" aria-hidden="true"></svg><div id="sch-gears"></div>
       </div>` : '<div class="empty">Sul controller non ci sono lettori o porte da collegare.</div>'}
       <p class="hint">Ogni filo è un lettore o un ingresso che comanda una porta. I collegamenti dei lettori si scrivono sul controller solo con Salva; quelli degli ingressi con Scrivi sul Controller nella loro finestra. Ogni modifica si può annullare dallo Storico Modifiche.</p>
@@ -3341,11 +3403,15 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
         ${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? " È anche il nome dell'entità in Home Assistant." : ""} Compare nel registro per le aperture da questo ingresso.`)}
         ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(inputRoleHint(i.io, role))}</span>`)}
         <div data-door-field ${DOOR_INPUT_ROLES.includes(role) ? "" : "hidden"}>${field("Porta", `<select name="door">${doorOptions}</select>`)}</div>
-        <div data-wiring ${wired(role) ? "" : "hidden"}>${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role))}</span>`)}
+        <div data-wiring ${wired(role) ? "" : "hidden"}>${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role, i.contact))}</span>`)}
         <div class="field inline"><input type="checkbox" name="supervised" id="f-sup" ${i.supervised && supervisable(role) ? "checked" : ""} ${supervisable(role) ? "" : "disabled"}><label for="f-sup">Linea Supervisionata</label></div>
         <p class="hint" style="margin-top:-8px">${i.can_supervise ? "Con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. Attivala solo se le resistenze sono montate. Dopo averla tolta, l'ingresso può risultare attivo finché non riavvii il controller." : "Questo ingresso non supporta la linea supervisionata."}</p></div>`,
       onOpen: (dlg) => {
-        const select = $('[name="role"]', dlg), name = $('[name="name"]', dlg);
+        const select = $('[name="role"]', dlg), name = $('[name="name"]', dlg), contact = $('[name="contact"]', dlg);
+        // Il suggerimento segue il tipo di contatto scelto, non solo il ruolo
+        const showContact = () => { $("[data-contact-hint]", dlg).textContent = contactHint(select.value, contact.value); };
+        contact.onchange = showContact;
+        showContact();
         select.onchange = () => {
           // Il nome segue il ruolo finché è quello di serie
           if (!name.value.trim() || name.value.trim() === i.default_name || Object.values(p.input_roles).includes(name.value.trim())) {
@@ -3354,7 +3420,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
           $("[data-door-field]", dlg).hidden = !DOOR_INPUT_ROLES.includes(select.value);
           $("[data-role-hint]", dlg).textContent = inputRoleHint(i.io, select.value);
           $("[data-wiring]", dlg).hidden = !wired(select.value);
-          $("[data-contact-hint]", dlg).textContent = contactHint(select.value);
+          showContact();
           const supervised = $('[name="supervised"]', dlg);
           supervised.disabled = !supervisable(select.value);
           if (supervised.disabled) supervised.checked = false;
@@ -3415,7 +3481,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   $("#sch-save").onclick = () => save();
   $("#sch-discard").onclick = () => { pending = saved.map((l) => ({...l})); selected = null; update(); };
   // keep: chi ridisegna la pagina senza uscire (render) la chiama prima, così i collegamenti non salvati restano
-  pageGuard = {dirty: () => changes().length > 0, save: () => save(false), keep};
+  pageGuard = {dirty: () => changes().length > 0, save: () => save(false), keep, message: "Hai modifiche non ancora scritte sul controller."};
   resize.observe(schema);
   update();
   requestAnimationFrame(draw);
@@ -3465,7 +3531,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
   body.onclick = async (e) => {
     const b = e.target.closest("button");
     if (!b) return;
-    if (b.dataset.appEdit) doorEditor(ctrl, appDoor(b.dataset.appEdit));
+    if (b.dataset.appEdit) doorEditor(ctrl, appDoor(b.dataset.appEdit), b.dataset.appEdit, p.doors.find((d) => d.token === b.dataset.appEdit)?.name);
     else if (b.dataset.appAdd) doorEditor(ctrl, null, b.dataset.appAdd, p.doors.find((d) => d.token === b.dataset.appAdd)?.name);
     else if (b.dataset.appDel) {
       const door = appDoor(b.dataset.appDel);
@@ -3474,7 +3540,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
     } else if (b.dataset.pd) {
       const d = p.doors.find((x) => x.token === b.dataset.pd);
       const times = DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
-      const ok = await modal({title: "Porta " + (d.name || d.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(d.name)}">`)}
+      const ok = await modal({title: named("Porta", d.name || d.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(d.name)}">`)}
         ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(d.description)}">`)}
         ${times.length ? `<div class="fields-2">${times.map(([k, label, hint, min, max]) => field(label + " (Secondi)", `<input type="number" name="${k}" min="${Math.min(min, d[k])}" max="${Math.max(max, d[k])}" step="1" value="${d[k]}" required>`, hint)).join("")}</div>` : ""}`,
         actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) => {
@@ -3507,7 +3573,7 @@ function controllerReaders(body, p, errors, doorName) {
     const b = e.target.closest("[data-pr]");
     if (!b) return;
     const r = p.readers.find((x) => x.token === b.dataset.pr);
-    const ok = await modal({title: "Lettore " + (r.name || r.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(r.name)}">`)}
+    const ok = await modal({title: named("Lettore", r.name || r.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(r.name)}">`)}
       ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(r.description)}">`)}`,
       actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
         (await saveProgramming(`api/programming/readers/${encodeURIComponent(r.token)}`, {name: val(dlg, "name"), description: val(dlg, "description")}, "Lettore aggiornato sul controller")) || false}]});
@@ -3515,7 +3581,7 @@ function controllerReaders(body, p, errors, doorName) {
   };
 }
 
-// Stato del controller, delle sue porte, degli eventi MQTT e dei citofoni
+// Stato del controller, delle sue porte, degli eventi MQTT e dei videocitofoni
 async function controllerStatus(body, ctrl) {
   let s;
   try { s = await api("api/status"); } catch (err) { body.innerHTML = errorBox("Stato Non Leggibile", err); return; }
@@ -3551,11 +3617,11 @@ async function controllerStatus(body, ctrl) {
     + (h?.clock_fault === "home_assistant" ? '<p class="hint">A essere sbagliata è l\'ora di Home Assistant: controlla il suo server NTP. Le fasce orarie non ne risentono, perché le applica il controller con la sua ora.</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
   const cats = Object.entries(m.categories || {});
   const unknown = `${statusDot("")} Sconosciuto <span class="muted">· broker non collegato</span>`;
-  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta Broker MQTT nella Configurazione dell'add-on.</div></div>` : props([
+  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta Broker MQTT nella Configurazione dell'add-on. Un Mosquitto installato dopo l'app lo trova da sola entro un minuto, senza riavviare l'add-on.</div></div>` : props([
     ["Broker", m.connected ? `${statusDot("ok")} Collegato` : `${statusDot("err")} Non Collegato${m.error ? ` <span class="muted">· ${esc(m.error)}</span>` : ""}`],
     ["Prefisso", `<code>${esc(m.prefix)}</code>`],
     // Senza broker gli ultimi valori ricevuti non dicono com'è adesso
-    ["Controller", !m.connected ? unknown : m.controller_online === null ? "stato non ancora ricevuto" : m.controller_online ? `${statusDot("ok")} Collegato al Broker` : `${statusDot("err")} Non Collegato al Broker`],
+    ["Controller", !m.connected ? unknown : m.controller_online === null ? `${statusDot("")} Non Ancora Ricevuto` : m.controller_online ? `${statusDot("ok")} Collegato al Broker` : `${statusDot("err")} Non Collegato al Broker`],
     ["Ultima Tessera Letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
     ["Eventi AccessControl", !m.connected ? unknown : m.access_events_seen ? `${statusDot("ok")} Ricevuti` : `${statusDot("warn")} Non Ancora Ricevuti`],
     ["Eventi Persi", s.recovery ? `${s.recovery.events ? `${plural(s.recovery.events, "recuperato", "recuperati")}` : "nessuno"} dal registro del controller, controllato ${esc(relTime(s.recovery.at))}` : "si controllano all'avvio e dopo ogni interruzione"],
@@ -3563,7 +3629,7 @@ async function controllerStatus(body, ctrl) {
     + (cats.length ? `<details style="margin-top:12px"><summary class="small-text muted" style="cursor:pointer">Eventi Ricevuti per Categoria (${cats.length})</summary><div class="table-wrap"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo Topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div></details>` : "");
   const doors = s.doors.filter((d) => ctrl.doors.some((x) => x.id === d.id));
   const doorList = doors.length ? `<div class="list">${doors.map((d) => `<a class="item door-row" href="#porte/${d.id}" style="padding-left:0;padding-right:0">
-      <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
+      <div class="ev-icon k-${doorModeClass(d.mode) || "muted"}">${icon("door")}</div>
       <div class="grow"><div class="title">${esc(d.name)}</div>
         <div class="meta"><span class="mode-meta">${esc(doorModeLabel(d.mode))}</span>${d.camera ? `<span>telecamera ${esc(cameraName(d.camera))}</span>` : ""}${d.intercom ? `<span>videocitofono ${esc(d.intercom)}</span>` : ""}${d.ha_buttons ? "<span>pulsanti in Home Assistant</span>" : ""}</div></div>
       <span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span></a>`).join("")}</div>`
@@ -3576,12 +3642,12 @@ async function controllerStatus(body, ctrl) {
   ])).join('<hr style="border:none;border-top:1px solid var(--border);margin:12px 0">')}</div>` : "";
   body.innerHTML = `<div class="grid two">
       <div>
-        <div class="card"><h2>${statusDot(c.ok ? "ok" : "err")}Controller</h2>${ctrlInfo}
+        <div class="card"><h2>${statusDot(c.ok ? healthState(h, s)[0] : "err")}Controller</h2>${ctrlInfo}
           <p class="hint">Ultima sincronizzazione delle tessere: ${s.sync.paused ? "sospesa finché non confermi il nuovo controller" : s.sync.at ? esc(relTime(s.sync.at)) : "non ancora eseguita"}${s.sync.ok === false ? ` · <span style="color:var(--err)">${esc(s.sync.error)}</span>` : ""}</p></div>
         <div class="card"><h2>${icon("door")}Porte</h2>${doorList}</div>
       </div>
       <div>
-        <div class="card"><h2>${statusDot(!m.configured || !m.connected ? "err" : m.access_events_seen ? "ok" : "warn")}Eventi MQTT</h2>${mqtt}</div>
+        <div class="card"><h2>${statusDot(!m.configured || !m.connected || m.controller_online === false ? "err" : m.access_events_seen ? "ok" : "warn")}Eventi MQTT</h2>${mqtt}</div>
         ${intercomCard}
       </div>
     </div>`;
@@ -3641,7 +3707,7 @@ async function viewSites(body, data) {
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: (dlg) => ({name: val(dlg, "name"), description: val(dlg, "description")})}]});
   $("#site-new").onclick = async () => {
     const r = await nameDialog("Nuova Struttura", "Nome", "", field("Descrizione", '<input name="description" maxlength="200" placeholder="facoltativa">'));
-    if (r && await run(() => api("api/sites", {method: "POST", body: r}), "Struttura aggiunta")) { await loadSummary(); render(); }
+    if (r && await run(() => api("api/sites", {method: "POST", body: r}), "Struttura aggiunta")) { store.places = null; await loadSummary(); render(); }
   };
   const inside = (a) => a.controllers.length ? ` ${plural(a.controllers.length, "controller resterà", "controller resteranno")} senza area.` : "";
   body.onclick = async (e) => {
@@ -3667,7 +3733,8 @@ async function viewSites(body, data) {
       done = await confirmBox("Elimina Area", `Eliminare l'area <b>${esc(area.name)}</b>?${inside(area)}`, "Elimina", true) &&
         await run(() => api(`api/areas/${area.id}`, {method: "DELETE"}), "Area eliminata");
     }
-    if (done) { await loadSummary(); render(); }
+    // Nomi e aree cambiati: le righe Dove e Quando delle tipologie le rileggono
+    if (done) { store.places = null; await loadSummary(); render(); }
   };
 }
 
@@ -3705,7 +3772,7 @@ async function controllerCameras(body, ctrl) {
     ${rows.length || ctrlRow ? `<div class="card flush"><div class="list">${ctrlRow}${rows.map((d) => `<div class="item">
         <div class="ev-icon k-accent">${icon("camera")}</div>
         <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}${problem(d.snapshot_camera) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
-          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto su accessi negati, aperture remote, uscite, citofono e allarmi"}</span></div>
+          <div class="meta"><span>${esc(named("porta", d.name))}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto su accessi negati, aperture remote, uscite, citofono e allarmi"}</span></div>
           ${problem(d.snapshot_camera) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(d.snapshot_camera))}</div>` : ""}</div>
         <button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
@@ -3734,7 +3801,7 @@ async function cameraEditor(ctrl, cameras, door, forController = false) {
     : `<input name="camera" class="mono" value="${esc(current)}" placeholder="camera.ingresso">`;
   // Cosa fotografa: una porta (tutto quello che succede lì) o il coperchio del controller
   const editing = forController ? "ctrl" : door ? String(door.id) : "";
-  const targetSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${String(d.id) === editing ? "selected" : ""}>Porta ${esc(d.name)}${d.snapshot_camera && String(d.id) !== editing ? ` (ora ${esc(camLabel(d.snapshot_camera))})` : ""}</option>`).join("")}
+  const targetSelect = `<select name="door">${ctrl.doors.map((d) => `<option value="${d.id}" ${String(d.id) === editing ? "selected" : ""}>${esc(named("Porta", d.name))}${d.snapshot_camera && String(d.id) !== editing ? ` (ora ${esc(camLabel(d.snapshot_camera))})` : ""}</option>`).join("")}
     <option value="ctrl" ${editing === "ctrl" ? "selected" : ""}>Coperchio del Controller${ctrl.snapshot_camera && editing !== "ctrl" ? ` (ora ${esc(camLabel(ctrl.snapshot_camera))})` : ""}</option></select>`;
   let written = false;
   const result = await modal({
@@ -3782,7 +3849,7 @@ async function controllerIntercoms(body, ctrl) {
       : rows.length ? `<div class="card flush"><div class="list">${rows.map((d) => `<div class="item">
         <div class="ev-icon k-accent">${icon("phone")}</div>
         <div class="grow"><div class="title">${esc(d.intercom_name)}</div>
-          <div class="meta"><span>porta ${esc(d.name)}</span><span>${d.intercom_open_door ? `apre la porta con il relè ${d.intercom_relay}` : "registra le chiamate, non apre la porta"}</span><span>${esc(seen(d))}</span></div></div>
+          <div class="meta"><span>${esc(named("porta", d.name))}</span><span>${d.intercom_open_door ? `apre la porta con il relè ${d.intercom_relay}` : "registra le chiamate, non apre la porta"}</span><span>${esc(seen(d))}</span></div></div>
         <button type="button" class="small" data-ic-edit="${d.id}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost danger" data-ic-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
       : `<div class="card"><div class="empty">${icon("phone")}<br>Nessun videocitofono associato alle porte.</div></div>`}`;
@@ -3806,7 +3873,7 @@ async function intercomEditor(ctrl, door) {
     body: `<div class="fields-2">${field("Nome del Videocitofono", `<input name="intercom_name" value="${esc(d.intercom_name || "")}" required>`, "Lo stesso nome dato al videocitofono nell'add-on Hikvision Doorbell.")}
       ${field("Porta", doorSelect, "Se la porta ha già un videocitofono, viene sostituito.")}</div>
       <div class="field inline"><input type="checkbox" name="intercom_open_door" id="f-iod" ${d.intercom_open_door ? "checked" : ""}><label for="f-iod">"Apri" dal Videocitofono Apre Questa Porta</label></div>
-      <p class="hint" style="margin-top:-8px">Dall'app Hik-Connect o dal monitor: l'add-on manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Spento = le chiamate finiscono solo nel registro.</p>
+      <p class="hint" style="margin-top:-8px">"Apri" dal monitor o da Hik-Connect: l'app manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Spento = le chiamate finiscono solo nel registro.</p>
       <div class="fields-2">${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}
       ${field("Prefisso MQTT del Videocitofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}</div>`,
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
@@ -3840,7 +3907,7 @@ async function doorEditor(ctrl, door, token = "", controllerName = "") {
     title: door ? `Impostazioni App · ${door.name}` : "Gestisci nell'App",
     wide: true,
     body: `<div class="fields-2">${field("Nome nell'App", `<input name="name" maxlength="100" value="${esc(d.name || "")}" placeholder="es. Ingresso Scala A">`)}
-      ${field("Porta del Controller", `<input class="mono" value="${esc(d.door_token)}" disabled>`)}</div>
+      ${field("Porta del Controller", `<input value="${esc(controllerName || d.door_token)}" title="${esc(d.door_token)}" disabled>`)}</div>
       <div class="field inline"><input type="checkbox" name="ha_buttons" id="f-hab" ${d.ha_buttons ? "checked" : ""}><label for="f-hab">Pulsanti Apri e Apri a Lungo in Home Assistant</label></div>
       <p class="hint" style="margin-top:-8px">Da mettere nelle dashboard. L'apertura è sempre a tempo e solo a porta bloccata.</p>
       <p class="hint">Telecamera e videocitofono della porta si scelgono nelle schede <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a> e <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a> del controller.</p>`,
@@ -4200,12 +4267,13 @@ async function viewSettings(el, sub) {
     ["API di Home Assistant", ha.api ? `${statusDot("ok")} Disponibile` : `${statusDot("warn")} Non Disponibile`],
   ]) + `<p class="hint">L'evento "Eventi Accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, uscita, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni. I pulsanti di apertura si attivano per ogni porta nella pagina del controller.</p>`;
   body.innerHTML = `
-    ${store.summary.configured === false && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b>Controller, porte, citofono e telecamera si impostano nella pagina Impianti.</div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
+    ${store.summary.configured === false && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b>Controller, porte, videocitofono e telecamera si impostano nella pagina Impianti.</div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
     <div class="grid two">
       <div>
         <div class="card"><h2>${icon("dashboard")}Home Assistant</h2>${haCard}</div>
         <div class="card"><h2>${icon("cog")}Opzioni dell'Add-on</h2>${props([
-          ["Tipologia Predefinita", esc((await loadGroups(), categoryOf(store.me.default_category)?.name) || "—")],
+          // Dal database dell'app: la pagina non aspetta il controller
+          ["Tipologia Predefinita", esc((await loadCategories(), categoryOf(store.me.default_category)?.name) || "—")],
           ["Conservazione Registro", plural(o.event_retention_days, "giorno", "giorni")],
           ["Broker MQTT", !m.configured ? `${statusDot("warn")} Nessun Broker: installa l'add-on Mosquitto, l'app lo trova da sola` : o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
         ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione. La tipologia predefinita si sceglie in Persone → Tipologie.</p></div>
@@ -4221,9 +4289,9 @@ async function viewSettings(el, sub) {
           ["Copia per il Backup di Home Assistant", s.database.ha_copy_error
             ? `${statusDot("warn")} ${esc(capFirst(s.database.ha_copy_error))}${s.database.ha_copy ? ` <span class="muted">· preparata ${esc(relTime(s.database.ha_copy))}</span>` : ""}`
             : s.database.ha_copy ? `${statusDot("ok")} Preparata ${esc(relTime(s.database.ha_copy))}` : `${statusDot("")} Non ancora: si prepara prima del prossimo backup`],
-          ["Copie Prima degli Aggiornamenti", s.database.copies.length ? s.database.copies.map((c) => `${esc(fmtDateTime(c.at))} <span class="muted">· ${kb(c.size)}</span>`).join("<br>") : "nessuna"],
+          ["Copie Prima degli Aggiornamenti", s.database.copies.length ? s.database.copies.map((c) => `${esc(fmtDateTime(c.at))} <span class="muted">· ${kb(c.size)}</span>`).join("<br>") : "Nessuna"],
         ])}<p class="hint">Prima di ogni aggiornamento dell'add-on si fa una copia del database (si tengono le ultime 3). Subito prima di ogni backup di Home Assistant si prepara una copia coerente, usata all'avvio se il database risultasse danneggiato.</p></div>
-        ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Stato del controller, delle porte, degli eventi MQTT e dei citofoni: nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
+        ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Stato del controller, delle porte, degli eventi MQTT e dei videocitofoni: nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
       </div>
     </div>
     <p class="muted small-text" style="text-align:center">Axis Access Manager ${esc(store.me.version || "")}</p>`;
@@ -4232,7 +4300,7 @@ async function viewSettings(el, sub) {
 }
 
 async function viewAudit(body) {
-  body.innerHTML = `<div class="card flush"><h2>Attività<span class="spacer"></span><span class="muted small-text">chi ha fatto cosa dall'add-on</span></h2>
+  body.innerHTML = `<div class="card flush"><h2>Attività<span class="spacer"></span><span class="muted small-text">chi ha fatto cosa nell'app</span></h2>
       <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Azione</th></tr></thead><tbody id="audit"></tbody></table></div>
       <div style="text-align:center;padding:12px" id="audit-more-box" hidden><button type="button" id="audit-more">Carica Altre</button></div></div>`;
   $("#audit-more").onclick = () => loadAudit(true);
