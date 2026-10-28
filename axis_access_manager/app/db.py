@@ -176,6 +176,17 @@ LEGACY_COLUMNS = [
     ("controllers", "snapshot_camera", "TEXT NOT NULL DEFAULT ''"),
 ]
 
+# Numeri mai riusati per controller, porte, aree, strutture e tipologie (come le persone): impostazione con il più
+# alto già dato e righe che citano ancora i numeri degli eliminati (righe di accesso delle tipologie, Storico
+# Modifiche), che non devono passare a uno nuovo
+LAST_IDS = {
+    "controllers": ("controllers_last_id", "SELECT MAX(controller_id) FROM controller_changes"),
+    "doors": ("doors_last_id", "SELECT MAX(target_id) FROM category_rules WHERE target = 'door'"),
+    "areas": ("areas_last_id", "SELECT MAX(target_id) FROM category_rules WHERE target = 'area'"),
+    "sites": ("sites_last_id", "SELECT MAX(target_id) FROM category_rules WHERE target = 'site'"),
+    "categories": ("categories_last_id", "SELECT 0"),
+}
+
 # Migrazioni numerate: (versione, descrizione, istruzioni SQL). PRAGMA user_version tiene l'ultima applicata.
 # Ogni migrazione gira una volta sola, in una transazione; prima si fa una copia del database.
 SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
@@ -245,12 +256,21 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
     ),
     (
         7,
-        "indice degli eventi per porta, morsetti AUX in maiuscolo",
+        "indice degli eventi per porta, morsetti AUX in maiuscolo, numeri già dati a controller, porte, aree, "
+        "strutture e tipologie",
         [
             # Ultimo passaggio di ogni porta senza leggere e ordinare tutto il registro
             "CREATE INDEX IF NOT EXISTS events_door_ts ON events(door, ts)",
             "UPDATE events SET detail = replace(detail, ' · Aux ', ' · AUX ') "
             "WHERE kind IN ('uscita', 'apertura_remota', 'negato') AND instr(detail, ' · Aux ') > 0",
+            # Come la 5 per le persone: il numero più alto già dato, prima che un'eliminazione lo faccia riusare
+            *(
+                f"INSERT INTO app_settings (key, value) SELECT '{setting}', CAST(COALESCE(MAX(m), 0) AS TEXT) FROM ("
+                f"SELECT MAX(id) AS m FROM {table} UNION ALL {cited} "
+                f"UNION ALL SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = '{setting}') "
+                "WHERE true ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+                for table, (setting, cited) in LAST_IDS.items()
+            ),
         ],
     ),
 ]
@@ -258,15 +278,6 @@ SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 SETTING_APP_VERSION = "app_version"
 # Numero più alto mai dato a una persona: i numeri delle persone eliminate non si riusano
 SETTING_LAST_PERSON = "persons_last_id"
-# Lo stesso per controller, porte, aree, strutture e tipologie: impostazione e righe che citano ancora i numeri
-# degli eliminati (righe di accesso delle tipologie, Storico Modifiche), che non devono passare a uno nuovo
-LAST_IDS = {
-    "controllers": ("controllers_last_id", "SELECT MAX(controller_id) FROM controller_changes"),
-    "doors": ("doors_last_id", "SELECT MAX(target_id) FROM category_rules WHERE target = 'door'"),
-    "areas": ("areas_last_id", "SELECT MAX(target_id) FROM category_rules WHERE target = 'area'"),
-    "sites": ("sites_last_id", "SELECT MAX(target_id) FROM category_rules WHERE target = 'site'"),
-    "categories": ("categories_last_id", "SELECT 0"),
-}
 
 
 # Campi degli eventi che servono alle pagine (il messaggio originale resta nel database)

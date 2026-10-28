@@ -617,14 +617,16 @@ class AccessService:
                         f"la tessera {card['number']} non è più sul controller: riscrivila o toglila dall'app"
                     )
                 previous.append(credentials[0])
-            written: list[dict] = []
+            # Da riportare com'erano se una scrittura non riesce, compresa quella in corso: senza una risposta in
+            # tempo il controller può averla applicata lo stesso
+            attempted: list[dict] = []
             try:
                 for credential in previous:
+                    attempted.append(credential)
                     await self.controller.set_credential(self._apply_access(dict(credential), access))
-                    written.append(credential)
             except VapixError:
                 # Tutto o niente: le tessere già scritte tornano all'accesso di prima
-                for credential in written:
+                for credential in attempted:
                     try:
                         await self.controller.set_credential(credential)
                     except VapixError:
@@ -911,9 +913,9 @@ class AccessService:
                 raise ServiceError(f"la porta non è bloccata ({label}): attendi che si richiuda")
             before = self.monitor.door_modes.get(door) if self.monitor else None
             await self.controller.access_door(door, extended)
-            if self.monitor and self.monitor.connected and self.monitor.door_modes.get(door) == before:
-                # Evita un secondo comando finché MQTT non segnala che la porta si è richiusa; non copre un
-                # cambio arrivato via MQTT durante il comando
+            if self.monitor and self.monitor.door_modes.get(door) == before:
+                # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
+                # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
                 self.monitor.door_modes[door] = "Accessed"
         detail = ", ".join(x for x in ("tempo esteso" if extended else "", note) if x)
         self.log_event(ts=self.event_now(), kind="apertura_remota", detail=detail, source=user, door=door)
