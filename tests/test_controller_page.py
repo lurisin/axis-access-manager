@@ -274,6 +274,8 @@ def test_dashboard_layout(client):
 
 def test_seen_notifications_go_in_the_audit_log(client):
     db = client.app.state.db
+    # Nel test non c'è il broker: il suo guasto non c'entra
+    client.app.state.notifications.set_levels({"mqtt": "off"}, "test")
     now = datetime.now(tz=UTC)
     for minutes in (3, 2):
         db.add_event(ts=(now - timedelta(minutes=minutes)).isoformat(), kind="negato", card="04AA", door="porta")

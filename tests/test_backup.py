@@ -144,8 +144,8 @@ async def test_unreachable_controller_makes_an_incomplete_backup(plant, controll
     assert "non risponde" in manifest["errors"][0]
     error = plant.backups.last_error()
     items = NotificationService(db).collect(
-        mqtt_configured=False,
-        mqtt_connected=False,
+        mqtt_configured=True,
+        mqtt_connected=True,
         controller_configured=True,
         controller_online=None,
         sync={},
@@ -540,8 +540,8 @@ async def test_daily_verification_finds_damaged_backups(plant, db):
     assert not result["ok"] and result["damaged"] == 2
     assert result["errors"][0] == "indice 20260101-000000.json illeggibile"
     items = NotificationService(db).collect(
-        mqtt_configured=False,
-        mqtt_connected=False,
+        mqtt_configured=True,
+        mqtt_connected=True,
         controller_configured=True,
         controller_online=None,
         sync={},

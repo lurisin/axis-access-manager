@@ -27,7 +27,8 @@ DOOR_TIMES = {
     "ExtendedOpenTooLongTime": ("extended_open_too_long_time", "Allarme con Apertura Estesa", 1, 7200),
     "PreAlarmTime": ("pre_alarm_time", "Preallarme", 0, 3600),
 }
-DIRECTIONS = {"in": "Ingresso", "out": "Uscita"}
+# Lato della porta del lettore ("Ingresso" è il morsetto del controller)
+DIRECTIONS = {"in": "Entrata", "out": "Uscita"}
 # Ingressi fisici dell'A1210 (nomi del servizio axisio) → nome di serie e porta I/O degli eventi, se c'è.
 # Contatto porta e REX sono il connettore Door (pin 1-2 e 3-4); gli altri danno anche gli eventi Device/IO/Port.
 CONTROLLER_INPUTS = {
@@ -498,11 +499,11 @@ class ProgrammingService:
             done = await sync_rex_profile(self.controller, rex_policies(rows.values()))
             if done and missing:
                 names = ", ".join(rows[io]["name"] for io in CONTROLLER_INPUTS if io in missing)
-                self.db.add_audit(user, "programmazione controller", f"permesso di apertura senza tessera: {names}")
+                self.db.add_audit(user, "controller programmato", f"permesso di apertura senza tessera: {names}")
             elif done == "tolto":
                 self.db.add_audit(
                     user,
-                    "programmazione controller",
+                    "controller programmato",
                     f"profilo {REX_PROFILE_NAME} tolto: i suoi punti di accesso non ci sono più",
                 )
         return len(missing) if done else 0
@@ -515,7 +516,7 @@ class ProgrammingService:
         )
         await setter(after)
         self.db.add_controller_change(user, self.controller_id, kind, token, summary, before, after)
-        self.db.add_audit(user, "programmazione controller", summary)
+        self.db.add_audit(user, "controller programmato", summary)
 
     def _input_tokens(self) -> tuple[set[str], set[str]]:
         """Punti di accesso e punti di identificazione creati per gli ingressi di questo controller."""
@@ -665,7 +666,7 @@ class ProgrammingService:
             label = default if values["name"] in (default, *INPUT_ROLES.values()) else f"{values['name']} ({default})"
             summary = f"{label}: {INPUT_ROLES[role]}"
             self.db.add_controller_change(user, controller_id, "input", io, summary, before, values)
-            self.db.add_audit(user, "programmazione controller", summary)
+            self.db.add_audit(user, "controller programmato", summary)
         return values
 
     async def _input_problem(self, io: str, row: dict) -> str:
@@ -854,9 +855,7 @@ class ProgrammingService:
             if missing:
                 await link_access_points(self.controller, add=[p["token"] for p in missing])
                 names = ", ".join(p.get("Name") or p["token"] for p in missing)
-                self.db.add_audit(
-                    user, "programmazione controller", f"punti di accesso gestiti dal controller: {names}"
-                )
+                self.db.add_audit(user, "controller programmato", f"punti di accesso gestiti dal controller: {names}")
             return len(missing)
 
     async def update_access_point(self, token: str, data: dict, user: str) -> None:
@@ -1013,5 +1012,5 @@ class ProgrammingService:
                 )
                 await setter(change["before"])
             self.db.mark_change_undone(change_id)
-            self.db.add_audit(user, "programmazione controller annullata", change["summary"])
+            self.db.add_audit(user, "programmazione del controller annullata", change["summary"])
         return change["kind"]

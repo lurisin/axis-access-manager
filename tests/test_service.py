@@ -210,9 +210,15 @@ async def test_delete_person_removes_everything(service, controller, db):
 
 async def test_open_door_only_when_locked(service, controller, db):
     service.monitor.door_mode = "Accessed"
+    controller.door = "Accessed"
     with pytest.raises(ServiceError, match="non è bloccata"):
         await service.open_door(False, "admin")
     assert not [c for c in controller.calls if c[0] == "access_door"]
+
+    # "Bloccata" perso via MQTT: in memoria resta "Aperta a Tempo", ma decide il controller
+    controller.door = "Locked"
+    await service.open_door(False, "admin")
+    assert ("access_door", "porta", False) in controller.calls
 
     service.monitor.door_mode = "Locked"
     await service.open_door(True, "admin")

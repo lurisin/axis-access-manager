@@ -31,7 +31,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
 from .db import Database, now_iso
-from .programming import CONTACTS, DOOR_TIMES, INPUT_ROLES, parse_duration
+from .programming import CONTACTS, DIRECTIONS, DOOR_TIMES, INPUT_ROLES, parse_duration
 from .rules import describe_rules
 from .service import ServiceError, card_of_credential, plural
 from .users import role_label
@@ -848,7 +848,7 @@ def controller_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
             {
                 "door": ctx["doors"].get(point.get("Entity"), point.get("Entity") or "—"),
                 "readers": ", ".join(readers.get(r, r) for r in linked) or "—",
-                "direction": {"in": "Entrata", "out": "Uscita"}.get(_attribute(point, "Direction"), "—"),
+                "direction": DIRECTIONS.get(_attribute(point, "Direction"), "—"),
                 "Enabled": "attivo" if point.get("Enabled", True) is not False else "disattivato",
                 **({"managed": "no: legge le tessere ma non decide"} if unmanaged else {}),
             },
@@ -1386,17 +1386,22 @@ class BackupService:
                 return {"saved": False, "would_remove": len(expiring), "policy": policy}
             before = self.policy()
             self.db.set_setting(SETTING_POLICY, json.dumps(policy))
-            removed = self._prune()
+            removed = self._prune(user)
         changed = [k for k in DEFAULT_POLICY if before[k] != policy[k]]
         if changed:
-            self.db.add_audit(user, "impostazioni backup", policy_text(policy))
+            self.db.add_audit(user, "impostazioni dei backup modificate", policy_text(policy))
         return {"saved": True, "removed": len(removed), "policy": policy}
 
-    def _prune(self) -> list[str]:
+    def _prune(self, user: str = "sistema") -> list[str]:
         """Toglie i backup scaduti (da chiamare con il lock preso)."""
-        expired = [m["id"] for m in self._expired(self.store.list(), self.policy())]
+        manifests = self._expired(self.store.list(), self.policy())
+        expired = [m["id"] for m in manifests]
         if expired:
             self.store.remove(expired)
+            # In Attività come le eliminazioni a mano: anche un backup sbloccato da poco può scadere così
+            for manifest in manifests:
+                label = manifest.get("name") or _when(manifest.get("created_at"))
+                self.db.add_audit(user, "backup eliminato dalla ritenzione", label)
         return expired
 
     # Pianificazione

@@ -884,11 +884,23 @@ class AccessService:
         # e trova la porta già aperta, invece di passare anche lui il controllo e far ripartire il tempo
         async with self._door_locks.setdefault(door, asyncio.Lock()):
             mode = self.monitor.door_modes.get(door) if self.monitor else None
-            if mode is None:
+            if mode != "Locked":
+                # In memoria può restare l'"Aperta a Tempo" di un'apertura il cui "Bloccata" via MQTT è andato perso
+                # (broker riavviato durante l'apertura): prima di rifiutare decide il controller
                 try:
-                    mode = await self.controller.door_mode(door)
+                    read = await self.controller.door_mode(door)
                 except VapixError as err:
                     _LOGGER.warning("Stato della porta non leggibile: %s", err)
+                else:
+                    current = self.monitor.door_modes.get(door) if self.monitor else mode
+                    if current != mode:
+                        # Arrivata via MQTT mentre si leggeva: è più recente della lettura
+                        mode = current
+                    elif read:
+                        if self.monitor and read != mode:
+                            self.monitor.door_modes[door] = read
+                            self._changed()
+                        mode = read
             if mode is None:
                 raise ServiceError("stato della porta sconosciuto: riprova tra qualche secondo")
             if mode != "Locked":
@@ -897,9 +909,11 @@ class AccessService:
 
                 label = DOOR_MODES.get(mode, mode)
                 raise ServiceError(f"la porta non è bloccata ({label}): attendi che si richiuda")
+            before = self.monitor.door_modes.get(door) if self.monitor else None
             await self.controller.access_door(door, extended)
-            if self.monitor and self.monitor.connected:
-                # Evita un secondo comando finché MQTT non segnala che la porta si è richiusa
+            if self.monitor and self.monitor.connected and self.monitor.door_modes.get(door) == before:
+                # Evita un secondo comando finché MQTT non segnala che la porta si è richiusa; non copre un
+                # cambio arrivato via MQTT durante il comando
                 self.monitor.door_modes[door] = "Accessed"
         detail = ", ".join(x for x in ("tempo esteso" if extended else "", note) if x)
         self.log_event(ts=self.event_now(), kind="apertura_remota", detail=detail, source=user, door=door)

@@ -116,11 +116,20 @@ class A1210Client:
         method = body.get("method") or next(iter(body), "")
         if self._invalid_host:
             raise ControllerUnreachable("indirizzo del controller non valido")
+        # Client chiuso da una nuova configurazione mentre un'operazione lo usava ancora: httpx solleva
+        # RuntimeError, che chi chiama non gestirebbe come un errore del controller
+        if self._client.is_closed:
+            raise ControllerUnreachable("il controller non risponde (collegamento chiuso)")
         try:
             response = await self._client.post(path, json=body)
         except (httpx.HTTPError, httpx.InvalidURL) as err:
             _LOGGER.debug("%s %s: %r", path, method, err)
             raise ControllerUnreachable(f"il controller non risponde ({_network_reason(err)})") from err
+        except RuntimeError as err:
+            if not self._client.is_closed:
+                raise
+            _LOGGER.debug("%s %s: %r", path, method, err)
+            raise ControllerUnreachable("il controller non risponde (collegamento chiuso)") from err
         if response.status_code == 401:
             raise VapixError("credenziali del controller non valide")
         try:

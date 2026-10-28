@@ -101,7 +101,9 @@ class IntercomBridge:
         relay = topic_name(f"Door {settings.relay} relay")
         self.relay_topic = f"{base}/switch/{device}/{relay}/state"
         self.relay_attributes_topic = f"{base}/switch/{device}/{relay}/attributes"
-        self.call_state = "idle"
+        # Stesso citofono su due porte (relè 1 e 2): la chiamata è una e la segue il bridge della prima porta
+        self.call: IntercomBridge | None = None
+        self._call_state = "idle"
         self._ring_at: float | None = None
         self._answered = False
         self._attributes: dict = {}
@@ -113,6 +115,10 @@ class IntercomBridge:
     @property
     def topics(self) -> list[str]:
         return [self.call_topic, self.relay_topic, self.relay_attributes_topic]
+
+    @property
+    def call_state(self) -> str:
+        return self.call.call_state if self.call else self._call_state
 
     def handle(self, topic: str, payload: bytes, retained: bool = False) -> None:
         # Gli stati sono conservati dal broker: alla riconnessione non sono eventi nuovi
@@ -138,7 +144,7 @@ class IntercomBridge:
 
     def _on_call_state(self, value: str) -> None:
         state = value.lower()
-        previous, self.call_state = self.call_state, state
+        previous, self._call_state = self._call_state, state
         if state == previous:
             return
         if state in RINGING_STATES:
@@ -174,10 +180,11 @@ class IntercomBridge:
             )
             return
         note = ""
-        if self._ring_at is not None:
-            note = f"{self._since_ring()} s dopo la chiamata"
+        ring = self.call or self
+        if ring._ring_at is not None:
+            note = f"{ring._since_ring()} s dopo la chiamata"
             # Chi apre ha risposto, anche senza inoltro: alla fine della chiamata non serve "nessuna risposta"
-            self._answered = True
+            ring._answered = True
         if not self.settings.open_door:
             detail = ", ".join(x for x in (f"apertura da {how} (inoltro all'A1210 disattivato)", note) if x)
             self._event(detail, attributes)

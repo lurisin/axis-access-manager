@@ -423,7 +423,9 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
         except ServiceError as err:
             outcome.update(esito="errore", dettaglio=str(err))
         except VapixError as err:
-            outcome.update(esito="errore", dettaglio=f"errore del controller: {err}")
+            # Come il gestore degli errori del controller in main: niente prefisso se il messaggio lo nomina già
+            text = str(err)
+            outcome.update(esito="errore", dettaglio=text if "controller" in text else f"errore del controller: {text}")
         results.append(outcome)
     for outcome in results:
         # Etichetta da mostrare; esito resta il valore su cui ragiona l'interfaccia

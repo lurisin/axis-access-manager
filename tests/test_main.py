@@ -358,6 +358,8 @@ def test_summary_gives_camera_friendly_names(controller, tmp_path, monkeypatch):
         settings, allow_any_client=True, controller=controller, db_path=tmp_path / "n.db", home_assistant=ha
     )
     with TestClient(app) as client:
+        # Nel test non c'è il broker: il suo guasto non c'entra
+        app.state.notifications.set_levels({"mqtt": "off"}, "test")
         assert client.get("/api/summary").json()["camera_names"] == {"camera.x": "Ingresso Teatro"}
         # Il riepilogo si legge a ogni evento: i nomi restano in memoria per qualche minuto
         summary = client.get("/api/summary").json()
