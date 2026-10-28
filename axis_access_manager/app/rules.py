@@ -49,16 +49,16 @@ def normalize_rules(rules: list[dict]) -> list[dict]:
         if not TIME_PATTERN.match(end):
             raise RuleError(f"ora di fine non valida: {end or 'vuota'}")
         if end <= start:
-            raise RuleError(f"l'intervallo {start}-{end} deve finire dopo l'inizio, nello stesso giorno")
+            raise RuleError(f"l'intervallo {start}–{end} deve finire dopo l'inizio, nello stesso giorno")
         result.append({"days": days, "start": start, "end": end})
     return result
 
 
 def describe_rules(rules: list[dict]) -> str:
-    """Testo breve, ad esempio "lun-ven 08:00-18:00; sab 09:00-12:00"."""
+    """Testo breve, ad esempio "lun-ven 08:00–18:00; sab 09:00–12:00"."""
     parts = []
     for rule in rules:
-        parts.append(f"{_describe_days(rule['days'])} {rule['start']}-{rule['end']}")
+        parts.append(f"{_describe_days(rule['days'])} {rule['start']}–{rule['end']}")
     return "; ".join(parts)
 
 

@@ -55,7 +55,7 @@ from .service import (
 )
 from .transfer import events_csv, import_persons, persons_csv, read_import
 from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
-from .vapix import A1210Client, ControllerGuard, VapixError
+from .vapix import A1210Client, ControllerGuard, ControllerUnreachable, VapixError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -592,8 +592,10 @@ def create_app(
     @app.exception_handler(VapixError)
     async def vapix_error(request: Request, err: VapixError) -> JSONResponse:
         text = str(err)
-        # "il controller non risponde", "credenziali del controller…": il controller è già nominato
-        return JSONResponse({"detail": text if "controller" in text else f"errore del controller: {text}"}, 502)
+        # "il controller non risponde", "credenziali del controller…": il controller è già nominato.
+        # unreachable: nessuna risposta, l'interfaccia propone di riprovare
+        detail = text if "controller" in text else f"errore del controller: {text}"
+        return JSONResponse({"detail": detail, "unreachable": isinstance(err, ControllerUnreachable)}, 502)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, err: RequestValidationError) -> JSONResponse:
@@ -618,6 +620,8 @@ def create_app(
             "default_category": request.app.state.rules.default_category,
             "door": request.app.state.settings.door_token,
             "version": __version__,
+            # Fuso di Home Assistant (per esempio Europe/Rome, vuoto se sconosciuto): ore e giorni come nel server
+            "time_zone": ha_time_zone(),
         }
 
     @app.get("/api/status", dependencies=[need("impianti", "import_export", "utenti", any_of=True)])
@@ -835,6 +839,9 @@ def create_app(
 
     @app.post("/api/missing-cards/forget", dependencies=[need("persone_modifica")])
     async def forget_missing_cards(body: MissingCardsIn, request: Request) -> dict:
+        # Solo le tessere contate nella conferma: senza elenco toglierebbe anche quelle sparite nel frattempo
+        if body.ids is None:
+            raise HTTPException(400, "indica le tessere da togliere")
         return request.app.state.service.forget_missing(request_user(request), body.ids)
 
     # Persone e tessere
@@ -941,11 +948,17 @@ def create_app(
 
     @app.get("/api/events/count", dependencies=[need("registro")])
     async def count_events(
-        request: Request, kind: str = "", q: str = "", since: str = "", until: str = "", door: str = ""
+        request: Request,
+        kind: str = "",
+        q: str = "",
+        since: str = "",
+        until: str = "",
+        person_id: int | None = None,
+        door: str = "",
     ) -> dict:
         """Quanti eventi corrispondono ai filtri: serve per gli accessi nascosti dalle viste del registro."""
         count = request.app.state.db.count_matching_events(
-            kind=kind, search=q, since=_utc(since), until=_utc(until), door=door
+            kind=kind, search=q, since=_utc(since), until=_utc(until), person_id=person_id, door=door
         )
         return {"count": count}
 
@@ -2215,7 +2228,7 @@ async def _recover_if_needed(state) -> None:
         state.db.add_audit(
             "sistema",
             "eventi recuperati dal controller",
-            f"{plural(recovered, 'evento', 'eventi')} dal {since.astimezone():%d/%m %H:%M}",
+            f"{plural(recovered, 'evento', 'eventi')} dal {since.astimezone():%d/%m/%Y %H:%M}",
         )
 
 

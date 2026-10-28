@@ -675,7 +675,7 @@ def rules_text(rules: list[dict], ctx: dict) -> str:
 
 
 def _schedule_rules_text(rules: list[dict]) -> str:
-    """Come nella pagina Regole: "lun-ven 08:00-18:00; sab 09:00-12:00"."""
+    """Come nella pagina Regole: "lun-ven 08:00–18:00; sab 09:00–12:00"."""
     try:
         return describe_rules(rules or []) or "—"
     except (KeyError, TypeError, ValueError):
