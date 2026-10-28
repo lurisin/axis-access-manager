@@ -1124,16 +1124,22 @@ function eventItem(e, {showSnapshot = true} = {}) {
       <div class="meta"><span title="${esc(fmtFull(e.ts))}">${esc(relTime(e.ts))}</span>
         ${multiDoor() && e.door ? `<span>${esc(doorLabel(e.door))}</span>` : ""}${e.card ? `<code>${esc(e.card)}</code>` : ""}${e.detail ? `<span>${esc(e.detail)}</span>` : ""}${source ? `<span>${source}</span>` : ""}${e.recovered ? '<span title="Recuperato dal registro interno del controller">recuperato</span>' : ""}</div>
     </div>
-    ${showSnapshot && e.snapshot ? `<img class="thumb" loading="lazy" src="api/events/${e.id}/snapshot" alt="istantanea" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    ${showSnapshot && e.snapshot ? `<img class="thumb" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
     <div class="side">${esc(fmtDateTime(e.ts))}</div>
   </div>`;
+}
+// Righe del registro nel cruscotto e nella porta: il dettaglio si apre con il clic o, da tastiera, con Invio e Spazio
+function bindEventRows(list, open) {
+  const pick = (e) => { const row = e.target.closest("[data-event]"); if (row) open(Number(row.dataset.event)); };
+  list.onclick = pick;
+  list.onkeydown = (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.closest("[data-event]")) { e.preventDefault(); pick(e); } };
 }
 
 // Riquadri del cruscotto: titolo, descrizione nel catalogo, larghezza (quarti di riga) e altezza (righe) predefinite,
 // minimi sotto i quali il contenuto non si legge più, massimo per i riquadri con un solo numero, permesso
 const WIDGETS = {
   da_gestire: {title: "Da Gestire", desc: "Le notifiche aperte, dalla più grave.", size: 2, height: 5, minSize: 2, minHeight: 2},
-  accessi_oggi: {title: "Accessi Oggi", desc: "Passaggi con tessera e aperture remote di oggi.", size: 1, height: 1, maxHeight: 2},
+  accessi_oggi: {title: "Accessi Oggi", desc: "Passaggi con tessera, aperture remote e uscite di oggi.", size: 1, height: 1, maxHeight: 2},
   negati_oggi: {title: "Negati Oggi", desc: "Accessi negati e tessere sconosciute di oggi.", size: 1, height: 1, maxHeight: 2},
   allarmi_oggi: {title: "Allarmi Oggi", desc: "Porte forzate, aperte troppo a lungo, manomissioni.", size: 1, height: 1, maxHeight: 2},
   persone: {title: "Persone", desc: "Persone e tessere registrate.", size: 1, height: 1, maxHeight: 2},
@@ -1187,11 +1193,14 @@ const WIDGET_BODY = {
   da_gestire(ctx) {
     const open = (ctx.notif?.items || []).filter((i) => !i.seen);
     const rows = [];
-    if (store.summary.configured === false) rows.push(`<div class="item"><div class="ev-icon k-info">${icon("cog")}</div><div class="grow"><div class="title">Impianto da Configurare</div><div class="meta">${can("impianti") ? 'Aggiungi il controller e le porte in <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare il controller."}</div></div></div>`);
+    if (store.summary.configured === false) rows.push(`<div class="item"><div class="ev-icon k-info">${icon("cog")}</div><div class="grow"><div class="title">Impianto da Configurare</div><div class="meta">${can("impianti") ? 'Aggiungi il controller e le porte nella pagina <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare l'impianto."}</div></div></div>`);
     rows.push(...open.slice(0, 5).map((i) => `<a class="item dw-notif sev-${i.severity}" href="#notifiche">
       <div class="n-tile">${icon(i.type === "door_alarm" && i.title.startsWith("Manomissione") ? "shield" : NOTIF_ICONS[i.type] || "bell")}</div>
       <div class="grow"><div class="title">${esc(i.title)} <span class="n-sev">${SEVERITY[i.severity]}</span></div>
         <div class="meta"><span>${esc(i.text)}</span>${i.door ? `<span>${esc(i.door)}</span>` : ""}${i.type !== "expiring" ? `<span>${esc(dayTime(i.ts))}</span>` : ""}</div></div></a>`));
+    // I guasti già visti restano finché non si risolvono: con loro non è tutto in ordine
+    const ongoing = (ctx.notif?.items || []).filter((i) => i.seen && i.fault).length;
+    if (!rows.length && ongoing) return `<h2>Da Gestire<span class="spacer"></span><a class="small-text" href="#notifiche">Notifiche</a></h2><div class="empty">Nessuna notifica da gestire · ${plural(ongoing, "guasto", "guasti")} in corso, già ${ongoing === 1 ? "visto" : "visti"}.</div>`;
     if (!rows.length) return `<h2>Da Gestire</h2><div class="all-ok" style="margin:0">${icon("check")}<span><b>Tutto in Ordine</b> · nessun evento da gestire</span></div>`;
     return `<h2>Da Gestire <span class="muted">· ${open.length}</span><span class="spacer"></span><a class="small-text" href="#notifiche">${open.length > 5 ? `Tutte le Notifiche (${open.length})` : "Notifiche"}</a></h2><div class="list">${rows.join("")}</div>`;
   },
@@ -1210,7 +1219,7 @@ const WIDGET_BODY = {
       const total = w.granted + w.denied;
       const h = (n) => `${(n / max) * 100}%`;
       const label = new Date(w.day + "T12:00:00").toLocaleDateString("it-IT", {weekday: "short"});
-      return `<div class="col" title="${esc(fmtDate(w.day + "T12:00:00"))}: ${w.granted} concessi, ${w.denied} negati${w.unknown ? `, ${plural(w.unknown, "tessera sconosciuta", "tessere sconosciute")}` : ""}">
+      return `<div class="col" title="${esc(fmtDate(w.day + "T12:00:00"))}: ${plural(w.granted, "accesso", "accessi")}, ${plural(w.denied, "negato", "negati")}${w.unknown ? `, ${plural(w.unknown, "tessera sconosciuta", "tessere sconosciute")}` : ""}">
         <div class="num">${total || ""}</div>
         <div class="bars"><div class="bar g" style="height:${h(w.granted)}"></div><div class="bar d" style="height:${h(w.denied)}"></div></div>
         <div class="lbl">${esc(label)}</div></div>`;
@@ -1220,25 +1229,29 @@ const WIDGET_BODY = {
       <div class="legend"><span><i style="background:var(--ok)"></i>concessi, aperture remote e uscite</span><span><i style="background:var(--warn)"></i>negati</span></div>`;
   },
   ultimi_eventi: ({d}) => `<h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro">Registro Completo</a></h2>
-    <div class="list compact" data-dash-events>${d.recent.length ? logRows(d.recent) : '<div class="empty">nessun evento registrato</div>'}</div>`,
+    <div class="list compact" data-dash-events>${d.recent.length ? logRows(d.recent) : '<div class="empty">Nessun evento registrato.</div>'}</div>`,
   scadenze: ({d}) => `<h2>Tessere in Scadenza<span class="spacer"></span><a class="small-text" href="#persone">Persone</a></h2>
-    ${d.expiring.length ? `<div class="list">${d.expiring.slice(0, 6).map((e) => `<a class="item" href="#persone/${e.id}"><div class="ev-icon k-warn">${icon("clock")}</div><div class="grow"><div class="title">${esc(e.name)}</div><div class="meta">scade ${esc(fmtDateTime(e.valid_to))}</div></div></a>`).join("")}</div>${d.expiring.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">e altre ${d.expiring.length - 6}</p>` : ""}`
+    ${d.expiring.length ? `<div class="list">${d.expiring.slice(0, 6).map((e) => `<a class="item" href="#persone/${e.id}"><div class="ev-icon k-warn">${icon("clock")}</div><div class="grow"><div class="title">${esc(e.name)}</div><div class="meta">scade il ${esc(fmtDateTime(e.valid_to))}</div></div></a>`).join("")}</div>${d.expiring.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">e altre ${d.expiring.length - 6}</p>` : ""}`
       : '<div class="empty">Nessuna tessera scade nei prossimi 7 giorni.</div>'}`,
-  da_registrare: ({unknown}) => `<h2>Tessere da Registrare<span class="spacer"></span><a class="small-text" href="#da-registrare">Da Registrare</a></h2>
-    ${unknown.length ? `<div class="list">${unknown.slice(0, 6).map((c) => `<a class="item" href="#da-registrare"><div class="ev-icon k-info">${icon("cardplus")}</div><div class="grow"><div class="title"><code>${esc(c.number)}</code></div><div class="meta"><span>letta ${plural(c.count, "volta", "volte")}</span><span>ultima ${esc(relTime(c.last_seen))}</span></div></div></a>`).join("")}</div>`
+  // Come nella pagina Da Registrare: stessa icona, stesse parole
+  da_registrare: ({unknown}) => `<h2>Tessere da Registrare<span class="spacer"></span><a class="small-text" href="#da-registrare">Tutte</a></h2>
+    ${unknown.length ? `<div class="list">${unknown.slice(0, 6).map((c) => `<a class="item" href="#da-registrare"><div class="ev-icon k-warn">${icon("question")}</div><div class="grow"><div class="title"><code>${esc(c.number)}</code></div><div class="meta"><span>ultima lettura ${esc(relTime(c.last_seen))}</span><span>${plural(c.count, "lettura", "letture")}</span></div></div></a>`).join("")}</div>`
       : '<div class="empty">Nessuna tessera da registrare.</div>'}`,
-  impianto({d: {system: s}}) {
-    const row = (cls, label, value) => `<div class="dw-sys"><span class="dot ${cls}"></span><span class="grow">${label}</span><b>${value}</b></div>`;
+  impianto({d: {system: s}, notif}) {
+    const row = (cls, label, value, title = "") => `<div class="dw-sys"${title ? ` title="${esc(title)}"` : ""}><span class="dot ${cls}"></span><span class="grow" style="flex:1;min-width:0">${label}</span><b>${value}</b></div>`;
     if (!s.configured) return `<h2>Stato Impianto</h2><div class="empty">Nessun controller configurato.</div>`;
+    // Perché gli eventi non arrivano: dalla notifica MQTT (nessun broker, broker perso, controller non collegato)
+    const mqtt = (notif?.items || []).find((i) => i.type === "mqtt");
+    const why = mqtt ? `${mqtt.title}: ${mqtt.text}` : s.controller_online === false ? "Il controller non è raggiungibile." : "";
     return `<h2>Stato Impianto${can("impianti") ? '<span class="spacer"></span><a class="small-text" href="#impianti/stato">Dettagli</a>' : ""}</h2>
-      ${row(s.controller_online === false ? "err" : s.controller_online ? "ok" : "", "Controller", s.controller_online === false ? "non raggiungibile" : s.controller_online ? "in linea" : "stato sconosciuto")}
-      ${s.mqtt_connected === null ? "" : row(s.mqtt_connected ? "ok" : "err", "Eventi MQTT", s.mqtt_connected ? "in arrivo" : "non collegati")}
+      ${row(s.controller_online === false ? "err" : s.controller_online ? "ok" : "", "Controller", s.controller_online === false ? "non raggiungibile" : s.controller_online ? "raggiungibile" : "stato sconosciuto")}
+      ${s.mqtt_connected === null ? "" : row(s.mqtt_connected ? "ok" : "err", "Eventi MQTT", s.mqtt_connected ? "in arrivo" : "non collegati", s.mqtt_connected ? "" : why)}
       ${s.casing_open === null ? "" : row(s.casing_open ? "err" : "ok", "Coperchio del Controller", s.casing_open ? "aperto" : "chiuso")}
       ${row("", "Ultimo Evento", s.last_event ? esc(relTime(s.last_event)) : "nessuno")}`;
   },
   backup({d: {backup: b}}) {
-    const row = (cls, label, value, title = "") => `<div class="dw-sys"${title ? ` title="${esc(title)}"` : ""}><span class="dot ${cls}"></span><span class="grow">${label}</span><b>${value}</b></div>`;
-    if (!b) return `<h2>Backup</h2><div class="empty">Serve il permesso Backup.</div>`;
+    const row = (cls, label, value, title = "") => `<div class="dw-sys"${title ? ` title="${esc(title)}"` : ""}><span class="dot ${cls}"></span><span class="grow" style="flex:1;min-width:0">${label}</span><b>${value}</b></div>`;
+    if (!b) return `<h2>Backup</h2><div class="empty">Serve il permesso di vedere i backup.</div>`;
     const last = b.last, v = b.verify;
     return `<h2>Backup<span class="spacer"></span><a class="small-text" href="#impianti/backup">Tutti i Backup</a></h2>
       ${row(!last || last.errors.length || b.error ? "warn" : "ok", "Ultimo Backup", last ? `${esc(relTime(last.created_at))} · ${esc(last.name || last.kind_label)}` : "nessuno", last?.summary || "")}
@@ -1307,11 +1320,10 @@ async function viewDashboard(el) {
     paintIcons(el);
     window.scrollTo(0, scroll);
     const events = $("[data-dash-events]", el);
-    if (events) events.onclick = (e) => {
-      const row = e.target.closest("[data-event]");
-      const ev = row && ctx.d.recent.find((x) => x.id === Number(row.dataset.event));
+    if (events) bindEventRows(events, (id) => {
+      const ev = ctx.d.recent.find((x) => x.id === id);
       if (ev && !dash.editing) showEvent(ev);
-    };
+    });
     if (dash.editing) bindDashEdit(el, draw, missing);
     else $("#top-edit").onclick = () => {
       dash.editing = true;
@@ -1462,14 +1474,19 @@ function bindDashEdit(el, draw, missing) {
 }
 
 // ---------- Porte ----------
+// Ultimo passaggio di una porta: chi, oppure il tipo di evento quando non c'è un nome (uscite, aperture remote)
+const lastLabel = (last) => last.person || (KINDS[last.kind] || [last.kind])[0];
 // Riquadro di una porta: stato, ultimo passaggio, numeri di oggi
 function doorTile(d) {
-  const last = d.last ? `<div class="small-text">Ultimo: <b>${esc(d.last.person || (KINDS[d.last.kind] || [d.last.kind])[0])}</b> <span class="muted">· ${esc(relTime(d.last.ts))}</span></div>` : '<div class="small-text muted">Nessun passaggio registrato</div>';
+  // Senza il permesso del registro il server non manda l'ultimo passaggio: non vuol dire che non ce ne siano
+  const none = can("registro") ? "Nessun passaggio registrato." : "Ultimo passaggio: serve il permesso di vedere il registro.";
+  const last = d.last ? `<div class="small-text">Ultimo: <b>${esc(lastLabel(d.last))}</b> <span class="muted">· ${esc(relTime(d.last.ts))}</span></div>` : `<div class="small-text muted">${none}</div>`;
+  const count = (n, one, many, style) => `<b ${style}>${n}</b> ${n === 1 ? one : many}`;
   return `<a class="tile" href="#porte/${d.id}">
-    <div class="row" style="flex-wrap:nowrap"><b class="grow" style="font-size:16px;overflow-wrap:anywhere">${esc(d.name)}</b><span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span></div>
+    <div class="row" style="flex-wrap:nowrap"><b class="grow" style="flex:1;min-width:0;font-size:16px;overflow-wrap:anywhere">${esc(d.name)}</b><span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span></div>
     ${last}
     <div class="row small-text muted" style="margin-top:auto">
-      <span>Oggi <b class="t">${d.today.granted}</b> accessi${d.today.denied ? ` · <b style="color:var(--warn)">${d.today.denied}</b> negati` : ""}${d.today.alarms ? ` · <b style="color:var(--err)">${d.today.alarms}</b> allarmi` : ""}</span>
+      <span>Oggi ${count(d.today.granted, "accesso", "accessi", 'class="t"')}${d.today.denied ? ` · ${count(d.today.denied, "negato", "negati", 'style="color:var(--warn)"')}` : ""}${d.today.alarms ? ` · ${count(d.today.alarms, "allarme", "allarmi", 'style="color:var(--err)"')}` : ""}</span>
       <span class="spacer" style="flex:1"></span>
       ${d.intercom ? `<span title="Videocitofono ${esc(d.intercom)}">${icon("phone")}</span>` : ""}${d.camera ? `<span title="Telecamera ${esc(cameraName(d.camera))}">${icon("camera")}</span>` : ""}
     </div></a>`;
@@ -1490,7 +1507,7 @@ async function viewDoorsPage(el, sub) {
   let doors;
   try { doors = await api("api/door-overview"); } catch (err) { el.innerHTML = `<div class="alert err">${esc(err.message)}</div>`; return; }
   if (!doors.length) {
-    el.innerHTML = `<div class="card"><div class="empty">${icon("door")}<br><b>Nessuna porta configurata</b><br>${can("impianti") ? 'Aggiungi controller e porte nella pagina <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare l'impianto."}</div></div>`;
+    el.innerHTML = `<div class="card"><div class="empty">${icon("door")}<br><b>Nessuna Porta Configurata</b><br>${can("impianti") ? 'Aggiungi il controller e le porte nella pagina <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare l'impianto."}</div></div>`;
     return;
   }
   if (Number(sub)) return viewDoorDetail(el, Number(sub), doors);
@@ -1514,7 +1531,7 @@ function doorList(doors) {
   }
   const row = (d) => `<a class="item door-row" href="#porte/${d.id}" data-door-row="${esc(`${d.name} ${placeOf(d)}`.toLowerCase())}">
       <div class="ev-icon ${d.mode === "Locked" ? "k-ok" : d.mode ? "k-warn" : "k-muted"}">${icon("door")}</div>
-      <div class="grow"><div class="title">${esc(d.name)}</div><div class="meta">${groups.length > 1 ? "" : `<span>${esc(placeOf(d) || "Senza area")}</span>`}<span class="mode-meta">${esc(doorModeLabel(d.mode))}</span><span>oggi ${plural(d.today.granted, "accesso", "accessi")}</span>${d.today.alarms ? `<span style="color:var(--err)">${plural(d.today.alarms, "allarme", "allarmi")}</span>` : ""}</div></div>
+      <div class="grow"><div class="title">${esc(d.name)}</div><div class="meta">${groups.length > 1 ? "" : `<span>${esc(placeOf(d) || "Senza Area")}</span>`}<span class="mode-meta">${esc(doorModeLabel(d.mode))}</span><span>oggi ${plural(d.today.granted, "accesso", "accessi")}</span>${d.today.alarms ? `<span style="color:var(--err)">${plural(d.today.alarms, "allarme", "allarmi")}</span>` : ""}</div></div>
       <span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span>
       <span class="muted">${icon("arrow")}</span></a>`;
   return `${doors.length > 8 ? '<div class="toolbar"><input type="search" id="door-q" placeholder="Cerca porta o area" aria-label="Cerca porta"></div>' : ""}
@@ -1527,7 +1544,8 @@ async function viewDoorDetail(el, id, doors) {
   $("#page-title").textContent = d.name;
   document.title = `${d.name} · Controllo Accessi`;
   const place = placeOf(d);
-  const switcher = doors.length > 1 ? `<label class="row small-text muted">Cambia Porta <select id="d-switch">${doors.map((x) => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.name)}${placeOf(x) ? ` · ${esc(placeOf(x))}` : ""}</option>`).join("")}</select></label>` : "";
+  // Sul telefono il menu si stringe alla pagina invece di allargarla: l'opzione più lunga resta intera nell'elenco
+  const switcher = doors.length > 1 ? `<label class="row small-text muted" style="min-width:0;max-width:100%">Cambia Porta <select id="d-switch" style="min-width:0;max-width:100%">${doors.map((x) => `<option value="${x.id}" ${x.id === d.id ? "selected" : ""}>${esc(x.name)}${placeOf(x) ? ` · ${esc(placeOf(x))}` : ""}</option>`).join("")}</select></label>` : "";
   // Etichetta solo quando qualcosa non va: un dispositivo che funziona non ha bisogno di bollino
   const off = (r) => (r.enabled ? null : ["warn", "Disattivato"]);
   const readerMeta = (r) => {
@@ -1536,9 +1554,10 @@ async function viewDoorDetail(el, id, doors) {
     return [side, r.description.includes("Axis Access Manager") ? "" : r.description].filter(Boolean).join(" · ");
   };
   const devices = [
-    ...d.readers.map((r) => [icon(r.role_key === "intercom" ? "bell" : r.role ? "dooropen" : "card"), r.name, readerMeta(r), off(r)]),
+    // Ingressi del controller con le stesse icone dello schema in Impianti
+    ...d.readers.map((r) => [icon(r.role ? INPUT_ICONS[r.role_key] || "chip" : "card"), r.name, readerMeta(r), off(r)]),
     d.intercom ? [icon("phone"), d.intercom, d.intercom_open_door ? `Videocitofono Hikvision · apre la porta con il relè ${d.intercom_relay}` : "Videocitofono Hikvision · registra le chiamate, non apre la porta", null] : null,
-    d.camera ? [icon("camera"), cameraName(d.camera), d.snapshot_on_granted ? "Telecamera · istantanea a ogni passaggio" : "Telecamera · istantanea su rifiuti, aperture a distanza, citofono e allarmi", null] : null,
+    d.camera ? [icon("camera"), cameraName(d.camera), d.snapshot_on_granted ? "Telecamera · foto a ogni passaggio e su chiamate al citofono, allarmi e manomissioni" : "Telecamera · foto su accessi negati, aperture remote, uscite dai pulsanti, chiamate al citofono, allarmi e manomissioni", null] : null,
     [icon("chip"), d.controller.name || "Controller", ["Controller", d.controller.host].filter(Boolean).join(" · "), null],
   ].filter(Boolean);
   const kpi = (label, value, sub, color = "") => `<div class="card"><div class="label">${label}</div><div class="value" ${color ? `style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
@@ -1554,23 +1573,21 @@ async function viewDoorDetail(el, id, doors) {
       ${kpi("Accessi Oggi", d.today.granted, "concessi, aperture remote e uscite, come nel cruscotto")}
       ${kpi("Negati Oggi", d.today.denied, "comprese le tessere sconosciute", d.today.denied ? "var(--warn)" : "")}
       ${kpi("Allarmi Oggi", d.today.alarms, "forzature e aperture troppo lunghe", d.today.alarms ? "var(--err)" : "")}
-      ${kpi("Ultimo Passaggio", d.last ? esc(d.last.person || "—") : "—", d.last ? esc(relTime(d.last.ts)) : can("registro") ? "nessuno" : "serve il permesso Registro")}
+      ${kpi("Ultimo Passaggio", d.last ? esc(lastLabel(d.last)) : "—", d.last ? esc(relTime(d.last.ts)) : can("registro") ? "nessuno" : "serve il permesso di vedere il registro")}
     </div>
     <div class="grid two">
       <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") && d.controller.id ? `<a class="small-text" href="#impianti/c${d.controller.id}">Configura</a>` : ""}</h2>
         <div class="list" style="margin-top:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div>
         <p class="hint" style="padding:0 18px 14px">L'apertura della porta resta nei pulsanti di Home Assistant.</p></div>
       ${d.groups ? `<div class="card flush"><h2>Chi Può Entrare<span class="spacer"></span>${can("persone") ? '<a class="small-text" href="#persone/tipologie">Tipologie</a>' : ""}</h2>
-        <div class="list" style="margin-top:8px">${d.groups.length ? d.groups.map((g) => `<div class="item"><div class="grow"><div class="title"><span class="swatch c-${esc(g.color)}"></span> ${esc(g.name)}${g.default ? ' <span class="pill accent">Predefinita</span>' : ""}${g.enabled ? "" : ' <span class="pill">Disattivato</span>'}</div><div class="meta">${esc(g.schedule_names.join(", ") || "sempre")}</div></div><div class="side">${plural(g.persons, "persona", "persone")}</div></div>`).join("") : '<div class="empty">nessuna tipologia apre questa porta</div>'}</div></div>` : ""}
+        <div class="list" style="margin-top:8px">${d.groups.length ? d.groups.map((g) => `<div class="item"><div class="grow"><div class="title"><span class="swatch c-${esc(g.color)}"></span> ${esc(g.name)}${g.default ? ' <span class="pill accent">Predefinita</span>' : ""}${g.enabled ? "" : ' <span class="pill">Disattivata</span>'}</div><div class="meta">${esc(g.schedule_names.join(", ") || "sempre")}</div></div><div class="side">${plural(g.persons, "persona", "persone")}</div></div>`).join("") : '<div class="empty">Nessuna tipologia apre questa porta.</div>'}</div></div>` : ""}
     </div>
     ${d.events ? `<div class="card flush"><h2>Eventi di Questa Porta<span class="spacer"></span><a class="small-text" href="#registro" id="d-log">Apri nel Registro</a></h2>
-      <div class="list compact" style="margin-top:8px" id="d-events">${d.events.length ? logRows(d.events) : '<div class="empty">nessun evento registrato</div>'}</div></div>` : ""}`;
+      <div class="list compact" style="margin-top:8px" id="d-events">${d.events.length ? logRows(d.events, {place: false}) : '<div class="empty">Nessun evento registrato.</div>'}</div></div>` : ""}`;
   if ($("#d-switch")) $("#d-switch").onchange = (e) => { location.hash = `#porte/${e.target.value}`; };
-  if ($("#d-log")) $("#d-log").onclick = () => { logFilters.door = multiDoor() ? d.token : ""; };
-  if ($("#d-events")) $("#d-events").onclick = (e) => {
-    const row = e.target.closest("[data-event]");
-    if (row) showEvent(d.events.find((x) => x.id === Number(row.dataset.event)));
-  };
+  // Il registro mostra tutti gli eventi della porta, non la vista, la ricerca e le date dell'ultima visita
+  if ($("#d-log")) $("#d-log").onclick = () => { Object.assign(logFilters, {door: multiDoor() ? d.token : "", view: "tutto", q: "", from: "", to: ""}); };
+  if ($("#d-events")) bindEventRows($("#d-events"), (id) => showEvent(d.events.find((x) => x.id === id)));
 }
 
 // ---------- Persone ----------
