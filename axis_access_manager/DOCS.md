@@ -58,7 +58,7 @@ Il menu è una barra laterale sempre presente con le sole icone; il pulsante ☰
   - Ogni notifica ha la foto della porta, Dettagli e Presa Visione. Un nuovo tentativo la rimette da gestire.
   - Sotto c'è il **Registro Eventi** delle ultime 24 ore, con le schede per categoria e lo stato Da Gestire o Visto di ogni evento.
   - Allarmi ed eventi restano per 24 ore. I guasti restano finché non si risolvono: dopo la Presa Visione escono da Da Gestire e compaiono più sotto, in **Guasti Ancora in Corso** con l'etichetta Visto, e nella barra in alto. Un guasto già visto torna da gestire se peggiora (altre tessere sparite, altri punti di accesso o pulsanti, orologio ancora più sbagliato); se si risolve e poi torna, si ripresenta.
-  - Quali tipi sono attivi lo sceglie l'amministratore in Impostazioni → Notifiche: Allarmi delle Porte, Controller Non Raggiungibile, Porte Che Non Si Aprono (punti di accesso non gestiti, pulsanti senza permesso di apertura, ingressi da riscrivere, tipologie non aggiornate sul controller), Collegamento MQTT Perso (anche senza broker), Tessere Sconosciute, Accessi Negati, Tessere in Scadenza, Telecamere Non Disponibili, Controller Cambiato, Orologio Sbagliato (anche il fuso orario), Backup Non Riuscito, Tessere Non Presenti sul Controller e Database dell'App ("Database Ripristinato dalla Copia", "Database Non Ripristinato", "Copia per il Backup Non Aggiornata").
+  - Quali tipi sono attivi lo sceglie l'amministratore in Impostazioni → Notifiche: Allarmi delle Porte, Controller Non Raggiungibile, Porte Che Non Si Aprono (punti di accesso non gestiti, pulsanti senza permesso di apertura, ingressi da riscrivere, tipologie non aggiornate sul controller), Collegamento MQTT Perso (anche senza broker), Tessere Sconosciute, Accessi Negati, Tessere in Scadenza, Telecamere Non Disponibili, Controller Cambiato, Orologio Sbagliato (anche il fuso orario), Backup Non Riuscito, Tessere Non Presenti sul Controller e Database dell'Add-on ("Database Ripristinato dalla Copia", "Database Non Ripristinato", "Copia per il Backup Non Aggiornata").
   - Le notifiche seguono i permessi: gli allarmi delle porte li vede chi vede lo stato (eventi e foto solo con il registro), gli accessi negati chi vede il registro, tessere sconosciute, in scadenza e non presenti chi vede le persone, backup e database chi vede i backup.
 - **Regole**: fasce orarie e festività (vedi sotto).
 - **Impianti**: controller, schema lettori ↔ porte, porte con videocitofono e telecamera, strutture e aree, programmazione del controller e backup (vedi sotto).
@@ -155,7 +155,7 @@ La creazione da zero di porte e lettori (tipo di serratura, protocollo OSDP del 
 
 ## Utenti e permessi
 
-Gli utenti sono quelli di Home Assistant, riconosciuti dall'app con il loro id di Home Assistant: se cambia il nome utente i permessi lo seguono, e chi prende in seguito il vecchio nome utente non li eredita. Chi entra senza nome utente (accesso con LDAP, OIDC o simili) ha un suo utente `id:…` e parte con "Solo Stato" come gli altri. In Impostazioni → Utenti l'amministratore assegna un ruolo o sceglie i permessi a spunta:
+Gli utenti sono quelli di Home Assistant, riconosciuti dall'app con il loro id di Home Assistant: se cambia il nome utente i permessi lo seguono, e chi prende in seguito il vecchio nome utente non li eredita. Fa eccezione l'ultimo amministratore rimasto: se il suo account di Home Assistant viene ricreato con lo stesso nome utente, o Home Assistant viene reinstallato, i permessi restano al nome utente, così l'app non resta senza amministratori (in Attività compare "unico amministratore passato a un nuovo account di Home Assistant"). Chi entra senza nome utente (accesso con LDAP, OIDC o simili) ha un suo utente `id:…` e parte con "Solo Stato" come gli altri. In Impostazioni → Utenti l'amministratore assegna un ruolo o sceglie i permessi a spunta:
 
 | Ruolo | Cosa può fare |
 | --- | --- |
@@ -179,13 +179,13 @@ Con l'opzione **Entità in Home Assistant** attiva compare il dispositivo **Cont
 - per ogni porta, il sensore acceso/spento **Elettroserratura Porta** (classe lock: spento bloccata, acceso sbloccata, anche quando è aperta a tempo da una tessera), che nelle dashboard mostra il lucchetto;
 - per ogni porta, il sensore acceso/spento **Contatto Porta** (classe door: acceso aperta, spento chiusa) dal contatto magnetico della porta, letto dal controller all'avvio e poi aggiornato a ogni apertura; senza contatto porta resta sconosciuto;
 - per ogni porta, sensori acceso/spento **Allarme Porta** (porta forzata o aperta troppo a lungo), **Preallarme Porta** e **Manomissione Porta**, con negli attributi il tipo e l'ora dell'ultimo cambio;
-- controller: **Controller Online**, **Coperchio Controller Aperto**, **Ultimo Avvio Controller** e gli ingressi **Ingresso AUX 1**, **Ingresso AUX 2**, **Ingresso Manomissione**, **Ingresso Allarme** (porte I/O 0-3), con il nome scelto nell'app. Un AUX collegato come Pulsante Uscita o Relè Citofono è acceso mentre si preme; dopo un riavvio del controller resta spento fino alla seconda pressione, perché fino ad allora il controller manda un valore che non è affidabile;
+- controller: **Controller Collegato al Broker** (MQTT), **Coperchio Controller Aperto**, **Ultimo Avvio Controller** e gli ingressi **Ingresso AUX 1**, **Ingresso AUX 2**, **Ingresso Manomissione**, **Ingresso Allarme** (porte I/O 0-3), con il nome scelto nell'app. Un AUX collegato come Pulsante Uscita o Relè Citofono è acceso mentre si preme; dopo un riavvio del controller resta spento fino alla seconda pressione, perché fino ad allora il controller manda un valore che non è affidabile;
 - pulsanti **Apri Porta** e **Apri Porta a Lungo** per le porte che li hanno attivi in Impianti: aprono solo a serratura bloccata e solo con un'apertura a tempo. Ogni pulsante ha l'attributo `comando`, il comando che manda all'add-on;
 - evento **Eventi Accessi**, con tipi `accesso_concesso`, `accesso_negato`, `tessera_letta`, `tessera_sconosciuta`, `apertura_remota`, `uscita`, `allarme_porta`, `manomissione`, `citofono` e attributi `persona`, `tessera`, `dettaglio`, `origine`, `ora`.
 
 I nomi con "Porta" (Stato Porta, Apri Porta…) e gli identificativi delle versioni precedenti (`button.apri_porta`…) restano alla porta che li aveva, cioè alla stessa porta sul controller, anche se l'ordine delle porte cambia o il controller viene tolto e aggiunto di nuovo. Per ogni altra porta le stesse entità hanno il nome della porta al posto di "Porta": per la porta Cantina, ad esempio, Stato Cantina, Elettroserratura Cantina, Contatto Cantina, Allarme Cantina, Preallarme Cantina, Manomissione Cantina, Apri Cantina e Apri Cantina a Lungo. Il comando `apri` senza porta, usato dalle automazioni delle versioni precedenti, apre la porta con gli identificativi di sempre; se quella porta è stata tolta dall'app non apre niente.
 
-Le entità di una porta tolta dall'app, e i pulsanti spenti, spariscono da Home Assistant: quelle con gli identificativi di sempre non passano a un'altra porta. Quando l'add-on si ferma o si riavvia, le entità risultano non disponibili.
+Le entità di una porta tolta dall'app, e i pulsanti spenti, spariscono da Home Assistant: quelle con gli identificativi di sempre non passano a un'altra porta. Quando l'add-on si ferma o si riavvia, le entità risultano non disponibili e al ritorno riprendono l'ultimo valore; una modifica in Impianti non le rende non disponibili. Per questo le automazioni con un trigger di stato devono ignorare il ritorno da non disponibile (`not_from`), come nell'esempio qui sotto: senza, a ogni riavvio dell'add-on ripeterebbero l'ultimo evento.
 
 Esempio di automazione: notifica quando una tessera sconosciuta viene passata sul lettore.
 
@@ -193,6 +193,7 @@ Esempio di automazione: notifica quando una tessera sconosciuta viene passata su
 triggers:
   - trigger: state
     entity_id: event.controllo_accessi_eventi_accessi
+    not_from: unavailable
 conditions:
   - condition: state
     entity_id: event.controllo_accessi_eventi_accessi
@@ -244,8 +245,8 @@ Non parla direttamente con il videocitofono.
   il videocitofono attiva il suo relè e lo segnala, e l'app manda all'A1210 **una sola apertura a tempo**,
   sulla porta associata: solo a serratura bloccata e al massimo una ogni 5 secondi.
   Senza la spunta l'apertura finisce solo nel registro e la porta non si apre; un'apertura durante la chiamata conta comunque come risposta.
-  Nel registro compare come apertura remota con il modo e il videocitofono, ad esempio "App Hik-Connect (Citofono)"
-  o "Monitor Interno (Citofono)"; se c'era una chiamata, il dettaglio dice dopo quanti secondi si è aperto.
+  Nel registro compare come apertura remota con il modo e il videocitofono, ad esempio "App Hik-Connect (Videocitofono)"
+  o "Monitor Interno (Videocitofono)"; se c'era una chiamata, il dettaglio dice dopo quanti secondi si è aperto.
   Il videocitofono non comunica quale account Hik-Connect ha aperto, quindi il nome della persona non c'è.
 - Le aperture fatte con tessere, PIN o volti salvati sul videocitofono **non** vengono inoltrate: chi può entrare lo decide solo l'A1210.
 - Il relè del videocitofono non va collegato alla serratura.

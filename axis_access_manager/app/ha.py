@@ -100,7 +100,7 @@ class HomeAssistant:
         except OSError as err:
             # Disco di Home Assistant pieno o cartella Media in sola lettura
             _LOGGER.warning("Istantanea da %s non salvata: %s", camera, err)
-            return "", "istantanea non salvata: spazio esaurito o cartella Media non scrivibile"
+            return "", "spazio esaurito o cartella Media non scrivibile"
         return filename, ""
 
     async def button_presser(self, command: str = "", now: datetime | None = None) -> str | None:

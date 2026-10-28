@@ -14,11 +14,11 @@ PERMISSIONS = {
     "stato": "Vedere cruscotto, porte e notifiche",
     "persone": "Vedere persone, tessere e tipologie",
     "persone_modifica": "Registrare, modificare, sospendere ed eliminare persone e tessere",
-    "registro": "Vedere il registro accessi e le istantanee",
+    "registro": "Vedere il registro accessi e le foto",
     "regole": "Vedere fasce orarie e festività",
     "regole_modifica": "Modificare tipologie, fasce orarie e festività",
     "import_export": "Esportare e importare file CSV",
-    "impianti": "Configurare controller, porte, citofoni e telecamere e programmare il controller",
+    "impianti": "Configurare controller, porte, videocitofoni e telecamere e programmare il controller",
     "backup": "Vedere, creare, bloccare e confrontare i backup (sbloccare, ripristinare ed eliminare restano agli "
     "amministratori)",
     "utenti": "Gestire gli utenti dell'app e vedere le attività (amministratore)",
@@ -167,10 +167,22 @@ class UserDirectory:
             username = bound or f"{ID_PREFIX}{user_id}"
         elif bound != username:
             owner = next((i for i, name in ids.items() if name == username and i != user_id), "")
-            if owner and self.db.get_app_user(username) is not None and f"{ID_PREFIX}{owner}" != username:
-                # Il nome utente era di un'altra persona di Home Assistant: i permessi restano suoi
-                self._move(username, f"{ID_PREFIX}{owner}", "nome utente passato a un altro utente di Home Assistant")
-                ids[owner] = f"{ID_PREFIX}{owner}"
+            row = self.db.get_app_user(username)
+            if owner and row is not None and f"{ID_PREFIX}{owner}" != username:
+                if ADMIN in row["perms"] and not self._reachable_admins(username):
+                    # Unico amministratore (account di Home Assistant ricreato, Home Assistant reinstallato): messo da
+                    # parte sotto il vecchio id nessuno potrebbe più ridare i permessi, quindi resta al nome utente
+                    self.db.add_audit(
+                        "sistema",
+                        "unico amministratore passato a un nuovo account di Home Assistant",
+                        f"{row['name'] or username}: i permessi restano al nome utente {username}",
+                    )
+                else:
+                    # Il nome utente era di un'altra persona di Home Assistant: i permessi restano suoi
+                    self._move(
+                        username, f"{ID_PREFIX}{owner}", "nome utente passato a un altro utente di Home Assistant"
+                    )
+                    ids[owner] = f"{ID_PREFIX}{owner}"
             if bound and self.db.get_app_user(username) is None:
                 # Nome utente cambiato in Home Assistant: i permessi seguono la persona
                 self._move(bound, username, "nome utente cambiato in Home Assistant")
@@ -230,7 +242,7 @@ class UserDirectory:
                 raise UserError(f"l'utente {username} esiste già")
             if not create and not existing:
                 raise UserError("utente non trovato")
-            if existing and ADMIN in existing["perms"] and ADMIN not in perms and self._admins() <= 1:
+            if existing and ADMIN in existing["perms"] and ADMIN not in perms and not self._reachable_admins(username):
                 raise UserError("serve almeno un amministratore: dai prima i permessi completi a un altro utente")
             if create:
                 # Registrato prima del suo primo accesso: lo prende chi entra con questo nome utente
@@ -249,14 +261,22 @@ class UserDirectory:
                 raise UserError("utente non trovato")
             if username == by.username:
                 raise UserError("non puoi eliminare il tuo utente")
-            if ADMIN in existing["perms"] and self._admins() <= 1:
+            if ADMIN in existing["perms"] and not self._reachable_admins(username):
                 raise UserError("è l'unico amministratore")
             self.db.delete_app_user(username)
             self._unbind(username)
         self.db.add_audit(by.label, "utente eliminato", existing["name"] or username)
 
-    def _admins(self) -> int:
-        return sum(1 for u in self.db.list_app_users() if ADMIN in u["perms"])
+    def _reachable_admins(self, excluding: str) -> int:
+        """Amministratori diversi da excluding che qualcuno può ancora usare: non conta chi è stato messo da parte
+        sotto l'id di una persona di Home Assistant (id:…) e da allora non è più entrato."""
+        return sum(
+            1
+            for u in self.db.list_app_users()
+            if ADMIN in u["perms"]
+            and u["username"] != excluding
+            and not (u["username"].startswith(ID_PREFIX) and not u["last_seen"])
+        )
 
 
 def role_label(perms: list[str]) -> str:

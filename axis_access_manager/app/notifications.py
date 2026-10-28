@@ -24,7 +24,11 @@ TYPES = {
         "Porta forzata, aperta troppo a lungo, manomissione del lettore o del controller.",
         "urgent",
     ),
-    "controller": ("Controller Non Raggiungibile", "Il controller è offline o non risponde all'add-on.", "urgent"),
+    "controller": (
+        "Controller Non Raggiungibile",
+        "Il controller non è raggiungibile o non risponde all'app.",
+        "urgent",
+    ),
     "programming": (
         "Porte Che Non Si Aprono",
         "Punti di accesso che il controller non gestisce, pulsanti senza il permesso di apertura o ingressi rimasti "
@@ -34,7 +38,7 @@ TYPES = {
     ),
     "mqtt": (
         "Collegamento MQTT Perso",
-        "L'add-on non riceve più gli eventi dal broker MQTT, oppure non c'è nessun broker MQTT.",
+        "L'app non riceve più gli eventi dal broker MQTT, oppure non c'è nessun broker MQTT.",
         "urgent",
     ),
     "unknown_card": ("Tessere Sconosciute", "Tessere non registrate passate sul lettore.", "urgent"),
@@ -68,7 +72,7 @@ TYPES = {
         "urgent",
     ),
     "database": (
-        "Database dell'App",
+        "Database dell'Add-on",
         "Database trovato danneggiato o mancante all'avvio, oppure copia del database per il backup di Home Assistant "
         "non aggiornata.",
         "urgent",
@@ -272,7 +276,7 @@ class NotificationService:
                     "mqtt",
                     "crit",
                     "Collegamento MQTT Perso",
-                    "Gli eventi del controller non arrivano all'add-on: registro e stato porta non si aggiornano.",
+                    "Gli eventi del controller non arrivano all'app: registro e stato porta non si aggiornano.",
                     now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
@@ -292,7 +296,7 @@ class NotificationService:
             # Solo con l'ultimo controllo riuscito: dopo il primo errore il controller potrebbe non rispondere
             reachable = bool(controllers) and all(c.get("online") is True for c in controllers)
             if mqtt_connected and controller_online is False and reachable:
-                # Il controller risponde all'add-on ma non pubblica sul broker
+                # Il controller risponde all'app ma non pubblica sul broker
                 add(
                     "mqtt",
                     "mqtt:controller",
@@ -304,7 +308,7 @@ class NotificationService:
                     link="#impianti/stato",
                 )
             elif not unreachable and (sync.get("ok") is False or (controller_online is False and not controllers)):
-                detail = sync.get("error") if sync.get("ok") is False else "il controller risulta offline"
+                detail = sync.get("error") if sync.get("ok") is False else "il controller non è raggiungibile"
                 add(
                     "controller",
                     "controller",
@@ -474,7 +478,8 @@ class NotificationService:
             restored = RESTORED in db_recovery
             add(
                 "database",
-                "database:avvio",
+                # Un id per avvio: il database ripristinato di nuovo a un avvio successivo non risulta già visto
+                f"database:avvio:{self.started_at}",
                 "crit",
                 "Database Ripristinato dalla Copia" if restored else "Database Non Ripristinato",
                 _sentence(db_recovery),

@@ -42,7 +42,7 @@ LOCAL_CREDENTIALS = {
     "FACE": "volto",
     "FINGERPRINT": "impronta",
 }
-# Origine dell'apertura nel registro ("App Hik-Connect (Citofono)")
+# Origine dell'apertura nel registro ("App Hik-Connect (Videocitofono)")
 UNLOCK_SOURCES = {
     "HOUSEHOLDER": "App o Monitor",
     # Al banco l'apertura dall'app Hik-Connect arriva così (sorgente "00"); l'account che apre non c'è
@@ -176,7 +176,7 @@ class IntercomBridge:
         if unlock_type in LOCAL_CREDENTIALS:
             # Il visitatore entra da solo: se ha suonato, nessuno ha risposto
             self._event(
-                f"apertura con {LOCAL_CREDENTIALS[unlock_type]} del citofono non inoltrata all'A1210", attributes
+                f"apertura con {LOCAL_CREDENTIALS[unlock_type]} del videocitofono non inoltrata all'A1210", attributes
             )
             return
         note = ""
@@ -189,8 +189,8 @@ class IntercomBridge:
             detail = ", ".join(x for x in (f"apertura da {how} (inoltro all'A1210 disattivato)", note) if x)
             self._event(detail, attributes)
             return
-        # Nel registro come le aperture da Home Assistant: chi o cosa, e da dove ("App Hik-Connect (Citofono)")
-        source = f"{how} (Citofono)"
+        # Nel registro come le aperture da Home Assistant: chi o cosa, e da dove ("App Hik-Connect (Videocitofono)")
+        source = f"{how} (Videocitofono)"
         task = asyncio.get_running_loop().create_task(self._forward(source, note))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)

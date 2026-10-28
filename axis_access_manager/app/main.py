@@ -20,14 +20,14 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .backup import BACKUP_DIR, COMMON, BackupError, BackupService
+from .backup import BACKUP_DIR, BackupError, BackupService
 from .backup_copy import ha_copy_error, ha_copy_path, update_copies
 from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS, renamed_tokens
 from .ha import HomeAssistant
-from .ha_mqtt import HaBridge, parse_command
+from .ha_mqtt import HaBridge, parse_command, topic_base
 from .health import (
     HEALTH_INTERVAL,
     HealthMonitor,
@@ -395,9 +395,10 @@ def before_change(kind: str = "prima_modifica") -> Any:
 
     async def backup(request: Request) -> None:
         state = request.app.state
-        await state.backups.before_change(
-            kind, request_user(request), _backup_clients(state), _offline_controllers(state)
-        )
+        async with _reading(state):
+            await state.backups.before_change(
+                kind, request_user(request), _backup_clients(state), _offline_controllers(state)
+            )
 
     return Depends(backup)
 
@@ -483,7 +484,7 @@ async def _wait_for_broker(app: FastAPI) -> None:
     c'è, poi l'ascolto degli eventi parte da solo, senza riavviare l'add-on."""
     while app.state.mqtt is None:
         await asyncio.sleep(MQTT_RETRY)
-        broker = await resolve_mqtt(app.state.options)
+        broker = await resolve_mqtt(app.state.options, quiet=True)
         if broker is None:
             continue
         _LOGGER.info("Broker MQTT disponibile: parte l'ascolto degli eventi")
@@ -973,10 +974,10 @@ def create_app(
     async def snapshot(event_id: int, request: Request) -> Response:
         event = request.app.state.db.get_event(event_id)
         if not event or not event.get("snapshot"):
-            return JSONResponse({"detail": "nessuna istantanea"}, status_code=404)
+            return JSONResponse({"detail": "nessuna foto"}, status_code=404)
         path = request.app.state.ha.snapshot_dir / Path(event["snapshot"]).name
         if not path.exists():
-            return JSONResponse({"detail": "istantanea cancellata"}, status_code=404)
+            return JSONResponse({"detail": "foto cancellata"}, status_code=404)
         return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/api/export/events.csv", dependencies=[need("registro", "import_export")])
@@ -1039,13 +1040,14 @@ def create_app(
             groups = []
         if body.apply:
             # Un'importazione cambia molte persone insieme: il backup si fa sempre, non una volta ogni tanto
-            await state.backups.before_change(
-                "prima_importazione",
-                request_user(request),
-                _backup_clients(state),
-                _offline_controllers(state),
-                window=False,
-            )
+            async with _reading(state):
+                await state.backups.before_change(
+                    "prima_importazione",
+                    request_user(request),
+                    _backup_clients(state),
+                    _offline_controllers(state),
+                    window=False,
+                )
         return await import_persons(state.service, body.csv, groups, request_user(request), body.apply)
 
     @app.get("/api/audit", dependencies=[need("utenti")])
@@ -1560,9 +1562,10 @@ def create_app(
     @app.post("/api/backups", dependencies=[need("backup")])
     async def create_backup(body: BackupIn, request: Request) -> dict:
         state = request.app.state
-        return await state.backups.create(
-            "manuale", body.name, request_user(request), _backup_clients(state), offline=_offline_controllers(state)
-        )
+        async with _reading(state):
+            return await state.backups.create(
+                "manuale", body.name, request_user(request), _backup_clients(state), offline=_offline_controllers(state)
+            )
 
     @app.put("/api/backups/policy")
     async def backup_policy(body: BackupPolicyIn, request: Request, user: Admin) -> dict:
@@ -1579,9 +1582,10 @@ def create_app(
         """Differenze con il backup precedente, con lo stato attuale ("attuale") o con un altro backup."""
         state = request.app.state
         # Un controller che non risponde non si aspetta e non risulta tolto: il confronto dice che non è letto
-        return await state.backups.compare(
-            backup_id, other, _backup_clients(state), part or None, offline=_offline_controllers(state)
-        )
+        async with _reading(state):
+            return await state.backups.compare(
+                backup_id, other, _backup_clients(state), part or None, offline=_offline_controllers(state)
+            )
 
     @app.put("/api/backups/{backup_id}/lock", dependencies=[need("backup")])
     async def lock_backup(backup_id: str, body: BackupLockIn, request: Request) -> dict:
@@ -1602,7 +1606,8 @@ def create_app(
         _, saved = await asyncio.to_thread(state.backups.load, backup_id)
         # Un controller che non risponde non ha la sua parte nello stato attuale: porte e lettori restano bloccati.
         # Quelli già irraggiungibili per il controllo di stato non si aspettano, come nel ripristino
-        current, _ = await state.backups.snapshot(_backup_clients(state), offline=_offline_controllers(state))
+        async with _reading(state):
+            current, _ = await state.backups.snapshot(_backup_clients(state), offline=_offline_controllers(state))
         items = _restore_plan(state, saved, current, body)
         return {"items": public(items), "sections": ALL_SECTIONS, "paused": state.controller.paused}
 
@@ -1618,9 +1623,10 @@ def create_app(
         label = manifest.get("name") or _local_text(manifest["created_at"])
         # Con la data e non con il nome: "Prima del Ripristino di Prima del Ripristino di …" non si legge
         name = f"Prima del Ripristino del Backup del {_local_text(manifest['created_at'])}"
-        before = await state.backups.create(
-            "prima_ripristino", name, user.label, _backup_clients(state), offline=_offline_controllers(state)
-        )
+        async with _reading(state):
+            before = await state.backups.create(
+                "prima_ripristino", name, user.label, _backup_clients(state), offline=_offline_controllers(state)
+            )
         _, current = await asyncio.to_thread(state.backups.load, before["id"])
         stale = {k for k, info in before["parts"].items() if info.get("stale")}
         current = {k: v for k, v in current.items() if k not in stale}
@@ -1643,6 +1649,8 @@ def create_app(
             + (f", {plural(len(result['failed']), 'non riuscita', 'non riuscite')}" if result["failed"] else ""),
         )
         if result.pop("reload"):
+            # Profili riscritti dal backup: se dopo le tipologie non si aggiornano, l'aggiornamento resta da fare
+            state.places_key = None
             await reload_runtime(request.app)
         if full:
             # Backup di prima della 0.21.3: il permesso dei pulsanti non c'era, lo si rimette
@@ -1651,15 +1659,8 @@ def create_app(
             except (VapixError, ServiceError) as err:
                 _LOGGER.warning("Permesso dei pulsanti non rimesso dopo il ripristino: %s", err)
             await state.health.recheck_managed(state.installation.primary)
-            # Regole delle fasce dell'app dai Dati Comuni del backup (le versioni precedenti le perdevano dopo un
-            # reset), poi le festività di oggi
-            schedules = saved.get(COMMON, {}).get("schedules", [])
-            if restored := state.rules.restore_schedule_rules(schedules, runtime.cache.get("tokens")):
-                _LOGGER.info("Regole di %s fasce orarie riprese dal backup", restored)
-            try:
-                await state.rules.reapply_holidays(only_changed=True)
-            except (VapixError, ServiceError) as err:
-                _LOGGER.warning("Festività non riscritte dopo il ripristino: %s", err)
+            # Le regole delle fasce tornano solo con le righe delle fasce spuntate (anche «Riporta le regole della
+            # fascia nell'app»), che le scrivono già con le festività di oggi: le altre fasce non si toccano
         return {**result, "backup_before": before["id"]}
 
     @app.get("/api/users", dependencies=[need("utenti")])
@@ -1755,6 +1756,8 @@ async def _start_runtime(app: FastAPI) -> None:
         state.db, state.controller, primary["id"] if primary else None, state.service.lock
     )
     state.bridge = HaBridge(cfg, state.monitor, state.db, state.doors)
+    # Letture in corso con il client di questa configurazione fuori dal lock del servizio (vedi _reading)
+    state.readers = set()
     _wire(app)
     state.mqtt_configured = bool(state.mqtt)
     state.monitor_task = (
@@ -1762,6 +1765,10 @@ async def _start_runtime(app: FastAPI) -> None:
     )
     # Contatori di oggi in Home Assistant ripubblicati a mezzanotte
     state.bridge.start()
+    if not hasattr(state, "places_key"):
+        # All'avvio: porte e aree di cui i profili delle tipologie sul controller tengono già conto (un aggiornamento
+        # rimasto da fare è in SETTING_CATEGORIES_PENDING). None: non si sa, vedi _refresh_categories
+        state.places_key = _places_key(state)
 
 
 async def _load_access_points(service: AccessService) -> None:
@@ -1777,28 +1784,30 @@ async def _stop_runtime(app: FastAPI) -> None:
     await _close_runtime(app, await _stop_listening(app), STOP_GRACE)
 
 
-async def _stop_listening(app: FastAPI) -> tuple:
-    """Ferma l'ascolto MQTT. Restituisce client, lock e sorgenti di comandi di questa configurazione, da chiudere
-    con _close_runtime quando hanno finito."""
+async def _stop_listening(app: FastAPI, offline: bool = True) -> tuple:
+    """Ferma l'ascolto MQTT. Restituisce client, lock, sorgenti di comandi e letture in corso di questa
+    configurazione, da chiudere con _close_runtime quando hanno finito. offline=False se la nuova configurazione
+    ripubblica subito le stesse entità di Home Assistant (vedi _stays_online)."""
     state = app.state
     bridge = getattr(state, "bridge", None)
     if bridge:
         # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
         # ordinata il broker scarta il messaggio di addio)
-        await bridge.stop()
+        await bridge.stop(offline)
     task = getattr(state, "monitor_task", None)
     if task:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
-    return state.raw_controller, state.service.lock, [state.monitor, *state.intercoms]
+    return state.raw_controller, state.service.lock, [state.monitor, *state.intercoms], state.readers
 
 
 async def _close_runtime(app: FastAPI, old: tuple, grace: float) -> None:
-    """Chiude il client del controller di una configurazione quando i comandi di Home Assistant e del citofono e le
-    operazioni sotto il lock (sincronizzazione, scritture a più passi) hanno finito, al massimo dopo grace secondi.
-    Chiuso sotto i loro piedi, la porta non si apriva e restava solo un errore nel log."""
-    client, lock, sources = old
+    """Chiude il client del controller di una configurazione quando i comandi di Home Assistant e del citofono, le
+    operazioni sotto il lock (sincronizzazione, scritture a più passi) e le letture di backup, confronti e recupero
+    degli eventi hanno finito, al massimo dopo grace secondi. Chiuso sotto i loro piedi, la porta non si apriva e
+    restava solo un errore nel log; un backup risultava incompleto."""
+    client, lock, sources, readers = old
     tasks = {task for source in sources for task in source._tasks}
     try:
         async with asyncio.timeout(grace):
@@ -1806,16 +1815,46 @@ async def _close_runtime(app: FastAPI, old: tuple, grace: float) -> None:
                 await asyncio.wait(tasks)
             async with lock:
                 pass
+            for done in list(readers):
+                await done.wait()
     except TimeoutError:
         _LOGGER.warning("Operazioni sul controller ancora in corso dopo %s s: il collegamento si chiude", grace)
     if app.state.injected_controller is None:
         await client.aclose()
 
 
+@contextlib.asynccontextmanager
+async def _reading(state):
+    """Letture del controller fuori dal lock del servizio (backup, confronti, anteprima del ripristino, recupero
+    degli eventi): una nuova configurazione chiude il client di adesso solo quando hanno finito. Il client va
+    preso dentro il blocco, e dentro il blocco non si ricarica la configurazione."""
+    done = asyncio.Event()
+    readers = getattr(state, "readers", set())
+    readers.add(done)
+    try:
+        yield
+    finally:
+        readers.discard(done)
+        done.set()
+
+
+def _stays_online(app: FastAPI) -> bool:
+    """La nuova configurazione si ricollega al broker e pubblica la disponibilità delle entità sullo stesso topic:
+    le entità di Home Assistant non passano per «non disponibile» (le automazioni ripartirebbero da sole)."""
+    state = app.state
+    bridge = getattr(state, "bridge", None)
+    if bridge is None or getattr(state, "monitor_task", None) is None or not state.mqtt:
+        return False
+    cfg = state.installation.effective_settings(state.options)
+    if not cfg.ha_integration or not cfg.mqtt_topic_prefix:
+        return False
+    return f"{topic_base(cfg.ha_topic_prefix, cfg.mqtt_topic_prefix)}/disponibile" == bridge.availability_topic
+
+
 async def reload_runtime(app: FastAPI) -> None:
     """Riparte con la nuova configurazione dopo una modifica a controller o porte."""
     async with app.state.reload_lock:
-        old = await _stop_listening(app)
+        old = await _stop_listening(app, offline=not _stays_online(app))
         await _start_runtime(app)
     # Il client di prima si chiude dopo le operazioni che lo stanno ancora usando; le nuove usano già quello nuovo
     await _close_runtime(app, old, RELOAD_GRACE)
@@ -1832,6 +1871,17 @@ async def reload_runtime(app: FastAPI) -> None:
     await _refresh_categories(app)
 
 
+def _places_key(state) -> tuple:
+    """Controller in uso e porte con area e struttura: quello che decide le porte coperte dalle tipologie."""
+    installation = state.installation
+    area_site = {a["id"]: s["id"] for s in state.db.list_sites() for a in s["areas"]}
+    doors = []
+    for door in installation.doors():
+        area = installation.door_area(door)
+        doors.append((door["id"], door["door_token"], area, area_site.get(area, 0)))
+    return state.settings.a1210_host, tuple(doors)
+
+
 async def _refresh_categories(app: FastAPI) -> None:
     """Porte spostate tra aree e strutture: le tipologie che le comprendono aggiornano il loro profilo.
     Se il controller non risponde o le scritture sono sospese, il controller applicherebbe ancora le righe di prima:
@@ -1839,13 +1889,25 @@ async def _refresh_categories(app: FastAPI) -> None:
     state = app.state
     if not state.settings.a1210_host:
         return
+    places = _places_key(state)
     try:
         if changed := await state.rules.refresh_category_profiles():
             _LOGGER.info("Profili di %s tipologie aggiornati dopo una modifica alle porte", changed)
     except (VapixError, ServiceError) as err:
+        if (
+            places == state.places_key
+            and not state.controller.paused
+            and not state.db.get_setting(SETTING_CATEGORIES_PENDING)
+        ):
+            # Porte e aree come all'ultimo aggiornamento riuscito (cambiati solo telecamera, nome, videocitofono…):
+            # sul controller non manca niente e l'errore resta nel log. Con le scritture sospese invece l'errore può
+            # essere un profilo diverso non scritto
+            _LOGGER.warning("Profili delle tipologie non controllati: %s", err)
+            return
         _LOGGER.warning("Profili delle tipologie non aggiornati, si riprova: %s", err)
         state.db.set_setting(SETTING_CATEGORIES_PENDING, json.dumps({"at": _now(), "error": str(err)}))
         return
+    state.places_key = places
     if state.db.get_setting(SETTING_CATEGORIES_PENDING):
         state.db.set_setting(SETTING_CATEGORIES_PENDING, "")
 
@@ -1966,10 +2028,10 @@ async def _save_snapshot(state, camera: str, row: dict) -> None:
     except OSError:
         # Disco di Home Assistant pieno o cartella Media in sola lettura
         _LOGGER.exception("Istantanea da %s non salvata", camera)
-        filename, error = "", "istantanea non salvata: spazio esaurito o cartella Media non scrivibile"
+        filename, error = "", "spazio esaurito o cartella Media non scrivibile"
     except Exception:  # noqa: BLE001
         _LOGGER.exception("Istantanea da %s non salvata", camera)
-        filename, error = "", "istantanea non salvata: errore imprevisto, dettagli nel log dell'add-on"
+        filename, error = "", "errore imprevisto, dettagli nel log dell'add-on"
     if filename or error:
         state.db.set_event_snapshot(row["id"], filename, error)
     state.snapshot_errors.pop(camera, None)
@@ -2217,7 +2279,8 @@ async def _recover_if_needed(state) -> None:
     since = min(start, marked_at) - timedelta(seconds=RECOVER_OVERLAP)
     since = max(since, datetime.now(tz=UTC) - RECOVER_LIMIT)
     try:
-        recovered = await state.service.recover_events(since)
+        async with _reading(state):
+            recovered = await state.service.recover_events(since)
     except VapixError as err:
         _LOGGER.warning("Eventi persi non recuperati dal controller: %s", err)
         return
@@ -2249,19 +2312,21 @@ async def _input_changed(state) -> None:
 
 async def _read_door_states(state, force: bool = False) -> None:
     """Contatto porta e modalità letti dal controller all'avvio, dopo ogni interruzione e dopo la programmazione di
-    un ingresso; senza broker a ogni controllo. Via MQTT arrivano solo ai cambi: senza un messaggio conservato dal
-    broker, al banco Contatto Porta restava sconosciuto fino alla prima apertura."""
+    un ingresso; senza broker, o con il broker non collegato, a ogni controllo. Via MQTT arrivano solo ai cambi:
+    senza un messaggio conservato dal broker, al banco Contatto Porta restava sconosciuto fino alla prima apertura."""
     monitor = state.monitor
     doors = [d["door_token"] for d in state.installation.doors()]
-    # Senza broker nessun evento le tiene aggiornate: si rileggono a ogni controllo
-    key = (monitor.outages, tuple(doors)) if state.mqtt else None
+    # Senza broker collegato nessun evento le tiene aggiornate (un'apertura dall'app restava «Aperta a Tempo» fino al
+    # ritorno del broker): si rileggono a ogni controllo, e una volta ancora quando torna
+    listening = state.mqtt and monitor.connected
+    key = (monitor.outages, tuple(doors)) if listening else None
     if not doors or (key is not None and key == state.door_states_key and not force):
         return
     primary = state.installation.primary
     health = state.health.states.get(primary["id"]) if primary else None
     if not health or not health.online or state.controller.paused:
         return
-    if state.mqtt and (not monitor.connected or monitor.controller_online is False):
+    if listening and monitor.controller_online is False:
         return
     changed = False
     for token in doors:
@@ -2341,7 +2406,9 @@ async def _backup_loop(app: FastAPI) -> None:
         # Prima il controllo di stato: dice quali controller non rispondono o sono cambiati
         await asyncio.wait_for(state.health_ready.wait(), HEALTH_INTERVAL)
     try:
-        if made := await state.backups.after_update(_backup_clients(state), _offline_controllers(state)):
+        async with _reading(state):
+            made = await state.backups.after_update(_backup_clients(state), _offline_controllers(state))
+        if made:
             _LOGGER.info("Backup dopo l'aggiornamento: %s", made["summary"])
     except BackupError as err:
         _LOGGER.warning("Backup dopo l'aggiornamento non riuscito: %s", err)
@@ -2349,7 +2416,9 @@ async def _backup_loop(app: FastAPI) -> None:
         _LOGGER.exception("Backup dopo l'aggiornamento non riuscito")
     while True:
         try:
-            if made := await state.backups.run_scheduled(_backup_clients(state), _offline_controllers(state)):
+            async with _reading(state):
+                made = await state.backups.run_scheduled(_backup_clients(state), _offline_controllers(state))
+            if made:
                 _LOGGER.debug("Backup %s: %s", made["kind"], made["summary"])
             if state.backups.verify_due():
                 result = await state.backups.verify_now()

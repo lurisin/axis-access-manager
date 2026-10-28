@@ -74,6 +74,12 @@ async def test_resolve_mqtt_when_supervisor_has_no_broker(caplog):
         assert await resolve_mqtt(parse_options(BASE), client, token="tok") is None
     assert "Mosquitto" in caplog.text
 
+    # I tentativi successivi, uno al minuto, non riempiono il log
+    caplog.clear()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await resolve_mqtt(parse_options(BASE), client, token="tok", quiet=True) is None
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
 
 def test_intercom_options():
     settings = parse_options({"intercom_name": " Citofono ", "intercom_open_door": True, "intercom_relay": 2})
