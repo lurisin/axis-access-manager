@@ -282,10 +282,10 @@ def test_seen_notifications_go_in_the_audit_log(client):
     unknown = next(i for i in items if i["type"] == "unknown_card")
     client.post("/api/notifications/seen", json={"ids": [unknown["id"]]})
     [last] = db.list_audit(limit=1)
-    assert last["action"] == "presa visione" and last["detail"] == "Tessera Sconosciuta ×2 (Tessera 04AA)"
+    assert last["action"] == "notifica segnata come vista" and last["detail"] == "Tessera Sconosciuta ×2 (Tessera 04AA)"
     client.post("/api/notifications/seen", json={})
     [last] = db.list_audit(limit=1)
-    assert last["action"] == "presa visione" and last["detail"] == "Allarme Porta (Porta forzata)"
+    assert last["action"] == "notifica segnata come vista" and last["detail"] == "Allarme Porta (Porta forzata)"
     # Già viste: nessuna nuova riga
     count = len(db.list_audit())
     client.post("/api/notifications/seen", json={})
