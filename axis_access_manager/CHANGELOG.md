@@ -45,7 +45,7 @@ Rifiniture dopo la seconda prova di reset al banco e richieste dell'utente.
 
 - **Sensore Elettroserratura Porta** in Home Assistant, uno per porta: acceso/spento con classe lock (spento bloccata, acceso sbloccata, anche quando è aperta a tempo da una tessera). Nelle dashboard mostra il lucchetto.
 - **Tessere rilette appena il controller torna raggiungibile** dopo un riavvio o un reset: l'avviso delle tessere non presenti e il Ripristino Completo compaiono subito, senza premere Rileggi dal Controller né aspettare il giro dei 15 minuti.
-- **Pallino verde** accanto a "Collegato" nella pagina del controller (era grigio).
+- **Pallino verde** accanto a "Raggiungibile" nella pagina del controller (era grigio).
 - **Dettaglio dell'evento nel Registro** che segue lo scorrimento: aprendo un evento in fondo all'elenco il riquadro resta visibile invece di restare in cima alla pagina.
 - **Fai Gestire al Controller** mostra "Sto Scrivendo…" mentre scrive.
 - La fascia di fabbrica standard_after_hours si chiama **Fuori Orario**, come le altre fasce di fabbrica.
@@ -117,7 +117,7 @@ Correzioni dal collaudo al banco della 0.19.
 - **Persone nuove con il numero di una persona eliminata**: una persona creata dopo averne eliminata un'altra poteva prenderne il numero interno, e con quello i passaggi nel registro e l'ultimo accesso. Ora i numeri non si riusano mai. All'aggiornamento gli eventi più vecchi della persona a cui erano attaccati vengono staccati: restano nel registro con il loro nome.
 - **Log dell'add-on più pulito**: niente più una riga per ogni richiesta della pagina (decine al minuto con il cruscotto aperto). Con il livello debug tornano.
 - **Orologio appena avviato**: nella scheda Stato non compare più per qualche istante la vecchia frase "36 s avanti" prima di "Home Assistant è 36 s indietro".
-- **Backup**: i lettori si contano senza gli ingressi (pulsante di uscita, relè del citofono), che hanno il loro numero. Il backup fatto prima di un ripristino si chiama "Prima del ripristino del backup del 25/10/2026 19:05", senza catene di nomi, e ogni riga mostra sempre il tipo.
+- **Backup**: i lettori si contano senza gli ingressi (pulsante di uscita, relè del citofono), che hanno il loro numero. Il backup fatto prima di un ripristino si chiama "Prima del Ripristino del Backup del 25/10/2026 19:05", senza catene di nomi, e ogni riga mostra sempre il tipo.
 - **Persona tolta dall'app**: il nome negli accessi recuperati viene dai suoi accessi già nel registro, con gli accenti ("Prova Stabilità (tolta dall'app)").
 
 ## 0.19.1
@@ -154,7 +154,7 @@ Correzioni dalla prova al banco della 0.18.0.
 
 Stabilità: l'app non perde dati se il controller viene resettato o sostituito, se Mosquitto si ferma o se un backup viene preso nel momento sbagliato.
 
-- **Tessere sparite dal controller**: non vengono più cancellate dall'app. Restano in Persone con l'etichetta "Non Sul Controller" e un avviso in cima all'elenco; da lì le riscrivi sul controller con gruppo e validità salvati, oppure le togli dall'app. Ditta, note e tipologia non si perdono più dopo un reset. Se sparisce più di una piccola quota delle tessere, o tutte, il guasto è critico.
+- **Tessere sparite dal controller**: non vengono più cancellate dall'app. Restano in Persone con l'etichetta "Non sul Controller" e un avviso in cima all'elenco; da lì le riscrivi sul controller con gruppo e validità salvati, oppure le togli dall'app. Ditta, note e tipologia non si perdono più dopo un reset. Se sparisce più di una piccola quota delle tessere, o tutte, il guasto è critico.
 - **Identità del controller**: al primo collegamento l'app memorizza numero di serie, modello, firmware e impronta del certificato. Se all'indirizzo risponde un apparecchio diverso compare il guasto "Controller Cambiato" e l'app smette di scrivere sul controller e di rileggere le tessere, finché un amministratore non conferma con "Conferma Nuovo Controller". Aprire la porta resta possibile. Un aggiornamento del firmware non è un cambio: si annota nell'attività.
 - **Controllo di ogni controller ogni 30 secondi**, in parallelo: spia verde, gialla o rossa nella pagina Impianti, guasto "Controller Non Raggiungibile" dopo un minuto senza risposta. Se il controller risponde ma non manda eventi a MQTT, il guasto lo dice.
 - **Orologio del controller**: confronto con l'ora di Home Assistant e guasto oltre un minuto di scarto, perché le fasce orarie scattano con l'ora del controller. Nella scheda Stato ci sono scarto, fuso orario e server NTP.
@@ -216,7 +216,7 @@ Stabilità: l'app non perde dati se il controller viene resettato o sostituito, 
   - cambiando la larghezza o togliendo un riquadro la pagina resta dov'era, non torna in cima;
   - il titolo non compare più due volte e la × resta sulla stessa riga anche nei riquadri da ¼;
   - i riquadri di una riga non si allungano più fino all'altezza del più alto.
-- Presa Visione e Segna Tutte Come Viste finiscono in Impostazioni → Attività, con l'utente e le notifiche viste.
+- Presa Visione e Segna Tutte come Viste finiscono in Impostazioni → Attività, con l'utente e le notifiche viste.
 - Gli eventi del coperchio del controller mostrano il nome attuale del controller. Quelli già registrati vengono aggiornati all'avvio, e di nuovo quando rinomini il controller.
 
 ## 0.15.1
@@ -241,8 +241,8 @@ Stabilità: l'app non perde dati se il controller viene resettato o sostituito, 
     - Bassa: un singolo accesso negato, una tessera in scadenza.
   - Gli eventi uguali vengono raggruppati in una sola notifica con il conteggio, ad esempio "×3 · 3 tentativi in 3 minuti". Sono uguali quando hanno stessa persona o tessera, stessa porta e stesso motivo, e arrivano a meno di 5 minuti l'uno dall'altro.
   - Ogni notifica ha la foto della porta (o il motivo per cui manca), Dettagli e Presa Visione. Un nuovo tentativo dopo la Presa Visione la rimette da gestire.
-  - Sotto, il **Registro Eventi** delle ultime 24 ore, con le schede Tutte, Accessi Negati e Allarmi e Manomissioni, il conteggio di ciascuna e la colonna Stato (Da Gestire o Visto). La spunta "Solo da gestire" filtra le righe.
-  - Ricerca per persona, tessera o porta, filtro per porta se ce n'è più di una, e "Segna Tutte Come Viste".
+  - Sotto, il **Registro Eventi** delle ultime 24 ore, con le schede Tutte, Accessi Negati e Allarmi e Manomissioni, il conteggio di ciascuna e la colonna Stato (Da Gestire o Visto). La spunta "Solo da Gestire" filtra le righe.
+  - Ricerca per persona, tessera o porta, filtro per porta se ce n'è più di una, e "Segna Tutte come Viste".
 - Il numero sulla campanella conta le notifiche da gestire. In Impostazioni → Notifiche ogni tipo è **Attiva** o **Disattivata**: le informative non esistono più e contano come attive.
   - Accessi Negati è ora attiva in modo predefinito.
   - Una tessera sconosciuta compare come notifica solo quando viene letta: l'elenco completo resta in Da Registrare.
@@ -267,8 +267,8 @@ Stabilità: l'app non perde dati se il controller viene resettato o sostituito, 
 ## 0.12.0
 
 - **Istantanee nella cartella Media di Home Assistant**: le foto stanno in Media → axis_access_manager (cartella `/media/axis_access_manager`, visibile anche da File editor e Samba). All'aggiornamento quelle già salvate vengono spostate lì. Non entrano più nel backup dell'add-on.
-- Una sola istantanea per passaggio, sull'esito: accesso negato sempre, accesso concesso con "Istantanea Anche sugli Accessi Concessi". La lettura della tessera e la tessera sconosciuta non scattano più una seconda foto uguale.
-- Istantanea anche sulle aperture a distanza (pulsanti di Home Assistant e citofono), anche senza "Istantanea Anche sugli Accessi Concessi".
+- Una sola istantanea per passaggio, sull'esito: accesso negato sempre, accesso concesso con "Foto Anche sugli Accessi Concessi". La lettura della tessera e la tessera sconosciuta non scattano più una seconda foto uguale.
+- Istantanea anche sulle aperture a distanza (pulsanti di Home Assistant e citofono), anche senza "Foto Anche sugli Accessi Concessi".
 - Il nome del file usa l'ora dell'evento data dal controller, non l'orologio di Home Assistant.
 - Su computer le pagine occupano tutta la larghezza dello schermo: prima si fermavano a 1180 pixel e a destra restava spazio vuoto.
 
@@ -279,8 +279,8 @@ Stabilità: l'app non perde dati se il controller viene resettato o sostituito, 
 ## 0.11.2
 
 - Pagina della porta, scheda Dispositivi, con testi più chiari:
-  - i lettori dicono da che lato della porta sono ("Lettore tessere sul lato entrata");
-  - pulsanti e relè collegati agli ingressi del controller mostrano ruolo e morsetto ("Pulsante Uscita · morsetto Aux 1 del controller") invece di "Uscita · Ingresso IO1";
+  - i lettori dicono da che lato della porta sono ("Lettore tessere in entrata");
+  - pulsanti e relè collegati agli ingressi del controller mostrano ruolo e morsetto ("Pulsante Uscita · morsetto AUX 1 del controller") invece di "Uscita · Ingresso IO1";
   - il videocitofono dice se apre la porta e con quale relè;
   - i bollini "Attivo" e "Apre la Porta" sono stati tolti: compare un bollino solo per un lettore disattivato.
 - Impianti: la scheda del controller conta a parte lettori e ingressi usati ("1 lettore · 2 ingressi"); prima pulsanti e relè sugli ingressi risultavano lettori.
@@ -335,7 +335,7 @@ Stabilità: l'app non perde dati se il controller viene resettato o sostituito, 
   - **Ingresso di Allarme**;
   - **Non Usato**.
 - Per pulsante e relè l'app scrive sul controller il punto di identificazione, l'assegnazione dell'ingresso e il punto di accesso in uscita. Ogni modifica si annulla dallo Storico Modifiche.
-- Registro: le aperture compaiono con il nome dato all'ingresso (ad esempio "Pulsante Portineria"), con ruolo e morsetto nel dettaglio ("Pulsante Uscita · Aux 1").
+- Registro: le aperture compaiono con il nome dato all'ingresso (ad esempio "Pulsante Portineria"), con ruolo e morsetto nel dettaglio ("Pulsante Uscita · AUX 1").
 - Home Assistant: le entità degli ingressi AUX, Manomissione e Allarme prendono il nome scelto nell'app.
 
 ## 0.8.4
@@ -451,7 +451,7 @@ Stabilità: l'app non perde dati se il controller viene resettato o sostituito, 
 
 - Anagrafica: persone e tessere con creazione, rinomina, sospensione ed eliminazione, scritte direttamente sull'A1210.
 - Importazione automatica di utenti e tessere già presenti sul controller (all'avvio e ogni 15 minuti).
-- Scheda "Da registrare": le tessere passate sul lettore e non registrate, da assegnare in un clic.
+- Scheda "Da Registrare": le tessere passate sul lettore e non registrate, da assegnare in un clic.
 - Log degli accessi con ricerca e filtri, conservato per il numero di giorni scelto.
 - Pulsanti di apertura porta (normale e a lungo), solo quando la serratura è bloccata.
 - Nuove opzioni: profilo di accesso delle nuove tessere e giorni di conservazione del log.
