@@ -341,6 +341,27 @@ def test_controller_mqtt_offline_but_reachable(db):
     assert titles(online=False, unreachable=False) == []
 
 
+def test_controller_off_the_broker_with_another_controller_down(db):
+    # Collaudo 29/10: il principale risponde ma è scollegato dal broker da ore; un altro controller non risponde
+    items = NotificationService(db).collect(
+        mqtt_configured=True,
+        mqtt_connected=True,
+        controller_configured=True,
+        controller_online=False,
+        sync={"ok": True},
+        door_names={},
+        primary_id=1,
+        controller_offline_since="2026-10-29T11:33:00+00:00",
+        controllers=[
+            {"id": 1, "name": "Quadro Hall", "online": True, "unreachable": False},
+            {"id": 2, "name": "Villa 3", "online": False, "unreachable": True, "error": "non risponde"},
+        ],
+    )
+    fault = next(i for i in items if i["id"] == "mqtt:controller")
+    assert fault["severity"] == "crit" and fault["ts"] == "2026-10-29T11:33:00+00:00"
+    assert fault["text"].startswith("Quadro Hall risponde ma non è collegato al broker MQTT")
+
+
 def test_home_assistant_clock_notification(db):
     synced = {"unreachable": False, "clock_fault": "home_assistant", "clock_offset": 36.0 + 60, "checked_at": ""}
     items = NotificationService(db).collect(

@@ -342,3 +342,30 @@ async def test_door_contact_is_read_from_the_controller_after_each_connection(co
     controller.door_physical = "Unknown"
     await _read_door_states(state, force=True)
     assert monitor.door_physical == {"porta": "Unknown"}
+
+
+async def test_door_state_is_polled_while_the_controller_is_off_the_broker(controller):
+    from types import SimpleNamespace
+
+    from app.events import EventMonitor
+    from app.main import _read_door_states
+
+    # Collaudo 29/10: app collegata al broker, controller no; Stato Porta fermo su «Aperta a Tempo» per ore
+    monitor = EventMonitor(prefix="x")
+    monitor.connected, monitor.controller_online = True, False
+    monitor.door_modes["porta"] = "Accessed"
+    state = SimpleNamespace(
+        installation=SimpleNamespace(primary={"id": 1}, doors=lambda: [{"door_token": "porta"}]),
+        health=SimpleNamespace(states={1: SimpleNamespace(online=True)}),
+        controller=SimpleNamespace(paused="", door_state=controller.door_state),
+        mqtt=object(),
+        monitor=monitor,
+        service=SimpleNamespace(notify_change=lambda: None),
+        door_states_key=None,
+    )
+    await _read_door_states(state)
+    assert monitor.door_modes == {"porta": "Locked"}
+    # A ogni controllo, non una volta sola
+    controller.door = "Accessed"
+    await _read_door_states(state)
+    assert monitor.door_modes == {"porta": "Accessed"}

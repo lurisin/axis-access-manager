@@ -138,6 +138,8 @@ class EventMonitor:
     prefix: str
     connected: bool = False
     controller_online: bool | None = None
+    # Da quando l'app sa il controller scollegato dal broker (ISO, UTC); vuoto se collegato
+    controller_offline_since: str = ""
     last_error: str = ""
     categories: dict[str, CategoryStats] = field(default_factory=dict)
     last_card: dict | None = None
@@ -219,7 +221,10 @@ class EventMonitor:
             online = payload.decode(errors="replace") == "online"
             if not online and self.controller_online is not False:
                 self.outages += 1
-            if not online:
+                self.controller_offline_since = datetime.now(tz=UTC).isoformat(timespec="seconds")
+            if online:
+                self.controller_offline_since = ""
+            else:
                 # Al riavvio il controller rimanda gli ingressi da capo, e il primo valore non conta come cambio
                 self.io_ports.clear()
                 self.io_changed.clear()

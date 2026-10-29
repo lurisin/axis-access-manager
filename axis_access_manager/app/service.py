@@ -138,6 +138,11 @@ def local_time(value: str) -> str:
         return value
 
 
+def input_detail(io: str, role: str) -> str:
+    """Dettaglio nel registro delle pressioni di un ingresso: ruolo e morsetto ("Pulsante Uscita · AUX 1")."""
+    return f"{INPUT_SOURCES[role]} · {INPUT_TERMINALS.get(io, io)}"
+
+
 def event_ref(kind: str, door: str, card: str = "", detail: str = "") -> str:
     """Impronta di un evento del controller, uguale via MQTT e dal registro interno.
 
@@ -877,15 +882,22 @@ class AccessService:
 
     # Porta
 
-    async def open_door(self, extended: bool, user: str, door: str = "", note: str = "") -> None:
-        """Sblocco temporaneo, solo a serratura bloccata: la serratura non regge l'alimentazione continua."""
+    async def open_door(self, extended: bool, user: str, door: str = "", note: str = "") -> bool:
+        """Sblocco temporaneo, solo a serratura bloccata: la serratura non regge l'alimentazione continua.
+
+        False se la porta era già aperta a tempo: non si manda un altro comando (farebbe ripartire il tempo) e non è
+        un rifiuto, chi ha chiesto di aprire trova la porta aperta."""
         door = door or self.settings.door_token
         if not door:
             raise ServiceError("nessuna porta configurata")
         # Due comandi ravvicinati (doppio tocco, Home Assistant e citofono insieme): il secondo aspetta il primo
         # e trova la porta già aperta, invece di passare anche lui il controllo e far ripartire il tempo
         async with self._door_locks.setdefault(door, asyncio.Lock()):
-            mode = self.monitor.door_modes.get(door) if self.monitor else None
+            stored = self.monitor.door_modes.get(door) if self.monitor else None
+            # Senza eventi in diretta (broker giù, o controller non collegato al broker) la modalità in memoria può
+            # essere vecchia anche quando dice "Bloccata": decide sempre il controller
+            live = bool(self.monitor and self.monitor.connected and self.monitor.controller_online is not False)
+            mode = stored if live else None
             if mode != "Locked":
                 # In memoria può restare l'"Aperta a Tempo" di un'apertura il cui "Bloccata" via MQTT è andato perso
                 # (broker riavviato durante l'apertura): prima di rifiutare decide il controller
@@ -894,17 +906,22 @@ class AccessService:
                 except VapixError as err:
                     _LOGGER.warning("Stato della porta non leggibile: %s", err)
                 else:
-                    current = self.monitor.door_modes.get(door) if self.monitor else mode
-                    if current != mode:
+                    current = self.monitor.door_modes.get(door) if self.monitor else stored
+                    if live and current != stored:
                         # Arrivata via MQTT mentre si leggeva: è più recente della lettura
                         mode = current
                     elif read:
-                        if self.monitor and read != mode:
+                        if self.monitor and read != current:
                             self.monitor.door_modes[door] = read
                             self._changed()
                         mode = read
             if mode is None:
                 raise ServiceError("stato della porta sconosciuto: riprova tra qualche secondo")
+            if mode == "Accessed":
+                # Al collaudo: un secondo comando da Home Assistant un secondo dopo il primo finiva nel Registro come
+                # accesso negato, con la porta aperta
+                _LOGGER.info("Porta %s già aperta a tempo: comando di %s non ripetuto", door, user)
+                return False
             if mode != "Locked":
                 # Import qui: ha_mqtt importa programming, che importa questo modulo
                 from .ha_mqtt import DOOR_MODES
@@ -920,6 +937,7 @@ class AccessService:
         detail = ", ".join(x for x in ("tempo esteso" if extended else "", note) if x)
         self.log_event(ts=self.event_now(), kind="apertura_remota", detail=detail, source=user, door=door)
         self.db.add_audit(user, "porta aperta", detail)
+        return True
 
     # Eventi
 
@@ -1117,11 +1135,9 @@ class AccessService:
         for row in self.db.all_controller_inputs():
             if row.get("access_point_token") != access_point:
                 continue
-            role = INPUT_SOURCES.get(row["role"], "")
-            if not role:
+            if row["role"] not in INPUT_SOURCES:
                 return None
-            terminal = INPUT_TERMINALS.get(row["io"], row["io"])
-            return row["name"] or role, f"{role} · {terminal}", row["role"]
+            return row["name"] or INPUT_SOURCES[row["role"]], input_detail(row["io"], row["role"]), row["role"]
         return None
 
     def _door_of(self, event: Event) -> str:

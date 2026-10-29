@@ -209,21 +209,50 @@ async def test_delete_person_removes_everything(service, controller, db):
 
 
 async def test_open_door_only_when_locked(service, controller, db):
-    service.monitor.door_mode = "Accessed"
-    controller.door = "Accessed"
+    service.monitor.connected, service.monitor.controller_online = True, True
+    service.monitor.door_mode = "Unlocked"
+    controller.door = "Unlocked"
     with pytest.raises(ServiceError, match="non è bloccata"):
         await service.open_door(False, "admin")
     assert not [c for c in controller.calls if c[0] == "access_door"]
 
+    # Già aperta a tempo (collaudo: secondo comando da Home Assistant un secondo dopo il primo): nessun comando,
+    # nessun rifiuto, nessuna riga
+    service.monitor.door_mode = "Accessed"
+    controller.door = "Accessed"
+    assert await service.open_door(False, "admin") is False
+    assert not [c for c in controller.calls if c[0] == "access_door"] and db.list_events() == []
+
     # "Bloccata" perso via MQTT: in memoria resta "Aperta a Tempo", ma decide il controller
     controller.door = "Locked"
-    await service.open_door(False, "admin")
+    assert await service.open_door(False, "admin") is True
     assert ("access_door", "porta", False) in controller.calls
 
     service.monitor.door_mode = "Locked"
     await service.open_door(True, "admin")
     assert ("access_door", "porta", True) in controller.calls
     assert db.list_events()[0]["kind"] == "apertura_remota"
+
+
+async def test_open_door_without_live_events_asks_the_controller(service, controller):
+    # Collaudo 29/10: controller scollegato dal broker per ore, in memoria una modalità vecchia
+    service.monitor.connected, service.monitor.controller_online = True, False
+    service.monitor.door_mode = "Locked"
+    controller.door = "Accessed"
+    assert await service.open_door(False, "admin") is False
+    assert not [c for c in controller.calls if c[0] == "access_door"]
+    assert service.monitor.door_mode == "Accessed"
+    controller.door = "Locked"
+    assert await service.open_door(False, "admin") is True
+
+    # Controller che non risponde: senza eventi in diretta la memoria non basta
+    async def broken(door_token):
+        raise VapixError("timeout")
+
+    controller.door_mode = broken
+    service.monitor.door_mode = "Locked"
+    with pytest.raises(ServiceError, match="sconosciuto"):
+        await service.open_door(False, "admin")
 
 
 async def test_open_door_asks_controller_when_state_unknown(service, controller):

@@ -3262,7 +3262,9 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   const inputOf = (io) => inputs.find((i) => i.io === io);
   const linkedDoor = (i) => DOOR_INPUT_ROLES.includes(i.role) && i.door ? i.door : "";
   const inputMeta = (i) => [p.input_roles?.[i.role] || "Non Usato", linkedDoor(i) ? doorName({token: i.door}) : "", i.pins.join(", ")].filter(Boolean).join(" · ");
-  const inputDot = (i) => i.port == null ? '<span class="muted" title="Stato non disponibile: il controller non invia eventi per questo ingresso">—</span>'
+  // Il contatto porta non manda lo stato dell'ingresso: vale quello della porta, aperta o chiusa
+  const inputDot = (i) => i.role === "door_monitor" ? (i.door_open === true ? '<span class="dot warn" title="Porta Aperta"></span>' : i.door_open === false ? '<span class="dot ok" title="Porta Chiusa"></span>' : '<span class="muted" title="Stato della porta non ancora letto dal controller">—</span>')
+    : i.port == null ? '<span class="muted" title="Stato non disponibile: il controller non invia eventi per questo ingresso">—</span>'
     : i.active === true ? '<span class="dot warn" title="Attivo"></span>' : i.active === false ? '<span class="dot ok" title="A riposo"></span>' : "";
   const readerName = (token) => { const r = p.readers.find((x) => x.token === token); return r?.name || token; };
   const directionsOf = (door) => [...new Set(p.access_points.filter((a) => a.door === door).map((a) => a.direction || ""))];
@@ -3302,7 +3304,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
         <div class="sch-col"><div class="sch-head">Lettori</div>${p.readers.map((r) => `<button type="button" class="sch-node" data-reader="${esc(r.token)}">
           <span class="ev-icon k-accent">${icon("card")}</span><span class="grow"><b>${esc(r.name || r.token)}</b><span class="sch-meta" data-reader-meta="${esc(r.token)}"></span></span></button>`).join("")}
           ${inputs.length ? `<div class="sch-head" style="margin-top:8px">Ingressi</div>${inputs.map((i) => `<button type="button" class="sch-node" data-input="${esc(i.io)}">
-          <span class="ev-icon ${i.problem ? "k-warn" : i.role ? "k-info" : "k-muted"}">${icon(INPUT_ICONS[i.role] || "chip")}</span><span class="grow"><b>${esc(i.name)}</b><span class="sch-meta">${esc(inputMeta(i))}</span>${i.problem ? `<span class="sch-meta" style="color:var(--warn)">Da riscrivere: ${esc(i.problem)}</span>` : ""}</span>${inputDot(i)}</button>`).join("")}` : ""}</div>
+          <span class="ev-icon ${i.problem ? "k-warn" : i.role ? "k-info" : "k-muted"}">${icon(INPUT_ICONS[i.role] || "chip")}</span><span class="grow"><b>${esc(i.name)}</b><span class="sch-meta">${esc(inputMeta(i))}</span>${i.last_press ? `<span class="sch-meta" title="${esc(fmtFull(i.last_press))}">Ultima pressione ${esc(relTime(i.last_press))}</span>` : ""}${i.problem ? `<span class="sch-meta" style="color:var(--warn)">Da riscrivere: ${esc(i.problem)}</span>` : ""}</span>${inputDot(i)}</button>`).join("")}` : ""}</div>
         <div class="sch-mid"></div>
         <div class="sch-col"><div class="sch-head" style="text-align:right">Porte</div>${p.doors.map((d) => `<button type="button" class="sch-node" data-door="${esc(d.token)}">
           <span class="ev-icon k-muted">${icon("door")}</span><span class="grow"><b>${esc(doorName(d))}</b><span class="sch-meta">${appDoor(d.token) ? (d.name && d.name !== doorName(d) ? esc(`sul controller: ${d.name}`) : "") : "non gestita dall'app"}</span></span></button>`).join("")}</div>

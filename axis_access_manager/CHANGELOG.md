@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.22.2
+
+Dal collaudo del 29 ottobre nel sito nuovo, con il controller scollegato dal broker.
+
+- **Stato della porta aggiornato anche con il controller scollegato dal broker.** Se l'app era collegata al broker ma il controller no, lo stato della porta non si rileggeva più: dopo un'apertura da Home Assistant, Stato Porta è rimasto «Aperta a Tempo» per ore. Ora, quando gli eventi del controller non arrivano in diretta, l'app rilegge la porta dal controller ogni 30 secondi, come senza broker. Prima di aprire non si fida della modalità in memoria: decide sempre il controller.
+- **Porta già aperta: nessun rifiuto.** Un secondo comando Apri arrivato mentre la porta è ancora aperta a tempo (alle 20:44:38 da Home Assistant, un secondo dopo il primo) finiva nel Registro e in Home Assistant come accesso negato, «la porta non è bloccata (Aperta a Tempo)». Ora non si ripete il comando, che farebbe ripartire il tempo, e non risulta niente: chi ha premuto trova la porta aperta. Restano rifiutate le aperture con la porta sbloccata o in blocco.
+- **Guasto per il controller scollegato dal broker anche con più controller.** «Eventi del Controller Non Arrivano» compariva solo se tutti i controller dell'app rispondevano: con un altro controller spento il controller principale poteva restare scollegato dal broker per ore senza nessun guasto. Ora conta solo il controller principale, quello che manda gli eventi; il guasto dice da che ora è scollegato e che i passaggi persi si recuperano quando torna collegato.
+- **Schema: contatto porta e REX.** Il Sensore Porta ha il pallino della porta aperta o chiusa, e sotto i pulsanti e i relè collegati a una porta compare l'ora dell'ultima pressione registrata. Contatto porta e REX non mandano lo stato dell'ingresso come gli AUX.
+
 ## 0.22.1
 
 Correzioni dalla revisione delle modifiche della 0.22.0.

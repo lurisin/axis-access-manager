@@ -176,6 +176,8 @@ class NotificationService:
         controller_configured: bool,
         controller_online: bool | None,
         sync: dict,
+        primary_id: int | None = None,
+        controller_offline_since: str = "",
         door_names: dict[str, str],
         cameras: list[dict] | None = None,
         controllers: list[dict] | None = None,
@@ -293,18 +295,24 @@ class NotificationService:
                     c.get("checked_at") or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
-            # Solo con l'ultimo controllo riuscito: dopo il primo errore il controller potrebbe non rispondere
-            reachable = bool(controllers) and all(c.get("online") is True for c in controllers)
+            # Solo con l'ultimo controllo riuscito: dopo il primo errore il controller potrebbe non rispondere. Conta
+            # il controller principale, l'unico che manda gli eventi all'app: al collaudo con un altro controller
+            # non raggiungibile il guasto non compariva, e il principale è rimasto scollegato dal broker per ore
+            primary = next((c for c in controllers if c.get("id") == primary_id), None) if primary_id else None
+            checked = [primary] if primary else controllers
+            reachable = bool(checked) and all(c.get("online") is True for c in checked)
             if mqtt_connected and controller_online is False and reachable:
                 # Il controller risponde all'app ma non pubblica sul broker
+                name = f"{primary['name']} risponde" if primary and len(controllers) > 1 else "Il controller risponde"
                 add(
                     "mqtt",
                     "mqtt:controller",
                     "crit",
                     "Eventi del Controller Non Arrivano",
-                    "Il controller risponde ma non è collegato al broker MQTT: "
-                    "registro e stato porta non si aggiornano.",
-                    now.isoformat(timespec="seconds"),
+                    f"{name} ma non è collegato al broker MQTT: passaggi e allarmi non arrivano in diretta. "
+                    "Lo stato della porta si rilegge dal controller ogni 30 secondi, e i passaggi persi si "
+                    "recuperano quando il controller torna collegato.",
+                    controller_offline_since or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
             elif not unreachable and (sync.get("ok") is False or (controller_online is False and not controllers)):

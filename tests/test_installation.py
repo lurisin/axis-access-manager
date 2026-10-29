@@ -418,3 +418,33 @@ def test_installation_api_reloads_runtime(settings, controller, tmp_path, monkey
         # Senza il permesso impianti non si vede niente
         client.get("/api/me", headers={"X-Remote-User-Name": "admin"})
         assert client.get("/api/installation", headers={"X-Remote-User-Name": "altro"}).status_code == 403
+
+
+def test_schema_shows_door_contact_and_last_button_press(settings, controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    app = create_app(parse_options({}), allow_any_client=True, controller=controller, db_path=tmp_path / "s.db")
+    with TestClient(app) as client:
+        data = {"name": "A1210", "host": "10.0.0.5", "username": "root", "password": "x", "mqtt_topic_prefix": "acc"}
+        controller_id = client.post("/api/controllers", json=data).json()["id"]
+        door = {"door_token": "porta", "name": "Scala"}
+        assert client.post(f"/api/controllers/{controller_id}/doors", json=door).status_code == 200
+        for io, role in (("DPS", "door_monitor"), ("REX", "rex")):
+            body = {"name": "", "role": role, "door": "porta", "contact": "no", "supervised": False}
+            assert client.put(f"/api/programming/inputs/{io}", json=body).status_code == 200
+        state = app.state
+        # Collaudo 29/10: nello Schema contatto porta e REX non avevano pallino, perché non mandano Device/IO/Port
+        state.monitor.door_physical["porta"] = "Open"
+        state.db.add_event(ts="2026-10-29T20:00:00+00:00", kind="uscita", detail="Pulsante Uscita · REX", door="porta")
+        state.db.add_event(
+            ts="2026-10-29T20:05:00+00:00", kind="negato", detail="Pulsante Uscita · Rex · fuori fascia", door="porta"
+        )
+        state.db.add_event(
+            ts="2026-10-29T20:09:00+00:00", kind="uscita", detail="Pulsante Uscita · AUX 1", door="porta"
+        )
+        inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
+        assert inputs["DPS"]["door_open"] is True
+        assert inputs["REX"]["last_press"] == "2026-10-29T20:05:00+00:00"
+        # Contatto non ancora letto o in guasto: nessun pallino
+        state.monitor.door_physical["porta"] = "Unknown"
+        inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
+        assert inputs["DPS"]["door_open"] is None
