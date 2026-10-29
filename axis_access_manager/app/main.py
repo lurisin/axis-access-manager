@@ -2115,6 +2115,7 @@ def _current_notifications(state) -> list[dict]:
         sync=state.last_sync,
         primary_id=(state.installation.primary or {}).get("id"),
         controller_offline_since=state.monitor.controller_offline_since,
+        mqtt_disconnected_since=state.monitor.disconnected_since,
         door_names={d["door_token"]: d["name"] for d in state.doors},
         cameras=[
             {

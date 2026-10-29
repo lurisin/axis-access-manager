@@ -140,6 +140,8 @@ class EventMonitor:
     controller_online: bool | None = None
     # Da quando l'app sa il controller scollegato dal broker (ISO, UTC); vuoto se collegato
     controller_offline_since: str = ""
+    # Da quando l'app non è collegata al broker (ISO, UTC); vuoto se collegata
+    disconnected_since: str = ""
     last_error: str = ""
     categories: dict[str, CategoryStats] = field(default_factory=dict)
     last_card: dict | None = None
@@ -303,6 +305,7 @@ class EventMonitor:
                         await client.subscribe(topic_filter, qos=1)
                     self.client = client
                     self.connected = True
+                    self.disconnected_since = ""
                     self.last_error = ""
                     _LOGGER.info("Collegato al broker MQTT %s:%s", settings.host, settings.port)
                     if self.on_connect:
@@ -323,6 +326,8 @@ class EventMonitor:
                 # si vede nell'app e dopo si recuperano gli eventi persi
                 if self.connected:
                     self.outages += 1
+                if self.connected or not self.disconnected_since:
+                    self.disconnected_since = datetime.now(tz=UTC).isoformat(timespec="seconds")
                 self.client = None
                 self.connected = False
                 self.last_error = mqtt_error_text(err)

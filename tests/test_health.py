@@ -362,6 +362,33 @@ def test_controller_off_the_broker_with_another_controller_down(db):
     assert fault["text"].startswith("Quadro Hall risponde ma non è collegato al broker MQTT")
 
 
+def test_acknowledged_broker_fault_comes_back_while_it_lasts(db):
+    from datetime import UTC, datetime
+
+    service = NotificationService(db)
+
+    def collect(now):
+        return service.collect(
+            mqtt_configured=True,
+            mqtt_connected=True,
+            controller_configured=True,
+            controller_online=False,
+            sync={"ok": True},
+            door_names={},
+            primary_id=1,
+            controller_offline_since="2026-10-29T11:33:00+00:00",
+            controllers=[{"id": 1, "name": "Rack Portineria", "online": True, "unreachable": False}],
+            now=now,
+        )
+
+    # Collaudo 29/10: preso visione alle 18:20 e rimasto nascosto per ore; ora torna ogni 4 ore finché dura
+    seen_at = collect(datetime(2026, 10, 29, 18, 20, 22, tzinfo=UTC))
+    assert seen_at[0]["ts"] == "2026-10-29T11:33:00+00:00"
+    service.mark_seen(["mqtt:controller"], seen_at)
+    assert service.listing(collect(datetime(2026, 10, 29, 19, 0, tzinfo=UTC)))["items"][0]["seen"] is True
+    assert service.listing(collect(datetime(2026, 10, 29, 19, 34, tzinfo=UTC)))["items"][0]["seen"] is False
+
+
 def test_home_assistant_clock_notification(db):
     synced = {"unreachable": False, "clock_fault": "home_assistant", "clock_offset": 36.0 + 60, "checked_at": ""}
     items = NotificationService(db).collect(
