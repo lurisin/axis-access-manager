@@ -357,36 +357,54 @@ def test_controller_off_the_broker_with_another_controller_down(db):
             {"id": 2, "name": "Villa 3", "online": False, "unreachable": True, "error": "non risponde"},
         ],
     )
-    fault = next(i for i in items if i["id"] == "mqtt:controller")
+    fault = next(i for i in items if i["id"] == "mqtt:controller@2026-10-29T11:33:00+00:00")
     assert fault["severity"] == "crit" and fault["ts"] == "2026-10-29T11:33:00+00:00"
     assert fault["text"].startswith("Quadro Hall risponde ma non è collegato al broker MQTT")
+
+
+def _broker_fault(service, now, since="2026-10-29T11:33:00+00:00"):
+    return service.collect(
+        mqtt_configured=True,
+        mqtt_connected=True,
+        controller_configured=True,
+        controller_online=False,
+        sync={"ok": True},
+        door_names={},
+        primary_id=1,
+        controller_offline_since=since,
+        controllers=[{"id": 1, "name": "Rack Portineria", "online": True, "unreachable": False}],
+        now=now,
+    )
 
 
 def test_acknowledged_broker_fault_comes_back_while_it_lasts(db):
     from datetime import UTC, datetime
 
     service = NotificationService(db)
-
-    def collect(now):
-        return service.collect(
-            mqtt_configured=True,
-            mqtt_connected=True,
-            controller_configured=True,
-            controller_online=False,
-            sync={"ok": True},
-            door_names={},
-            primary_id=1,
-            controller_offline_since="2026-10-29T11:33:00+00:00",
-            controllers=[{"id": 1, "name": "Rack Portineria", "online": True, "unreachable": False}],
-            now=now,
-        )
-
     # Collaudo 29/10: preso visione alle 18:20 e rimasto nascosto per ore; ora torna ogni 4 ore finché dura
-    seen_at = collect(datetime(2026, 10, 29, 18, 20, 22, tzinfo=UTC))
+    seen_at = _broker_fault(service, datetime(2026, 10, 29, 18, 20, 22, tzinfo=UTC))
     assert seen_at[0]["ts"] == "2026-10-29T11:33:00+00:00"
-    service.mark_seen(["mqtt:controller"], seen_at)
-    assert service.listing(collect(datetime(2026, 10, 29, 19, 0, tzinfo=UTC)))["items"][0]["seen"] is True
-    assert service.listing(collect(datetime(2026, 10, 29, 19, 34, tzinfo=UTC)))["items"][0]["seen"] is False
+    service.mark_seen([seen_at[0]["id"]], seen_at)
+    assert service.listing(_broker_fault(service, datetime(2026, 10, 29, 19, 0, tzinfo=UTC)))["items"][0]["seen"]
+    later = _broker_fault(service, datetime(2026, 10, 29, 19, 34, tzinfo=UTC))
+    assert service.listing(later)["items"][0]["seen"] is False
+
+
+def test_broker_fault_that_starts_again_is_not_seen(db):
+    from datetime import UTC, datetime
+
+    service = NotificationService(db)
+    seen_at = _broker_fault(service, datetime(2026, 10, 29, 18, 20, 22, tzinfo=UTC))
+    service.mark_seen([seen_at[0]["id"]], seen_at)
+    # Collaudo 29/10: con l'aggiornamento dell'add-on il guasto riparte alle 21:46:04 ma restava visto dalle 18:20
+    restarted = NotificationService(db)
+    items = _broker_fault(restarted, datetime(2026, 10, 29, 21, 47, tzinfo=UTC), "2026-10-29T21:46:04+00:00")
+    assert items[0]["ts"] == "2026-10-29T21:46:04+00:00"
+    listing = restarted.listing(items)
+    assert listing["items"][0]["seen"] is False and listing["open"] == 1
+    # Il guasto nuovo si prende visione come gli altri
+    restarted.mark_seen([items[0]["id"]], items)
+    assert restarted.listing(items)["open"] == 0
 
 
 def test_home_assistant_clock_notification(db):
