@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.22.1
+
+Correzioni dalla revisione delle modifiche della 0.22.0.
+
+- **Ripristino di tipologie con un controller tolto e riaggiunto.** Se una regola della tipologia indicava una porta di un controller tolto dall'app (o tolto e aggiunto di nuovo, quindi con un altro numero), l'anteprima diceva «il controller non risponde» e proponeva di ricreare la tipologia, che poi non si ricreava. Ora l'anteprima dice che alcune regole indicano porte che non ci sono più, come per le altre porte eliminate. L'avviso «il controller non risponde» compare solo quando il controller in uso non si è potuto leggere.
+- **Sensore Porta nel controllo di stato.** Se il sensore porta sul controller non era collegato alla porta o la porta non usava il sensore (per esempio dopo una scrittura interrotta a metà), la pagina del controller lo segnalava ma il controllo di stato no. Ora compare anche tra i guasti, come per i pulsanti.
+- **Unico amministratore con un nome utente riusato.** Se in Home Assistant l'unico amministratore cambiava nome utente e il nome vecchio passava a un'altra persona, l'amministratore perdeva i permessi. Ora li ritrova al primo accesso con il nome nuovo; chi ha preso il nome vecchio resta amministratore (serve quando Home Assistant è stato reinstallato) e Attività lo segnala, così si possono togliere i permessi dalla pagina Utenti.
+- **Profili delle tipologie rifiutati dal controller.** Se dopo una modifica a nome, telecamera o videocitofono di una porta il controller rifiutava il profilo di una tipologia da aggiornare, l'errore restava solo nel log. Ora compare «Tipologie Non Aggiornate sul Controller» e l'app riprova dopo la sincronizzazione successiva.
+- **Persone: il fuoco resta sulla riga.** Se un altro utente eliminava una persona che stava prima nell'elenco, all'aggiornamento automatico il fuoco della tastiera tornava all'inizio della pagina. Ora resta sulla riga scelta.
+- **Esito degli eventi sempre leggibile.** Su tablet e computer gli Ultimi Eventi del cruscotto tagliavano l'esito (concesso, negato, tessera sconosciuta) con i puntini: ora la porta va sotto il nome come sul telefono e il testo va a capo. Anche nel Registro una riga lunga va a capo invece di nascondere l'esito.
+- **Documentazione.** DOCS dice quali entità di Home Assistant tornano con il loro valore dopo un riavvio dell'add-on e quali restano sconosciute fino al prossimo evento del controller.
+
 ## 0.22.0
 
 Correzioni dall'analisi completa di codice, grafica e testi del 28 ottobre.

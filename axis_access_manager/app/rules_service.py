@@ -59,6 +59,10 @@ def profile_schedules(profile: dict) -> list[str]:
     return tokens
 
 
+class ProfileNotWritten(ServiceError):
+    """Profilo di una tipologia da cambiare che il controller non ha preso: sul controller restano le righe di prima."""
+
+
 class RulesService:
     def __init__(self, access: AccessService) -> None:
         self.access = access
@@ -883,7 +887,10 @@ class RulesService:
                 profile = await self._build_profile(category, rules[category["id"]], found[0], refresh=True)
                 if _policy_sig(profile) == _policy_sig(found[0]):
                     continue
-                await self.controller.set_access_profile(profile)
+                try:
+                    await self.controller.set_access_profile(profile)
+                except (VapixError, ServiceError) as err:
+                    raise ProfileNotWritten(str(err)) from err
                 if self._door_schedules(rules[category["id"]]):
                     detail = f"{category['name']}: porte di aree e strutture"
                 else:

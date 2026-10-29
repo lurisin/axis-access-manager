@@ -308,8 +308,19 @@ class HealthMonitor:
         def name(io: str) -> str:
             return rows[io]["name"] or CONTROLLER_INPUTS[io][0]
 
+        assigned = door_configs = None
+        # Sensore porta: come la pagina del controller, collegamento e configurazione della porta
+        if any(row.get("role") == "door_monitor" for row in rows.values()):
+            try:
+                assigned = (await client.list_io())[1]
+                door_configs = await client.list_door_configurations()
+            except VapixError as err:
+                _LOGGER.debug("Ingressi di %s non letti: %s", state.name, err)
+                assigned = door_configs = None
         state.input_problems = [
-            name(io) for io in CONTROLLER_INPUTS if io in rows and input_problem(io, rows[io], points)
+            name(io)
+            for io in CONTROLLER_INPUTS
+            if io in rows and input_problem(io, rows[io], points, assigned=assigned, door_configs=door_configs)
         ]
         existing = {p.get("token") for p in points}
         wanted = [t for t in rex_policies(rows.values()) if t in existing]

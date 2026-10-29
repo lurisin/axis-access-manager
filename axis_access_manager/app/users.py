@@ -171,11 +171,16 @@ class UserDirectory:
             if owner and row is not None and f"{ID_PREFIX}{owner}" != username:
                 if ADMIN in row["perms"] and not self._reachable_admins(username):
                     # Unico amministratore (account di Home Assistant ricreato, Home Assistant reinstallato): messo da
-                    # parte sotto il vecchio id nessuno potrebbe più ridare i permessi, quindi resta al nome utente
+                    # parte sotto il vecchio id nessuno potrebbe più ridare i permessi, quindi resta al nome utente.
+                    # Una copia resta anche al vecchio id: se l'account era stato solo rinominato e il nome riusato
+                    # da un altro, chi era amministratore lo ritrova al prossimo accesso
+                    self.db.save_app_user(f"{ID_PREFIX}{owner}", row["name"], row["perms"])
+                    ids[owner] = f"{ID_PREFIX}{owner}"
                     self.db.add_audit(
                         "sistema",
                         "unico amministratore passato a un nuovo account di Home Assistant",
-                        f"{row['name'] or username}: i permessi restano al nome utente {username}",
+                        f"{row['name'] or username}: i permessi restano al nome utente {username} e anche a "
+                        f"{ID_PREFIX}{owner}, per l'account di prima",
                     )
                 else:
                     # Il nome utente era di un'altra persona di Home Assistant: i permessi restano suoi

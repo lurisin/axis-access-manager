@@ -176,10 +176,14 @@
     .list.compact > .ev { grid-template-columns: 40px 10px minmax(0, 1fr); gap: 0 8px; padding: 9px 12px; }
     .list.compact > .ev > span:last-child:empty { display: none; }
     .ev .where { grid-column: 3; max-width: none; text-align: left; font-size: 12px; }
-    /* Nome ed esito vanno a capo invece di finire nei puntini: con «Tessera 04ff… acc…» negato o concesso non si leggeva.
-       Senza un limite di righe: nei riquadri stretti del cruscotto tessera ed esito ne occupano tre */
-    .list.compact > .ev .what { white-space: normal; overflow-wrap: anywhere; }
   }
+  /* Ultimi Eventi del cruscotto: il riquadro è stretto anche su tablet e computer, quindi la porta va sotto come sul telefono */
+  .list.compact[data-dash-events] > .ev { grid-template-columns: 40px 10px minmax(0, 1fr); gap: 0 8px; }
+  .list.compact[data-dash-events] > .ev > span:last-child:empty { display: none; }
+  [data-dash-events] .ev .where { grid-column: 3; max-width: none; text-align: left; font-size: 12px; }
+  /* Nome ed esito vanno a capo invece di finire nei puntini: con «Tessera 04ff… acc…» negato o concesso non si leggeva.
+     Senza un limite di righe: nei riquadri stretti del cruscotto tessera ed esito ne occupano tre */
+  .list.compact > .ev .what { white-space: normal; overflow-wrap: anywhere; }
   .ev .dot.info { background: var(--info); } .ev .dot.accent { background: var(--accent); }
   .list.compact > .day { padding: 5px 16px; background: var(--surface-2); border-top: 1px solid var(--border); font-size: 12px; font-weight: 700; color: var(--muted); }
   .list.compact > .day:first-child { border-top: none; }
@@ -711,6 +715,9 @@ function morph(target, html) {
   morphChildren(target, next.content);
 }
 function morphChildren(from, to) {
+  // Righe sparite tolte prima: spostare le successive davanti a loro farebbe perdere il fuoco
+  const nextKeys = new Set([...to.childNodes].map(nodeKey).filter(Boolean));
+  [...from.children].forEach((c) => { const k = nodeKey(c); if (k && !nextKeys.has(k)) c.remove(); });
   const keyed = new Map([...from.children].filter(nodeKey).map((c) => [nodeKey(c), c]));
   let cur = from.firstChild;
   [...to.childNodes].forEach((next) => {
@@ -1838,7 +1845,7 @@ function renderPersonList() {
       : !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
     const c = categoryOf(p.category_id);
     const first = (p.name.trim()[0] || "#").toLocaleUpperCase("it");
-    const head = sorted.length > 12 && first !== letter ? `<div class="day">${esc(first)}</div>` : "";
+    const head = sorted.length > 12 && first !== letter ? `<div class="day" data-key="h${esc(first)}">${esc(first)}</div>` : "";
     letter = first;
     return `${head}<div class="person-row" data-person="${p.id}" data-key="p${p.id}" role="button" tabindex="0">
       <span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span>
