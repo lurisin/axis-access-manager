@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.3
+
+Dal collaudo della 0.22.2 nel sito nuovo, sempre con il controller scollegato dal broker.
+
+- **Guasto ripartito di nuovo da gestire.** Dopo l'aggiornamento alla 0.22.2 «Eventi del Controller Non Arrivano» ripartiva con l'ora del riavvio dell'add-on (21:46), ma restava visto per la presa visione delle 18:20, data al guasto iniziato alle 11:33: in Da Gestire non compariva. Ora, per questo guasto e per «Collegamento MQTT Perso», la presa visione vale solo per il guasto che c'era quando è stata data. Se il guasto riparte, anche dopo un riavvio o un aggiornamento dell'add-on, torna da gestire. Dopo un riavvio l'app non sa da quando dura il problema, quindi lo conta da quel momento e lo ripropone.
+
 ## 0.22.2
 
 Dal collaudo del 29 ottobre nel sito nuovo, con il controller scollegato dal broker.

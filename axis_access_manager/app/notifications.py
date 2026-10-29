@@ -278,7 +278,7 @@ class NotificationService:
             elif not mqtt_connected:
                 add(
                     "mqtt",
-                    "mqtt",
+                    _episode_id("mqtt", mqtt_disconnected_since),
                     "crit",
                     "Collegamento MQTT Perso",
                     "Gli eventi del controller non arrivano all'app: registro e stato porta non si aggiornano.",
@@ -310,7 +310,7 @@ class NotificationService:
                 name = f"{primary['name']} risponde" if primary and len(controllers) > 1 else "Il controller risponde"
                 add(
                     "mqtt",
-                    "mqtt:controller",
+                    _episode_id("mqtt:controller", controller_offline_since),
                     "crit",
                     "Eventi del Controller Non Arrivano",
                     f"{name} ma non è collegato al broker MQTT: passaggi e allarmi non arrivano in diretta. "
@@ -661,6 +661,12 @@ def _reminder_weight(since: str, now: datetime) -> int:
     if start is None or now <= start:
         return 0
     return int((now - start) / REMIND_AFTER)
+
+
+def _episode_id(item_id: str, since: str) -> str:
+    """Id di un guasto con l'ora di inizio: se riparte è un'altra notifica, da gestire anche se la precedente era
+    stata presa visione. Al collaudo il guasto ripartito con l'aggiornamento dell'add-on restava visto dalle 18:20."""
+    return f"{item_id}@{since}" if since else item_id
 
 
 def _offset_weight(seconds: float | None) -> int:
