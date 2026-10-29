@@ -27,7 +27,7 @@ from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS, renamed_tokens
 from .ha import HomeAssistant
-from .ha_mqtt import HaBridge, parse_command, topic_base
+from .ha_mqtt import DOOR_PHYSICAL, HaBridge, parse_command, topic_base
 from .health import (
     HEALTH_INTERVAL,
     HealthMonitor,
@@ -50,6 +50,7 @@ from .service import (
     INPUT_TERMINALS,
     AccessService,
     ServiceError,
+    input_detail,
     mass_missing,
     plural,
 )
@@ -1489,11 +1490,19 @@ def create_app(
 
     @app.get("/api/programming", dependencies=[need("impianti")])
     async def programming(request: Request) -> dict:
-        data = await request.app.state.programming.read()
+        state = request.app.state
+        data = await state.programming.read()
         # Stato in tempo reale degli ingressi che mandano gli eventi Device/IO/Port
-        monitor = request.app.state.monitor
+        monitor = state.monitor
         for item in data.get("inputs", []):
             item["active"] = monitor.input_active(item["port"], item["role"] in REX_ROLES)
+            door = item.get("door") or ""
+            if item["role"] == "door_monitor" and door:
+                # Il contatto porta non manda Device/IO/Port: vale lo stato della porta (DoorPhysicalState)
+                item["door_open"] = DOOR_PHYSICAL.get(monitor.door_physical.get(door, ""))
+            if item["role"] in REX_ROLES and door:
+                # L'ingresso REX non manda Device/IO/Port: almeno l'ora dell'ultima pressione nel Registro
+                item["last_press"] = state.db.last_input_press(door, input_detail(item["io"], item["role"]))
         return data
 
     @app.put("/api/programming/doors/{token:path}", dependencies=[need("impianti"), before_change()])
@@ -2104,6 +2113,9 @@ def _current_notifications(state) -> list[dict]:
         controller_configured=bool(state.settings.a1210_host),
         controller_online=state.monitor.controller_online,
         sync=state.last_sync,
+        primary_id=(state.installation.primary or {}).get("id"),
+        controller_offline_since=state.monitor.controller_offline_since,
+        mqtt_disconnected_since=state.monitor.disconnected_since,
         door_names={d["door_token"]: d["name"] for d in state.doors},
         cameras=[
             {
@@ -2311,23 +2323,27 @@ async def _input_changed(state) -> None:
     await _read_door_states(state, force=True)
 
 
+def events_live(state) -> bool:
+    """Gli eventi del controller principale arrivano in diretta: app collegata al broker e controller collegato."""
+    monitor = state.monitor
+    return bool(state.mqtt) and monitor.connected and monitor.controller_online is not False
+
+
 async def _read_door_states(state, force: bool = False) -> None:
     """Contatto porta e modalità letti dal controller all'avvio, dopo ogni interruzione e dopo la programmazione di
-    un ingresso; senza broker, o con il broker non collegato, a ogni controllo. Via MQTT arrivano solo ai cambi:
-    senza un messaggio conservato dal broker, al banco Contatto Porta restava sconosciuto fino alla prima apertura."""
+    un ingresso; senza eventi in diretta, a ogni controllo. Via MQTT arrivano solo ai cambi: senza un messaggio
+    conservato dal broker, al banco Contatto Porta restava sconosciuto fino alla prima apertura."""
     monitor = state.monitor
     doors = [d["door_token"] for d in state.installation.doors()]
-    # Senza broker collegato nessun evento le tiene aggiornate (un'apertura dall'app restava «Aperta a Tempo» fino al
-    # ritorno del broker): si rileggono a ogni controllo, e una volta ancora quando torna
-    listening = state.mqtt and monitor.connected
-    key = (monitor.outages, tuple(doors)) if listening else None
+    # Senza eventi in diretta (broker non collegato all'app, o controller non collegato al broker) niente le tiene
+    # aggiornate: al collaudo un'apertura da Home Assistant è rimasta «Aperta a Tempo» per ore con il controller
+    # scollegato dal broker. Si rileggono a ogni controllo, e una volta ancora quando gli eventi tornano
+    key = (monitor.outages, tuple(doors)) if events_live(state) else None
     if not doors or (key is not None and key == state.door_states_key and not force):
         return
     primary = state.installation.primary
     health = state.health.states.get(primary["id"]) if primary else None
     if not health or not health.online or state.controller.paused:
-        return
-    if listening and monitor.controller_online is False:
         return
     changed = False
     for token in doors:

@@ -107,6 +107,8 @@ RECENT = timedelta(hours=24)
 # Come il riquadro Tessere in Scadenza del cruscotto e l'etichetta In Scadenza in Persone
 EXPIRING = timedelta(days=7)
 GROUP_WINDOW = timedelta(minutes=5)
+# Un guasto di collegamento preso visione torna da gestire ogni tanto, finché dura
+REMIND_AFTER = timedelta(hours=4)
 MAX_EVENTS = 500
 SEVERITY_ORDER = {"crit": 0, "warn": 1, "low": 2}
 SETTING_LEVELS = "notifications"
@@ -176,6 +178,9 @@ class NotificationService:
         controller_configured: bool,
         controller_online: bool | None,
         sync: dict,
+        primary_id: int | None = None,
+        controller_offline_since: str = "",
+        mqtt_disconnected_since: str = "",
         door_names: dict[str, str],
         cameras: list[dict] | None = None,
         controllers: list[dict] | None = None,
@@ -277,8 +282,9 @@ class NotificationService:
                     "crit",
                     "Collegamento MQTT Perso",
                     "Gli eventi del controller non arrivano all'app: registro e stato porta non si aggiornano.",
-                    now.isoformat(timespec="seconds"),
+                    mqtt_disconnected_since or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
+                    weight=_reminder_weight(mqtt_disconnected_since, now),
                 )
             controllers = controllers or []
             unreachable = [c for c in controllers if c.get("unreachable")]
@@ -293,19 +299,26 @@ class NotificationService:
                     c.get("checked_at") or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
-            # Solo con l'ultimo controllo riuscito: dopo il primo errore il controller potrebbe non rispondere
-            reachable = bool(controllers) and all(c.get("online") is True for c in controllers)
+            # Solo con l'ultimo controllo riuscito: dopo il primo errore il controller potrebbe non rispondere. Conta
+            # il controller principale, l'unico che manda gli eventi all'app: al collaudo con un altro controller
+            # non raggiungibile il guasto non compariva, e il principale è rimasto scollegato dal broker per ore
+            primary = next((c for c in controllers if c.get("id") == primary_id), None) if primary_id else None
+            checked = [primary] if primary else controllers
+            reachable = bool(checked) and all(c.get("online") is True for c in checked)
             if mqtt_connected and controller_online is False and reachable:
                 # Il controller risponde all'app ma non pubblica sul broker
+                name = f"{primary['name']} risponde" if primary and len(controllers) > 1 else "Il controller risponde"
                 add(
                     "mqtt",
                     "mqtt:controller",
                     "crit",
                     "Eventi del Controller Non Arrivano",
-                    "Il controller risponde ma non è collegato al broker MQTT: "
-                    "registro e stato porta non si aggiornano.",
-                    now.isoformat(timespec="seconds"),
+                    f"{name} ma non è collegato al broker MQTT: passaggi e allarmi non arrivano in diretta. "
+                    "Lo stato della porta si rilegge dal controller ogni 30 secondi, e i passaggi persi si "
+                    "recuperano quando il controller torna collegato.",
+                    controller_offline_since or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
+                    weight=_reminder_weight(controller_offline_since, now),
                 )
             elif not unreachable and (sync.get("ok") is False or (controller_online is False and not controllers)):
                 detail = sync.get("error") if sync.get("ok") is False else "il controller non è raggiungibile"
@@ -639,6 +652,15 @@ def _offset_text(seconds: float) -> str:
     if value >= 120:
         return f"{round(value / 60)} min {way}"
     return f"{round(value)} s {way}"
+
+
+def _reminder_weight(since: str, now: datetime) -> int:
+    """Peso di un guasto che dura: cresce ogni REMIND_AFTER, così dopo la presa visione torna da gestire. Al
+    collaudo un controller scollegato dal broker, preso visione alle 18:20, è rimasto nascosto per ore."""
+    start = _parse(since) if since else None
+    if start is None or now <= start:
+        return 0
+    return int((now - start) / REMIND_AFTER)
 
 
 def _offset_weight(seconds: float | None) -> int:

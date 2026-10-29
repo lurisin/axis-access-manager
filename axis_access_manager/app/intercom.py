@@ -197,7 +197,9 @@ class IntercomBridge:
 
     async def _forward(self, source: str, note: str = "") -> None:
         try:
-            await self._open_door(source, note)
+            if await self._open_door(source, note) is False:
+                _LOGGER.info("Apertura dal citofono non inoltrata: porta già aperta (%s)", source)
+                return
             _LOGGER.info("Apertura dal citofono inoltrata all'A1210 (%s)", source)
         except Exception as err:
             # Porta non bloccata, controller irraggiungibile...: resta traccia nel log

@@ -1166,6 +1166,17 @@ class Database:
         )
         return rows[0] if rows else None
 
+    def last_input_press(self, door: str, detail: str) -> str:
+        """Ora dell'ultima pressione registrata di un ingresso (aperture e rifiuti), dal suo dettaglio: ruolo e
+        morsetto, anche scritti in maiuscolo diverso dalle versioni precedenti. Vuoto se non ce ne sono."""
+        escaped = detail.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        rows = self._query(
+            "SELECT ts FROM events WHERE door = ? AND kind IN ('uscita', 'apertura_remota', 'negato') "
+            "AND (detail LIKE ? ESCAPE '\\' OR detail LIKE ? ESCAPE '\\') ORDER BY ts DESC LIMIT 1",
+            (door, escaped, escaped + " · %"),
+        )
+        return rows[0]["ts"] if rows else ""
+
     def set_event_detail(self, event_id: int, detail: str) -> None:
         self._execute("UPDATE events SET detail = ? WHERE id = ?", (detail, event_id))
 

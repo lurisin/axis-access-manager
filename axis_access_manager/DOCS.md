@@ -57,7 +57,7 @@ Il menu è una barra laterale sempre presente con le sole icone; il pulsante ☰
   - Gli eventi uguali (stessa persona o tessera, stessa porta, stesso motivo, a meno di 5 minuti l'uno dall'altro) diventano una sola notifica con il numero dei tentativi.
   - Ogni notifica ha la foto della porta, Dettagli e Presa Visione. Un nuovo tentativo la rimette da gestire.
   - Sotto c'è il **Registro Eventi** delle ultime 24 ore, con le schede per categoria e lo stato Da Gestire o Visto di ogni evento.
-  - Allarmi ed eventi restano per 24 ore. I guasti restano finché non si risolvono: dopo la Presa Visione escono da Da Gestire e compaiono più sotto, in **Guasti Ancora in Corso** con l'etichetta Visto, e nella barra in alto. Un guasto già visto torna da gestire se peggiora (altre tessere sparite, altri punti di accesso o pulsanti, orologio ancora più sbagliato); se si risolve e poi torna, si ripresenta.
+  - Allarmi ed eventi restano per 24 ore. I guasti restano finché non si risolvono: dopo la Presa Visione escono da Da Gestire e compaiono più sotto, in **Guasti Ancora in Corso** con l'etichetta Visto, e nella barra in alto. Un guasto già visto torna da gestire se peggiora (altre tessere sparite, altri punti di accesso o pulsanti, orologio ancora più sbagliato); se si risolve e poi torna, si ripresenta. **Collegamento MQTT Perso** ed **Eventi del Controller Non Arrivano** riportano l'ora da cui dura il problema e, se già visti, tornano da gestire ogni 4 ore finché il collegamento non torna.
   - Quali tipi sono attivi lo sceglie l'amministratore in Impostazioni → Notifiche: Allarmi delle Porte, Controller Non Raggiungibile, Porte Che Non Si Aprono (punti di accesso non gestiti, pulsanti senza permesso di apertura, ingressi da riscrivere, tipologie non aggiornate sul controller), Collegamento MQTT Perso (anche senza broker), Tessere Sconosciute, Accessi Negati, Tessere in Scadenza, Telecamere Non Disponibili, Controller Cambiato, Orologio Sbagliato (anche il fuso orario), Backup Non Riuscito, Tessere Non Presenti sul Controller e Database dell'Add-on ("Database Ripristinato dalla Copia", "Database Non Ripristinato", "Copia per il Backup Non Aggiornata").
   - Le notifiche seguono i permessi: gli allarmi delle porte li vede chi vede lo stato (eventi e foto solo con il registro), gli accessi negati chi vede il registro, tessere sconosciute, in scadenza e non presenti chi vede le persone, backup e database chi vede i backup.
 - **Regole**: fasce orarie e festività (vedi sotto).
@@ -93,7 +93,7 @@ Sotto i lettori, nello stesso schema, ci sono gli **ingressi fisici** del contro
 - i due AUX (Aux pin 3 e 4);
 - gli ingressi Manomissione e Allarme del connettore External.
 
-Il pallino accanto al nome mostra lo stato in tempo reale degli ingressi che lo mandano (AUX, Manomissione e Allarme).
+Il pallino accanto al nome mostra lo stato in tempo reale degli ingressi che lo mandano (AUX, Manomissione e Allarme). Per il Sensore Porta mostra se la porta è aperta o chiusa. L'ingresso REX non manda il suo stato: sotto il nome compare l'ora dell'ultima pressione registrata.
 
 **Tocca un ingresso e poi una porta** per collegarlo, oppure tocca due volte l'ingresso per aprirne la scheda:
 - **Nome**: è anche il nome dell'entità in Home Assistant, che mantiene il suo identificativo.
@@ -180,7 +180,7 @@ Con l'opzione **Entità in Home Assistant** attiva compare il dispositivo **Cont
 - per ogni porta, il sensore acceso/spento **Contatto Porta** (classe door: acceso aperta, spento chiusa) dal contatto magnetico della porta, letto dal controller all'avvio e poi aggiornato a ogni apertura; senza contatto porta resta sconosciuto;
 - per ogni porta, sensori acceso/spento **Allarme Porta** (porta forzata o aperta troppo a lungo), **Preallarme Porta** e **Manomissione Porta**, con negli attributi il tipo e l'ora dell'ultimo cambio;
 - controller: **Controller Collegato al Broker** (MQTT), **Coperchio Controller Aperto**, **Ultimo Avvio Controller** e gli ingressi **Ingresso AUX 1**, **Ingresso AUX 2**, **Ingresso Manomissione**, **Ingresso Allarme** (porte I/O 0-3), con il nome scelto nell'app. Un AUX collegato come Pulsante Uscita o Relè Citofono è acceso mentre si preme; dopo un riavvio del controller resta spento fino alla seconda pressione, perché fino ad allora il controller manda un valore che non è affidabile;
-- pulsanti **Apri Porta** e **Apri Porta a Lungo** per le porte che li hanno attivi in Impianti: aprono solo a serratura bloccata e solo con un'apertura a tempo. Ogni pulsante ha l'attributo `comando`, il comando che manda all'add-on;
+- pulsanti **Apri Porta** e **Apri Porta a Lungo** per le porte che li hanno attivi in Impianti: aprono solo a serratura bloccata e solo con un'apertura a tempo. Se la porta è già aperta a tempo il comando non si ripete e non risulta un rifiuto. Se gli eventi del controller non arrivano in diretta, prima di aprire l'app rilegge lo stato della porta dal controller. Ogni pulsante ha l'attributo `comando`, il comando che manda all'add-on;
 - evento **Eventi Accessi**, con tipi `accesso_concesso`, `accesso_negato`, `tessera_letta`, `tessera_sconosciuta`, `apertura_remota`, `uscita`, `allarme_porta`, `manomissione`, `citofono` e attributi `persona`, `tessera`, `dettaglio`, `origine`, `ora`.
 
 I nomi con "Porta" (Stato Porta, Apri Porta…) e gli identificativi delle versioni precedenti (`button.apri_porta`…) restano alla porta che li aveva, cioè alla stessa porta sul controller, anche se l'ordine delle porte cambia o il controller viene tolto e aggiunto di nuovo. Per ogni altra porta le stesse entità hanno il nome della porta al posto di "Porta": per la porta Cantina, ad esempio, Stato Cantina, Elettroserratura Cantina, Contatto Cantina, Allarme Cantina, Preallarme Cantina, Manomissione Cantina, Apri Cantina e Apri Cantina a Lungo. Il comando `apri` senza porta, usato dalle automazioni delle versioni precedenti, apre la porta con gli identificativi di sempre; se quella porta è stata tolta dall'app non apre niente.
@@ -231,7 +231,7 @@ Per il registro servono gli eventi **IdPoint** (tessera letta, anche sconosciuta
 
 I sensori di Home Assistant usano anche **Door** (stato, contatto porta, allarmi, manomissione) e **Device** (coperchio, inclinazione, avvio, porte I/O). Un sensore resta "sconosciuto" finché il controller non manda il primo evento: se gli ingressi I/O restano sconosciuti anche cambiandoli, aggiungi `Device/IO/Port` al filtro eventi MQTT dell'A1210.
 
-Senza broker MQTT gli eventi non arrivano e il registro non si aggiorna; lo stato delle porte si rilegge comunque dal controller ogni 30 secondi.
+Senza broker MQTT gli eventi non arrivano e il registro non si aggiorna; lo stato delle porte si rilegge comunque dal controller ogni 30 secondi. Lo stesso vale quando l'app è collegata al broker ma il controller no (**Controller Collegato al Broker** spento): compare il guasto **Eventi del Controller Non Arrivano**, con l'ora da cui il controller è scollegato.
 
 ## Videocitofono Hikvision
 

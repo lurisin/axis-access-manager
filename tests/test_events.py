@@ -68,6 +68,18 @@ def test_pushbutton_aux_is_read_the_other_way_round_and_not_before_a_change():
     assert monitor.input_active("0", pushbutton=True) is False
 
 
+def test_monitor_remembers_since_when_the_controller_is_off_the_broker():
+    monitor = EventMonitor(prefix=PREFIX, door_token="porta")
+    monitor.handle(f"{PREFIX}/stato", b"offline")
+    since = monitor.controller_offline_since
+    assert since and monitor.controller_online is False
+    # Un altro "offline" (per esempio il messaggio conservato dopo una riconnessione) non sposta l'inizio
+    monitor.handle(f"{PREFIX}/stato", b"offline")
+    assert monitor.controller_offline_since == since
+    monitor.handle(f"{PREFIX}/stato", b"online")
+    assert monitor.controller_offline_since == ""
+
+
 def test_parse_event_ignores_other_topics_and_bad_payloads():
     assert parse_event(PREFIX, "altro/eventi/Door", payload({})) is None
     assert parse_event(PREFIX, f"{PREFIX}/eventi/Door", b"non json") is None
