@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.23.0
+
+Lo stato del controller non dipende più da MQTT.
+
+- **Stato letto dal controller.** Modalità e contatto delle porte, allarmi, preallarmi, manomissioni, ingressi I/O, coperchio e ultimo avvio si leggono con le API del controller. Per intero quando il controller risponde: all'avvio dell'add-on, quando torna a rispondere, dopo un'interruzione degli eventi, dopo la programmazione di un ingresso. Poi a ogni giro: ogni 30 secondi con gli eventi MQTT in diretta, come rete di sicurezza, e ogni 10 secondi senza. Gli eventi aggiornano subito come prima, e una lettura iniziata prima di un evento non lo sovrascrive. Prima, senza MQTT, si rileggevano solo modalità e contatto: allarmi, ingressi e coperchio restavano sconosciuti fino al loro primo evento.
+- **Controller che non risponde: stato sconosciuto.** Dopo un minuto senza risposta, o con un controller diverso all'indirizzo, lo stato si svuota. Nell'app porte, contatti, allarmi, ingressi e coperchio diventano gialli e «Sconosciuto»; in Home Assistant le loro entità, e i pulsanti Apri, risultano non disponibili. Mai l'ultimo valore. Quando il controller torna a rispondere lo stato si rilegge per intero.
+- **Contatto porta non configurato.** Se sul controller la porta non usa il contatto porta, l'app scrive «Non Configurato» e in Home Assistant Contatto Porta risulta non disponibile, invece di sconosciuto (collaudo del 30 ottobre, con il contatto tolto apposta).
+- **Stato della Porta.** Il dettaglio di una porta ha il riquadro Stato della Porta: serratura, contatto porta, allarme, preallarme e manomissione.
+- **Controller Raggiungibile.** Nuova entità di Home Assistant: dice se il controller risponde all'app. Controller Collegato al Broker resta e riguarda solo MQTT.
+- **Pulsanti e relè sugli AUX giusti da subito.** Letti dal controller, sono a riposo anche subito dopo un suo riavvio: prima restavano spenti fino alla seconda pressione. La pressione, che dura meno di un secondo, si vede solo con gli eventi in diretta.
+- **Dal registro del controller.** Coperchio, manomissione, preallarme e ultimo avvio non hanno un'API di stato: valgono gli ultimi eventi del registro interno del controller, che all'avvio li registra tutti (prova in sola lettura del 30 ottobre). Con il WebSocket, previsto nella prossima versione, arriveranno in diretta anche senza MQTT.
+
 ## 0.22.3
 
 Dal collaudo della 0.22.2 nel sito nuovo, sempre con il controller scollegato dal broker.

@@ -243,13 +243,22 @@ class HaBridge:
             if row["io"] in ports and row["role"] in REX_ROLES
         }
 
+    def _availability(self, path: str) -> dict:
+        """Entità disponibile solo con l'add-on collegato e il controller che risponde (e, per il contatto, con il
+        contatto porta configurato): altrimenti in Home Assistant è "non disponibile", non l'ultimo valore."""
+        return {
+            "availability": [
+                {"topic": self.availability_topic},
+                {"topic": self.state_topic, "value_template": f"{{{{ value_json.disponibilita.{path} }}}}"},
+            ],
+            "availability_mode": "all",
+        }
+
     def _entities(self) -> list[tuple[str, str, dict]]:
         """(componente, id oggetto, configurazione) di ogni entità."""
-        common = {
-            "availability_topic": self.availability_topic,
-            "device": self._device(),
-        }
+        common = {"device": self._device()}
         state = {"state_topic": self.state_topic}
+        controller = self._availability("controller")
         names = self._input_names()
         entities = [
             (
@@ -316,9 +325,20 @@ class HaBridge:
             ),
             (
                 "binary_sensor",
+                "controller_raggiungibile",
+                {
+                    **state,
+                    "name": "Controller Raggiungibile",
+                    "device_class": "connectivity",
+                    "value_template": "{{ value_json.controller.raggiungibile }}",
+                },
+            ),
+            (
+                "binary_sensor",
                 "coperchio_controller",
                 {
                     **state,
+                    **controller,
                     "name": "Coperchio Controller Aperto",
                     "device_class": "tamper",
                     "value_template": "{{ value_json.controller.coperchio }}",
@@ -341,6 +361,7 @@ class HaBridge:
                     object_id,
                     {
                         **state,
+                        **controller,
                         "name": names.get(port) or name,
                         **({"device_class": device_class} if device_class else {}),
                         "icon": "mdi:electric-switch",
@@ -375,6 +396,7 @@ class HaBridge:
                     f"stato_porta{suffix}",
                     {
                         **state,
+                        **controller,
                         "name": f"Stato {label}",
                         "icon": "mdi:door",
                         "value_template": f"{{{{ value_json.porte['{door['door_token']}'] }}}}",
@@ -388,6 +410,7 @@ class HaBridge:
                     f"elettroserratura_porta{suffix}",
                     {
                         **state,
+                        **controller,
                         "name": f"Elettroserratura {label}",
                         "device_class": "lock",
                         "value_template": f"{{{{ value_json.serrature['{door['door_token']}'] }}}}",
@@ -401,6 +424,7 @@ class HaBridge:
                     f"contatto_porta{suffix}",
                     {
                         **state,
+                        **self._availability(f"contatti['{door['door_token']}']"),
                         "name": f"Contatto {label}",
                         "device_class": "door",
                         "value_template": f"{{{{ value_json.contatti['{door['door_token']}'] }}}}",
@@ -415,6 +439,7 @@ class HaBridge:
                         f"{key}_porta{suffix}",
                         {
                             **state,
+                            **controller,
                             "name": f"{name} {label}",
                             "device_class": device_class,
                             "icon": icon,
@@ -431,6 +456,7 @@ class HaBridge:
                     "button",
                     f"apri_porta{suffix}",
                     {
+                        **controller,
                         "name": f"Apri {label}",
                         "icon": "mdi:door-open",
                         "command_topic": self.command_topic,
@@ -442,6 +468,7 @@ class HaBridge:
                     "button",
                     f"apri_porta_a_lungo{suffix}",
                     {
+                        **controller,
                         "name": f"Apri {label} a Lungo",
                         "icon": "mdi:door-open",
                         "command_topic": self.command_topic,
@@ -452,6 +479,9 @@ class HaBridge:
             ]
         result = []
         for component, object_id, config in entities:
+            # Le altre entità dipendono solo dall'add-on: registro, conteggi e anagrafica sono dell'app
+            if "availability" not in config:
+                config = {"availability_topic": self.availability_topic, **config}
             config = {**common, **config, "unique_id": f"{NODE_ID}_{object_id}"}
             result.append((component, object_id, config))
         return result
@@ -551,7 +581,18 @@ class HaBridge:
     def state(self) -> dict:
         counts = self.db.count_events(local_day_start())
         mode = self.monitor.door_mode
+        reachable = self.monitor.reachable is True
         return {
+            "disponibilita": {
+                "controller": "online" if reachable else "offline",
+                # Senza contatto porta configurato il contatto non c'è: "non disponibile", non sconosciuto
+                "contatti": {
+                    d["door_token"]: "online"
+                    if reachable and self.monitor.door_contacts.get(d["door_token"]) is not False
+                    else "offline"
+                    for d in self.doors
+                },
+            },
             "porta": door_label(mode),
             "modalita": mode,
             "porte": {d["door_token"]: door_label(self.monitor.door_modes.get(d["door_token"])) for d in self.doors},
@@ -568,6 +609,7 @@ class HaBridge:
             "da_registrare": len(self.db.list_unknown_cards()),
             "persone": len(self.db.all_persons()),
             "controller": {
+                "raggiungibile": on_off(self.monitor.reachable),
                 "online": on_off(self.monitor.controller_online),
                 "coperchio": on_off(self.monitor.casing_open),
                 "avvio": self.monitor.system_ready or "None",

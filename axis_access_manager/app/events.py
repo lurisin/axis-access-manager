@@ -20,6 +20,30 @@ RECONNECT_DELAY = 10
 INVALID_TOPIC = "topic MQTT non valido"
 
 
+@dataclass
+class StateSnapshot:
+    """Stato del controller letto con le API, nello stesso formato degli eventi (vedi controller_state)."""
+
+    at: str
+    # Porte lette: per ognuna modalità (DoorMode) e contatto (DoorPhysicalState). Senza contatto porta il controller
+    # non manda DoorPhysicalState: per una porta letta, un contatto che manca è sconosciuto
+    doors: set[str] = field(default_factory=set)
+    modes: dict[str, str] = field(default_factory=dict)
+    physical: dict[str, str] = field(default_factory=dict)
+    # Allarme, preallarme e manomissione per porta (chiave → stato, come DOOR_CONDITIONS), con l'ora del cambio
+    # quando la si sa (dal registro del controller; se no vale l'ora della lettura)
+    conditions: dict[str, dict[str, str]] = field(default_factory=dict)
+    changed_at: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Ingressi I/O per numero di porta, attivi o no come in Device/IO/Port
+    io: dict[str, bool] = field(default_factory=dict)
+    # Coperchio aperto; None se non letto
+    casing: bool | None = None
+    # Porte con il contatto porta configurato; None se la configurazione non è stata letta
+    contacts: dict[str, bool] | None = None
+    # Ultimo avvio del controller (ISO, dal registro); vuoto se non trovato
+    system_ready: str = ""
+
+
 @dataclass(frozen=True)
 class Event:
     category: str  # primo livello del topic ONVIF: AccessControl, Door, IdPoint, Device...
@@ -158,6 +182,17 @@ class EventMonitor:
     io_changed: set[str] = field(default_factory=set)
     # Porta aperta o chiusa secondo il contatto porta (DoorPhysicalState: Open, Closed, Fault...), per token
     door_physical: dict[str, str] = field(default_factory=dict)
+    # Porte con il contatto porta configurato sul controller (DoorMonitor), per token: senza, il contatto non si sa
+    door_contacts: dict[str, bool] = field(default_factory=dict)
+    # Il controller risponde all'app (controllo periodico delle API): None finché non si sa. Quando non risponde lo
+    # stato qui sopra si svuota, e app e Home Assistant lo mostrano sconosciuto invece dell'ultimo valore
+    reachable: bool | None = None
+    # Ultima lettura completa o periodica dello stato con le API (ISO, UTC)
+    state_read_at: str = ""
+    # Cambi di stato arrivati dagli eventi: numero dell'ultimo cambio di ogni valore. Una lettura con le API
+    # iniziata prima non lo sovrascrive (vedi apply_snapshot)
+    seq: int = 0
+    changed: dict[tuple, int] = field(default_factory=dict)
     # Chiamata quando il controller va online o offline
     on_status: Callable[[], None] | None = None
     # Chiamata per ogni evento; retained=True per i messaggi conservati dal broker
@@ -235,8 +270,11 @@ class EventMonitor:
                 self.on_status()
             return
         event = parse_event(self.prefix, topic, payload)
-        if event is None:
-            return
+        if event is not None:
+            self.apply_event(event, retained)
+
+    def apply_event(self, event: Event, retained: bool = False) -> None:
+        """Evento del controller arrivato in diretta, da qualunque fonte: oggi MQTT, più avanti il WebSocket."""
         stats = self.categories.setdefault(event.category, CategoryStats())
         stats.count += 1
         stats.last_topic = event.topic
@@ -247,6 +285,7 @@ class EventMonitor:
             token = door_of_topic(event.topic)
             if token:
                 self.door_modes[token] = event.data["State"]
+                self._mark(("mode", token))
         self._track_state(event)
         if self.on_event:
             try:
@@ -257,7 +296,8 @@ class EventMonitor:
     def input_active(self, port: str | None, pushbutton: bool = False) -> bool | None:
         """Ingresso I/O attivo (None se non si sa). Gli AUX collegati come pulsante o relè (inout pu/gnd con un
         utente REX) il controller li manda al contrario degli ingressi classici: al banco 1 a riposo, 0 alla
-        pressione (il REX scatta 40-50 ms dopo il passaggio a 0), e 0 dall'avvio fino alla prima pressione."""
+        pressione (il REX scatta 40-50 ms dopo il passaggio a 0), e 0 dall'avvio fino alla prima pressione. La
+        lettura con le API (getPorts: closed con normalState open, cioè 1) è giusta da subito e vale come un cambio."""
         value = self.io_ports.get(port) if port is not None else None
         if value is None or not pushbutton:
             return value
@@ -273,8 +313,10 @@ class EventMonitor:
                 active = state == "TamperDetected" if key == "manomissione" else state != "Normal"
                 token = door_of_topic(topic) or self.door_token
                 self.door_conditions.setdefault(token, {})[key] = {"active": active, "state": state, "ts": ts}
+                self._mark(("condition", token, key))
         if topic.startswith("Device/Casing/Open") and "Open" in data:
             self.casing_open = str(data["Open"]) == "1"
+            self._mark(("casing",))
         elif topic.startswith("Device/Status/SystemReady"):
             self.system_ready = ts
         elif topic.startswith("Device/IO/Port") and IO_PORT_MARKER in topic and "state" in data:
@@ -283,8 +325,82 @@ class EventMonitor:
             if port in self.io_ports and self.io_ports[port] != active:
                 self.io_changed.add(port)
             self.io_ports[port] = active
+            self._mark(("io", port))
         elif topic.startswith("Door/State/DoorPhysicalState") and "State" in data:
-            self.door_physical[door_of_topic(topic) or self.door_token] = str(data["State"])
+            token = door_of_topic(topic) or self.door_token
+            self.door_physical[token] = str(data["State"])
+            self._mark(("physical", token))
+
+    def set_door_mode(self, token: str, mode: str) -> None:
+        """Modalità della porta saputa dall'app (letta prima di aprire, o appena aperta): vale come un evento."""
+        self.door_modes[token] = mode
+        self._mark(("mode", token))
+
+    def _mark(self, key: tuple) -> None:
+        self.seq += 1
+        self.changed[key] = self.seq
+
+    def forget_state(self) -> None:
+        """Controller che non risponde: porte, contatti, allarmi, ingressi e coperchio tornano sconosciuti."""
+        self.door_modes.clear()
+        self.door_physical.clear()
+        self.door_conditions.clear()
+        self.casing_open = None
+        self.io_ports.clear()
+        self.io_changed.clear()
+
+    def apply_snapshot(self, snapshot: StateSnapshot, since: int) -> bool:
+        """Stato letto con le API (vedi controller_state). Un valore arrivato da un evento dopo l'inizio della
+        lettura (numero since) è più recente e resta. True se qualcosa è cambiato."""
+        changed = False
+
+        def fresh(key: tuple) -> bool:
+            return self.changed.get(key, 0) <= since
+
+        def put(target: dict, key, value, mark: tuple) -> None:
+            nonlocal changed
+            if fresh(mark) and target.get(key) != value:
+                target[key] = value
+                changed = True
+
+        for token in snapshot.doors:
+            # Un valore che la lettura non dà è sconosciuto, non l'ultimo: contatto porta tolto (niente
+            # DoorPhysicalState), porta che il controller non conosce più
+            for target, value, mark in (
+                (self.door_modes, snapshot.modes.get(token), ("mode", token)),
+                (self.door_physical, snapshot.physical.get(token), ("physical", token)),
+            ):
+                if value:
+                    put(target, token, value, mark)
+                elif fresh(mark) and token in target:
+                    del target[token]
+                    changed = True
+        for token, conditions in snapshot.conditions.items():
+            for key, state in conditions.items():
+                current = self.door_conditions.get(token, {}).get(key)
+                if not fresh(("condition", token, key)) or (current and current["state"] == state):
+                    continue
+                active = state == "TamperDetected" if key == "manomissione" else state != "Normal"
+                ts = snapshot.changed_at.get((token, key), snapshot.at)
+                self.door_conditions.setdefault(token, {})[key] = {"active": active, "state": state, "ts": ts}
+                changed = True
+        for port, active in snapshot.io.items():
+            if fresh(("io", port)):
+                put(self.io_ports, port, active, ("io", port))
+                # Letto dal controller, il valore è affidabile anche per pulsanti e relè: dopo l'avvio del controller
+                # gli eventi li danno a 0 fino alla prima pressione (vedi input_active)
+                self.io_changed.add(port)
+        if snapshot.casing is not None and fresh(("casing",)) and self.casing_open != snapshot.casing:
+            self.casing_open = snapshot.casing
+            changed = True
+        if snapshot.system_ready > self.system_ready:
+            self.system_ready = snapshot.system_ready
+            changed = True
+        if snapshot.contacts is not None and self.door_contacts != snapshot.contacts:
+            self.door_contacts = dict(snapshot.contacts)
+            changed = True
+        self.state_read_at = snapshot.at
+        return changed
 
     async def run(self, settings: MqttSettings) -> None:
         """Resta collegato al broker, riconnettendosi in caso di errore."""

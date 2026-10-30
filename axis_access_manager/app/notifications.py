@@ -314,7 +314,7 @@ class NotificationService:
                     "crit",
                     "Eventi del Controller Non Arrivano",
                     f"{name} ma non è collegato al broker MQTT: passaggi e allarmi non arrivano in diretta. "
-                    "Lo stato della porta si rilegge dal controller ogni 30 secondi, e i passaggi persi si "
+                    "Lo stato si rilegge dal controller ogni 10 secondi, e i passaggi persi si "
                     "recuperano quando il controller torna collegato.",
                     controller_offline_since or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",

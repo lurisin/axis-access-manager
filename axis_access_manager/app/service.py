@@ -912,7 +912,7 @@ class AccessService:
                         mode = current
                     elif read:
                         if self.monitor and read != current:
-                            self.monitor.door_modes[door] = read
+                            self.monitor.set_door_mode(door, read)
                             self._changed()
                         mode = read
             if mode is None:
@@ -933,7 +933,7 @@ class AccessService:
             if self.monitor and self.monitor.door_modes.get(door) == before:
                 # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
                 # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
-                self.monitor.door_modes[door] = "Accessed"
+                self.monitor.set_door_mode(door, "Accessed")
         detail = ", ".join(x for x in ("tempo esteso" if extended else "", note) if x)
         self.log_event(ts=self.event_now(), kind="apertura_remota", detail=detail, source=user, door=door)
         self.db.add_audit(user, "porta aperta", detail)

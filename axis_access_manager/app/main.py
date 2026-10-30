@@ -23,6 +23,7 @@ from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
 from .backup_copy import ha_copy_error, ha_copy_path, update_copies
 from .config import Settings, load_settings, resolve_mqtt, supervisor_token
+from .controller_state import POLL_LIVE, POLL_WITHOUT_EVENTS, StateKeeper
 from .db import DB_PATH, Database, local_day_start
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS, renamed_tokens
@@ -551,10 +552,12 @@ def create_app(
         # Controller tornato raggiungibile (riavvio, reset): le tessere si rileggono subito, non al giro dei 15 minuti
         app.state.sync_wake = asyncio.Event()
         app.state.last_recovery = None
+        # Stato del controller da rileggere subito: tornato a rispondere, ingresso programmato
+        app.state.state_wake = asyncio.Event()
         await _start_runtime(app)
         maintenance = asyncio.create_task(_maintenance(app))
         health = asyncio.create_task(_health_loop(app))
-        tasks = [maintenance, health]
+        tasks = [maintenance, health, asyncio.create_task(_state_loop(app))]
         if scheduled_backups:
             tasks.append(asyncio.create_task(_backup_loop(app)))
         if not app.state.mqtt and supervisor_token():
@@ -683,7 +686,7 @@ def create_app(
         return {
             "version": __version__,
             "door_mode": state.monitor.door_mode if status else None,
-            "doors": doors if status else [{**d, "mode": None} for d in doors],
+            "doors": doors if status else [{**d, "mode": None, "state": None} for d in doors],
             "configured": bool(state.settings.a1210_host),
             "mqtt_connected": state.monitor.connected if status else None,
             "unknown_cards": len(state.db.list_unknown_cards()) if user.can("persone") else 0,
@@ -787,6 +790,8 @@ def create_app(
                 # Eventi del controller in arrivo: senza broker no
                 "mqtt_connected": bool(state.mqtt) and monitor.connected and monitor.controller_online is not False,
                 "casing_open": monitor.casing_open,
+                # Ultima lettura dello stato con le API del controller
+                "state_read_at": monitor.state_read_at or None,
                 "last_event": next(iter(db.list_events(limit=1)), {}).get("ts"),
                 "configured": bool(state.settings.a1210_host),
             },
@@ -1705,6 +1710,9 @@ MONITOR_STATE = (
     "controller_online",
     "door_modes",
     "door_physical",
+    "door_contacts",
+    "reachable",
+    "state_read_at",
     "door_conditions",
     "casing_open",
     "system_ready",
@@ -1743,8 +1751,9 @@ async def _start_runtime(app: FastAPI) -> None:
         # Da dove recuperare: l'ultimo evento del registro quando era completo. Una nuova configurazione tiene
         # quello di prima, che può essere di prima di un'interruzione non ancora recuperata
         state.recover_from = _recover_mark(state)
-    # Stato delle porte letto dal controller: interruzioni del broker e porte di quella lettura
-    state.door_states_key = None
+    # Stato del controller letto con le API: per intero alla prima lettura, anche con una nuova configurazione
+    state.state_keeper = StateKeeper(state.monitor, getattr(state, "state_wake", None))
+    state.state_keeper.request_full()
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
     if old_service is not None:
         # Le operazioni ancora in corso con la configurazione di prima e le nuove non si accavallano
@@ -2076,6 +2085,7 @@ def _doors_status(state) -> list[dict]:
             "site_id": places.get(d["id"], {}).get("site_id", 0),
             "area_id": places.get(d["id"], {}).get("area_id", 0),
             "mode": state.monitor.door_modes.get(d["door_token"]),
+            "state": _door_state(state.monitor, d["door_token"]),
             "camera": d["snapshot_camera"],
             "snapshot_on_granted": d["snapshot_on_granted"],
             "ha_buttons": d["ha_buttons"],
@@ -2083,6 +2093,26 @@ def _doors_status(state) -> list[dict]:
         }
         for d in state.doors
     ]
+
+
+def _door_state(monitor: EventMonitor, token: str) -> dict:
+    """Contatto ("open", "closed", "none" senza contatto porta, None se non si sa), allarme, preallarme e manomissione
+    (stato del controller, None se non si sa). known: il controller risponde e lo stato è stato letto."""
+    if monitor.reachable is not True:
+        return {"known": False, "contact": None, "alarm": None, "warning": None, "tamper": None}
+    if monitor.door_contacts.get(token) is False:
+        contact = "none"
+    else:
+        contact = {True: "open", False: "closed"}.get(DOOR_PHYSICAL.get(monitor.door_physical.get(token, "")))
+    conditions = monitor.door_conditions.get(token, {})
+    return {
+        "known": True,
+        "contact": contact,
+        **{
+            name: (conditions.get(key) or {}).get("state")
+            for name, key in (("alarm", "allarme"), ("warning", "preallarme"), ("tamper", "manomissione"))
+        },
+    }
 
 
 def _brief(item: dict) -> dict:
@@ -2242,6 +2272,7 @@ async def _health_loop(app: FastAPI) -> None:
             primary = state.installation.primary
             was = state.health.states.get(primary["id"]) if primary else None
             was_down = bool(was and was.failures)
+            responding = _responding(state)
             await state.health.check_all()
             now = state.health.states.get(primary["id"]) if primary else None
             if was_down and now is not None and now.online:
@@ -2250,8 +2281,10 @@ async def _health_loop(app: FastAPI) -> None:
             _apply_pause(state)
             if before != state.controller.paused:
                 state.service.notify_change()
+            if _responding(state) != responding:
+                # Non risponde più: stato sconosciuto subito. Torna a rispondere: lettura completa subito
+                state.state_wake.set()
             await _recover_if_needed(state)
-            await _read_door_states(state)
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo dei controller non riuscito")
         state.health_ready.set()
@@ -2320,7 +2353,7 @@ async def _input_changed(state) -> None:
     await state.bridge.publish_input_names()
     await state.health.recheck_managed(state.installation.primary)
     # Contatto porta appena collegato o tolto: Contatto Porta subito giusto in Home Assistant
-    await _read_door_states(state, force=True)
+    state.state_keeper.request_full()
 
 
 def events_live(state) -> bool:
@@ -2329,47 +2362,38 @@ def events_live(state) -> bool:
     return bool(state.mqtt) and monitor.connected and monitor.controller_online is not False
 
 
-async def _read_door_states(state, force: bool = False) -> None:
-    """Contatto porta e modalità letti dal controller all'avvio, dopo ogni interruzione e dopo la programmazione di
-    un ingresso; senza eventi in diretta, a ogni controllo. Via MQTT arrivano solo ai cambi: senza un messaggio
-    conservato dal broker, al banco Contatto Porta restava sconosciuto fino alla prima apertura."""
-    monitor = state.monitor
-    doors = [d["door_token"] for d in state.installation.doors()]
-    # Senza eventi in diretta (broker non collegato all'app, o controller non collegato al broker) niente le tiene
-    # aggiornate: al collaudo un'apertura da Home Assistant è rimasta «Aperta a Tempo» per ore con il controller
-    # scollegato dal broker. Si rileggono a ogni controllo, e una volta ancora quando gli eventi tornano
-    key = (monitor.outages, tuple(doors)) if events_live(state) else None
-    if not doors or (key is not None and key == state.door_states_key and not force):
-        return
+def _responding(state) -> bool | None:
+    """Il controller principale risponde all'app: True, False (non risponde da almeno un minuto, o all'indirizzo
+    risponde un controller diverso), None se non si sa ancora (primo controllo non fatto, un solo controllo fallito)."""
     primary = state.installation.primary
-    health = state.health.states.get(primary["id"]) if primary else None
-    if not health or not health.online or state.controller.paused:
-        return
-    changed = False
-    for token in doors:
-        mode_before = monitor.door_modes.get(token)
+    health = state.health.states.get(primary["id"]) if primary and primary.get("host") else None
+    if health is None:
+        return None
+    if health.unreachable or state.controller.paused:
+        return False
+    return True if health.online else None
+
+
+async def _state_loop(app: FastAPI) -> None:
+    """Stato del controller con le API (vedi controller_state): ogni POLL_LIVE secondi con gli eventi in diretta,
+    ogni POLL_WITHOUT_EVENTS senza; subito quando il controller smette o torna a rispondere."""
+    state = app.state
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(state.health_ready.wait(), HEALTH_INTERVAL)
+    while True:
+        state.state_wake.clear()
         try:
-            door = await state.controller.door_state(token)
-        except VapixError as err:
-            _LOGGER.warning("Stato della porta %s non leggibile: %s", token, err)
-            return
-        physical = str(door.get("DoorPhysicalState") or "")
-        if monitor.door_physical.get(token, "") != physical:
-            if physical:
-                monitor.door_physical[token] = physical
-            else:
-                monitor.door_physical.pop(token, None)
-            changed = True
-        # Dopo un'interruzione vale la modalità del controller: quella in memoria può essere l'"Aperta a Tempo" di
-        # un'apertura il cui "Bloccata" è andato perso, e le aperture da Home Assistant e dal citofono venivano
-        # rifiutate. Resta quella arrivata via MQTT, o messa da un'apertura, mentre si leggeva
-        mode = str(door.get("DoorMode") or "")
-        if mode and mode != mode_before and monitor.door_modes.get(token) == mode_before:
-            monitor.door_modes[token] = mode
-            changed = True
-    state.door_states_key = key
-    if changed:
-        state.service.notify_change()
+            async with _reading(state):
+                keeper = state.state_keeper
+                doors = [d["door_token"] for d in state.installation.doors()]
+                changed = await keeper.tick(state.controller, doors, _responding(state))
+            if changed:
+                state.service.notify_change()
+        except Exception:  # noqa: BLE001 - la lettura riparte al giro successivo
+            _LOGGER.exception("Lettura dello stato del controller non riuscita")
+        interval = POLL_LIVE if events_live(state) else POLL_WITHOUT_EVENTS
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(state.state_wake.wait(), interval)
 
 
 def _controllers_health(state) -> list[dict]:

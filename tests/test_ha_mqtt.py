@@ -145,7 +145,7 @@ async def test_controller_and_door_condition_entities(bridge):
     assert lock["value_template"] == "{{ value_json.serrature['porta'] }}"
 
     state = json.loads(client.published["axis_access_manager/stato"])
-    assert state["controller"] == {"online": "ON", "coperchio": "None", "avvio": "None"}
+    assert state["controller"] == {"raggiungibile": "None", "online": "ON", "coperchio": "None", "avvio": "None"}
     assert state["ingressi"] == {"0": "None", "1": "None", "2": "None", "3": "OFF"}
     # Un AUX collegato come pulsante arriva al contrario: 1 a riposo, 0 premuto (dopo il primo cambio)
     controller_id = bridge.db.save_controller(
@@ -173,6 +173,51 @@ async def test_controller_and_door_condition_entities(bridge):
     porta = state["condizioni"]["porta"]
     assert porta["allarme"] == {"stato": "ON", "tipo": "Porta Forzata", "ultimo_cambio": "t"}
     assert porta["preallarme"]["stato"] == "None"
+
+
+async def test_entities_unavailable_while_the_controller_does_not_answer(bridge):
+    client = FakeClient()
+    monitor = bridge.monitor
+    await bridge.on_connect(client)
+
+    def config(component, object_id):
+        return json.loads(client.published[f"homeassistant/{component}/axis_access_manager/{object_id}/config"])
+
+    # Stato del controller: con l'add-on collegato e il controller che risponde, non l'ultimo valore
+    for component, object_id in (
+        ("sensor", "stato_porta"),
+        ("binary_sensor", "elettroserratura_porta"),
+        ("binary_sensor", "allarme_porta"),
+        ("binary_sensor", "coperchio_controller"),
+        ("binary_sensor", "ingresso_aux_1"),
+        ("button", "apri_porta"),
+    ):
+        item = config(component, object_id)
+        assert "availability_topic" not in item and item["availability_mode"] == "all"
+        assert item["availability"] == [
+            {"topic": "axis_access_manager/disponibile"},
+            {"topic": "axis_access_manager/stato", "value_template": "{{ value_json.disponibilita.controller }}"},
+        ]
+    assert config("binary_sensor", "contatto_porta")["availability"][1]["value_template"] == (
+        "{{ value_json.disponibilita.contatti['porta'] }}"
+    )
+    # Registro, conteggi e anagrafica sono dell'app: solo l'add-on
+    for component, object_id in (("sensor", "accessi_oggi"), ("binary_sensor", "controller_raggiungibile")):
+        assert config(component, object_id)["availability_topic"] == "axis_access_manager/disponibile"
+    reachable = config("binary_sensor", "controller_raggiungibile")
+    assert reachable["name"] == "Controller Raggiungibile" and reachable["device_class"] == "connectivity"
+
+    state = bridge.state()
+    assert state["disponibilita"] == {"controller": "offline", "contatti": {"porta": "offline"}}
+    monitor.reachable = True
+    state = bridge.state()
+    assert state["disponibilita"] == {"controller": "online", "contatti": {"porta": "online"}}
+    assert state["controller"]["raggiungibile"] == "ON"
+    # Contatto porta non configurato sul controller: non disponibile, non sconosciuto
+    monitor.door_contacts["porta"] = False
+    assert bridge.state()["disponibilita"]["contatti"] == {"porta": "offline"}
+    monitor.reachable = False
+    assert bridge.state()["controller"]["raggiungibile"] == "OFF"
 
 
 async def test_input_entities_take_the_name_chosen_in_the_app(bridge, db):
