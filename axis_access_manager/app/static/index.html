@@ -747,9 +747,24 @@ const DOOR_MODES = {
 };
 const doorModeLabel = (mode) => mode ? DOOR_MODES[mode] || mode : "Sconosciuto";
 // Verde quando la porta è chiusa, come il sensore della serratura in Home Assistant (ha_mqtt.LOCKED_MODES);
-// In Blocco resta gialla: è chiusa, ma per un'emergenza che va notata
+// In Blocco resta gialla: è chiusa, ma per un'emergenza che va notata. Gialla anche quando non si sa (il controller
+// non risponde, o non è ancora stato letto): mai l'ultimo valore
 const LOCKED_MODES = ["Locked", "Blocked", "DoubleLocked"];
-const doorModeClass = (mode) => LOCKED_MODES.includes(mode) ? "ok" : mode ? "warn" : "";
+const doorModeClass = (mode) => LOCKED_MODES.includes(mode) ? "ok" : "warn";
+// Stato della porta oltre alla serratura (main._door_state): [classe, testo]
+const UNKNOWN_STATE = ["warn", "Sconosciuto"];
+const CONTACT_STATES = {open: ["warn", "Aperta"], closed: ["ok", "Chiusa"], none: ["", "Non Configurato"]};
+const DOOR_ALARMS = {Normal: ["ok", "Nessuno"], DoorForcedOpen: ["err", "Porta Forzata"], DoorOpenTooLong: ["err", "Aperta Troppo a Lungo"]};
+const DOOR_TAMPER = {NotInTamper: ["ok", "Nessuna"], TamperDetected: ["err", "Rilevata"]};
+const doorStateRows = (d) => {
+  const st = d.state || {};
+  const shown = (map, value) => !st.known || !value ? UNKNOWN_STATE : map[value] || ["warn", value];
+  const rows = [["Serratura", [doorModeClass(d.mode), doorModeLabel(d.mode)]], ["Contatto Porta", shown(CONTACT_STATES, st.contact)]];
+  // Allarme e preallarme vengono dal contatto porta: senza, non ci sono
+  if (st.contact !== "none") rows.push(["Allarme", shown(DOOR_ALARMS, st.alarm)], ["Preallarme", shown(DOOR_ALARMS, st.warning)]);
+  rows.push(["Manomissione", shown(DOOR_TAMPER, st.tamper)]);
+  return rows;
+};
 // Porte dell'impianto dall'intestazione: nomi e luoghi per registro e cruscotto
 const allDoors = () => store.summary.doors || [];
 const multiDoor = () => allDoors().length > 1;
@@ -1391,7 +1406,7 @@ const WIDGET_BODY = {
     return `<h2>Stato Impianto${can("impianti") ? '<span class="spacer"></span><a class="small-text" href="#impianti/stato">Dettagli</a>' : ""}</h2>
       ${row(s.controller_online === false ? "err" : s.controller_online ? "ok" : "", "Controller", s.controller_online === false ? "Non Raggiungibile" : s.controller_online ? "Raggiungibile" : "Stato Sconosciuto")}
       ${s.mqtt_connected === null ? "" : row(s.mqtt_connected ? "ok" : "err", "Eventi MQTT", s.mqtt_connected ? "In Arrivo" : "Non Collegati", s.mqtt_connected ? "" : why)}
-      ${s.casing_open === null ? "" : row(s.casing_open ? "err" : "ok", "Coperchio del Controller", s.casing_open ? "Aperto" : "Chiuso")}
+      ${s.casing_open === null ? row("warn", "Coperchio del Controller", "Sconosciuto") : row(s.casing_open ? "err" : "ok", "Coperchio del Controller", s.casing_open ? "Aperto" : "Chiuso")}
       ${row("", "Ultimo Evento", s.last_event ? esc(relTime(s.last_event)) : "nessuno")}`;
   },
   backup({d: {backup: b}}) {
@@ -1727,6 +1742,9 @@ async function viewDoorDetail(el, id, doors) {
       ${kpi("Allarmi Oggi", d.today.alarms, "forzature e aperture troppo lunghe", d.today.alarms ? "var(--err)" : "")}
       ${kpi("Ultimo Passaggio", d.last ? esc(lastLabel(d.last)) : "—", d.last ? esc(relTime(d.last.ts)) : can("registro") ? "nessuno" : "serve il permesso di vedere il registro")}
     </div>
+    <div class="card" style="margin-bottom:16px"><h2>Stato della Porta</h2>
+      ${doorStateRows(d).map(([label, [cls, value]]) => `<div class="dw-sys"><span class="dot ${cls}"></span><span class="grow" style="flex:1;min-width:0">${esc(label)}</span><b>${esc(value)}</b></div>`).join("")}
+      ${d.state?.known ? "" : '<p class="hint" style="margin-bottom:0">Il controller non risponde, o non è ancora stato letto: lo stato compare appena risponde.</p>'}</div>
     <div class="grid two">
       <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") && d.controller.id ? `<a class="small-text" href="#impianti/c${d.controller.id}">Configura</a>` : ""}</h2>
         <div class="list" style="margin-top:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div>
@@ -3263,9 +3281,10 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   const linkedDoor = (i) => DOOR_INPUT_ROLES.includes(i.role) && i.door ? i.door : "";
   const inputMeta = (i) => [p.input_roles?.[i.role] || "Non Usato", linkedDoor(i) ? doorName({token: i.door}) : "", i.pins.join(", ")].filter(Boolean).join(" · ");
   // Il contatto porta non manda lo stato dell'ingresso: vale quello della porta, aperta o chiusa
-  const inputDot = (i) => i.role === "door_monitor" ? (i.door_open === true ? '<span class="dot warn" title="Porta Aperta"></span>' : i.door_open === false ? '<span class="dot ok" title="Porta Chiusa"></span>' : '<span class="muted" title="Stato della porta non ancora letto dal controller">—</span>')
+  const unknownDot = '<span class="dot warn" title="Stato sconosciuto: il controller non risponde, o non è ancora stato letto"></span>';
+  const inputDot = (i) => i.role === "door_monitor" ? (i.door_open === true ? '<span class="dot warn" title="Porta Aperta"></span>' : i.door_open === false ? '<span class="dot ok" title="Porta Chiusa"></span>' : unknownDot)
     : i.port == null ? '<span class="muted" title="Stato non disponibile: il controller non invia eventi per questo ingresso">—</span>'
-    : i.active === true ? '<span class="dot warn" title="Attivo"></span>' : i.active === false ? '<span class="dot ok" title="A riposo"></span>' : "";
+    : i.active === true ? '<span class="dot warn" title="Attivo"></span>' : i.active === false ? '<span class="dot ok" title="A riposo"></span>' : unknownDot;
   const readerName = (token) => { const r = p.readers.find((x) => x.token === token); return r?.name || token; };
   const directionsOf = (door) => [...new Set(p.access_points.filter((a) => a.door === door).map((a) => a.direction || ""))];
   // Attivo o disattivato vale per il punto di accesso (porta e direzione) con tutti i suoi lettori. Si tiene lo stato

@@ -17,7 +17,14 @@ class FakeController:
         self.credentials: dict[str, dict] = {}
         self.calls: list[tuple] = []
         self.door = "Locked"
+        # Come al collaudo: senza contatto porta (None) GetDoorState non dà né DoorPhysicalState né Alarm
         self.door_physical = "Closed"
+        self.door_alarm = "Normal"
+        # getPorts: AUX 1 e 2, ingressi di manomissione e allarme a riposo
+        self.ports = [
+            {"port": str(n), "name": name, "direction": "input", "state": "open", "normalState": "open"}
+            for n, name in enumerate(("AUX IO1", "AUX IO2", "Tamper", "Alarm"))
+        ]
         self.fail_set_credential = False
         self.fail_io_assignment = False
         self.idpoint_configs: dict[str, dict] = {}
@@ -374,7 +381,17 @@ class FakeController:
         return self.door
 
     async def door_state(self, door_token):
-        return {"DoorMode": self.door, "DoorPhysicalState": self.door_physical}
+        state = {"DoorMode": self.door}
+        if self.door_physical:
+            state.update(DoorPhysicalState=self.door_physical, Alarm=self.door_alarm)
+        return state
+
+    async def io_ports(self):
+        return copy.deepcopy(self.ports)
+
+    async def latest_events(self, limit, before=None):
+        rows = sorted(self.log_events, key=lambda e: e["rowid"], reverse=True)
+        return [e for e in rows if before is None or e["rowid"] < before][:limit]
 
     async def access_door(self, door_token, extended=False):
         self.calls.append(("access_door", door_token, extended))

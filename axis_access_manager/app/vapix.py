@@ -249,6 +249,19 @@ class A1210Client:
         data = await self._post("/vapix/eventlogger", {"axlog:FetchEvents": request})
         return data.get("Event") or [], bool(data.get("More"))
 
+    async def latest_events(self, limit: int, before: int | None = None) -> list[dict]:
+        """Ultimi eventi del registro interno, dal più recente; con before quelli prima di quella riga (rowid): al
+        collaudo RowID con Descending va indietro e non comprende la riga indicata."""
+        request: dict = {"Limit": limit, "Descending": True}
+        if before is not None:
+            request["RowID"] = before
+        data = await self._post("/vapix/eventlogger", {"axlog:FetchEvents": request})
+        return data.get("Event") or []
+
+    async def io_ports(self) -> list[dict]:
+        """Porte I/O con lo stato attuale: port, name, direction, state e normalState (open o closed)."""
+        return (await self._cgi("/axis-cgi/io/portmanagement.cgi", "getPorts")).get("items") or []
+
     async def door_info_list(self) -> list[dict]:
         data = await self._post("/vapix/doorcontrol", {"tdc:GetDoorInfoList": {}})
         return data.get("DoorInfo", [])
@@ -457,8 +470,8 @@ class A1210Client:
         await self._post("/vapix/pacs", {"pacsaxis:SetAccessPoint": {"AccessPoint": [access_point]}})
 
     async def door_state(self, door_token: str) -> dict:
-        """Stato attuale della porta: modalità (DoorMode: Locked, Accessed...), contatto porta (DoorPhysicalState:
-        Open, Closed, Unknown senza contatto), allarmi."""
+        """Stato attuale della porta: modalità (DoorMode: Locked, Accessed...) e, solo con il contatto porta
+        configurato, contatto (DoorPhysicalState: Open, Closed) e allarme (Alarm: Normal, DoorForcedOpen...)."""
         data = await self._post("/vapix/doorcontrol", {"tdc:GetDoorState": {"Token": door_token}})
         return data.get("DoorState") or {}
 
