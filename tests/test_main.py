@@ -411,6 +411,36 @@ def test_changed_controller_through_api(client, controller):
     assert response.status_code == 200
 
 
+def test_open_casing_through_api(client):
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    state.notifications.set_levels({"mqtt": "off"}, "test")
+    [health] = client.get("/api/status").json()["controllers"]
+    assert health["primary"] is True
+    # Nel controller finto il registro non dice niente del coperchio: sconosciuto, nessun guasto
+    state.monitor.casing_open, state.monitor.casing_since = None, ""
+    assert client.get("/api/summary").json()["faults"] == []
+    state.monitor.casing_open, state.monitor.casing_since = True, "2026-10-29T21:55:17+00:00"
+    [health] = client.get("/api/status").json()["controllers"]
+    assert (health["casing_open"], health["casing_since"]) == (True, "2026-10-29T21:55:17+00:00")
+    [ctrl] = client.get("/api/installation").json()["controllers"]
+    assert ctrl["health"]["casing_open"] is True
+    # Guasto nella barra in alto: dopo la presa visione resta finché il coperchio non si chiude
+    [fault] = client.get("/api/summary").json()["faults"]
+    assert fault["title"] == "Coperchio del Controller Aperto" and fault["type"] == "casing"
+    client.post("/api/notifications/seen", json={"ids": [fault["id"]]})
+    assert len(client.get("/api/summary").json()["faults"]) == 1
+    # Una porta modificata ricrea il monitor: l'ora dell'apertura resta, e con lei la presa visione
+    state.notifications.settled_at = 0
+    door = state.db.list_doors()[0]
+    client.put(f"/api/doors/{door['id']}", json={**door, "snapshot_camera": "camera.x"})
+    assert client.app.state.monitor.casing_since == "2026-10-29T21:55:17+00:00"
+    [after] = client.get("/api/summary").json()["faults"]
+    assert after["id"] == fault["id"] and after["seen"] is True
+    client.app.state.monitor.casing_open = False
+    assert client.get("/api/summary").json()["faults"] == []
+
+
 def test_status_reports_database(client):
     data = client.get("/api/status").json()
     assert data["database"]["schema"] >= 2

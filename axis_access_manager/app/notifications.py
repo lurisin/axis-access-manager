@@ -29,6 +29,12 @@ TYPES = {
         "Il controller non è raggiungibile o non risponde all'app.",
         "urgent",
     ),
+    "casing": (
+        "Coperchio del Controller Aperto",
+        "Il coperchio del controller è aperto: chi lo apre arriva ai fili della serratura. Resta finché non si chiude; "
+        "l'apertura è anche negli Allarmi delle Porte per 24 ore, con la foto se il controller ha la sua telecamera.",
+        "urgent",
+    ),
     "programming": (
         "Porte Che Non Si Aprono",
         "Punti di accesso che il controller non gestisce, pulsanti senza il permesso di apertura o ingressi rimasti "
@@ -81,6 +87,7 @@ TYPES = {
 # Guasti dell'impianto: restano finché non si risolvono, anche dopo la presa visione
 FAULT_TYPES = (
     "controller",
+    "casing",
     "programming",
     "mqtt",
     "camera",
@@ -333,6 +340,21 @@ class NotificationService:
                 )
             ha_clock = False
             for c in controllers:
+                if c.get("casing_open") and not c.get("unreachable"):
+                    # Stato, non evento: resta finché il coperchio non si chiude, anche dopo le 24 ore degli allarmi
+                    since = c.get("casing_since") or ""
+                    add(
+                        "casing",
+                        _episode_id(f"casing:{c['id']}", since),
+                        "crit",
+                        "Coperchio del Controller Aperto",
+                        "Chi apre il coperchio arriva ai fili della serratura: se non ci sta lavorando nessuno, "
+                        "controlla il controller.",
+                        since or now.isoformat(timespec="seconds"),
+                        door=c["name"],
+                        link=f"#impianti/c{c['id']}/stato",
+                        weight=_reminder_weight(since, now),
+                    )
                 if c.get("identity_change"):
                     add(
                         "controller_changed",

@@ -36,8 +36,11 @@ class StateSnapshot:
     changed_at: dict[tuple[str, str], str] = field(default_factory=dict)
     # Ingressi I/O per numero di porta, attivi o no come in Device/IO/Port
     io: dict[str, bool] = field(default_factory=dict)
-    # Coperchio aperto; None se non letto
+    # Coperchio aperto; None se non letto. casing_at: ora dell'ultimo cambio (dal registro), vuota se non si sa;
+    # casing_before: ora del cambio precedente, al valore opposto (chiuso prima di riaprirlo), vuota se non c'è
     casing: bool | None = None
+    casing_at: str = ""
+    casing_before: str = ""
     # Porte con il contatto porta configurato; None se la configurazione non è stata letta
     contacts: dict[str, bool] | None = None
     # Ultimo avvio del controller (ISO, dal registro); vuoto se non trovato
@@ -132,6 +135,14 @@ def event_from_log(entry: dict) -> Event | None:
     return Event(category=levels[0], topic="/".join(levels) + "/", timestamp=timestamp, data=data)
 
 
+def _later(value: str, than: str) -> bool:
+    """Ora ISO successiva a un'altra; False se una delle due manca o non si legge."""
+    try:
+        return bool(value and than) and datetime.fromisoformat(value) > datetime.fromisoformat(than)
+    except ValueError:
+        return False
+
+
 def door_of_topic(topic: str) -> str:
     """Token della porta nei topic come Door/State/DoorMode/.../DoorToken/<token>."""
     marker = "/DoorToken/"
@@ -176,6 +187,8 @@ class EventMonitor:
     door_conditions: dict[str, dict[str, dict]] = field(default_factory=dict)
     # Diagnostica del controller: coperchio aperto, ultimo avvio, ingressi I/O (numero → attivo)
     casing_open: bool | None = None
+    # Da quando il coperchio è aperto o chiuso (ISO, ora del controller); vuoto se non si sa
+    casing_since: str = ""
     system_ready: str = ""
     io_ports: dict[str, bool] = field(default_factory=dict)
     # Ingressi I/O cambiati dopo il primo valore ricevuto (dall'avvio dell'app o del controller)
@@ -315,7 +328,11 @@ class EventMonitor:
                 self.door_conditions.setdefault(token, {})[key] = {"active": active, "state": state, "ts": ts}
                 self._mark(("condition", token, key))
         if topic.startswith("Device/Casing/Open") and "Open" in data:
-            self.casing_open = str(data["Open"]) == "1"
+            casing = str(data["Open"]) == "1"
+            # Un messaggio uguale (conservato dal broker, ripetuto) non sposta l'ora dell'apertura
+            if casing != self.casing_open or not self.casing_since:
+                self.casing_since = ts
+            self.casing_open = casing
             self._mark(("casing",))
         elif topic.startswith("Device/Status/SystemReady"):
             self.system_ready = ts
@@ -346,6 +363,7 @@ class EventMonitor:
         self.door_physical.clear()
         self.door_conditions.clear()
         self.casing_open = None
+        self.casing_since = ""
         self.io_ports.clear()
         self.io_changed.clear()
 
@@ -390,9 +408,14 @@ class EventMonitor:
                 # Letto dal controller, il valore è affidabile anche per pulsanti e relè: dopo l'avvio del controller
                 # gli eventi li danno a 0 fino alla prima pressione (vedi input_active)
                 self.io_changed.add(port)
-        if snapshot.casing is not None and fresh(("casing",)) and self.casing_open != snapshot.casing:
+        if snapshot.casing is not None and fresh(("casing",)):
+            # Chiuso e riaperto tra due letture, senza eventi in diretta: il valore è lo stesso ma è un'altra apertura.
+            # Il controller che si riavvia registra di nuovo il coperchio con lo stesso valore: quello non conta
+            again = _later(snapshot.casing_before, self.casing_since)
+            if self.casing_open != snapshot.casing or again or (snapshot.casing_at and not self.casing_since):
+                self.casing_since = snapshot.casing_at or snapshot.at
+                changed = True
             self.casing_open = snapshot.casing
-            changed = True
         if snapshot.system_ready > self.system_ready:
             self.system_ready = snapshot.system_ready
             changed = True

@@ -2700,7 +2700,7 @@ async function viewHolidays(body) {
 }
 
 // ---------- Notifiche ----------
-const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", programming: "lock", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", clock: "clock", missing_cards: "card", backup: "history", database: "history"};
+const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", programming: "lock", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", casing: "shield", clock: "clock", missing_cards: "card", backup: "history", database: "history"};
 const SEVERITY = {crit: "Critica", warn: "Media", low: "Bassa"};
 // Schede del registro delle notifiche: eventi che possono diventare una notifica
 const NOTIF_TABS = {tutte: ["Tutte", "negato,allarme,manomissione"], negati: ["Accessi Negati", "negato"], allarmi: ["Allarmi e Manomissioni", "allarme,manomissione"]};
@@ -2980,6 +2980,7 @@ async function viewControllers(body, data) {
         <span class="ctl-name">${icon("chip")}${esc(c.name)}${(() => { const [cls, text] = healthState(c.health); return `<span class="dot ${cls}" data-ctl-state="${c.id}" title="${esc(text)}" role="img" aria-label="${esc(text)}"></span>`; })()}</span>
         <span class="muted small-text" data-ctl-model="${c.id}">${esc([c.model, c.description].filter(Boolean).join(" · ") || "Axis")}</span>
         ${c.health?.identity_change ? '<span class="pill err" style="align-self:flex-start">Controller Cambiato</span>' : c.health?.clock_problem ? '<span class="pill warn" style="align-self:flex-start">Orologio Sbagliato</span>' : ""}
+        ${c.health?.casing_open === true ? casingPill(c.health, 'style="align-self:flex-start"') : ""}
         <span class="ctl-stats"><span><b>${c.doors.length}</b> ${c.doors.length === 1 ? "porta" : "porte"}</span><span data-ctl-readers="${c.id}"><b>…</b> lettori</span><span data-ctl-inputs="${c.id}" hidden></span></span>
       </a>
       <a class="ctl-gear btn small ghost icon-only" href="#impianti/c${c.id}/connessione" title="Impostazioni di Connessione" aria-label="Impostazioni di connessione di ${esc(c.name)}">${icon("cog")}</a>
@@ -3007,6 +3008,14 @@ async function viewControllers(body, data) {
     inputs.innerHTML = count(s.controller.inputs, "ingresso", "ingressi");
     if (s.controller.ok) $(`[data-ctl-model="${c.id}"]`).textContent = [`${s.controller.model}`, c.description].filter(Boolean).join(" · ");
   }).catch(() => {});
+}
+
+// Coperchio aperto: in rosso nell'intestazione del controller (su tutte le schede, Schema compresa) e nella sua scheda
+// in Impianti. Chiuso o sconosciuto non si mostra: lo dice la scheda Stato. Vuoto e nascosto, resta come segnaposto
+function casingPill(h, attrs = "") {
+  const open = h?.casing_open === true;
+  const since = open && h.casing_since ? `Aperto dal ${fmtFull(h.casing_since)}` : "Il coperchio del controller è aperto";
+  return `<span class="pill err" ${attrs}${open ? ` title="${esc(since)}"` : " hidden"}>${open ? '<span class="dot"></span>Coperchio Aperto' : ""}</span>`;
 }
 
 // Spia del controller, la stessa nella scheda di Impianti, nell'intestazione e nella scheda Stato del controller:
@@ -3129,7 +3138,7 @@ function controllerHeader(ctrl, tab) {
   const place = placeOf(ctrl.place);
   return `<div class="ctl-head">
       <div class="small-text muted"><a href="#impianti">Impianti</a>${place ? ` › ${esc(place)}` : ""}</div>
-      <div class="row" style="align-items:center"><h2 style="margin:0;font-size:20px">${esc(ctrl.name)}</h2><span class="pill" id="ctl-state"><span class="spinner" style="width:12px;height:12px"></span></span>
+      <div class="row" style="align-items:center"><h2 style="margin:0;font-size:20px">${esc(ctrl.name)}</h2><span class="pill" id="ctl-state"><span class="spinner" style="width:12px;height:12px"></span></span>${casingPill(ctrl.health, 'id="ctl-casing"')}
         <span class="spacer" style="flex:1"></span><a class="btn small" href="#impianti/c${ctrl.id}/connessione">${icon("cog")}Connessione</a></div>
       ${ctrl.description ? `<div class="muted small-text">${esc(ctrl.description)}</div>` : ""}
     </div>
@@ -3142,11 +3151,14 @@ function paintControllerState(ctrl) {
   api("api/status").then((s) => {
     const pill = $("#ctl-state");
     if (!pill) return;
-    const [cls, text, label] = healthState(s.controllers.find((h) => !ctrl || h.id === ctrl.id), s);
+    const h = s.controllers.find((x) => !ctrl || x.id === ctrl.id);
+    const [cls, text, label] = healthState(h, s);
     const live = cls !== "err" && s.controller?.ok;
     pill.className = `pill ${cls}`;
     pill.innerHTML = `<span class="dot"></span>${esc(label)}${live && cls === "ok" ? ` · ${esc(s.controller.model)}` : ""}`;
     pill.title = live ? `${text} · Firmware ${s.controller.firmware}` : text;
+    const casing = $("#ctl-casing");
+    if (casing) casing.outerHTML = casingPill(h, 'id="ctl-casing"');
   }).catch(() => {});
 }
 
@@ -3630,6 +3642,14 @@ function controllerReaders(body, p, errors, doorName) {
 }
 
 // Stato del controller, delle sue porte, degli eventi MQTT e dei videocitofoni
+// Coperchio nella scheda Stato: aperto (da quando), chiuso, o sconosciuto se il registro del controller non lo dice
+function casingText(h) {
+  if (h?.casing_open === true) return `${statusDot("err")} Aperto${h.casing_since ? ` <span class="muted">· dal ${esc(fmtFull(h.casing_since))}</span>` : ""}`;
+  if (h?.casing_open === false) return `${statusDot("ok")} Chiuso${h.casing_since ? ` <span class="muted">· dal ${esc(fmtFull(h.casing_since))}</span>` : ""}`;
+  // Stato letto ma senza il coperchio: il registro del controller non lo dice (si sa al prossimo cambio)
+  return `${statusDot("warn")} Sconosciuto <span class="muted">· ${h?.state_read_at ? "non risulta dal registro del controller" : "non ancora letto dal controller"}</span>`;
+}
+
 async function controllerStatus(body, ctrl) {
   let s;
   try { s = await api("api/status"); } catch (err) { body.innerHTML = errorBox("Stato Non Leggibile", err); return; }
@@ -3651,7 +3671,8 @@ async function controllerStatus(body, ctrl) {
   const ntpSource = (source) => ({static: "impostato a mano", dhcp: "da DHCP"})[source.toLowerCase()] || source;
   const ntpText = ntp.servers?.length || ntp.source ? `${ntp.active === false ? statusDot("warn") + " Non Sincronizzato · " : ntp.active ? statusDot("ok") + " " : ""}${esc((ntp.servers || []).join(", ") || "nessun server")}${ntp.source ? ` <span class="muted">(${esc(ntpSource(ntp.source))})</span>` : ""}${ntp.active && ntp.offset !== null && ntp.offset !== undefined ? ` <span class="muted">· scarto ${String(ntp.offset).replace(".", ",")} s</span>` : ""}` : "—";
   const ctrlInfo = c.ok ? props([
-    ["Stato", `${statusDot("ok")} Raggiungibile${h?.latency_ms != null ? ` <span class="muted">· risponde in ${h.latency_ms} ms, controllato ${esc(relTime(h.checked_at))}</span>` : ""}`], ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
+    ["Stato", `${statusDot("ok")} Raggiungibile${h?.latency_ms != null ? ` <span class="muted">· risponde in ${h.latency_ms} ms, controllato ${esc(relTime(h.checked_at))}</span>` : ""}`],
+    ...(h?.primary ? [["Coperchio", casingText(h)]] : []), ["Modello", esc(c.model)], ["Firmware", esc(c.firmware)], ["Numero di Serie", `<code>${esc(c.serial)}</code>`],
     ["Certificato", h?.cert_fingerprint ? `<code class="small-text" style="overflow-wrap:anywhere">${esc(h.cert_fingerprint)}</code>` : "—"],
     ["Orologio", clock], ["Server NTP", ntpText],
     ...(Math.abs(haVsDevice) >= 5 ? [["Ora di Home Assistant", `${statusDot("warn")} ${offsetText(haVsDevice)} rispetto a questo dispositivo`]] : []),

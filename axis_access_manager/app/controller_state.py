@@ -54,8 +54,14 @@ def _from_log(snapshot: StateSnapshot, entries: list[dict], doors: list[str]) ->
         topic, data = event.topic.rstrip("/"), event.data
         ts = event.timestamp.isoformat(timespec="seconds")
         if topic == CASING_TOPIC and "Open" in data:
+            casing = str(data["Open"]) == "1"
             if snapshot.casing is None:
-                snapshot.casing = str(data["Open"]) == "1"
+                snapshot.casing = casing
+                # Da quando: per il guasto Coperchio del Controller Aperto e la scheda Stato del controller
+                snapshot.casing_at = ts
+            elif casing != snapshot.casing and not snapshot.casing_before:
+                # Il cambio precedente: dice se tra due letture il coperchio è stato chiuso e riaperto
+                snapshot.casing_before = ts
             continue
         if topic == READY_TOPIC:
             # Ultimo avvio del controller: in Home Assistant Ultimo Avvio Controller anche dopo un riavvio dell'add-on
