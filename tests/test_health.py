@@ -357,9 +357,10 @@ def test_controller_off_the_broker_with_another_controller_down(db):
             {"id": 2, "name": "Villa 3", "online": False, "unreachable": True, "error": "non risponde"},
         ],
     )
-    fault = next(i for i in items if i["id"] == "mqtt:controller@2026-10-29T11:33:00+00:00")
+    fault = next(i for i in items if i["id"] == "events@2026-10-29T11:33:00+00:00")
     assert fault["severity"] == "crit" and fault["ts"] == "2026-10-29T11:33:00+00:00"
-    assert fault["text"].startswith("Quadro Hall risponde ma non è collegato al broker MQTT")
+    assert fault["text"].startswith("Quadro Hall risponde ma passaggi e allarmi non arrivano in diretta")
+    assert "(MQTT: controller non collegato al broker)" in fault["text"]
 
 
 def _broker_fault(service, now, since="2026-10-29T11:33:00+00:00"):

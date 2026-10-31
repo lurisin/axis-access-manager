@@ -1400,12 +1400,13 @@ const WIDGET_BODY = {
   impianto({d: {system: s}, notif}) {
     const row = (cls, label, value, title = "") => `<div class="dw-sys"${title ? ` title="${esc(title)}"` : ""}><span class="dot ${cls}"></span><span class="grow" style="flex:1;min-width:0">${label}</span><b>${value}</b></div>`;
     if (!s.configured) return `<h2>Stato Impianto</h2><div class="empty">Nessun controller configurato.</div>`;
-    // Perché gli eventi non arrivano: dalla notifica MQTT (nessun broker, broker perso, controller non collegato)
-    const mqtt = (notif?.items || []).find((i) => i.type === "mqtt");
+    // Perché gli eventi non arrivano: dal guasto degli eventi (WebSocket e MQTT), se no dagli altri del broker
+    const items = (notif?.items || []).filter((i) => i.type === "mqtt");
+    const mqtt = items.find((i) => i.id.startsWith("events")) || items[0];
     const why = mqtt ? `${mqtt.title}: ${mqtt.text}` : s.controller_online === false ? "Il controller non è raggiungibile." : "";
     return `<h2>Stato Impianto${can("impianti") ? '<span class="spacer"></span><a class="small-text" href="#impianti/stato">Dettagli</a>' : ""}</h2>
       ${row(s.controller_online === false ? "err" : s.controller_online ? "ok" : "", "Controller", s.controller_online === false ? "Non Raggiungibile" : s.controller_online ? "Raggiungibile" : "Stato Sconosciuto")}
-      ${s.mqtt_connected === null ? "" : row(s.mqtt_connected ? "ok" : "err", "Eventi MQTT", s.mqtt_connected ? "In Arrivo" : "Non Collegati", s.mqtt_connected ? "" : why)}
+      ${s.controller_online === false ? "" : s.events_waiting ? row("", "Eventi in Diretta", "In Collegamento") : row(s.events_source ? "ok" : "warn", "Eventi in Diretta", s.events_source === "websocket" ? "WebSocket" : s.events_source === "mqtt" ? "MQTT" : "Non in Arrivo", s.events_source ? "" : why)}
       ${s.casing_open === null ? row("warn", "Coperchio del Controller", "Sconosciuto") : row(s.casing_open ? "err" : "ok", "Coperchio del Controller", s.casing_open ? "Aperto" : "Chiuso")}
       ${row("", "Ultimo Evento", s.last_event ? esc(relTime(s.last_event)) : "nessuno")}`;
   },
@@ -3031,13 +3032,25 @@ function healthState(h, s) {
     if (!s?.controller) return ["", "Verifica del collegamento…", "Verifica…"];
     if (!s.controller.ok) return ["err", `Non raggiungibile: ${s.controller.error || "nessuna risposta"}`, "Non Raggiungibile"];
   }
-  if (s) {
-    const why = !s.mqtt.configured ? "manca il broker MQTT" : !s.mqtt.connected ? "l'app non è collegata al broker MQTT"
-      : s.mqtt.controller_online === false ? "il controller non è collegato al broker MQTT" : "";
-    if (why) return ["warn", `Raggiungibile, ma gli eventi MQTT non arrivano (${why}): registro e stato porta non si aggiornano`, "Eventi Non in Arrivo"];
+  const waiting = s && !s.live?.source && s.live?.websocket && !s.live.websocket.connected && !s.live.websocket.failing;
+  if (s && !s.live?.source && !waiting) {
+    const why = liveWhy(s);
+    if (why) return ["warn", `Raggiungibile, ma gli eventi non arrivano in diretta (${why}): lo stato si rilegge ogni 10 secondi e i passaggi arrivano nel registro ogni 30`, "Eventi Non in Arrivo"];
   }
   if (h?.clock_problem) return ["warn", `Orologio sbagliato di ${offsetText(h.clock_offset)}`, "Orologio Sbagliato"];
+  // WebSocket in collegamento, o non collegato da meno di un minuto: non ancora un problema, ma nemmeno verde
+  if (waiting) return ["", "Raggiungibile, collegamento agli eventi in diretta in corso…", "Raggiungibile"];
   return ["ok", s ? "Raggiungibile, eventi in arrivo" : "Raggiungibile", "Raggiungibile"];
+}
+// Perché gli eventi del controller non arrivano in diretta, fonte per fonte (api/status: live e mqtt)
+function liveWhy(s) {
+  const ws = s.live?.websocket, m = s.mqtt;
+  // WebSocket in collegamento o non collegato da meno di un minuto (come il guasto): non si dice ancora niente
+  if (ws && !ws.failing) return "";
+  const parts = ws ? [`WebSocket: ${ws.error || "non collegato"}`] : [];
+  parts.push(!m.configured ? "MQTT: nessun broker" : !m.connected ? "MQTT: app non collegata al broker"
+    : m.controller_online === false ? "MQTT: controller non collegato al broker" : "MQTT: il controller non pubblica sul broker");
+  return parts.join("; ");
 }
 const offsetText = (sec) => {
   const way = sec > 0 ? "avanti" : "indietro", v = Math.abs(sec);
@@ -3686,15 +3699,31 @@ async function controllerStatus(body, ctrl) {
     + (h?.clock_fault === "home_assistant" ? '<p class="hint">A essere sbagliata è l\'ora di Home Assistant: controlla il suo server NTP. Le fasce orarie non ne risentono, perché le applica il controller con la sua ora.</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
   const cats = Object.entries(m.categories || {});
   const unknown = `${statusDot("")} Sconosciuto <span class="muted">· broker non collegato</span>`;
-  const mqtt = !m.configured ? `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Installa l'add-on Mosquitto o imposta Broker MQTT nella Configurazione dell'add-on. Un Mosquitto installato dopo l'app lo trova da sola entro un minuto, senza riavviare l'add-on.</div></div>` : props([
+  // Eventi in diretta: dal WebSocket del controller; MQTT è facoltativo per gli eventi, serve a Home Assistant
+  const ws = s.live?.websocket, source = s.live?.source || "";
+  // Controller che non risponde: il WebSocket e le letture aspettano che torni
+  const silent = !c.ok || h?.unreachable || h?.online === false || h?.identity_change;
+  const wsText = !ws ? `${statusDot("")} Non Usato`
+    : ws.connected ? `${statusDot("ok")} Collegato${ws.since ? ` <span class="muted">· dal ${esc(fmtFull(ws.since))}</span>` : ""}`
+    : silent ? `${statusDot("")} In Attesa del Controller`
+    : ws.down_since ? `${statusDot(source ? "warn" : ws.failing ? "err" : "")} Non Collegato <span class="muted">· ${esc(ws.error || "nessuna risposta")}, riprova da solo</span>`
+    : `${statusDot("")} Collegamento in Corso…`;
+  const live = props([
+    ["Eventi", source ? `${statusDot("ok")} In Arrivo <span class="muted">· ${source === "websocket" ? "WebSocket" : "MQTT"}</span>`
+      : silent ? `${statusDot("")} Non in Arrivo <span class="muted">· riprendono quando il controller risponde</span>`
+      : `${statusDot(liveWhy(s) ? "err" : "")} Non in Arrivo <span class="muted">· stato riletto ogni 10 secondi, passaggi ogni 30</span>`],
+    ["WebSocket", wsText],
+    ["Ultima Tessera Letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
+    ["Eventi AccessControl", !source ? unknown.replace("broker non collegato", "eventi non in arrivo") : m.access_events_seen ? `${statusDot("ok")} Ricevuti` : `${statusDot("warn")} Non Ancora Ricevuti`],
+    ["Eventi Persi", s.recovery ? `${s.recovery.events ? `${plural(s.recovery.events, "recuperato", "recuperati")}` : "nessuno"} dal registro del controller, controllato ${esc(relTime(s.recovery.at))}` : "si controllano all'avvio e dopo ogni interruzione"],
+  ]);
+  const mqtt = !m.configured ? `<div class="alert ${s.options.ha_integration || s.intercoms.length ? "err" : "info"}" style="margin:0">${icon("alert")}<div class="grow"><b>Nessun Broker</b>Serve a Home Assistant per stato, pulsanti ed eventi dell'app, e ai videocitofoni per chiamate e aperture. Installa l'add-on Mosquitto o imposta Broker MQTT nella Configurazione dell'add-on. Un Mosquitto installato dopo l'app lo trova da sola entro un minuto, senza riavviare l'add-on.</div></div>` : props([
     ["Broker", m.connected ? `${statusDot("ok")} Collegato` : `${statusDot("err")} Non Collegato${m.error ? ` <span class="muted">· ${esc(m.error)}</span>` : ""}`],
     ["Prefisso", `<code>${esc(m.prefix)}</code>`],
-    // Senza broker gli ultimi valori ricevuti non dicono com'è adesso
-    ["Controller", !m.connected ? unknown : m.controller_online === null ? `${statusDot("")} Non Ancora Ricevuto` : m.controller_online ? `${statusDot("ok")} Collegato al Broker` : `${statusDot("err")} Non Collegato al Broker`],
-    ["Ultima Tessera Letta", m.last_card ? `<code>${esc(m.last_card.card)}</code> ${esc(relTime(m.last_card.read_at))}` : "nessuna dall'avvio"],
-    ["Eventi AccessControl", !m.connected ? unknown : m.access_events_seen ? `${statusDot("ok")} Ricevuti` : `${statusDot("warn")} Non Ancora Ricevuti`],
-    ["Eventi Persi", s.recovery ? `${s.recovery.events ? `${plural(s.recovery.events, "recuperato", "recuperati")}` : "nessuno"} dal registro del controller, controllato ${esc(relTime(s.recovery.at))}` : "si controllano all'avvio e dopo ogni interruzione"],
-  ]) + (m.connected && !m.access_events_seen ? '<p class="hint">Se dopo il passaggio di una tessera compare solo IdPoint, aggiungi gli eventi AccessControl (accesso concesso e negato) al filtro eventi MQTT dell\'A1210: servono per sapere se la porta si è aperta e perché un accesso è stato negato.</p>' : "")
+    // Senza broker gli ultimi valori ricevuti non dicono com'è adesso. Il controller sul broker è facoltativo
+    ["Controller", !m.connected ? unknown : m.controller_online === null ? `${statusDot("")} Non Pubblica sul Broker <span class="muted">· facoltativo</span>` : m.controller_online ? `${statusDot("ok")} Collegato al Broker` : `${statusDot(source ? "" : "err")} Non Collegato al Broker`],
+  ]) + (source === "mqtt" && !m.access_events_seen ? '<p class="hint">Se dopo il passaggio di una tessera compare solo IdPoint, aggiungi gli eventi AccessControl (accesso concesso e negato) al filtro eventi MQTT dell\'A1210: servono per sapere se la porta si è aperta e perché un accesso è stato negato.</p>' : "");
+  const liveCard = live + `<h3 class="section-title" style="margin-top:14px">Broker MQTT</h3>` + mqtt
     + (cats.length ? `<details style="margin-top:12px"><summary class="small-text muted" style="cursor:pointer">Eventi Ricevuti per Categoria (${cats.length})</summary><div class="table-wrap"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo Topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div></details>` : "");
   const doors = s.doors.filter((d) => ctrl.doors.some((x) => x.id === d.id));
   const doorList = doors.length ? `<div class="list">${doors.map((d) => `<a class="item door-row" href="#porte/${d.id}" style="padding-left:0;padding-right:0">
@@ -3716,7 +3745,7 @@ async function controllerStatus(body, ctrl) {
         <div class="card"><h2>${icon("door")}Porte</h2>${doorList}</div>
       </div>
       <div>
-        <div class="card"><h2>${statusDot(!m.configured || !m.connected || m.controller_online === false ? "err" : m.access_events_seen ? "ok" : "warn")}Eventi MQTT</h2>${mqtt}</div>
+        <div class="card"><h2>${statusDot(source ? (m.access_events_seen ? "ok" : "warn") : !silent && liveWhy(s) ? "err" : "")}Eventi in Diretta</h2>${liveCard}</div>
         ${intercomCard}
       </div>
     </div>`;

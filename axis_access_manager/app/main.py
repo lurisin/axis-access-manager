@@ -40,6 +40,7 @@ from .health import (
 )
 from .installation import MAX_CONTROLLERS, InstallationService, check_host, same_controller
 from .intercom import IntercomBridge, IntercomSettings
+from .live_events import LiveEvents
 from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
 from .programming import DIRECTIONS, INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
@@ -648,6 +649,11 @@ def create_app(
                 "entities": [c["name"] for _, _, c in state.bridge._entities()] if cfg.ha_integration else [],
             },
             "doors": _doors_status(state),
+            # Eventi in diretta: da dove arrivano ("websocket", "mqtt" o "") e com'è il WebSocket (None: non usato)
+            "live": {
+                "source": events_source(state),
+                "websocket": state.live_events.status() if getattr(state, "live_events", None) else None,
+            },
             "options": {
                 "default_group": state.service.default_group,
                 "event_retention_days": cfg.event_retention_days,
@@ -789,6 +795,10 @@ def create_app(
                 "controller_online": reachable,
                 # Eventi del controller in arrivo: senza broker no
                 "mqtt_connected": bool(state.mqtt) and monitor.connected and monitor.controller_online is not False,
+                # Eventi in diretta: "websocket", "mqtt" o "" (solo letture periodiche)
+                "events_source": events_source(state),
+                # WebSocket in collegamento, o non collegato da meno di un minuto: non ancora un problema
+                "events_waiting": _events_waiting(state),
                 "casing_open": monitor.casing_open,
                 # Ultima lettura dello stato con le API del controller
                 "state_read_at": monitor.state_read_at or None,
@@ -1435,6 +1445,8 @@ def create_app(
         except LookupError as err:
             raise HTTPException(404, str(err)) from err
         _apply_pause(state)
+        # Cambio confermato: WebSocket e lettura completa subito, recupero nelle Attività
+        _signal_responding(state)
         with contextlib.suppress(VapixError, ServiceError):
             if state.settings.a1210_host:
                 result = await state.service.sync_from_controller()
@@ -1748,10 +1760,15 @@ async def _start_runtime(app: FastAPI) -> None:
     # Eventi persi da recuperare dal registro del controller: all'avvio e dopo ogni interruzione
     state.recover_pending = True
     state.recover_outages = 0
-    if getattr(state, "recover_from", None) is None:
+    # Il primo recupero con la nuova configurazione va nelle Attività, anche dopo giri senza eventi in diretta
+    state.recover_periodic = False
+    fresh = getattr(state, "recover_from", None) is None
+    if fresh or (not state.recover_from[0] and getattr(state, "recover_host", None) != cfg.a1210_host):
         # Da dove recuperare: l'ultimo evento del registro quando era completo. Una nuova configurazione tiene
-        # quello di prima, che può essere di prima di un'interruzione non ancora recuperata
+        # quello di prima, che può essere di prima di un'interruzione non ancora recuperata. Registro ancora vuoto e
+        # controller appena aggiunto (o indirizzo nuovo): da adesso, non dall'avvio dell'add-on giorni prima
         state.recover_from = _recover_mark(state)
+    state.recover_host = cfg.a1210_host
     # Stato del controller letto con le API: per intero alla prima lettura, anche con una nuova configurazione
     state.state_keeper = StateKeeper(state.monitor, getattr(state, "state_wake", None))
     state.state_keeper.request_full()
@@ -1782,6 +1799,19 @@ async def _start_runtime(app: FastAPI) -> None:
     state.monitor_task = (
         asyncio.create_task(state.monitor.run(state.mqtt)) if state.mqtt and cfg.mqtt_topic_prefix else None
     )
+    # Eventi in diretta dal WebSocket del controller principale: la fonte principale, MQTT è facoltativo
+    live = cfg.a1210_host and callable(getattr(state.raw_controller, "ws_session", None))
+    state.live_events = (
+        LiveEvents(
+            state.monitor,
+            state.raw_controller,
+            lambda: _responding(state),
+            fingerprint=lambda: (state.installation.primary or {}).get("cert_fingerprint") or "",
+        )
+        if live
+        else None
+    )
+    state.live_task = asyncio.create_task(state.live_events.run()) if state.live_events else None
     # Contatori di oggi in Home Assistant ripubblicati a mezzanotte
     state.bridge.start()
     if not hasattr(state, "places_key"):
@@ -1813,11 +1843,12 @@ async def _stop_listening(app: FastAPI, offline: bool = True) -> tuple:
         # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
         # ordinata il broker scarta il messaggio di addio)
         await bridge.stop(offline)
-    task = getattr(state, "monitor_task", None)
-    if task:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    for name in ("monitor_task", "live_task"):
+        task = getattr(state, name, None)
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     return state.raw_controller, state.service.lock, [state.monitor, *state.intercoms], state.readers
 
 
@@ -1883,6 +1914,11 @@ async def reload_runtime(app: FastAPI) -> None:
     except Exception:  # noqa: BLE001
         _LOGGER.exception("Controllo dei controller non riuscito")
     _apply_pause(app.state)
+    _signal_responding(app.state)
+    if getattr(app.state, "live_events", None):
+        # Indirizzo corretto: il WebSocket si prova subito, senza aspettare il prossimo giro; controller diverso: il
+        # collegamento appena aperto si chiude
+        app.state.live_events.wake.set()
     with contextlib.suppress(VapixError, ServiceError):
         if app.state.settings.a1210_host:
             result = await app.state.service.sync_from_controller()
@@ -2147,6 +2183,9 @@ def _current_notifications(state) -> list[dict]:
         primary_id=(state.installation.primary or {}).get("id"),
         controller_offline_since=state.monitor.controller_offline_since,
         mqtt_disconnected_since=state.monitor.disconnected_since,
+        ws=state.live_events.status() if getattr(state, "live_events", None) else None,
+        ha_integration=bool(state.settings.ha_integration),
+        intercoms=any(d["intercom_name"] for d in state.doors),
         door_names={d["door_token"]: d["name"] for d in state.doors},
         cameras=[
             {
@@ -2259,9 +2298,32 @@ def _health_client(app: FastAPI, row: dict):
     return A1210Client(row["host"], row["username"], row["password"], bool(row["verify_ssl"]))
 
 
+def _signal_responding(state) -> None:
+    """Dopo ogni controllo di chi risponde (giro periodico, sincronizzazione, nuova configurazione): se il controller
+    ha smesso o ripreso a rispondere, stato sconosciuto subito o lettura completa, e il WebSocket si chiude o si
+    riprova subito. Il valore già segnalato si tiene qui, perché il cambio può venire da uno qualunque dei controlli."""
+    responding = _responding(state)
+    seen = getattr(state, "responding_seen", None)
+    if responding == seen:
+        return
+    state.responding_seen = responding
+    if seen is False and responding is True:
+        # Di nuovo raggiungibile, o cambio confermato: il recupero degli eventi del tempo in mezzo va nelle Attività
+        state.recover_periodic = False
+    if getattr(state, "state_wake", None):
+        state.state_wake.set()
+    if getattr(state, "live_events", None):
+        state.live_events.wake.set()
+
+
 def _apply_pause(state) -> None:
     """Scritture verso il controller in uso sospese se è cambiato e nessuno ha confermato."""
+    before = state.controller.paused
     state.controller.paused = paused_reason(state.installation.primary)
+    live = getattr(state, "live_events", None)
+    if live and before != state.controller.paused:
+        # Controller cambiato: il WebSocket aperto si chiude subito. Cambio confermato: si ricollega subito
+        live.wake.set()
 
 
 async def _health_loop(app: FastAPI) -> None:
@@ -2273,7 +2335,6 @@ async def _health_loop(app: FastAPI) -> None:
             primary = state.installation.primary
             was = state.health.states.get(primary["id"]) if primary else None
             was_down = bool(was and was.failures)
-            responding = _responding(state)
             await state.health.check_all()
             now = state.health.states.get(primary["id"]) if primary else None
             if was_down and now is not None and now.online:
@@ -2282,9 +2343,7 @@ async def _health_loop(app: FastAPI) -> None:
             _apply_pause(state)
             if before != state.controller.paused:
                 state.service.notify_change()
-            if _responding(state) != responding:
-                # Non risponde più: stato sconosciuto subito. Torna a rispondere: lettura completa subito
-                state.state_wake.set()
+            _signal_responding(state)
             await _recover_if_needed(state)
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo dei controller non riuscito")
@@ -2293,10 +2352,12 @@ async def _health_loop(app: FastAPI) -> None:
 
 
 async def _recover_if_needed(state) -> None:
-    """Dopo l'avvio o un'interruzione (broker perso, controller offline), appena gli eventi tornano ad arrivare
-    si recuperano quelli persi dal registro interno del controller."""
+    """Eventi del controller dal suo registro interno: dopo l'avvio o un'interruzione degli eventi in diretta
+    (WebSocket o broker persi, controller offline) quelli persi; senza eventi in diretta, a ogni giro (ogni
+    HEALTH_INTERVAL secondi), così passaggi e allarmi arrivano nel registro anche senza WebSocket né MQTT."""
     monitor = state.monitor
-    pending = state.recover_pending or monitor.outages != state.recover_outages
+    live = events_live(state)
+    pending = state.recover_pending or monitor.outages != state.recover_outages or not live
     if not pending:
         # Nessuna interruzione da recuperare: il registro è completo fin qui. Il punto da cui recuperare si fissa
         # adesso e non al recupero, quando gli eventi arrivati in diretta dopo l'interruzione lo avrebbero già
@@ -2307,14 +2368,12 @@ async def _recover_if_needed(state) -> None:
     health = state.health.states.get(primary["id"]) if primary else None
     if not health or not health.online or state.controller.paused:
         return
-    if state.mqtt and (not monitor.connected or monitor.controller_online is False):
-        return
     outages = monitor.outages
+    # Recupero dopo l'avvio o un'interruzione, non uno dei giri senza eventi in diretta: va nel log e nelle attività
+    announce = not getattr(state, "recover_periodic", False) or outages != state.recover_outages
+    # Registro dell'app ancora vuoto (primo avvio): da quando è stato fissato il punto, cioè dall'avvio o dall'ultimo
+    # recupero senza eventi in diretta
     last, marked_at = state.recover_from
-    if not last:
-        # Primo avvio: niente da recuperare, gli eventi arrivano da ora
-        state.recover_pending, state.recover_outages = False, outages
-        return
     try:
         start = datetime.fromisoformat(last)
     except ValueError:
@@ -2323,7 +2382,15 @@ async def _recover_if_needed(state) -> None:
         start = start.replace(tzinfo=UTC)
     # Un evento con l'ora nel futuro (orologio del controller avanti, poi corretto) non porta l'inizio oltre il
     # momento in cui il punto è stato fissato: i recuperi successivi non leggerebbero più niente
-    since = min(start, marked_at) - timedelta(seconds=RECOVER_OVERLAP)
+    since = min(start, marked_at)
+    # Già letto fino a qui dal registro del controller (ora del controller): senza eventi in diretta ogni giro legge
+    # solo quelli nuovi, anche quando gli ultimi eventi del registro non fanno righe (modalità della porta, ingressi)
+    # (al massimo fin dove l'app l'ha visto completo, con la sua ora: un orologio del controller avanti e poi corretto
+    # non porta l'inizio nel futuro)
+    host, cutoff = getattr(state, "recover_cutoff", None) or ("", None)
+    if cutoff is not None and host == state.settings.a1210_host:
+        since = max(since, min(cutoff, marked_at))
+    since = since - timedelta(seconds=RECOVER_OVERLAP)
     since = max(since, datetime.now(tz=UTC) - RECOVER_LIMIT)
     try:
         async with _reading(state):
@@ -2331,15 +2398,25 @@ async def _recover_if_needed(state) -> None:
     except VapixError as err:
         _LOGGER.warning("Eventi persi non recuperati dal controller: %s", err)
         return
-    state.recover_pending, state.recover_outages = False, outages
+    # Senza eventi in diretta resta da fare: anche il primo giro dopo il loro ritorno, per gli eventi tra questo
+    # recupero e il ritorno
+    state.recover_pending, state.recover_outages, state.recover_periodic = not live, outages, not live
+    if state.service.recover_newest is not None:
+        state.recover_cutoff = (state.settings.a1210_host, state.service.recover_newest)
+    if not live:
+        # Il registro dell'app è completo fino a qui
+        state.recover_from = _recover_mark(state)
     state.last_recovery = {"at": _now(), "since": since.isoformat(timespec="seconds"), "events": recovered}
-    if recovered:
+    if recovered and announce:
         _LOGGER.info("Recuperati %s eventi dal registro del controller", recovered)
         state.db.add_audit(
             "sistema",
             "eventi recuperati dal controller",
             f"{plural(recovered, 'evento', 'eventi')} dal {since.astimezone():%d/%m/%Y %H:%M}",
         )
+    elif recovered:
+        # Senza eventi in diretta i passaggi arrivano così a ogni giro: niente righe nelle attività
+        _LOGGER.debug("Recuperati %s eventi dal registro del controller", recovered)
 
 
 def _recover_mark(state) -> tuple[str, datetime]:
@@ -2358,9 +2435,29 @@ async def _input_changed(state) -> None:
 
 
 def events_live(state) -> bool:
-    """Gli eventi del controller principale arrivano in diretta: app collegata al broker e controller collegato."""
+    """Gli eventi del controller principale arrivano in diretta: WebSocket collegato, oppure app e controller
+    collegati al broker MQTT. Un controller mai visto sul broker (MQTT non configurato sul controller, ora
+    facoltativo) non conta."""
+    return state.monitor.ws_live or mqtt_live(state)
+
+
+def mqtt_live(state) -> bool:
     monitor = state.monitor
-    return bool(state.mqtt) and monitor.connected and monitor.controller_online is not False
+    return bool(state.mqtt) and monitor.connected and monitor.controller_online is True
+
+
+def events_source(state) -> str:
+    """Da dove arrivano gli eventi in diretta: "websocket", "mqtt" o "" (nessuna fonte, solo letture periodiche)."""
+    return "websocket" if state.monitor.ws_live else "mqtt" if mqtt_live(state) else ""
+
+
+def _events_waiting(state) -> bool:
+    """Nessun evento in diretta, ma il WebSocket si sta collegando o non si collega da meno di un minuto (vedi
+    live_events.FAULT_AFTER): non ancora un problema da mostrare."""
+    live = getattr(state, "live_events", None)
+    # Controller che non risponde o cambiato (scritture sospese): il WebSocket non si prova, non è in collegamento
+    waiting = bool(live) and _responding(state) is not False
+    return waiting and not events_live(state) and not live.connected and not live.failing()
 
 
 def _responding(state) -> bool | None:
@@ -2609,6 +2706,7 @@ async def _sync(state) -> tuple[bool, int]:
         # prima del controllo di stato, e un controller sostituito non si legge finché non lo si conferma
         health = await state.health.check(primary)
         _apply_pause(state)
+        _signal_responding(state)
         if state.controller.paused:
             state.service.notify_change()
         if not health.online and not state.controller.paused:

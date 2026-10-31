@@ -206,6 +206,8 @@ class AccessService:
         # Durante il recupero dal registro del controller: eventi segnati come recuperati, e quanti
         self._recovering = False
         self._recovered = 0
+        # Ora (del controller) dell'evento più recente letto dall'ultimo recupero, None se non ne ha letti
+        self.recover_newest: datetime | None = None
         # Secondi di cui l'orologio del controller (sincronizzato via NTP) è avanti rispetto a Home Assistant;
         # None se non si sa o se il controller non è sincronizzato
         self.clock_offset: Callable[[], float | None] | None = None
@@ -894,9 +896,10 @@ class AccessService:
         # e trova la porta già aperta, invece di passare anche lui il controllo e far ripartire il tempo
         async with self._door_locks.setdefault(door, asyncio.Lock()):
             stored = self.monitor.door_modes.get(door) if self.monitor else None
-            # Senza eventi in diretta (broker giù, o controller non collegato al broker) la modalità in memoria può
-            # essere vecchia anche quando dice "Bloccata": decide sempre il controller
-            live = bool(self.monitor and self.monitor.connected and self.monitor.controller_online is not False)
+            # Senza eventi in diretta (WebSocket non collegato, e broker giù o controller che non pubblica sul broker)
+            # la modalità in memoria può essere vecchia anche quando dice "Bloccata": decide sempre il controller
+            monitor = self.monitor
+            live = bool(monitor and (monitor.ws_live or (monitor.connected and monitor.controller_online is True)))
             mode = stored if live else None
             if mode != "Locked":
                 # In memoria può restare l'"Aperta a Tempo" di un'apertura il cui "Bloccata" via MQTT è andato perso
@@ -908,7 +911,7 @@ class AccessService:
                 else:
                     current = self.monitor.door_modes.get(door) if self.monitor else stored
                     if live and current != stored:
-                        # Arrivata via MQTT mentre si leggeva: è più recente della lettura
+                        # Arrivata in diretta (WebSocket o MQTT) mentre si leggeva: è più recente della lettura
                         mode = current
                     elif read:
                         if self.monitor and read != current:
@@ -1101,6 +1104,7 @@ class AccessService:
             # delle altre porte finivano sulla principale (e due volte, con l'impronta diversa da quella live)
             await self.load_access_points()
         self._recovered = 0
+        self.recover_newest = None
         row_id, read = None, 0
         while read < RECOVER_MAX:
             entries, more = await self.controller.fetch_events(start, RECOVER_PAGE, row_id)
@@ -1112,6 +1116,8 @@ class AccessService:
                 with self.db.batch():
                     for entry in entries:
                         event = event_from_log(entry)
+                        if event and (self.recover_newest is None or event.timestamp > self.recover_newest):
+                            self.recover_newest = event.timestamp
                         if event and event.topic.startswith(RECOVER_TOPICS):
                             self.record_event(event)
             finally:

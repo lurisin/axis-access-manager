@@ -255,6 +255,20 @@ async def test_open_door_without_live_events_asks_the_controller(service, contro
         await service.open_door(False, "admin")
 
 
+async def test_open_door_trusts_memory_only_with_live_events(service, controller):
+    # Broker collegato ma controller che non pubblica (MQTT facoltativo) e WebSocket giù: la memoria può essere vecchia
+    service.monitor.connected, service.monitor.controller_online = True, None
+    service.monitor.door_mode = "Locked"
+    controller.door = "Accessed"
+    assert await service.open_door(False, "admin") is False
+    assert not [c for c in controller.calls if c[0] == "access_door"]
+    # Con il WebSocket collegato la modalità in memoria è in diretta
+    service.monitor.ws_live = True
+    service.monitor.door_mode = "Locked"
+    assert await service.open_door(False, "admin") is True
+    assert ("access_door", "porta", False) in controller.calls
+
+
 async def test_open_door_asks_controller_when_state_unknown(service, controller):
     controller.door = "Unlocked"
     with pytest.raises(ServiceError, match=r"\(Sbloccata\)"):

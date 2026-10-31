@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -135,6 +136,47 @@ def event_from_log(entry: dict) -> Event | None:
     return Event(category=levels[0], topic="/".join(levels) + "/", timestamp=timestamp, data=data)
 
 
+def event_from_ws(notification: dict) -> Event | None:
+    """Evento del WebSocket del controller (events:notify) nello stesso formato di quelli MQTT.
+
+    Il topic ha i namespace (tns1:Door/State/DoorMode, tns1:IdPoint/tnsaxis:Request/IdData) e le sorgenti
+    nel messaggio: si tolgono i namespace e le sorgenti si mettono nel topic dopo $source, come li pubblica l'A1210
+    su MQTT (…/DoorMode/$source/DoorToken/<porta>, …/IO/Port/$source/port/0).
+    """
+    if not isinstance(notification, dict) or not isinstance(notification.get("topic"), str):
+        return None
+    levels = [level.rsplit(":", 1)[-1] for level in notification["topic"].split("/") if level]
+    if not levels:
+        return None
+    message = notification.get("message") if isinstance(notification.get("message"), dict) else {}
+    source = message.get("source") if isinstance(message.get("source"), dict) else {}
+    path = "/".join(levels)
+    if source:
+        # Un valore con la barra spezzerebbe le coppie del topic: nei dati resta quello vero
+        path += "/$source/" + "/".join(f"{k}/{str(v).replace('/', '_')}" for k, v in source.items())
+    data: dict = {}
+    for part in ("source", "key", "data"):
+        value = message.get(part)
+        if isinstance(value, dict):
+            data.update(value)
+    return Event(category=levels[0], topic=path, timestamp=_timestamp(notification.get("timestamp")), data=data)
+
+
+# Dati che distinguono due eventi con lo stesso topic e la stessa ora (vedi EventMonitor.apply_event): sorgenti e
+# valore. Non tutti i dati: un campo in più su un canale farebbe sembrare diversi due eventi uguali
+EVENT_IDENTITY = ("DoorToken", "AccessPointToken", "IdPointToken", "port", "CredentialToken", "Card", "State", "state")
+EVENT_IDENTITY += ("Open", "Active")
+# Eventi recenti ricordati per riconoscere quelli arrivati due volte (WebSocket e MQTT)
+RECENT_EVENTS = 2048
+
+
+def event_key(event: Event) -> tuple:
+    """Impronta di un evento del controller, uguale via WebSocket e via MQTT: topic senza le sorgenti, ora al
+    millisecondo e sorgenti. Due eventi diversi non hanno lo stesso topic, la stessa sorgente e lo stesso istante."""
+    base = event.topic.split("/$source/", 1)[0].rstrip("/")
+    return base, event.timestamp, tuple((k, str(event.data[k])) for k in EVENT_IDENTITY if k in event.data)
+
+
 def _later(value: str, than: str) -> bool:
     """Ora ISO successiva a un'altra; False se una delle due manca o non si legge."""
     try:
@@ -206,6 +248,12 @@ class EventMonitor:
     # iniziata prima non lo sovrascrive (vedi apply_snapshot)
     seq: int = 0
     changed: dict[tuple, int] = field(default_factory=dict)
+    # Eventi in diretta dal WebSocket del controller (vedi live_events): con il WebSocket collegato, broker e
+    # controller scollegati da MQTT non fanno perdere eventi
+    ws_live: bool = False
+    # Impronte degli ultimi eventi (event_key), dalla più vecchia, e se sono arrivati solo come stato (conservati):
+    # lo stesso evento via WebSocket e MQTT conta una volta
+    recent: OrderedDict = field(default_factory=OrderedDict)
     # Chiamata quando il controller va online o offline
     on_status: Callable[[], None] | None = None
     # Chiamata per ogni evento; retained=True per i messaggi conservati dal broker
@@ -270,24 +318,46 @@ class EventMonitor:
         if topic == f"{self.prefix}/stato":
             online = payload.decode(errors="replace") == "online"
             if not online and self.controller_online is not False:
-                self.outages += 1
+                # Con il WebSocket collegato gli eventi non si perdono: niente da recuperare
+                if not self.ws_live:
+                    self.outages += 1
                 self.controller_offline_since = datetime.now(tz=UTC).isoformat(timespec="seconds")
             if online:
                 self.controller_offline_since = ""
-            else:
-                # Al riavvio il controller rimanda gli ingressi da capo, e il primo valore non conta come cambio
+            elif not self.ws_live:
+                # Al riavvio il controller rimanda gli ingressi da capo, e il primo valore non conta come cambio.
+                # Con il WebSocket collegato il controller non si è riavviato: è solo scollegato dal broker
                 self.io_ports.clear()
                 self.io_changed.clear()
+                self.recent.clear()
             self.controller_online = online
             if self.on_status:
                 self.on_status()
+            return
+        if retained and self.ws_live:
+            # Il broker ripete gli ultimi eventi conservati a ogni collegamento, anche di molto tempo fa (controller
+            # poi scollegato dal broker): con il WebSocket collegato lo stato attuale lo danno lui e le letture del
+            # controller, e un coperchio aperto ad agosto non torna aperto
             return
         event = parse_event(self.prefix, topic, payload)
         if event is not None:
             self.apply_event(event, retained)
 
-    def apply_event(self, event: Event, retained: bool = False) -> None:
-        """Evento del controller arrivato in diretta, da qualunque fonte: oggi MQTT, più avanti il WebSocket."""
+    def apply_event(self, event: Event, retained: bool = False) -> bool:
+        """Evento del controller arrivato in diretta, dal WebSocket o da MQTT. Lo stesso evento arrivato da tutti e
+        due (o ripetuto dal broker) si applica una volta sola: False se era già arrivato."""
+        key = event_key(event)
+        if key in self.recent:
+            self.recent.move_to_end(key)
+            if self.recent[key] and not retained:
+                # Arrivato prima come stato (appena collegato il WebSocket, o conservato dal broker) e ora in diretta:
+                # è successo adesso, e vale per il registro, Home Assistant e la foto. Lo stato è già aggiornato
+                self.recent[key] = False
+                self._dispatch(event, False)
+            return False
+        self.recent[key] = retained
+        while len(self.recent) > RECENT_EVENTS:
+            self.recent.popitem(last=False)
         stats = self.categories.setdefault(event.category, CategoryStats())
         stats.count += 1
         stats.last_topic = event.topic
@@ -300,6 +370,10 @@ class EventMonitor:
                 self.door_modes[token] = event.data["State"]
                 self._mark(("mode", token))
         self._track_state(event)
+        self._dispatch(event, retained)
+        return True
+
+    def _dispatch(self, event: Event, retained: bool) -> None:
         if self.on_event:
             try:
                 self.on_event(event, retained)
@@ -366,6 +440,8 @@ class EventMonitor:
         self.casing_since = ""
         self.io_ports.clear()
         self.io_changed.clear()
+        # Al ritorno il controller rimanda lo stato con le ore di prima: non sono doppioni da scartare
+        self.recent.clear()
 
     def apply_snapshot(self, snapshot: StateSnapshot, since: int) -> bool:
         """Stato letto con le API (vedi controller_state). Un valore arrivato da un evento dopo l'inizio della
@@ -463,7 +539,8 @@ class EventMonitor:
             except Exception as err:  # noqa: BLE001
                 # Errori del broker, ma anche imprevisti: si risulta scollegati e si riprova, così l'interruzione
                 # si vede nell'app e dopo si recuperano gli eventi persi
-                if self.connected:
+                if self.connected and not self.ws_live:
+                    # Senza il WebSocket gli eventi persi si recuperano quando il broker torna
                     self.outages += 1
                 if self.connected or not self.disconnected_since:
                     self.disconnected_since = datetime.now(tz=UTC).isoformat(timespec="seconds")

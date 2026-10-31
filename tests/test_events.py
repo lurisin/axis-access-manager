@@ -44,19 +44,21 @@ def test_pushbutton_aux_is_read_the_other_way_round_and_not_before_a_change():
     monitor = EventMonitor(prefix=PREFIX, door_token="porta")
     aux = f"{PREFIX}/eventi/Device/IO/Port/$source/port/0"
     classic = f"{PREFIX}/eventi/Device/IO/Port/$source/port/3"
+    # Ogni evento con la sua ora, come dal controller: due eventi uguali alla stessa ora sono lo stesso evento
+    clock = iter(range(1729800000000, 1729800100000, 100))
     # Collaudo 26/10, IO1 come REX (inout pu/gnd): all'avvio 0 fino alla prima pressione, che dà solo 0→1
-    monitor.handle(aux, payload({"state": "0"}))
-    monitor.handle(classic, payload({"state": "0"}))
+    monitor.handle(aux, payload({"state": "0"}, next(clock)))
+    monitor.handle(classic, payload({"state": "0"}, next(clock)))
     assert monitor.input_active("0", pushbutton=True) is False
     assert monitor.input_active("3") is False
-    monitor.handle(aux, payload({"state": "1"}))
+    monitor.handle(aux, payload({"state": "1"}, next(clock)))
     assert monitor.input_active("0", pushbutton=True) is False
     # Poi 1 a riposo e 0 mentre si preme; un ingresso classico resta 0 = riposo
-    monitor.handle(aux, payload({"state": "0"}))
+    monitor.handle(aux, payload({"state": "0"}, next(clock)))
     assert monitor.input_active("0", pushbutton=True) is True
-    monitor.handle(aux, payload({"state": "1"}))
+    monitor.handle(aux, payload({"state": "1"}, next(clock)))
     assert monitor.input_active("0", pushbutton=True) is False
-    monitor.handle(classic, payload({"state": "1"}))
+    monitor.handle(classic, payload({"state": "1"}, next(clock)))
     assert monitor.input_active("3") is True
     assert monitor.input_active(None) is None and monitor.input_active("1", pushbutton=True) is None
 
@@ -64,7 +66,7 @@ def test_pushbutton_aux_is_read_the_other_way_round_and_not_before_a_change():
     monitor.handle(f"{PREFIX}/stato", b"offline")
     assert monitor.io_ports == {} and monitor.io_changed == set()
     monitor.handle(f"{PREFIX}/stato", b"online")
-    monitor.handle(aux, payload({"state": "0"}))
+    monitor.handle(aux, payload({"state": "0"}, next(clock)))
     assert monitor.input_active("0", pushbutton=True) is False
 
 
