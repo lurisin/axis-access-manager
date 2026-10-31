@@ -225,3 +225,45 @@ def test_contact_configured():
         {"token": "c", "Configuration": []},
     ]
     assert [contact_configured(configs, t) for t in "abcd"] == [True, False, False, None]
+
+
+async def test_casing_open_since_from_the_log_and_the_events(controller):
+    controller.log_events = [
+        log_event(1, "2026-10-29T21:55:17Z", "Device", "Casing", "Open", Open="1"),
+        log_event(2, "2026-10-30T10:00:00Z", "IdPoint", "Request", "IdData", Card="c0110a01"),
+    ]
+    monitor, keeper = keeper_for(controller)
+    # Collaudo 30/10: aperto dall'avvio del controller, si sa da quando anche dopo un riavvio dell'add-on
+    await keeper.tick(controller, ["porta"], True)
+    assert monitor.casing_open is True and monitor.casing_since == "2026-10-29T21:55:17+00:00"
+    # Lo stesso valore conservato dal broker non sposta l'ora; la chiusura sì
+    casing = "Device/Casing/Open"
+    later = datetime(2026, 10, 30, 22, 0, tzinfo=UTC)
+    monitor.apply_event(Event("Device", casing, later, {"Open": "1"}))
+    assert monitor.casing_since == "2026-10-29T21:55:17+00:00"
+    monitor.apply_event(Event("Device", casing, later, {"Open": "0"}))
+    assert monitor.casing_open is False and monitor.casing_since == "2026-10-30T22:00:00+00:00"
+    # Controller che non risponde: né lo stato né l'ora
+    await keeper.tick(controller, ["porta"], False)
+    assert monitor.casing_open is None and monitor.casing_since == ""
+
+
+async def test_casing_closed_and_opened_again_between_two_reads(controller):
+    casing = ("Device", "Casing", "Open")
+    controller.log_events = [log_event(1, "2026-10-29T21:55:17Z", *casing, Open="1")]
+    monitor, keeper = keeper_for(controller)
+    await keeper.tick(controller, ["porta"], True)
+    # Il controller si riavvia: registra di nuovo il coperchio aperto, ma non è un'altra apertura
+    controller.log_events.append(log_event(2, "2026-10-30T08:00:00Z", *casing, Open="1"))
+    await keeper.tick(controller, ["porta"], True)
+    assert monitor.casing_since == "2026-10-29T21:55:17+00:00"
+    # Senza eventi in diretta, chiuso e riaperto tra due letture: è un'apertura nuova, con la sua ora
+    controller.log_events += [
+        log_event(3, "2026-10-30T09:00:00Z", *casing, Open="0"),
+        log_event(4, "2026-10-30T09:00:05Z", *casing, Open="1"),
+    ]
+    assert await keeper.tick(controller, ["porta"], True) is True
+    assert monitor.casing_open is True and monitor.casing_since == "2026-10-30T09:00:05+00:00"
+    # Alla lettura dopo resta quella
+    await keeper.tick(controller, ["porta"], True)
+    assert monitor.casing_since == "2026-10-30T09:00:05+00:00"

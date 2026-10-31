@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.23.1
+
+- **Coperchio del controller aperto, anche nell'app.** Al collaudo del 30 ottobre il coperchio era aperto dall'avvio del controller: in Home Assistant Coperchio Controller Aperto era acceso, nell'app si vedeva solo nel riquadro Stato Impianto del cruscotto. Ora:
+  - un guasto **Coperchio del Controller Aperto** in Da Gestire e nella barra in alto, con l'ora dell'apertura. Resta finché il coperchio non si chiude, anche dopo la presa visione e oltre le 24 ore degli allarmi; se già visto torna da gestire ogni 4 ore, come i guasti di MQTT. Una nuova apertura è un guasto nuovo. Si può spegnere da solo in Impostazioni → Notifiche, senza spegnere gli Allarmi delle Porte;
+  - l'etichetta rossa **Coperchio Aperto** nell'intestazione del controller (Schema e tutte le altre schede) e nella sua scheda in Impianti;
+  - la riga **Coperchio** nella scheda Stato del controller: aperto o chiuso e da quando, oppure sconosciuto se il registro del controller non lo dice.
+- L'ora dell'apertura viene dal registro del controller, quindi resta giusta anche dopo un riavvio dell'add-on. Un messaggio MQTT uguale, conservato dal broker, non la sposta.
+
 ## 0.23.0
 
 Lo stato del controller non dipende più da MQTT.

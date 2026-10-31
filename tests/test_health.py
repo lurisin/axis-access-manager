@@ -617,3 +617,65 @@ def test_exit_button_openings_of_0_21_4_become_exits(tmp_path):
         "Mario (HA)": "apertura_remota",
     }
     db.close()
+
+
+def _casing_fault(service, now, casing_open=True, since="2026-10-29T21:55:17+00:00", unreachable=False):
+    return service.collect(
+        mqtt_configured=True,
+        mqtt_connected=True,
+        controller_configured=True,
+        controller_online=True,
+        sync={"ok": True},
+        door_names={},
+        primary_id=1,
+        controllers=[
+            {
+                "id": 1,
+                "name": "Rack Portineria",
+                "online": not unreachable,
+                "unreachable": unreachable,
+                "casing_open": casing_open,
+                "casing_since": since,
+            }
+        ],
+        now=now,
+    )
+
+
+def test_open_casing_is_a_fault_while_it_stays_open(db):
+    from datetime import UTC, datetime
+
+    service = NotificationService(db, settle=timedelta(0))
+    # Collaudo 30/10: coperchio aperto dall'avvio del 29/10, in Home Assistant acceso ma nell'app da nessuna parte
+    now = datetime(2026, 10, 30, 22, 30, tzinfo=UTC)
+    items = _casing_fault(service, now)
+    assert [(i["type"], i["title"], i["severity"]) for i in items] == [
+        ("casing", "Coperchio del Controller Aperto", "crit")
+    ]
+    fault = items[0]
+    assert fault["id"] == "casing:1@2026-10-29T21:55:17+00:00" and fault["ts"] == "2026-10-29T21:55:17+00:00"
+    assert fault["fault"] is True and fault["door"] == "Rack Portineria" and fault["link"] == "#impianti/c1/stato"
+    # Oltre le 24 ore degli allarmi resta, e già visto torna da gestire ogni 4 ore come i guasti che durano
+    service.mark_seen([fault["id"]], items)
+    assert service.listing(_casing_fault(service, now + timedelta(hours=1)))["open"] == 0
+    assert service.listing(_casing_fault(service, now + timedelta(hours=4)))["open"] == 1
+    # Chiuso, sconosciuto o controller che non risponde: niente guasto
+    assert _casing_fault(service, now, casing_open=False) == []
+    assert _casing_fault(service, now, casing_open=None) == []
+    assert [i["type"] for i in _casing_fault(service, now, unreachable=True)] == ["controller"]
+
+
+def test_casing_opened_again_is_a_new_fault(db):
+    from datetime import UTC, datetime
+
+    service = NotificationService(db, settle=timedelta(0))
+    now = datetime(2026, 10, 30, 22, 30, tzinfo=UTC)
+    items = _casing_fault(service, now)
+    service.mark_seen([items[0]["id"]], items)
+    # Chiuso e riaperto: un'altra apertura, da gestire anche se la precedente era stata vista
+    service.listing(_casing_fault(service, now, casing_open=False))
+    again = _casing_fault(service, now + timedelta(minutes=5), since="2026-10-30T22:34:00+00:00")
+    assert service.listing(again)["open"] == 1
+    # Il tipo si può spegnere da solo, senza spegnere gli allarmi delle porte
+    service.set_levels({"casing": "off"}, "admin")
+    assert _casing_fault(service, now) == []

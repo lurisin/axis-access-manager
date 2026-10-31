@@ -1715,6 +1715,7 @@ MONITOR_STATE = (
     "state_read_at",
     "door_conditions",
     "casing_open",
+    "casing_since",
     "system_ready",
     "io_ports",
     "io_changed",
@@ -2399,6 +2400,7 @@ async def _state_loop(app: FastAPI) -> None:
 def _controllers_health(state) -> list[dict]:
     """Stato di ogni controller con quanto serve a notifiche e pagina Impianti."""
     rows = {c["id"]: c for c in state.db.list_controllers()}
+    primary_id = (state.installation.primary or {}).get("id")
     result = []
     for controller_id, health in state.health.states.items():
         row = rows.get(controller_id)
@@ -2412,6 +2414,18 @@ def _controllers_health(state) -> list[dict]:
                 "clock_fault": clock_fault(health),
                 "clock_synced": controller_synced(health),
                 "known": {k: row.get(k) or "" for k in ("serial", "model", "firmware", "cert_fingerprint")},
+                # Lo stato (porte, ingressi, coperchio) si legge solo dal controller principale. Coperchio None: non
+                # si sa ancora, il controller non risponde (anche prima che lo stato si svuoti) o non è il principale
+                "primary": controller_id == primary_id,
+                **(
+                    {
+                        "casing_open": state.monitor.casing_open,
+                        "casing_since": state.monitor.casing_since or None,
+                        "state_read_at": state.monitor.state_read_at or None,
+                    }
+                    if controller_id == primary_id and not health.unreachable
+                    else {"casing_open": None, "casing_since": None, "state_read_at": None}
+                ),
             }
         )
     return result
