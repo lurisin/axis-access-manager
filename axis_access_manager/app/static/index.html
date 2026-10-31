@@ -223,6 +223,8 @@
     .door-app { grid-area: app; } .door-ctl { grid-area: ctl; } .door-times { grid-area: times; }
   }
   @media (min-width: 1600px) { .door-cols { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: auto; grid-template-areas: "app ctl times"; } }
+  /* Porta senza tempi letti dal controller (firmware senza GetDoorList): app e controller affiancati */
+  @media (min-width: 1100px) { .door-cols.no-times { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto; grid-template-areas: "app ctl"; } }
   .door-cols .section-title { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
   /* Tempi: etichetta larga e valore a destra, così le etichette lunghe non vanno a capo */
   .door-times dl.props { grid-template-columns: minmax(0, 1fr) auto; }
@@ -231,6 +233,8 @@
   /* Lettori del controller: righe con colonne allineate; sul telefono le colonne vanno sotto il nome */
   .list > .item.rd-row { display: grid; grid-template-columns: 34px minmax(0, 1.3fr) minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, .7fr) auto; gap: 6px 16px; }
   .rd-row .title { font-weight: 600; }
+  /* I token dei lettori veri sono lunghi e senza spazi (lettore_via_consulta_ingresso_scala): vanno a capo */
+  .rd-name code, .rd-cell { overflow-wrap: anywhere; }
   .rd-lbl { display: block; color: var(--muted); font-size: 12px; }
   .rd-more { grid-column: 2 / -1; }
   .rd-more details { margin-top: 0 !important; }
@@ -1398,7 +1402,7 @@ const WIDGET_BODY = {
     rows.push(...open.slice(0, 5).map((i) => `<a class="item dw-notif sev-${i.severity}" href="#notifiche">
       <div class="n-tile">${icon(notifIcon(i))}</div>
       <div class="grow"><div class="title">${esc(i.title)} <span class="n-sev">${SEVERITY[i.severity]}</span></div>
-        <div class="meta"><span>${esc(i.text)}</span>${i.door ? `<span>${esc(i.door)}</span>` : ""}${i.type !== "expiring" ? `<span>${esc(dayTime(i.ts))}</span>` : ""}</div></div></a>`));
+        <div class="meta">${i.text ? `<span>${esc(i.text)}</span>` : ""}${i.door ? `<span>${esc(i.door)}</span>` : ""}${i.type !== "expiring" ? `<span>${esc(dayTime(i.ts))}</span>` : ""}</div></div></a>`));
     // I guasti già visti restano finché non si risolvono: con loro non è tutto in ordine
     const ongoing = (ctx.notif?.items || []).filter((i) => i.seen && i.fault).length;
     if (!rows.length && ongoing) return `<h2>Da Gestire<span class="spacer"></span><a class="small-text" href="#notifiche">Notifiche</a></h2><div class="empty">Nessuna notifica da gestire · ${plural(ongoing, "guasto", "guasti")} in corso, già ${ongoing === 1 ? "visto" : "visti"}.</div>`;
@@ -3655,7 +3659,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
   body.innerHTML = `${errors}
     ${p.doors.map((d) => `<div class="card">
       <h2>${icon("door")}${esc(appDoor(d.token)?.name || d.name || d.token)}<span class="spacer"></span>${appDoor(d.token) ? '<span class="pill ok">Nell\'App</span>' : '<span class="pill">Solo Controller</span>'}</h2>
-      <div class="door-cols">
+      <div class="door-cols${doorTimes(d).length ? "" : " no-times"}">
         <section class="door-app"><h3 class="section-title">Nell'App</h3>${appInfo(d)}</section>
         <section class="door-ctl"><h3 class="section-title">Sul Controller</h3>
           ${props([["Nome", esc(d.name || "—")], ["Token", `<code>${esc(d.token)}</code>`]])}
@@ -4224,7 +4228,7 @@ async function viewBackupSettings(body) {
   const keep = (key, label, hint, max = 1000) => `<label>${esc(label)}<input type="number" data-bp="${key}" min="${key === "keep_last" ? 1 : 0}" max="${max}" step="1" value="${p[key]}" inputmode="numeric"><small>${hint}</small></label>`;
   const footer = (d) => {
     const span = retentionSpan(d.policy);
-    return `${plural(d.backups.length, "backup", "backup")} · ${kb(d.size)}, inclusi nei backup di Home Assistant. Una persona eliminata resta nei backup ${span ? `al massimo ${esc(span)}` : "finché non se ne creano di nuovi"}, in quelli bloccati finché non li sblocchi.`;
+    return `${plural(d.backups.length, "backup", "backup")} · ${kb(d.size)}, nei backup di Home Assistant con l'add-on. Una persona eliminata resta nei backup ${span ? `al massimo ${esc(span)}` : "finché i nuovi non li sostituiscono"}, in quelli bloccati finché non li sblocchi.`;
   };
   body.innerHTML = `<div class="bk-cols"><div class="card flush"><h2>${icon("history")}Backup Automatico</h2>
     <div class="list bk-set">

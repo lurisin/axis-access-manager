@@ -726,8 +726,12 @@ def test_casing_opened_before_and_again_now(db):
         source="Rack Portineria",
     )
     items = _casing_fault(service, now, since="2026-10-31T10:08:12+00:00")
-    # L'apertura delle 6 si era già chiusa prima di riaprire alle 10:08
-    assert [(i["text"], i["fault"]) for i in items] == [("", True), ("Richiuso", False)]
+    # Quella di adesso è il guasto. L'apertura delle 6 non dice "Richiuso": con il coperchio ancora aperto può essere
+    # la stessa, ripetuta dal controller al riavvio (il registro la scrive a ogni avvio)
+    assert [(i["text"], i["fault"]) for i in items] == [("", True), ("", False)]
+    # Chiuso adesso: tutte e due richiuse
+    closed = _casing_fault(service, now, casing_open=False, since="2026-10-31T10:20:00+00:00")
+    assert [(i["text"], i["fault"]) for i in closed] == [("Richiuso", False), ("Richiuso", False)]
     # Controller che non risponde: non si sa se è ancora aperto, niente guasto e niente "Richiuso"
     unknown = _casing_fault(service, now, unreachable=True, since="2026-10-31T10:08:12+00:00")
     assert [(i["type"], i["text"]) for i in unknown if i["type"] == "door_alarm"] == [
@@ -752,3 +756,32 @@ def test_controller_and_door_tamper_titles(db):
         ("Controller Inclinato", ""),
         ("Manomissione", ""),
     ]
+
+
+async def test_cover_opened_and_closed_again_is_still_one_notification(db, controller, settings):
+    # Revisione 0.24.1: aperto, chiuso e riaperto entro 5 minuti. La riga del registro diventa
+    # "coperchio del controller aperto · ripetuta" e la notifica tornava doppia, con il titolo "Manomissione"
+    from app.events import Event, EventMonitor
+    from app.service import AccessService
+
+    db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "Rack Portineria", "verify_ssl": 0})
+    monitor = EventMonitor(prefix="x", door_token="porta")
+    access = AccessService(db, controller, settings, monitor)
+    start = datetime(2026, 10, 31, 10, 8, 12, tzinfo=UTC)
+    for seconds, value in ((0, "1"), (60, "0"), (120, "1")):
+        event = Event(
+            "Device", "Device/Casing/Open/$source/Name/Casing", start + timedelta(seconds=seconds), {"Open": value}
+        )
+        monitor.apply_event(event)
+        access.record_event(event)
+    assert [e["detail"] for e in db.list_events()] == ["coperchio del controller aperto · ripetuta"]
+    service = NotificationService(db, settle=timedelta(0))
+    items = _casing_fault(service, start + timedelta(minutes=10), since=monitor.casing_since)
+    assert [(i["type"], i["title"], i["fault"]) for i in items] == [
+        ("door_alarm", "Coperchio del Controller Aperto", True)
+    ]
+    # Anche il controller inclinato più volte di seguito ha il suo titolo
+    for seconds in (0, 40):
+        access.record_event(Event("Device", "Device/Tampering/TiltDetected", start + timedelta(seconds=seconds), {}))
+    titles = [i["title"] for i in _casing_fault(service, start + timedelta(minutes=10), since=monitor.casing_since)]
+    assert sorted(titles) == ["Controller Inclinato", "Coperchio del Controller Aperto"]

@@ -5,14 +5,14 @@
 Pagine di Impianti a tutta larghezza e notifiche più brevi.
 
 - **Impianti a tutta larghezza.** Sul computer le pagine non lasciano più una colonna stretta e mezzo schermo vuoto:
-  - **Porte**: una scheda a tutta larghezza per porta, con Nell'App, Sul Controller e Tempi sul Controller affiancati (su tre colonne negli schermi larghi, due nei medi, una sotto l'altra sul telefono);
-  - **Lettori**: una riga per lettore con le colonne allineate (nome, porta comandata, posizione, attesa PIN), leggibile anche con 8 lettori;
+  - **Porte**: una scheda a tutta larghezza per porta, con le sezioni Nell'App, Sul Controller e Tempi sul Controller (tre colonne sugli schermi larghi, due sui medi, una sotto l'altra sul telefono);
+  - **Lettori**: una riga per lettore con le colonne allineate (nome, porte comandate, posizione, attesa PIN);
   - **Controller**: una riga per controller con lo stato a parole («Raggiungibile», «Eventi Non in Arrivo»…), modello, indirizzo, porte e lettori;
-  - **Connessione**: posizione e collegamento su due colonne, senza campi lunghi tutto lo schermo;
+  - **Connessione**: Controller e Connessione su due colonne, senza campi larghi quanto lo schermo;
   - **Impostazioni → Backup e Notifiche**: le schede del backup affiancate, i tipi di notifica su due colonne.
-- **Coperchio aperto: una notifica sola.** Al collaudo del 31 ottobre la stessa apertura compariva due volte, come «Coperchio del Controller Aperto» e come «Manomissione». Ora è una voce sola, con la foto se il controller ha la sua telecamera: resta tra i guasti finché il coperchio non si chiude, poi dice «Richiuso» fino alle 24 ore. Nella barra in alto conta una volta. Anche «Controller Inclinato» ha il suo titolo.
+- **Coperchio aperto: una notifica sola.** Al collaudo del 31 ottobre la stessa apertura compariva due volte, come «Coperchio del Controller Aperto» e come «Manomissione». Ora è una voce sola, con la foto se il controller ha la sua telecamera: finché il coperchio è aperto sta tra i guasti e nella barra in alto conta una volta; richiuso, dice «Richiuso» e resta per 24 ore dall'apertura come gli altri allarmi. Vale anche con il coperchio aperto e chiuso più volte di seguito. «Controller Inclinato» ha il suo titolo.
 - **Notifiche brevi.** Testi delle notifiche e descrizioni dei tipi ridotti allo stretto necessario, senza spiegazioni: per esempio «Controller A1210 · Uscita, Cantina Ingresso» invece di due righe su cosa fare. Più brevi anche le descrizioni del backup automatico.
-- **Eventi visti due volte (WebSocket e MQTT).** Due eventi di sorgenti diverse con la stessa ora al millisecondo (per esempio Network/Lost su due interfacce) non si confondono più in uno; aggiunta una prova con i messaggi veri dell'A1210 che simula WebSocket, MQTT e registro del controller insieme.
+- **Eventi distinti non più fusi.** Due eventi uguali di interfacce o ingressi diversi con la stessa ora al millisecondo (per esempio Network/Lost di «Any» ed «eth0») contano come due. Una nuova prova con i messaggi veri dell'A1210 simula WebSocket, MQTT e registro del controller insieme.
 
 ## 0.24.0
 

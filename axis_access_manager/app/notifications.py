@@ -51,7 +51,7 @@ TYPES = {
     ),
     "database": (
         "Database dell'Add-on",
-        "Database danneggiato all'avvio o copia per il backup di Home Assistant non aggiornata.",
+        "Database danneggiato o mancante all'avvio, o copia per il backup di Home Assistant non aggiornata.",
         "urgent",
     ),
 }
@@ -264,7 +264,7 @@ class NotificationService:
                     "mqtt:none",
                     "crit",
                     "Nessun Broker MQTT",
-                    f"{_capital(impact)} senza eventi. Installa Mosquitto.",
+                    f"{_capital(impact)} senza collegamento all'app. Installa Mosquitto.",
                     now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
@@ -274,7 +274,7 @@ class NotificationService:
                     _episode_id("mqtt", mqtt_disconnected_since),
                     "crit",
                     "Collegamento MQTT Perso",
-                    f"{_capital(impact)} senza eventi.",
+                    f"{_capital(impact)} senza collegamento all'app.",
                     mqtt_disconnected_since or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                     weight=_reminder_weight(mqtt_disconnected_since, now),
@@ -284,7 +284,7 @@ class NotificationService:
         alarm_groups: list[list[dict]] = []
         if levels["door_alarm"] != "off":
             alarms = self.db.list_events(kind="allarme,manomissione", since=since, limit=MAX_EVENTS)
-            alarm_groups = _groups(alarms, lambda e: (e["kind"], e.get("door") or "", e.get("detail") or ""))
+            alarm_groups = _groups(alarms, lambda e: (e["kind"], e.get("door") or "", _base_detail(e)))
         # Coperchio aperto: l'apertura nel registro e lo stato del controller sono la stessa cosa, quindi una voce
         # sola. Al collaudo comparivano "Coperchio del Controller Aperto" e "Manomissione" con la stessa ora
         casing_current: dict[int, bool] = {}
@@ -292,7 +292,7 @@ class NotificationService:
         for group in reversed(alarm_groups):
             last = group[-1]
             c = by_name.get(last.get("source") or "")
-            if last["kind"] != "manomissione" or last.get("door") or last.get("detail") != CASING_OPEN or c is None:
+            if last["kind"] != "manomissione" or last.get("door") or _base_detail(last) != CASING_OPEN or c is None:
                 continue
             if c["id"] in casing_shown or not controller_configured or not c.get("casing_open") or c.get("unreachable"):
                 continue
@@ -530,9 +530,9 @@ class NotificationService:
                 add_group("door_alarm", "crit", "Allarme Porta", _capital(detail), group)
             elif last.get("door"):
                 add_group("door_alarm", "crit", "Manomissione", "", group)
-            elif detail == TILTED:
+            elif _base_detail(last) == TILTED:
                 add_group("door_alarm", "crit", "Controller Inclinato", "", group)
-            elif detail == CASING_OPEN:
+            elif _base_detail(last) == CASING_OPEN:
                 c = by_name.get(last.get("source") or "")
                 current = casing_current.get(id(group))
                 # Ancora aperto: resta come un guasto (nella barra in alto anche dopo la presa visione) finché non si
@@ -542,7 +542,9 @@ class NotificationService:
                     if current and levels["casing"] != "off"
                     else {}
                 )
-                closed = not current and c is not None and c.get("casing_open") is not None and not c.get("unreachable")
+                # "Richiuso" solo con il coperchio chiuso adesso: con il coperchio aperto un'apertura precedente può
+                # essere la stessa, ripetuta dal controller al riavvio (il registro la scrive a ogni avvio)
+                closed = c is not None and c.get("casing_open") is False and not c.get("unreachable")
                 add_group(
                     "door_alarm",
                     "crit",
@@ -752,6 +754,11 @@ def _json_dict(value: str | None) -> dict | None:
 
 def _names(names: list[str]) -> str:
     return f"{', '.join(names[:3])}{' e altri' if len(names) > 3 else ''}"
+
+
+def _base_detail(event: dict) -> str:
+    """Dettaglio senza i segni aggiunti dopo (" · ripetuta" per il coperchio aperto e chiuso di continuo)."""
+    return (event.get("detail") or "").split(" · ", 1)[0]
 
 
 def _capital(text: str) -> str:

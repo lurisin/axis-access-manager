@@ -274,7 +274,9 @@ def test_broker_needed_only_for_home_assistant_with_the_websocket(db):
     now = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
     live = {"connected": True, "down_since": None, "error": ""}
     [none] = _events_fault(db, live, now, mqtt_configured=False, mqtt_connected=False)
-    assert none["id"] == "mqtt:none" and none["text"] == "Home Assistant senza eventi. Installa Mosquitto."
+    assert (
+        none["id"] == "mqtt:none" and none["text"] == "Home Assistant senza collegamento all'app. Installa Mosquitto."
+    )
     # Senza l'integrazione con Home Assistant il broker non serve
     assert _events_fault(db, live, now, mqtt_configured=False, mqtt_connected=False, ha_integration=False) == []
 
@@ -525,12 +527,12 @@ def test_broker_needed_for_intercoms_too(db):
     [none] = _events_fault(
         db, live, now, mqtt_configured=False, mqtt_connected=False, ha_integration=False, intercoms=True
     )
-    assert none["id"] == "mqtt:none" and none["text"] == "Videocitofoni senza eventi. Installa Mosquitto."
+    assert none["id"] == "mqtt:none" and none["text"] == "Videocitofoni senza collegamento all'app. Installa Mosquitto."
     [lost] = _events_fault(
         db, live, now, mqtt_connected=False, intercoms=True, mqtt_disconnected_since="2026-10-31T08:00:00+00:00"
     )
     assert lost["title"] == "Collegamento MQTT Perso"
-    assert lost["text"] == "Home Assistant e videocitofoni senza eventi."
+    assert lost["text"] == "Home Assistant e videocitofoni senza collegamento all'app."
 
 
 def test_initial_state_from_the_site_controller():
