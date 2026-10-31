@@ -592,3 +592,11 @@ def test_access_token_never_in_the_log(caplog):
     assert live.last_error == "indirizzo del controller non valido"
     assert caplog.records and all("SEGRETO" not in r.getMessage() for r in caplog.records)
     assert any("wssession=***" in r.getMessage() for r in caplog.records)
+
+
+def test_events_of_different_sources_at_the_same_time_are_two():
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    for interface in ("Any", "eth0"):
+        lost = notify("tns1:Device/tnsaxis:Network/Lost", {"interface": interface}, {"lost": "0"}, 1793310909289)
+        assert monitor.apply_event(event_from_ws(lost["params"]["notification"]), True) is True
+    assert monitor.categories["Device"].count == 2
