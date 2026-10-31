@@ -63,6 +63,14 @@ def _refused(what: str, fault: str) -> VapixError:
     return VapixError(f"il controller ha rifiutato {what}" + (f" ({reason})" if reason else ""), fault)
 
 
+def cert_fingerprint(der: bytes | None) -> str:
+    """Impronta SHA-256 di un certificato (DER), come la mostrano i browser: AB:CD:…; vuota senza certificato."""
+    if not der:
+        return ""
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
+
+
 def _network_reason(err: Exception) -> str:
     """Perché il collegamento non è riuscito, in parole: il nome dell'eccezione resta nel log."""
     if isinstance(err, httpx.ConnectTimeout | TimeoutError):
@@ -240,8 +248,7 @@ class A1210Client:
             der = writer.get_extra_info("ssl_object").getpeercert(binary_form=True) or b""
         finally:
             writer.close()
-        digest = hashlib.sha256(der).hexdigest().upper()
-        return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2)) if der else ""
+        return cert_fingerprint(der)
 
     # Eventi in diretta con il WebSocket (vedi live_events)
 
@@ -266,7 +273,8 @@ class A1210Client:
             raise VapixError("credenziali del controller non valide")
         token = response.text.strip()
         if response.status_code != 200 or not token or not token.isalnum():
-            _LOGGER.info("Il controller ha risposto %s a wssession.cgi: %s", response.status_code, response.text[:200])
+            # Una volta per motivo nel log, dall'errore (vedi live_events): qui solo per il debug
+            _LOGGER.debug("Il controller ha risposto %s a wssession.cgi: %s", response.status_code, response.text[:200])
             raise VapixError(f"il controller non dà l'accesso al WebSocket (risposta {response.status_code})")
         return token
 
@@ -276,7 +284,8 @@ class A1210Client:
 
     def ws_ssl(self) -> ssl.SSLContext:
         """Stesse regole del client: certificato verificato solo se richiesto. Il controller sostituito si riconosce
-        dall'impronta del certificato (controllo periodico), e allora il WebSocket non si apre."""
+        dall'impronta del certificato: il WebSocket non si apre con un certificato diverso da quello memorizzato
+        (vedi live_events) e si chiude quando il controllo periodico sospende le scritture."""
         context = ssl.create_default_context()
         if not self.verify_ssl:
             context.check_hostname = False

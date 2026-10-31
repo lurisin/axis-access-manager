@@ -251,7 +251,8 @@ class EventMonitor:
     # Eventi in diretta dal WebSocket del controller (vedi live_events): con il WebSocket collegato, broker e
     # controller scollegati da MQTT non fanno perdere eventi
     ws_live: bool = False
-    # Impronte degli ultimi eventi (event_key), dalla più vecchia: lo stesso evento via WebSocket e MQTT conta una volta
+    # Impronte degli ultimi eventi (event_key), dalla più vecchia, e se sono arrivati solo come stato (conservati):
+    # lo stesso evento via WebSocket e MQTT conta una volta
     recent: OrderedDict = field(default_factory=OrderedDict)
     # Chiamata quando il controller va online o offline
     on_status: Callable[[], None] | None = None
@@ -333,6 +334,11 @@ class EventMonitor:
             if self.on_status:
                 self.on_status()
             return
+        if retained and self.ws_live:
+            # Il broker ripete gli ultimi eventi conservati a ogni collegamento, anche di molto tempo fa (controller
+            # poi scollegato dal broker): con il WebSocket collegato lo stato attuale lo danno lui e le letture del
+            # controller, e un coperchio aperto ad agosto non torna aperto
+            return
         event = parse_event(self.prefix, topic, payload)
         if event is not None:
             self.apply_event(event, retained)
@@ -343,8 +349,13 @@ class EventMonitor:
         key = event_key(event)
         if key in self.recent:
             self.recent.move_to_end(key)
+            if self.recent[key] and not retained:
+                # Arrivato prima come stato (appena collegato il WebSocket, o conservato dal broker) e ora in diretta:
+                # è successo adesso, e vale per il registro, Home Assistant e la foto. Lo stato è già aggiornato
+                self.recent[key] = False
+                self._dispatch(event, False)
             return False
-        self.recent[key] = None
+        self.recent[key] = retained
         while len(self.recent) > RECENT_EVENTS:
             self.recent.popitem(last=False)
         stats = self.categories.setdefault(event.category, CategoryStats())
@@ -359,12 +370,15 @@ class EventMonitor:
                 self.door_modes[token] = event.data["State"]
                 self._mark(("mode", token))
         self._track_state(event)
+        self._dispatch(event, retained)
+        return True
+
+    def _dispatch(self, event: Event, retained: bool) -> None:
         if self.on_event:
             try:
                 self.on_event(event, retained)
             except Exception:
                 _LOGGER.exception("Errore nella gestione dell'evento %s", event.topic)
-        return True
 
     def input_active(self, port: str | None, pushbutton: bool = False) -> bool | None:
         """Ingresso I/O attivo (None se non si sa). Gli AUX collegati come pulsante o relè (inout pu/gnd con un

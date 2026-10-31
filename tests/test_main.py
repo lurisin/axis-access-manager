@@ -470,6 +470,104 @@ def test_controller_log_read_at_every_round_without_live_events(client):
     assert live == {"source": "websocket", "websocket": None}
 
 
+def _log_entry(rowid, ts, *topic, **values):
+    keys = [{"Key": f"topic{i}", "Value": t} for i, t in enumerate(topic)]
+    return {"rowid": rowid, "UtcTime": ts, "KeyValues": keys + [{"Key": k, "Value": v} for k, v in values.items()]}
+
+
+def _utc(moment):
+    return moment.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def test_rounds_without_live_events_stay_out_of_the_activity_log(client, controller):
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    assert main.events_source(state) == ""
+    controller.log_events = []
+
+    def audits():
+        return [a for a in state.db.list_audit() if a["action"] == "eventi recuperati dal controller"]
+
+    # Primo recupero dopo l'avvio
+    client.portal.call(main._recover_if_needed, state)
+    for i in range(3):
+        when = datetime.now(tz=UTC)
+        controller.log_events.append(_log_entry(100 + i, _utc(when), "IdPoint", "Request", "IdData", Card=f"0000{i}"))
+        client.portal.call(main._recover_if_needed, state)
+    recovered = [e for e in state.db.list_events() if e["kind"] == "sconosciuta"]
+    assert len(recovered) == 3
+    # Senza eventi in diretta i passaggi arrivano così a ogni giro: nessuna riga nelle Attività
+    assert audits() == []
+    # Dopo un'interruzione sì
+    state.monitor.outages += 1
+    controller.log_events.append(_log_entry(200, _utc(datetime.now(tz=UTC)), "IdPoint", "Request", "IdData", Card="09"))
+    client.portal.call(main._recover_if_needed, state)
+    assert len(audits()) == 1
+
+
+def test_rounds_without_live_events_read_only_new_controller_events(client, controller):
+    from datetime import timedelta
+
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    old = datetime.now(tz=UTC) - timedelta(hours=5)
+    state.db.add_event(ts=old.isoformat(timespec="seconds"), kind="concesso", door="porta")
+    state.recover_from = main._recover_mark(state)
+    # Nel registro del controller solo eventi che non fanno righe (modalità della porta)
+    controller.log_events = [_log_entry(1, _utc(datetime.now(tz=UTC)), "Door", "State", "DoorMode", State="Locked")]
+    calls = []
+    original = state.service.recover_events
+
+    async def spy(since):
+        calls.append(since)
+        return await original(since)
+
+    state.service.recover_events = spy
+    client.portal.call(main._recover_if_needed, state)
+    client.portal.call(main._recover_if_needed, state)
+    assert calls[0] < old and calls[1] > datetime.now(tz=UTC) - timedelta(minutes=1)
+
+
+def test_controller_added_later_does_not_import_old_history(client):
+    from datetime import timedelta
+
+    from app import main
+
+    state = client.app.state
+    # Add-on avviato giorni fa senza controller, registro vuoto: il controller aggiunto adesso parte da adesso
+    days_ago = datetime.now(tz=UTC) - timedelta(days=3)
+    assert state.recover_from[0] == ""
+    state.recover_from, state.recover_host = ("", days_ago), ""
+    client.portal.call(main.reload_runtime, client.app)
+    assert state.recover_from[1] > datetime.now(tz=UTC) - timedelta(minutes=1)
+    # Stesso controller, nuova configurazione (nome di una porta): resta il punto di prima
+    state.recover_from = ("", days_ago)
+    client.portal.call(main.reload_runtime, client.app)
+    assert state.recover_from[1] == days_ago
+
+
+def test_websocket_connecting_is_not_yet_a_problem(client):
+    from datetime import timedelta
+
+    from app.live_events import LiveEvents
+
+    state = client.app.state
+    live = LiveEvents(state.monitor, None, lambda: True)
+    state.live_events = live
+    live.down_since = (datetime.now(tz=UTC) - timedelta(seconds=10)).isoformat(timespec="seconds")
+    websocket = client.get("/api/status").json()["live"]["websocket"]
+    assert websocket["failing"] is False and websocket["down_since"]
+    assert client.get("/api/dashboard").json()["system"]["events_waiting"] is True
+    live.down_since = (datetime.now(tz=UTC) - timedelta(minutes=2)).isoformat(timespec="seconds")
+    assert client.get("/api/status").json()["live"]["websocket"]["failing"] is True
+    assert client.get("/api/dashboard").json()["system"]["events_waiting"] is False
+    state.live_events = None
+
+
 def test_status_reports_database(client):
     data = client.get("/api/status").json()
     assert data["database"]["schema"] >= 2

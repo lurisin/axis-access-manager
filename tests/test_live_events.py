@@ -1,5 +1,8 @@
 import asyncio
+import contextlib
 import json
+import logging
+import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -10,7 +13,7 @@ from app import live_events
 from app.events import EventMonitor, event_from_ws, event_key, parse_event
 from app.live_events import LiveEvents
 from app.notifications import NotificationService
-from app.vapix import A1210Client, VapixError
+from app.vapix import A1210Client, VapixError, cert_fingerprint
 
 PREFIX = "accessi/x"
 DOOR = "porta_via_consulta_ingresso_scala"
@@ -115,6 +118,12 @@ def quick(monkeypatch):
     monkeypatch.setattr(live_events, "RETRY_DELAYS", (0.05,))
 
 
+async def _shutdown(server):
+    server.close()
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(server.wait_closed(), 2)
+
+
 async def _until(check, seconds=3.0):
     for _ in range(int(seconds / 0.02)):
         if check():
@@ -163,7 +172,7 @@ async def test_events_from_the_websocket(quick):
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        server.close()
+        await _shutdown(server)
     assert monitor.ws_live is False and live.connected is False
 
 
@@ -185,7 +194,7 @@ async def test_filters_refused_by_the_controller(quick):
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        server.close()
+        await _shutdown(server)
 
 
 async def test_no_websocket_while_the_controller_does_not_answer(quick, monkeypatch):
@@ -269,3 +278,257 @@ def test_broker_needed_only_for_home_assistant_with_the_websocket(db):
     assert none["text"].endswith("Gli eventi del controller arrivano comunque con il WebSocket.")
     # Senza l'integrazione con Home Assistant il broker non serve
     assert _events_fault(db, live, now, mqtt_configured=False, mqtt_connected=False, ha_integration=False) == []
+
+
+def test_live_copy_of_an_event_first_seen_as_state_goes_to_the_log():
+    """Allarme nei primi secondi del WebSocket (preso per stato) e poi in diretta via MQTT: vale per il registro."""
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    seen = []
+    monitor.on_event = lambda event, retained: seen.append(retained)
+    alarm = event_from_ws(
+        notify("tns1:Door/State/DoorAlarm", {"DoorToken": DOOR}, {"State": "DoorForcedOpen"})["params"]["notification"]
+    )
+    assert monitor.apply_event(alarm, retained=True) is True
+    payload = json.dumps({"timestamp": 1792951050860, "message": {"data": {"State": "DoorForcedOpen"}}}).encode()
+    monitor.handle(f"{PREFIX}/eventi/Door/State/DoorAlarm/$source/DoorToken/{DOOR}", payload)
+    assert seen == [True, False] and monitor.categories["Door"].count == 1
+    # Una terza copia, conservata o no, non fa più niente
+    monitor.handle(f"{PREFIX}/eventi/Door/State/DoorAlarm/$source/DoorToken/{DOOR}", payload)
+    monitor.apply_event(alarm, retained=True)
+    assert seen == [True, False]
+
+
+def test_old_broker_messages_do_not_change_the_state_with_the_websocket():
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    monitor.casing_open, monitor.casing_since = False, "2026-10-30T08:00:00+00:00"
+    monitor.ws_live = True
+    # Mosquitto riavviato: ripete il coperchio aperto conservato da settembre
+    old = json.dumps({"timestamp": 1758400000000, "message": {"data": {"Open": "1"}}}).encode()
+    monitor.handle(f"{PREFIX}/eventi/Device/Casing/Open/$source/Name/Casing", old, retained=True)
+    assert monitor.casing_open is False and monitor.casing_since == "2026-10-30T08:00:00+00:00"
+    # In diretta sì, e senza WebSocket anche i conservati (prima lettura dopo l'avvio)
+    monitor.handle(f"{PREFIX}/eventi/Device/Casing/Open/$source/Name/Casing", old)
+    assert monitor.casing_open is True
+    monitor.ws_live = False
+    closed = json.dumps({"timestamp": 1758400001000, "message": {"data": {"Open": "0"}}}).encode()
+    monitor.handle(f"{PREFIX}/eventi/Device/Casing/Open/$source/Name/Casing", closed, retained=True)
+    assert monitor.casing_open is False
+
+
+def _ack():
+    return json.dumps({"apiVersion": "1.0", "context": "aam", "method": "events:configure", "data": {}})
+
+
+async def test_websocket_closes_when_the_controller_changes(quick):
+    """Controller cambiato (scritture sospese) mentre il WebSocket è aperto: si chiude subito, niente più eventi."""
+
+    async def handler(ws):
+        await ws.recv()
+        await ws.send(_ack())
+        for i in range(500):
+            await ws.send(
+                json.dumps(
+                    notify("tns1:Device/tnsaxis:IO/Port", {"port": "0"}, {"state": str(i % 2)}, 1792951050860 + i)
+                )
+            )
+            await asyncio.sleep(0.01)
+
+    server, port = await _controller(handler)
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    answering = {"now": True}
+    live = LiveEvents(monitor, FakeClient(port), lambda: answering["now"])
+    task = asyncio.create_task(live.run())
+    try:
+        await _until(lambda: live.events >= 5)
+        # Un solo controllo fallito (None) non basta per chiudere
+        answering["now"] = None
+        live.wake.set()
+        await asyncio.sleep(0.1)
+        assert live.connected
+        answering["now"] = False
+        live.wake.set()
+        await _until(lambda: not live.connected)
+        count = live.events
+        await asyncio.sleep(0.2)
+        assert live.events == count and not monitor.ws_live
+        assert live.last_error == "il controller non risponde più o è cambiato"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _shutdown(server)
+
+
+async def test_no_events_from_a_controller_suspended_while_connecting(quick):
+    answering = {"now": True}
+
+    async def handler(ws):
+        await ws.recv()
+        # Sospeso mentre si collegava (controllo periodico che trova un controller diverso)
+        answering["now"] = False
+        await ws.send(_ack())
+        await asyncio.sleep(1)
+
+    server, port = await _controller(handler)
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    live = LiveEvents(monitor, FakeClient(port), lambda: answering["now"])
+    task = asyncio.create_task(live.run())
+    try:
+        await _until(lambda: live.last_error)
+        assert live.last_error == "il controller non risponde più o è cambiato" and not monitor.ws_live
+        assert live.events == 0 and monitor.outages == 0
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _shutdown(server)
+
+
+class _Peer:
+    def __init__(self, der):
+        self.der = der
+
+    def get_extra_info(self, name):
+        assert name == "ssl_object"
+        return self
+
+    def getpeercert(self, binary_form=False):
+        return self.der
+
+
+class _Socket:
+    def __init__(self, der):
+        self.transport = _Peer(der)
+
+
+def test_websocket_only_with_the_known_certificate():
+    known = {"fp": ""}
+    live = LiveEvents(EventMonitor(prefix=PREFIX), FakeClient(1), lambda: True, fingerprint=lambda: known["fp"])
+    # Controller non ancora riconosciuto: nessun confronto
+    live._check_certificate(_Socket(b"certificato"))
+    known["fp"] = cert_fingerprint(b"certificato")
+    live._check_certificate(_Socket(b"certificato"))
+    # Un altro apparecchio all'indirizzo, prima che il controllo periodico se ne accorga
+    with pytest.raises(live_events.WebSocketError, match="certificato"):
+        live._check_certificate(_Socket(b"un altro"))
+    # Senza TLS (prove) non c'è niente da confrontare
+    live._check_certificate(_Socket(None))
+    assert known["fp"].count(":") == 31
+
+
+async def test_connection_that_drops_right_away_backs_off(quick, monkeypatch, caplog):
+    """Controller che accetta i filtri e chiude subito: attese sempre più lunghe, un avviso, guasto dal primo."""
+    monkeypatch.setattr(live_events, "RETRY_DELAYS", (0.02, 0.05, 0.3))
+
+    async def handler(ws):
+        await ws.recv()
+        await ws.send(_ack())
+
+    server, port = await _controller(handler)
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    client = FakeClient(port)
+    live = LiveEvents(monitor, client, lambda: True)
+    task = asyncio.create_task(live.run())
+    caplog.set_level(logging.DEBUG, logger="app.live_events")
+    try:
+        await _until(lambda: client.sessions >= 2 and live.down_since)
+        first = live.down_since
+        sessions = client.sessions
+        await asyncio.sleep(0.5)
+        # Arrivato alle attese lunghe: pochi tentativi, e il guasto conta dalla prima caduta
+        assert client.sessions - sessions <= 3 and live.down_since == first
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        infos = [r for r in caplog.records if r.levelno == logging.INFO]
+        assert len(warnings) == 1 and len(infos) == 1
+        # Ogni ritorno dopo una caduta rilegge lo stato e recupera gli eventi persi
+        assert monitor.outages >= 2 * (client.sessions - 1)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _shutdown(server)
+
+
+async def test_stable_connection_that_drops_starts_over(quick, monkeypatch):
+    monkeypatch.setattr(live_events, "STABLE_AFTER", 0)
+    live = LiveEvents(EventMonitor(prefix=PREFIX), FakeClient(1), lambda: True)
+    live.down_since, live._attempt, live._logged_error = "2026-10-31T08:00:00+00:00", 3, "collegamento perso"
+    live._connected()
+    assert live.status()["down_since"] is None and live.status()["error"] == ""
+    live._lost(live_events.WebSocketError("collegamento perso"))
+    assert live._attempt == 0 and live.down_since > "2026-10-31T08:00:00+00:00"
+    assert live._logged_error == "collegamento perso"
+
+
+async def test_stopping_does_not_wait_for_a_silent_controller(quick):
+    """Controller spento con il WebSocket aperto: una nuova configurazione non aspetta la chiusura ordinata."""
+    stop, peers = asyncio.Event(), []
+
+    async def handler(ws):
+        peers.append(ws)
+        await ws.recv()
+        await ws.send(_ack())
+        # Non legge più niente, nemmeno la chiusura
+        ws.transport.pause_reading()
+        await stop.wait()
+
+    server, port = await _controller(handler)
+    live = LiveEvents(EventMonitor(prefix=PREFIX), FakeClient(port), lambda: True)
+    task = asyncio.create_task(live.run())
+    try:
+        await _until(lambda: live.connected)
+        started = time.monotonic()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert time.monotonic() - started < 1
+    finally:
+        stop.set()
+        for peer in peers:
+            peer.transport.abort()
+        await _shutdown(server)
+
+
+async def test_websocket_task_survives_errors_and_retries_soon(quick, monkeypatch):
+    monkeypatch.setattr(live_events, "IDLE_WAIT", 0.05)
+    answers = iter([RuntimeError("database"), True, None, True])
+    calls = []
+
+    def responding():
+        calls.append(1)
+        value = next(answers, True)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    client = FakeClient(1)
+    live = LiveEvents(EventMonitor(prefix=PREFIX), client, responding)
+    live._attempt = 3
+    task = asyncio.create_task(live.run())
+    try:
+        await _until(lambda: client.sessions >= 2)
+        assert not task.done()
+        # Controller che non ha risposto a un controllo: al ritorno attese di nuovo brevi
+        assert live._attempt <= 2
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+def test_websocket_fault_waits_a_minute_in_the_interface():
+    live = LiveEvents(EventMonitor(prefix=PREFIX), FakeClient(1), lambda: True)
+    assert live.status()["failing"] is False
+    live.down_since = (datetime.now(tz=UTC) - timedelta(seconds=10)).isoformat(timespec="seconds")
+    assert live.status()["failing"] is False and live.status()["down_since"]
+    live.down_since = (datetime.now(tz=UTC) - timedelta(seconds=61)).isoformat(timespec="seconds")
+    assert live.status()["failing"] is True
+
+
+def test_broker_needed_for_intercoms_too(db):
+    now = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
+    live = {"connected": True, "down_since": None, "error": ""}
+    [none] = _events_fault(
+        db, live, now, mqtt_configured=False, mqtt_connected=False, ha_integration=False, intercoms=True
+    )
+    assert none["id"] == "mqtt:none" and none["text"].startswith("Le chiamate e le aperture dei videocitofoni")
+    [lost] = _events_fault(
+        db, live, now, mqtt_connected=False, intercoms=True, mqtt_disconnected_since="2026-10-31T08:00:00+00:00"
+    )
+    assert lost["title"] == "Collegamento MQTT Perso"
+    assert "Home Assistant non riceve stato, pulsanti ed eventi dell'app; le chiamate" in lost["text"]

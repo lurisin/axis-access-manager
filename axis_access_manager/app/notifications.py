@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 
 from .backup_copy import RESTORED
 from .db import Database
+from .live_events import FAULT_AFTER
 from .service import ServiceError, plural
 
 # Tipo → nome, descrizione, livello predefinito
@@ -45,7 +46,7 @@ TYPES = {
     "mqtt": (
         "Eventi in Diretta e MQTT",
         "Gli eventi del controller non arrivano in diretta (né con il WebSocket né con MQTT), oppure l'app non è "
-        "collegata al broker MQTT che porta stato, pulsanti ed eventi in Home Assistant.",
+        "collegata al broker MQTT che serve a Home Assistant (stato, pulsanti ed eventi) e ai videocitofoni.",
         "urgent",
     ),
     "unknown_card": ("Tessere Sconosciute", "Tessere non registrate passate sul lettore.", "urgent"),
@@ -118,8 +119,8 @@ GROUP_WINDOW = timedelta(minutes=5)
 # Un guasto di collegamento preso visione torna da gestire ogni tanto, finché dura
 REMIND_AFTER = timedelta(hours=4)
 # Il WebSocket che non si collega diventa un guasto dopo questo tempo: un tentativo fallito e riuscito al successivo
-# non lo è
-WS_GRACE = timedelta(minutes=1)
+# non lo è (lo stesso tempo dell'interfaccia)
+WS_GRACE = timedelta(seconds=FAULT_AFTER)
 MAX_EVENTS = 500
 SEVERITY_ORDER = {"crit": 0, "warn": 1, "low": 2}
 SETTING_LEVELS = "notifications"
@@ -194,6 +195,7 @@ class NotificationService:
         mqtt_disconnected_since: str = "",
         ws: dict | None = None,
         ha_integration: bool = True,
+        intercoms: bool = False,
         door_names: dict[str, str],
         cameras: list[dict] | None = None,
         controllers: list[dict] | None = None,
@@ -209,7 +211,8 @@ class NotificationService:
         db_recovery: cosa ha fatto all'avvio il controllo del database (backup_copy.recover), "" se era sano.
         ha_copy_error: perché l'ultima copia per il backup di Home Assistant non è stata aggiornata.
         ws: stato del WebSocket degli eventi (LiveEvents.status), None se l'app non lo usa.
-        ha_integration: l'integrazione con Home Assistant, che passa dal broker MQTT, è attiva."""
+        ha_integration: l'integrazione con Home Assistant, che passa dal broker MQTT, è attiva.
+        intercoms: ci sono videocitofoni, i cui eventi arrivano dal broker MQTT."""
         now = now or datetime.now(tz=UTC)
         levels = self.levels()
         since = (now - RECENT).astimezone(UTC).isoformat(timespec="seconds")
@@ -277,9 +280,19 @@ class NotificationService:
             )
 
         ws_live = bool(ws and ws.get("connected"))
-        # Il broker serve a Home Assistant; agli eventi del controller basta il WebSocket (vedi il guasto più sotto)
+        # Il broker serve a Home Assistant e ai videocitofoni; agli eventi del controller basta il WebSocket (vedi il
+        # guasto più sotto)
         still = " Gli eventi del controller arrivano comunque con il WebSocket." if ws_live else ""
-        if controller_configured and ha_integration:
+        impact = "; ".join(
+            text
+            for text, needed in (
+                ("Home Assistant non riceve stato, pulsanti ed eventi dell'app", ha_integration),
+                ("le chiamate e le aperture dei videocitofoni non arrivano all'app", intercoms),
+            )
+            if needed
+        )
+        impact = impact[:1].upper() + impact[1:]
+        if controller_configured and impact:
             if not mqtt_configured:
                 # Il broker si cerca di nuovo ogni minuto (main._wait_for_broker): la notifica sparisce da sola
                 add(
@@ -287,9 +300,8 @@ class NotificationService:
                     "mqtt:none",
                     "crit",
                     "Nessun Broker MQTT",
-                    "Home Assistant non riceve stato, pulsanti ed eventi dell'app. Installa l'add-on Mosquitto o "
-                    "imposta il broker nelle opzioni dell'add-on: l'app lo cerca di nuovo ogni minuto, senza riavvio."
-                    + still,
+                    f"{impact}. Installa l'add-on Mosquitto o imposta il broker nelle opzioni dell'add-on: l'app lo "
+                    "cerca di nuovo ogni minuto, senza riavvio." + still,
                     now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
@@ -299,8 +311,7 @@ class NotificationService:
                     _episode_id("mqtt", mqtt_disconnected_since),
                     "crit",
                     "Collegamento MQTT Perso",
-                    "L'app non è più collegata al broker MQTT: Home Assistant non riceve stato, pulsanti ed eventi "
-                    "dell'app." + still,
+                    f"L'app non è più collegata al broker MQTT. {impact}." + still,
                     mqtt_disconnected_since or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                     weight=_reminder_weight(mqtt_disconnected_since, now),
