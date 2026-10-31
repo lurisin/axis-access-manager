@@ -568,6 +568,48 @@ def test_websocket_connecting_is_not_yet_a_problem(client):
     state.live_events = None
 
 
+def test_controller_clock_ahead_then_corrected_does_not_stop_recovery(client, controller):
+    from datetime import timedelta
+
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    # Un recupero ha letto un evento con l'ora del controller avanti di 2 ore, poi l'orologio è stato corretto
+    state.recover_cutoff = (state.settings.a1210_host, datetime.now(tz=UTC) + timedelta(hours=2))
+    state.recover_from = main._recover_mark(state)
+    now = datetime.now(tz=UTC)
+    controller.log_events = [_log_entry(1, _utc(now), "IdPoint", "Request", "IdData", Card="07")]
+    client.portal.call(main._recover_if_needed, state)
+    assert [e["card"] for e in state.db.list_events() if e["kind"] == "sconosciuta"] == ["07"]
+
+
+def test_responding_changes_wake_the_websocket_from_any_check(client):
+    from app import main
+    from app.live_events import LiveEvents
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    live = LiveEvents(state.monitor, None, lambda: True)
+    state.live_events = live
+    # Di nuovo raggiungibile (anche se se ne accorge la sincronizzazione): WebSocket e lettura subito, recupero nelle
+    # Attività
+    state.responding_seen, state.recover_periodic = False, True
+    state.state_wake.clear()
+    main._signal_responding(state)
+    assert live.wake.is_set() and state.state_wake.is_set() and state.recover_periodic is False
+    live.wake.clear()
+    main._signal_responding(state)
+    assert not live.wake.is_set()
+    # Controller cambiato: niente "In Collegamento" nel cruscotto, il WebSocket non si prova
+    state.controller.paused = "il controller è cambiato"
+    assert main._events_waiting(state) is False
+    main._signal_responding(state)
+    assert live.wake.is_set() and state.responding_seen is False
+    state.controller.paused = ""
+    state.live_events = None
+
+
 def test_status_reports_database(client):
     data = client.get("/api/status").json()
     assert data["database"]["schema"] >= 2

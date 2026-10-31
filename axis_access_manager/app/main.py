@@ -1445,6 +1445,8 @@ def create_app(
         except LookupError as err:
             raise HTTPException(404, str(err)) from err
         _apply_pause(state)
+        # Cambio confermato: WebSocket e lettura completa subito, recupero nelle Attività
+        _signal_responding(state)
         with contextlib.suppress(VapixError, ServiceError):
             if state.settings.a1210_host:
                 result = await state.service.sync_from_controller()
@@ -1758,6 +1760,8 @@ async def _start_runtime(app: FastAPI) -> None:
     # Eventi persi da recuperare dal registro del controller: all'avvio e dopo ogni interruzione
     state.recover_pending = True
     state.recover_outages = 0
+    # Il primo recupero con la nuova configurazione va nelle Attività, anche dopo giri senza eventi in diretta
+    state.recover_periodic = False
     fresh = getattr(state, "recover_from", None) is None
     if fresh or (not state.recover_from[0] and getattr(state, "recover_host", None) != cfg.a1210_host):
         # Da dove recuperare: l'ultimo evento del registro quando era completo. Una nuova configurazione tiene
@@ -1910,6 +1914,7 @@ async def reload_runtime(app: FastAPI) -> None:
     except Exception:  # noqa: BLE001
         _LOGGER.exception("Controllo dei controller non riuscito")
     _apply_pause(app.state)
+    _signal_responding(app.state)
     if getattr(app.state, "live_events", None):
         # Indirizzo corretto: il WebSocket si prova subito, senza aspettare il prossimo giro; controller diverso: il
         # collegamento appena aperto si chiude
@@ -2293,6 +2298,24 @@ def _health_client(app: FastAPI, row: dict):
     return A1210Client(row["host"], row["username"], row["password"], bool(row["verify_ssl"]))
 
 
+def _signal_responding(state) -> None:
+    """Dopo ogni controllo di chi risponde (giro periodico, sincronizzazione, nuova configurazione): se il controller
+    ha smesso o ripreso a rispondere, stato sconosciuto subito o lettura completa, e il WebSocket si chiude o si
+    riprova subito. Il valore già segnalato si tiene qui, perché il cambio può venire da uno qualunque dei controlli."""
+    responding = _responding(state)
+    seen = getattr(state, "responding_seen", None)
+    if responding == seen:
+        return
+    state.responding_seen = responding
+    if seen is False and responding is True:
+        # Di nuovo raggiungibile, o cambio confermato: il recupero degli eventi del tempo in mezzo va nelle Attività
+        state.recover_periodic = False
+    if getattr(state, "state_wake", None):
+        state.state_wake.set()
+    if getattr(state, "live_events", None):
+        state.live_events.wake.set()
+
+
 def _apply_pause(state) -> None:
     """Scritture verso il controller in uso sospese se è cambiato e nessuno ha confermato."""
     before = state.controller.paused
@@ -2312,7 +2335,6 @@ async def _health_loop(app: FastAPI) -> None:
             primary = state.installation.primary
             was = state.health.states.get(primary["id"]) if primary else None
             was_down = bool(was and was.failures)
-            responding = _responding(state)
             await state.health.check_all()
             now = state.health.states.get(primary["id"]) if primary else None
             if was_down and now is not None and now.online:
@@ -2321,11 +2343,7 @@ async def _health_loop(app: FastAPI) -> None:
             _apply_pause(state)
             if before != state.controller.paused:
                 state.service.notify_change()
-            if _responding(state) != responding:
-                # Non risponde più: stato sconosciuto subito. Torna a rispondere: lettura completa e WebSocket subito
-                state.state_wake.set()
-                if getattr(state, "live_events", None):
-                    state.live_events.wake.set()
+            _signal_responding(state)
             await _recover_if_needed(state)
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo dei controller non riuscito")
@@ -2367,9 +2385,11 @@ async def _recover_if_needed(state) -> None:
     since = min(start, marked_at)
     # Già letto fino a qui dal registro del controller (ora del controller): senza eventi in diretta ogni giro legge
     # solo quelli nuovi, anche quando gli ultimi eventi del registro non fanno righe (modalità della porta, ingressi)
+    # (al massimo fin dove l'app l'ha visto completo, con la sua ora: un orologio del controller avanti e poi corretto
+    # non porta l'inizio nel futuro)
     host, cutoff = getattr(state, "recover_cutoff", None) or ("", None)
     if cutoff is not None and host == state.settings.a1210_host:
-        since = max(since, cutoff)
+        since = max(since, min(cutoff, marked_at))
     since = since - timedelta(seconds=RECOVER_OVERLAP)
     since = max(since, datetime.now(tz=UTC) - RECOVER_LIMIT)
     try:
@@ -2435,7 +2455,9 @@ def _events_waiting(state) -> bool:
     """Nessun evento in diretta, ma il WebSocket si sta collegando o non si collega da meno di un minuto (vedi
     live_events.FAULT_AFTER): non ancora un problema da mostrare."""
     live = getattr(state, "live_events", None)
-    return bool(live) and not events_live(state) and not live.connected and not live.failing()
+    # Controller che non risponde o cambiato (scritture sospese): il WebSocket non si prova, non è in collegamento
+    waiting = bool(live) and _responding(state) is not False
+    return waiting and not events_live(state) and not live.connected and not live.failing()
 
 
 def _responding(state) -> bool | None:
@@ -2684,6 +2706,7 @@ async def _sync(state) -> tuple[bool, int]:
         # prima del controllo di stato, e un controller sostituito non si legge finché non lo si conferma
         health = await state.health.check(primary)
         _apply_pause(state)
+        _signal_responding(state)
         if state.controller.paused:
             state.service.notify_change()
         if not health.online and not state.controller.paused:

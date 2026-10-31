@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -260,6 +261,8 @@ class LiveEvents:
         self._up_at = time.monotonic()
         if not self._announced:
             self._announced = True
+            # Dopo «in diretta» nel log, la prossima caduta si scrive di nuovo anche se ha lo stesso motivo
+            self._logged_error = ""
             _LOGGER.info("Eventi del controller in diretta con il WebSocket")
         else:
             _LOGGER.debug("WebSocket degli eventi di nuovo collegato")
@@ -284,9 +287,9 @@ class LiveEvents:
         if text != self._logged_error:
             # Una volta per motivo: con il WebSocket che non si apre il log non si riempie a ogni tentativo
             self._logged_error = text
-            _LOGGER.warning("WebSocket degli eventi non collegato: %s (%r)", text, err)
-        else:
-            _LOGGER.debug("WebSocket degli eventi non collegato: %r", err)
+            # Il dettaglio può contenere l'indirizzo con il gettone di accesso: nel log solo il tipo di errore
+            _LOGGER.warning("WebSocket degli eventi non collegato: %s (%s)", text, type(err).__name__)
+        _LOGGER.debug("WebSocket degli eventi non collegato: %s", _redact(repr(err)))
         self._set_live(False)
 
     def _set_live(self, live: bool) -> None:
@@ -322,6 +325,11 @@ class LiveEvents:
             "events": self.events,
             "last_event_at": self.last_event_at or None,
         }
+
+
+def _redact(text: str) -> str:
+    """Gettone di accesso al WebSocket tolto da un testo per il log."""
+    return re.sub(r"wssession=[^&'\"\s]+", "wssession=***", text)
 
 
 def _abort(ws) -> None:

@@ -532,3 +532,63 @@ def test_broker_needed_for_intercoms_too(db):
     )
     assert lost["title"] == "Collegamento MQTT Perso"
     assert "Home Assistant non riceve stato, pulsanti ed eventi dell'app; le chiamate" in lost["text"]
+
+
+def test_initial_state_from_the_site_controller():
+    """Raffica iniziale letta in sola lettura dall'A1210 in loco il 31/10: coperchio aperto dall'avvio del 29/10."""
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    burst = [
+        ("tns1:Device/tnsaxis:Status/SystemReady", 1793310931717, {}, {"ready": "1"}),
+        ("tns1:Device/tnsaxis:IO/Port", 1793311113230, {"port": "0"}, {"state": "1"}),
+        ("tns1:Device/tnsaxis:IO/Port", 1793311113230, {"port": "-1"}, {"state": "1"}),
+        ("tns1:Device/tnsaxis:IO/Port", 1793311110557, {"port": "1"}, {"state": "0"}),
+        ("tns1:Device/tnsaxis:IO/VirtualPort", 1793310918319, {"port": "1"}, {"state": "0"}),
+        ("tns1:Device/Trigger/DigitalInput", 1793310917354, {"InputToken": "2"}, {"LogicalState": "0"}),
+        ("tns1:Device/tnsaxis:Casing/Open", 1793310917346, {"Name": "Casing"}, {"Open": "1"}),
+        ("tns1:Device/tnsaxis:MQTT/ClientStatus", 1793311159728, {}, {"connected": "1", "active": "1"}),
+        ("tns1:Door/State/DoorAlarm", 1793310920068, {"DoorToken": DOOR}, {"State": "Normal"}),
+        ("tns1:Door/State/DoorTamper", 1793310920067, {"DoorToken": DOOR}, {"State": "NotInTamper"}),
+        ("tns1:Door/State/DoorMode", 1793397329960, {"DoorToken": DOOR}, {"State": "Locked"}),
+    ]
+    for topic, ts, source, data in burst:
+        assert monitor.apply_event(event_from_ws(notify(topic, source, data, ts)["params"]["notification"]), True)
+    assert monitor.casing_open is True and monitor.casing_since == "2026-10-29T21:55:17+00:00"
+    assert monitor.system_ready == "2026-10-29T21:55:31+00:00"
+    assert monitor.io_ports["0"] is True and monitor.io_ports["1"] is False
+    assert monitor.door_modes == {DOOR: "Locked"}
+    alarm = monitor.door_conditions[DOOR]
+    assert alarm["allarme"]["active"] is False and alarm["manomissione"]["active"] is False
+
+
+def test_log_says_again_when_the_websocket_keeps_dropping(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG, logger="app.live_events")
+    live = LiveEvents(EventMonitor(prefix=PREFIX), FakeClient(1), lambda: True)
+    closed = live_events.WebSocketError("collegamento chiuso dal controller")
+    live._connected()
+    monkeypatch.setattr(live_events, "STABLE_AFTER", 0)
+    live._lost(closed)
+    # Di nuovo «in diretta» nel log, ma cade subito: la caduta si scrive di nuovo, le successive no
+    live._connected()
+    monkeypatch.setattr(live_events, "STABLE_AFTER", 60)
+    live._lost(closed)
+    live._connected()
+    live._lost(closed)
+    levels = [(r.levelname, r.getMessage().split(":")[0]) for r in caplog.records if r.levelno >= logging.INFO]
+    assert levels == [
+        ("INFO", "Eventi del controller in diretta con il WebSocket"),
+        ("WARNING", "WebSocket degli eventi non collegato"),
+        ("INFO", "Eventi del controller in diretta con il WebSocket"),
+        ("WARNING", "WebSocket degli eventi non collegato"),
+    ]
+
+
+def test_access_token_never_in_the_log(caplog):
+    from websockets.exceptions import InvalidURI
+
+    caplog.set_level(logging.DEBUG, logger="app.live_events")
+    live = LiveEvents(EventMonitor(prefix=PREFIX), FakeClient(1), lambda: True)
+    url = "wss://admin@10.0.0.5/vapix/ws-data-stream?wssession=SEGRETO0123456789ABC&sources=events"
+    live._lost(InvalidURI(url, "username provided without password"))
+    assert live.last_error == "indirizzo del controller non valido"
+    assert caplog.records and all("SEGRETO" not in r.getMessage() for r in caplog.records)
+    assert any("wssession=***" in r.getMessage() for r in caplog.records)
