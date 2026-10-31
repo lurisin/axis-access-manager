@@ -194,14 +194,52 @@
   .log-detail { max-height: calc(100vh - 92px); overflow-y: auto; }
   .hidden-count { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--surface-2); font-size: 13px; color: var(--muted); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .ctl-card { position: relative; padding: 0; }
-  .ctl-main { display: flex; flex-direction: column; gap: 6px; padding: 16px 60px 16px 18px; color: var(--text); }
-  .ctl-main:hover { text-decoration: none; background: var(--surface-2); border-radius: inherit; }
-  .ctl-name { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; }
-  .ctl-stats { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; font-size: 13px; color: var(--muted); }
+  /* Elenco dei controller: una riga a tutta larghezza per controller, cliccabile; l'ingranaggio a destra apre la connessione */
+  .list > .item.ctl-row { padding: 0; gap: 0; }
+  .ctl-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 14px 18px; color: var(--text); }
+  .ctl-main:hover { text-decoration: none; background: var(--surface-2); }
+  .ctl-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-weight: 700; font-size: 16px; }
+  .ctl-stats { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 16px; font-size: 13px; color: var(--muted); flex: none; }
   .ctl-stats b { color: var(--text); font-size: 15px; }
-  .ctl-gear { position: absolute; top: 12px; right: 12px; }
+  .ctl-gear { flex: none; margin-right: 12px; }
   .ctl-head { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+  /* Impostazioni: le due schede del backup affiancate, i tipi di notifica su due colonne quando c'è posto */
+  .bk-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 16px; align-items: start; margin-bottom: 16px; }
+  .bk-cols > .card { margin: 0; }
+  @media (min-width: 1400px) {
+    .list.two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 0; }
+    .list.two-col > .item:nth-child(2) { border-top: none; }
+    .list.two-col > .item:nth-child(odd) { border-right: 1px solid var(--border); }
+  }
+  /* Pagina Connessione: posizione e collegamento affiancati quando c'è posto, senza campi troppo lunghi */
+  .conn-form { max-width: 1200px; }
+  .conn-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 16px; align-items: start; margin-bottom: 16px; }
+  .conn-cols > .card { margin: 0; }
+  /* Porte del controller: impostazioni dell'app e del controller affiancate quando c'è posto */
+  /* Telefono: una sotto l'altra; schermo medio: app e controller a sinistra, tempi a destra; largo: tre colonne */
+  .door-cols { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px 40px; }
+  @media (min-width: 1100px) {
+    .door-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: auto 1fr; grid-template-areas: "app times" "ctl times"; }
+    .door-app { grid-area: app; } .door-ctl { grid-area: ctl; } .door-times { grid-area: times; }
+  }
+  @media (min-width: 1600px) { .door-cols { grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: auto; grid-template-areas: "app ctl times"; } }
+  .door-cols .section-title { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+  /* Tempi: etichetta larga e valore a destra, così le etichette lunghe non vanno a capo */
+  .door-times dl.props { grid-template-columns: minmax(0, 1fr) auto; }
+  .door-times dl.props dd { text-align: right; }
+  .door-times dl.props dt:not(:first-child) { margin-top: 0; }
+  /* Lettori del controller: righe con colonne allineate; sul telefono le colonne vanno sotto il nome */
+  .list > .item.rd-row { display: grid; grid-template-columns: 34px minmax(0, 1.3fr) minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, .7fr) auto; gap: 6px 16px; }
+  .rd-row .title { font-weight: 600; }
+  .rd-lbl { display: block; color: var(--muted); font-size: 12px; }
+  .rd-more { grid-column: 2 / -1; }
+  .rd-more details { margin-top: 0 !important; }
+  @media (max-width: 860px) {
+    .list > .item.rd-row { grid-template-columns: 34px minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+    .rd-row > .rd-name, .rd-row > .rd-cell:nth-child(3), .rd-row > .rd-act { grid-column: 2 / -1; }
+    .rd-row > .rd-cell:nth-child(4) { grid-column: 2; }
+    .rd-row > .rd-cell:nth-child(5) { grid-column: 3; }
+  }
   .schema { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(56px, 200px) minmax(0, 1fr); align-items: start; }
   .sch-col { display: flex; flex-direction: column; gap: 14px; position: relative; z-index: 1; min-width: 0; }
   .sch-head { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
@@ -598,6 +636,9 @@
     .list > .item { flex-wrap: wrap; }
     .item .item-actions { flex-basis: 100%; margin-left: 46px; }
     .item .item-actions:empty { display: none; }
+    /* Controller: porte e lettori vanno sotto il nome */
+    .ctl-main { flex-wrap: wrap; padding: 12px 14px; }
+    .ctl-stats { flex-basis: 100%; justify-content: flex-start; margin-left: 46px; }
     /* Porte: lo stato passa nella riga sotto il nome, lasciando spazio al testo */
     .door-row > .pill { display: none; }
     .door-row .mode-meta { display: inline; }
@@ -1355,7 +1396,7 @@ const WIDGET_BODY = {
     const rows = [];
     if (store.summary.configured === false) rows.push(`<div class="item"><div class="ev-icon k-info">${icon("cog")}</div><div class="grow"><div class="title">Impianto da Configurare</div><div class="meta">${can("impianti") ? 'Aggiungi il controller e le porte nella pagina <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare l'impianto."}</div></div></div>`);
     rows.push(...open.slice(0, 5).map((i) => `<a class="item dw-notif sev-${i.severity}" href="#notifiche">
-      <div class="n-tile">${icon(i.type === "door_alarm" && i.title.startsWith("Manomissione") ? "shield" : NOTIF_ICONS[i.type] || "bell")}</div>
+      <div class="n-tile">${icon(notifIcon(i))}</div>
       <div class="grow"><div class="title">${esc(i.title)} <span class="n-sev">${SEVERITY[i.severity]}</span></div>
         <div class="meta"><span>${esc(i.text)}</span>${i.door ? `<span>${esc(i.door)}</span>` : ""}${i.type !== "expiring" ? `<span>${esc(dayTime(i.ts))}</span>` : ""}</div></div></a>`));
     // I guasti già visti restano finché non si risolvono: con loro non è tutto in ordine
@@ -2702,6 +2743,8 @@ async function viewHolidays(body) {
 
 // ---------- Notifiche ----------
 const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", programming: "lock", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", casing: "shield", clock: "clock", missing_cards: "card", backup: "history", database: "history"};
+// Manomissioni, coperchio aperto e controller inclinato: lo scudo; gli allarmi delle porte: il triangolo
+const notifIcon = (i) => i.type === "door_alarm" && !i.title.startsWith("Allarme Porta") ? "shield" : NOTIF_ICONS[i.type] || "bell";
 const SEVERITY = {crit: "Critica", warn: "Media", low: "Bassa"};
 // Schede del registro delle notifiche: eventi che possono diventare una notifica
 const NOTIF_TABS = {tutte: ["Tutte", "negato,allarme,manomissione"], negati: ["Accessi Negati", "negato"], allarmi: ["Allarmi e Manomissioni", "allarme,manomissione"]};
@@ -2718,7 +2761,7 @@ function dayTime(iso) {
 }
 const notifSince = () => new Date(Date.now() - 86400000).toISOString();
 function notifCard(i) {
-  const ic = i.type === "door_alarm" && i.title.startsWith("Manomissione") ? "shield" : NOTIF_ICONS[i.type] || "bell";
+  const ic = notifIcon(i);
   const minutes = Math.max(1, Math.round((new Date(i.ts) - new Date(i.first_ts)) / 60000));
   const meta = [
     i.door ? esc(i.door) : "",
@@ -2911,9 +2954,9 @@ async function viewNotifications(el) {
 async function viewNotificationSettings(body) {
   let n;
   try { n = await api("api/notifications"); } catch (err) { body.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }
-  body.innerHTML = `<div class="card flush" style="max-width:760px"><h2>${icon("bell")}Quali Notifiche Ricevere</h2>
-    <p class="muted small-text" style="margin:0 18px 8px">Attiva: compare in Da Gestire e conta sulla campanella finché non premi Presa Visione. Disattivata: non compare in Da Gestire; gli eventi restano nel registro. Vale per tutti gli utenti dell'app.</p>
-    <div class="list">${n.types.map((t) => `<div class="item"><div class="ev-icon k-accent">${icon(NOTIF_ICONS[t.key] || "bell")}</div>
+  body.innerHTML = `<div class="card flush"><h2>${icon("bell")}Quali Notifiche Ricevere</h2>
+    <p class="muted small-text" style="margin:0 18px 8px">Le attive compaiono in Da Gestire e sulla campanella, per tutti gli utenti.</p>
+    <div class="list two-col">${n.types.map((t) => `<div class="item"><div class="ev-icon k-accent">${icon(NOTIF_ICONS[t.key] || "bell")}</div>
       <div class="grow"><div class="title">${esc(t.name)}</div><div class="meta">${esc(t.description)}</div></div>
       <select data-level="${esc(t.key)}" style="width:auto">${Object.entries(n.levels).map(([k, label]) => `<option value="${k}" ${k === t.level ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></div>`).join("")}</div></div>`;
   paintIcons(body);
@@ -2976,12 +3019,15 @@ async function viewControllers(body, data) {
     const label = placeOf(c.place) || "Senza Area";
     (groups[label] = groups[label] || []).push(c);
   });
-  const card = (c) => `<div class="card ctl-card" style="margin:0">
+  // Stato a parole accanto al nome, come nell'intestazione del controller: la riga è larga e c'è posto
+  const statePill = (c) => { const [cls, text, label] = healthState(c.health); return `<span class="pill ${cls}" data-ctl-state="${c.id}" title="${esc(text)}"><span class="dot"></span>${esc(label)}</span>`; };
+  const row = (c) => `<div class="item ctl-row">
       <a class="ctl-main" href="#impianti/c${c.id}">
-        <span class="ctl-name">${icon("chip")}${esc(c.name)}${(() => { const [cls, text] = healthState(c.health); return `<span class="dot ${cls}" data-ctl-state="${c.id}" title="${esc(text)}" role="img" aria-label="${esc(text)}"></span>`; })()}</span>
-        <span class="muted small-text" data-ctl-model="${c.id}">${esc([c.model, c.description].filter(Boolean).join(" · ") || "Axis")}</span>
-        ${c.health?.identity_change ? '<span class="pill err" style="align-self:flex-start">Controller Cambiato</span>' : c.health?.clock_problem ? '<span class="pill warn" style="align-self:flex-start">Orologio Sbagliato</span>' : ""}
-        ${c.health?.casing_open === true ? casingPill(c.health, 'style="align-self:flex-start"') : ""}
+        <div class="ev-icon k-accent">${icon("chip")}</div>
+        <div class="grow">
+          <div class="ctl-name">${esc(c.name)}${statePill(c)}${c.health?.casing_open === true ? casingPill(c.health) : ""}</div>
+          <div class="meta"><span data-ctl-model="${c.id}">${esc([c.model, c.description].filter(Boolean).join(" · ") || "Axis")}</span>${c.host ? `<span class="mono">${esc(c.host)}</span>` : ""}</div>
+        </div>
         <span class="ctl-stats"><span><b>${c.doors.length}</b> ${c.doors.length === 1 ? "porta" : "porte"}</span><span data-ctl-readers="${c.id}"><b>…</b> lettori</span><span data-ctl-inputs="${c.id}" hidden></span></span>
       </a>
       <a class="ctl-gear btn small ghost icon-only" href="#impianti/c${c.id}/connessione" title="Impostazioni di Connessione" aria-label="Impostazioni di connessione di ${esc(c.name)}">${icon("cog")}</a>
@@ -2990,17 +3036,17 @@ async function viewControllers(body, data) {
   body.innerHTML = `
     <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Tocca un controller per collegare lettori e porte e per la programmazione. L'ingranaggio apre indirizzo, credenziali e posizione.</p>
       ${full ? "" : `<button type="button" class="primary" id="ctrl-new">${icon("plus")}Aggiungi Controller</button>`}</div>
-    ${Object.entries(groups).map(([label, list]) => `<h2 class="section-title">${esc(label)}</h2><div class="grid cards" style="margin-bottom:20px">${list.map(card).join("")}</div>`).join("")}
+    ${Object.entries(groups).map(([label, list]) => `<h2 class="section-title">${esc(label)}</h2><div class="card flush"><div class="list">${list.map(row).join("")}</div></div>`).join("")}
     ${full ? '<p class="hint">Per ora l\'app gestisce un controller; pagine e dati sono già pronti per averne di più.</p>' : ""}`;
   if ($("#ctrl-new")) $("#ctrl-new").onclick = () => controllerEditor();
   api("api/status").then((s) => {
     const c = data.controllers[0];
-    const dot = $(`[data-ctl-state="${c.id}"]`);
-    if (!dot) return;
-    const [cls, text] = healthState(s.controllers.find((h) => h.id === c.id) || c.health, s);
-    dot.className = `dot ${cls}`;
-    dot.title = text;
-    dot.setAttribute("aria-label", text);
+    const pill = $(`[data-ctl-state="${c.id}"]`);
+    if (!pill) return;
+    const [cls, text, label] = healthState(s.controllers.find((h) => h.id === c.id) || c.health, s);
+    pill.className = `pill ${cls}`;
+    pill.title = text;
+    pill.innerHTML = `<span class="dot"></span>${esc(label)}`;
     const count = (n, one, many) => `<b>${n ?? "—"}</b> ${n === 1 ? one : many}`;
     $(`[data-ctl-readers="${c.id}"]`).innerHTML = count(s.controller.readers, "lettore", "lettori");
     // Pulsanti, relè e sensori collegati agli ingressi del controller
@@ -3099,12 +3145,23 @@ function controllerAreaField(ctrl, sites) {
   return field("Struttura e Area", areaSelect(sites, areas.length === 1 ? areas[0].id : 0), where);
 }
 
+// Nome, area e posizione del controller. stacked: un campo per riga (pagina Connessione, colonna stretta)
+function controllerPlaceFields(ctrl, sites, stacked = false) {
+  const nameArea = `${field("Nome", `<input name="name" maxlength="100" value="${esc(ctrl?.name || "Controller A1210")}">`)}
+      ${controllerAreaField(ctrl, sites)}`;
+  return `${stacked ? nameArea : `<div class="fields-2">${nameArea}</div>`}
+    ${field("Descrizione della Posizione", `<input name="description" maxlength="200" value="${esc(ctrl?.description || "")}" placeholder="es. quadro elettrico sotto la scala">`)}`;
+}
+
 function controllerFields(ctrl, sites) {
-  return `<div class="fields-2">${field("Nome", `<input name="name" maxlength="100" value="${esc(ctrl?.name || "Controller A1210")}">`)}
-      ${controllerAreaField(ctrl, sites)}</div>
-    ${field("Descrizione della Posizione", `<input name="description" maxlength="200" value="${esc(ctrl?.description || "")}" placeholder="es. quadro elettrico sotto la scala">`)}
+  return `${controllerPlaceFields(ctrl, sites)}
     <h3 class="section-title" style="margin-top:18px">${icon("cog")}Connessione</h3>
-    ${field("Indirizzo", `<input name="host" class="mono" value="${esc(ctrl?.host || "")}" placeholder="es. 192.168.1.50">`, "IP o nome del controller, senza https://.")}
+    ${controllerConnectionFields(ctrl)}`;
+}
+
+// Indirizzo, credenziali, prefisso MQTT, certificato e prova del collegamento
+function controllerConnectionFields(ctrl) {
+  return `${field("Indirizzo", `<input name="host" class="mono" value="${esc(ctrl?.host || "")}" placeholder="es. 192.168.1.50">`, "IP o nome del controller, senza https://.")}
     <div class="fields-2">${field("Utente", `<input name="username" autocomplete="off" value="${esc(ctrl?.username || "")}">`)}
     ${field("Password", `<input name="password" type="password" autocomplete="new-password" placeholder="${ctrl?.has_password ? "lascia vuoto per non cambiarla" : ""}">`,
       ctrl?.has_password ? "Scrivi di nuovo la password se cambi indirizzo o utente." : "")}</div>
@@ -3183,8 +3240,12 @@ async function viewConnection(el, ctrl) {
   // Cambiata pagina, o la stessa ridisegnata, mentre si leggeva: non scrive sopra la pagina nuova né il suo pageGuard
   if (!el.isConnected || location.hash !== hash) return;
   el.innerHTML = `${controllerHeader(ctrl, "connessione")}
-    <form class="card" id="conn-form" style="max-width:760px">${controllerFields(ctrl, sites)}
-      <div class="row" style="margin-top:18px;justify-content:space-between"><button type="button" class="danger" id="ctrl-del">Togli Controller</button>
+    <form id="conn-form" class="conn-form">
+      <div class="conn-cols">
+        <div class="card"><h2>${icon("chip")}Controller</h2>${controllerPlaceFields(ctrl, sites, true)}</div>
+        <div class="card"><h2>${icon("cog")}Connessione</h2>${controllerConnectionFields(ctrl)}</div>
+      </div>
+      <div class="row" style="justify-content:space-between"><button type="button" class="danger" id="ctrl-del">Togli Controller</button>
         <span class="row"><a class="btn" href="#impianti/c${ctrl.id}">Annulla</a><button type="submit" class="primary">Salva</button></span></div></form>`;
   paintIcons(el);
   paintControllerState(ctrl);
@@ -3574,11 +3635,14 @@ const configDetails = (items) => items.length ? `<details style="margin-top:10px
   <div class="table-wrap"><table class="table"><tbody>${items.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td><code>${esc(c.value)}</code></td></tr>`).join("")}</tbody></table></div></details>` : "";
 const saveProgramming = (path, payload, message) => run(() => api(path, {method: "PUT", body: payload}), message);
 
+// Tempi che il controller ha per la porta (una porta appena creata può averne solo alcuni)
+const doorTimes = (d) => DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
+
 // Porte del controller: impostazioni dell'app (telecamera, citofono, pulsanti) e nome e tempi sul controller
 function controllerDoors(body, ctrl, p, errors, appDoor) {
   const appInfo = (d) => {
     const door = appDoor(d.token);
-    if (!door) return `<p class="muted small-text" style="margin:8px 0 0">Non gestita dall'app: niente registro per porta, pulsanti in Home Assistant o videocitofono.</p>`;
+    if (!door) return `<p class="muted small-text" style="margin:0">Non gestita dall'app: niente registro per porta, pulsanti in Home Assistant o videocitofono.</p>`;
     return props([
       ["Nome nell'App", esc(door.name)],
       ["Telecamera", `${door.snapshot_camera ? `${esc(cameraName(door.snapshot_camera))}${door.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'} · <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a>`],
@@ -3587,18 +3651,22 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
     ]);
   };
   const missing = ctrl.doors.filter((d) => !p.doors.some((x) => x.token === d.door_token));
+  // Una scheda a tutta larghezza per porta: impostazioni dell'app e del controller affiancate, una sotto l'altra sul telefono
   body.innerHTML = `${errors}
-    <div class="grid cards">${p.doors.map((d) => `<div class="card" style="margin:0">
+    ${p.doors.map((d) => `<div class="card">
       <h2>${icon("door")}${esc(appDoor(d.token)?.name || d.name || d.token)}<span class="spacer"></span>${appDoor(d.token) ? '<span class="pill ok">Nell\'App</span>' : '<span class="pill">Solo Controller</span>'}</h2>
-      ${appInfo(d)}
-      <h3 class="section-title" style="margin-top:14px">Sul Controller</h3>
-      ${props([["Nome", esc(d.name || "—")], ["Token", `<code>${esc(d.token)}</code>`], ...DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined).map(([k, label]) => [label, secs(d[k])])])}
-      ${d.description ? `<p class="hint">${esc(d.description)}</p>` : ""}${configDetails(d.configuration)}
-      <div class="row" style="margin-top:12px">${appDoor(d.token) ? `<button type="button" class="small" data-app-edit="${esc(d.token)}">${icon("edit")}Impostazioni App</button>` : `<button type="button" class="small primary" data-app-add="${esc(d.token)}">${icon("plus")}Gestisci nell'App</button>`}
+      <div class="door-cols">
+        <section class="door-app"><h3 class="section-title">Nell'App</h3>${appInfo(d)}</section>
+        <section class="door-ctl"><h3 class="section-title">Sul Controller</h3>
+          ${props([["Nome", esc(d.name || "—")], ["Token", `<code>${esc(d.token)}</code>`]])}
+          ${d.description ? `<p class="hint">${esc(d.description)}</p>` : ""}${configDetails(d.configuration)}</section>
+        ${doorTimes(d).length ? `<section class="door-times"><h3 class="section-title">Tempi sul Controller</h3>${props(doorTimes(d).map(([k, label]) => [label, secs(d[k])]))}</section>` : ""}
+      </div>
+      <div class="row" style="margin-top:14px">${appDoor(d.token) ? `<button type="button" class="small" data-app-edit="${esc(d.token)}">${icon("edit")}Impostazioni App</button>` : `<button type="button" class="small primary" data-app-add="${esc(d.token)}">${icon("plus")}Gestisci nell'App</button>`}
         ${d.editable || d.name ? `<button type="button" class="small" data-pd="${esc(d.token)}">${icon("clock")}Nome e Tempi</button>` : ""}
         ${appDoor(d.token) ? `<button type="button" class="small ghost danger" data-app-del="${esc(d.token)}">Togli dall'App</button>` : ""}</div>
-    </div>`).join("") || '<div class="card"><div class="empty">Nessuna porta letta dal controller.</div></div>'}</div>
-    ${missing.length ? `<div class="alert" style="margin-top:16px">${icon("alert")}<div class="grow"><b>Porte Non Trovate sul Controller</b>${missing.map((d) => `${esc(d.name)} (<code>${esc(d.door_token)}</code>)`).join(", ")}: controlla la programmazione o toglile dall'app.
+    </div>`).join("") || '<div class="card"><div class="empty">Nessuna porta letta dal controller.</div></div>'}
+    ${missing.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Porte Non Trovate sul Controller</b>${missing.map((d) => `${esc(d.name)} (<code>${esc(d.door_token)}</code>)`).join(", ")}: controlla la programmazione o toglile dall'app.
       ${missing.map((d) => `<button type="button" class="small ghost danger" data-app-del="${esc(d.door_token)}">Togli ${esc(d.name)}</button>`).join(" ")}</div></div>` : ""}`;
   paintIcons(body);
   body.onclick = async (e) => {
@@ -3612,7 +3680,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
           await run(() => api(`api/doors/${door.id}`, {method: "DELETE"}), "Porta tolta dall'app")) { loadSummary(); render(); }
     } else if (b.dataset.pd) {
       const d = p.doors.find((x) => x.token === b.dataset.pd);
-      const times = DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
+      const times = doorTimes(d);
       const ok = await modal({title: named("Porta", d.name || d.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(d.name)}">`)}
         ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(d.description)}">`)}
         ${times.length ? `<div class="fields-2">${times.map(([k, label, hint, min, max]) => field(label + " (Secondi)", `<input type="number" name="${k}" min="${Math.min(min, d[k])}" max="${Math.max(max, d[k])}" step="1" value="${d[k]}" required>`, hint)).join("")}</div>` : ""}`,
@@ -3629,17 +3697,22 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
 
 function controllerReaders(body, p, errors, doorName) {
   const links = linksOf(p);
+  // Una riga per lettore con le colonne allineate, come un elenco: si legge bene anche con 8 lettori
+  const cell = (label, value) => `<div class="rd-cell"><span class="rd-lbl">${label}</span>${value}</div>`;
   body.innerHTML = `${errors}
-    <div class="grid cards">${p.readers.map((r) => {
+    ${p.readers.length ? `<div class="card flush"><div class="list">${p.readers.map((r) => {
       const mine = links.filter((l) => l.reader === r.token);
-      return `<div class="card" style="margin:0">
-      <h2>${icon("card")}${esc(r.name || r.token)}</h2>
-      ${props([["Comanda", mine.length ? mine.map((l) => `${esc(doorName(p.doors.find((d) => d.token === l.door) || {token: l.door}))} · ${DIRECTION_LABELS[l.direction]}${l.enabled ? "" : ' <span class="pill warn">Disattivato</span>'}`).join("<br>") : '<span class="muted">Nessuna porta</span>'],
-        ["Token", `<code>${esc(r.token)}</code>`], ["Posizione", esc(r.location || "—")], ["Attesa PIN", secs(r.timeout)]])}
-      ${r.description ? `<p class="hint">${esc(r.description)}</p>` : ""}${configDetails(r.configuration)}
-      <div class="row" style="margin-top:12px"><button type="button" class="small" data-pr="${esc(r.token)}">${icon("edit")}Nome e Descrizione</button></div>
+      return `<div class="item rd-row">
+      <div class="ev-icon k-accent">${icon("card")}</div>
+      <div class="rd-name"><div class="title">${esc(r.name || r.token)}</div><code class="muted">${esc(r.token)}</code>
+        ${r.description ? `<div class="small-text muted">${esc(r.description)}</div>` : ""}</div>
+      ${cell("Comanda", mine.length ? mine.map((l) => `<div>${esc(doorName(p.doors.find((d) => d.token === l.door) || {token: l.door}))} · ${DIRECTION_LABELS[l.direction]}${l.enabled ? "" : ' <span class="pill warn">Disattivato</span>'}</div>`).join("") : '<div class="muted">Nessuna porta</div>')}
+      ${cell("Posizione", `<div>${esc(r.location || "—")}</div>`)}
+      ${cell("Attesa PIN", `<div>${secs(r.timeout)}</div>`)}
+      <div class="rd-act"><button type="button" class="small" data-pr="${esc(r.token)}">${icon("edit")}Nome e Descrizione</button></div>
+      ${r.configuration?.length ? `<div class="rd-more">${configDetails(r.configuration)}</div>` : ""}
     </div>`;
-    }).join("") || '<div class="card"><div class="empty">Nessun lettore letto dal controller.</div></div>'}</div>
+    }).join("")}</div></div>` : '<div class="card"><div class="empty">Nessun lettore letto dal controller.</div></div>'}
     <p class="hint">Quale porta comanda ogni lettore si sceglie nello Schema.</p>`;
   paintIcons(body);
   body.onclick = async (e) => {
@@ -4151,25 +4224,25 @@ async function viewBackupSettings(body) {
   const keep = (key, label, hint, max = 1000) => `<label>${esc(label)}<input type="number" data-bp="${key}" min="${key === "keep_last" ? 1 : 0}" max="${max}" step="1" value="${p[key]}" inputmode="numeric"><small>${hint}</small></label>`;
   const footer = (d) => {
     const span = retentionSpan(d.policy);
-    return `${plural(d.backups.length, "backup", "backup")} · ${kb(d.size)}. Stanno nella cartella dell'add-on ed entrano nei backup di Home Assistant: controlla che includano l'add-on e che vadano anche fuori sede (NAS o cloud). Una persona eliminata resta nei backup finché non scadono: ${span ? `con queste regole al massimo ${esc(span)}` : "con il backup automatico disattivato scadono solo quando se ne creano di nuovi"}, e in quelli bloccati finché non li sblocchi.`;
+    return `${plural(d.backups.length, "backup", "backup")} · ${kb(d.size)}, inclusi nei backup di Home Assistant. Una persona eliminata resta nei backup ${span ? `al massimo ${esc(span)}` : "finché non se ne creano di nuovi"}, in quelli bloccati finché non li sblocchi.`;
   };
-  body.innerHTML = `<div class="card flush" style="max-width:760px"><h2>${icon("history")}Backup Automatico</h2>
+  body.innerHTML = `<div class="bk-cols"><div class="card flush"><h2>${icon("history")}Backup Automatico</h2>
     <div class="list bk-set">
-      ${row("refresh", "Backup Automatico", "Un backup quando cambia qualcosa, con la frequenza scelta, e comunque uno ogni notte.", onOff("auto"))}
-      ${row("clock", "Frequenza", "Ogni quanto si guarda se è cambiato qualcosa. Se non è cambiato niente non si crea un backup.", `<select data-bp="frequency" style="width:auto">${Object.entries(BACKUP_FREQ).map(([k, label]) => `<option value="${k}" ${k === p.frequency ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`)}
-      ${row("history", "Backup Notturno", "Si fa anche se non è cambiato niente: ogni giorno ha il suo punto di ripristino e si vede che il backup funziona.", `<input type="time" data-bp="night" value="${esc(p.night)}" style="width:auto" required>`)}
-      ${row("shield", "Backup Prima delle Modifiche", "Prima di programmare porte, lettori, ingressi e punti di accesso, di cambiare tipologie, fasce orarie e festività e di togliere una porta o un controller dall'app (uno ogni 10 minuti), prima di ogni importazione CSV e dopo ogni aggiornamento dell'add-on. Prima di un ripristino il backup si fa sempre.", onOff("before_changes"))}
+      ${row("refresh", "Backup Automatico", "Quando cambia qualcosa e ogni notte.", onOff("auto"))}
+      ${row("clock", "Frequenza", "Ogni quanto controllare se è cambiato qualcosa.", `<select data-bp="frequency" style="width:auto">${Object.entries(BACKUP_FREQ).map(([k, label]) => `<option value="${k}" ${k === p.frequency ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`)}
+      ${row("history", "Backup Notturno", "Anche se non è cambiato niente.", `<input type="time" data-bp="night" value="${esc(p.night)}" style="width:auto" required>`)}
+      ${row("shield", "Backup Prima delle Modifiche", "Prima di programmare il controller, cambiare le regole o importare, e dopo ogni aggiornamento.", onOff("before_changes"))}
     </div></div>
-    <div class="card flush" style="max-width:760px"><h2>${icon("lock")}Quanti Backup Tenere</h2>
-      <p class="muted small-text" style="margin:0 18px 10px">Come restic: si tengono gli ultimi, poi il più recente di ogni giorno, settimana, mese e anno. I backup bloccati restano sempre e non occupano posti.</p>
+    <div class="card flush"><h2>${icon("lock")}Quanti Backup Tenere</h2>
+      <p class="muted small-text" style="margin:0 18px 10px">Gli ultimi, poi uno per giorno, settimana, mese e anno. I bloccati restano sempre.</p>
       <div class="bk-keep">
         ${keep("keep_last", "Ultimi", "i più recenti")}
         ${keep("keep_daily", "Giornalieri", "uno al giorno")}
         ${keep("keep_weekly", "Settimanali", "uno a settimana")}
         ${keep("keep_monthly", "Mensili", "uno al mese")}
         ${keep("keep_yearly", "Annuali", "uno all'anno", 100)}
-      </div></div>
-    <p class="hint" style="max-width:760px" id="bp-hint">${footer(data)}</p>`;
+      </div></div></div>
+    <p class="hint" id="bp-hint">${footer(data)}</p>`;
   paintIcons(body);
   const saveField = async (input) => {
     const key = input.dataset.bp;

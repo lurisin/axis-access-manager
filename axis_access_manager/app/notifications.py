@@ -16,73 +16,42 @@ from datetime import UTC, datetime, timedelta
 from .backup_copy import RESTORED
 from .db import Database
 from .live_events import FAULT_AFTER
-from .service import ServiceError, plural
+from .service import CASING_OPEN, TILTED, ServiceError, plural
 
 # Tipo → nome, descrizione, livello predefinito
 TYPES = {
-    "door_alarm": (
-        "Allarmi delle Porte",
-        "Porta forzata, aperta troppo a lungo, manomissione del lettore o del controller.",
-        "urgent",
-    ),
-    "controller": (
-        "Controller Non Raggiungibile",
-        "Il controller non è raggiungibile o non risponde all'app.",
-        "urgent",
-    ),
-    "casing": (
-        "Coperchio del Controller Aperto",
-        "Il coperchio del controller è aperto: chi lo apre arriva ai fili della serratura. Resta finché non si chiude; "
-        "l'apertura è anche negli Allarmi delle Porte per 24 ore, con la foto se il controller ha la sua telecamera.",
-        "urgent",
-    ),
+    "door_alarm": ("Allarmi delle Porte", "Porta forzata o aperta troppo a lungo, manomissioni.", "urgent"),
+    "controller": ("Controller Non Raggiungibile", "Il controller non risponde all'app.", "urgent"),
+    "casing": ("Coperchio del Controller Aperto", "Resta finché il coperchio non si chiude.", "urgent"),
     "programming": (
         "Porte Che Non Si Aprono",
-        "Punti di accesso che il controller non gestisce, pulsanti senza il permesso di apertura o ingressi rimasti "
-        "programmati a metà, per esempio dopo un reset del controller: la porta non si apre. Segnala anche "
-        "le tipologie non ancora aggiornate sul controller dopo una modifica a porte e aree.",
+        "Programmazione del controller incompleta, per esempio dopo un reset.",
         "urgent",
     ),
     "mqtt": (
         "Eventi in Diretta e MQTT",
-        "Gli eventi del controller non arrivano in diretta (né con il WebSocket né con MQTT), oppure l'app non è "
-        "collegata al broker MQTT che serve a Home Assistant (stato, pulsanti ed eventi) e ai videocitofoni.",
+        "Eventi del controller non in arrivo o broker MQTT non collegato.",
         "urgent",
     ),
     "unknown_card": ("Tessere Sconosciute", "Tessere non registrate passate sul lettore.", "urgent"),
-    "denied": (
-        "Accessi Negati",
-        "Accessi negati a persone registrate: fuori fascia, porta non autorizzata, tessera scaduta.",
-        "urgent",
-    ),
-    "expiring": ("Tessere in Scadenza", "Persone con tessere che scadono nei prossimi 7 giorni.", "urgent"),
-    "camera": ("Telecamere Non Disponibili", "L'ultima foto di una telecamera delle porte non è riuscita.", "urgent"),
+    "denied": ("Accessi Negati", "Accessi negati a persone registrate.", "urgent"),
+    "expiring": ("Tessere in Scadenza", "Tessere che scadono nei prossimi 7 giorni.", "urgent"),
+    "camera": ("Telecamere Non Disponibili", "L'ultima foto di una telecamera non è riuscita.", "urgent"),
     "controller_changed": (
         "Controller Cambiato",
-        "All'indirizzo del controller risponde un apparecchio diverso: scritture sospese finché non si conferma.",
+        "All'indirizzo del controller risponde un apparecchio diverso.",
         "urgent",
     ),
-    "clock": (
-        "Orologio Sbagliato",
-        "L'ora del controller o di Home Assistant è sbagliata di oltre un minuto, oppure il controller ha un fuso "
-        "orario diverso da Home Assistant. Se a sbagliare è il controller le fasce orarie scattano all'ora sbagliata.",
-        "urgent",
-    ),
-    "backup": (
-        "Backup Non Riuscito",
-        "L'ultimo backup non è riuscito o è incompleto, per esempio perché un controller non rispondeva, oppure la "
-        "verifica giornaliera ha trovato file dei backup rovinati.",
-        "urgent",
-    ),
+    "clock": ("Orologio Sbagliato", "Ora o fuso orario diversi tra controller e Home Assistant.", "urgent"),
+    "backup": ("Backup Non Riuscito", "Backup non riuscito, incompleto o rovinato.", "urgent"),
     "missing_cards": (
         "Tessere Non Presenti sul Controller",
-        "Tessere che l'app conosce ma che sul controller non ci sono più: da riscrivere o togliere dall'app.",
+        "Tessere dell'app che sul controller non ci sono più.",
         "urgent",
     ),
     "database": (
         "Database dell'Add-on",
-        "Database trovato danneggiato o mancante all'avvio, oppure copia del database per il backup di Home Assistant "
-        "non aggiornata.",
+        "Database danneggiato all'avvio o copia per il backup di Home Assistant non aggiornata.",
         "urgent",
     ),
 }
@@ -255,7 +224,9 @@ class NotificationService:
                 name = next(iter(door_names.values()))
             return name or "porta non indicata"
 
-        def add_group(kind: str, severity: str, title: str, text: str, group: list[dict], link: str = "") -> None:
+        def add_group(
+            kind: str, severity: str, title: str, text: str, group: list[dict], link: str = "", **extra
+        ) -> None:
             last = group[-1]
             shot = next((e for e in reversed(group) if e.get("snapshot")), None)
             # Id dall'ultimo evento: resta lo stesso quando i primi escono dalle 24 ore, cambia con un nuovo tentativo
@@ -277,21 +248,14 @@ class NotificationService:
                 person_id=last.get("person_id"),
                 card=last.get("card") or "",
                 link=link,
+                **extra,
             )
 
-        ws_live = bool(ws and ws.get("connected"))
         # Il broker serve a Home Assistant e ai videocitofoni; agli eventi del controller basta il WebSocket (vedi il
         # guasto più sotto)
-        still = " Gli eventi del controller arrivano comunque con il WebSocket." if ws_live else ""
-        impact = "; ".join(
-            text
-            for text, needed in (
-                ("Home Assistant non riceve stato, pulsanti ed eventi dell'app", ha_integration),
-                ("le chiamate e le aperture dei videocitofoni non arrivano all'app", intercoms),
-            )
-            if needed
+        impact = " e ".join(
+            name for name, needed in (("Home Assistant", ha_integration), ("videocitofoni", intercoms)) if needed
         )
-        impact = impact[:1].upper() + impact[1:]
         if controller_configured and impact:
             if not mqtt_configured:
                 # Il broker si cerca di nuovo ogni minuto (main._wait_for_broker): la notifica sparisce da sola
@@ -300,8 +264,7 @@ class NotificationService:
                     "mqtt:none",
                     "crit",
                     "Nessun Broker MQTT",
-                    f"{impact}. Installa l'add-on Mosquitto o imposta il broker nelle opzioni dell'add-on: l'app lo "
-                    "cerca di nuovo ogni minuto, senza riavvio." + still,
+                    f"{_capital(impact)} senza eventi. Installa Mosquitto.",
                     now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
@@ -311,13 +274,35 @@ class NotificationService:
                     _episode_id("mqtt", mqtt_disconnected_since),
                     "crit",
                     "Collegamento MQTT Perso",
-                    f"L'app non è più collegata al broker MQTT. {impact}." + still,
+                    f"{_capital(impact)} senza eventi.",
                     mqtt_disconnected_since or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                     weight=_reminder_weight(mqtt_disconnected_since, now),
                 )
+        controllers = controllers or []
+        by_name = {c["name"]: c for c in controllers}
+        alarm_groups: list[list[dict]] = []
+        if levels["door_alarm"] != "off":
+            alarms = self.db.list_events(kind="allarme,manomissione", since=since, limit=MAX_EVENTS)
+            alarm_groups = _groups(alarms, lambda e: (e["kind"], e.get("door") or "", e.get("detail") or ""))
+        # Coperchio aperto: l'apertura nel registro e lo stato del controller sono la stessa cosa, quindi una voce
+        # sola. Al collaudo comparivano "Coperchio del Controller Aperto" e "Manomissione" con la stessa ora
+        casing_current: dict[int, bool] = {}
+        casing_shown: set[int] = set()
+        for group in reversed(alarm_groups):
+            last = group[-1]
+            c = by_name.get(last.get("source") or "")
+            if last["kind"] != "manomissione" or last.get("door") or last.get("detail") != CASING_OPEN or c is None:
+                continue
+            if c["id"] in casing_shown or not controller_configured or not c.get("casing_open") or c.get("unreachable"):
+                continue
+            start = _parse(c.get("casing_since") or "")
+            at = _parse(last.get("ts") or "")
+            # L'apertura di adesso: non una precedente, già richiusa prima di riaprire
+            if start is None or (at is not None and at >= start - GROUP_WINDOW):
+                casing_current[id(group)] = True
+                casing_shown.add(c["id"])
         if controller_configured:
-            controllers = controllers or []
             unreachable = [c for c in controllers if c.get("unreachable")]
             for c in unreachable:
                 # Controllo periodico di ogni controller: non risponde da almeno un minuto
@@ -339,16 +324,13 @@ class NotificationService:
             events_since = _events_down_since(ws, mqtt_connected, controller_online, controller_offline_since, now)
             if reachable and events_since:
                 # Il controller risponde all'app ma i suoi eventi non arrivano: né WebSocket né MQTT
-                name = f"{primary['name']} risponde" if primary and len(controllers) > 1 else "Il controller risponde"
                 why = _events_why(ws, mqtt_configured, mqtt_connected, controller_online)
                 add(
                     "mqtt",
                     _episode_id("events", events_since),
                     "crit",
                     "Eventi del Controller Non Arrivano",
-                    f"{name} ma passaggi e allarmi non arrivano in diretta ({why}). Lo stato si rilegge dal "
-                    "controller ogni 10 secondi e i passaggi arrivano nel registro ogni 30 secondi dal registro "
-                    "del controller, senza foto.",
+                    f"{primary['name']} · {why}" if primary and len(controllers) > 1 else why,
                     events_since,
                     link="#impianti/stato",
                     weight=_reminder_weight(events_since, now),
@@ -366,16 +348,16 @@ class NotificationService:
                 )
             ha_clock = False
             for c in controllers:
-                if c.get("casing_open") and not c.get("unreachable"):
-                    # Stato, non evento: resta finché il coperchio non si chiude, anche dopo le 24 ore degli allarmi
+                if c.get("casing_open") and not c.get("unreachable") and c["id"] not in casing_shown:
+                    # Stato, non evento: resta finché il coperchio non si chiude, anche dopo le 24 ore degli allarmi.
+                    # Con l'apertura nel registro delle ultime 24 ore la voce è quella dell'allarme, qui sotto
                     since = c.get("casing_since") or ""
                     add(
                         "casing",
                         _episode_id(f"casing:{c['id']}", since),
                         "crit",
                         "Coperchio del Controller Aperto",
-                        "Chi apre il coperchio arriva ai fili della serratura: se non ci sta lavorando nessuno, "
-                        "controlla il controller.",
+                        "",
                         since or now.isoformat(timespec="seconds"),
                         door=c["name"],
                         link=f"#impianti/c{c['id']}/stato",
@@ -387,7 +369,7 @@ class NotificationService:
                         f"changed:{c['id']}:{c.get('serial') or ''}",
                         "crit",
                         "Controller Cambiato",
-                        _capital(c["identity_change"]) + ". Fino ad allora le modifiche non vengono scritte.",
+                        _capital(c["identity_change"]) + ". Scritture sospese.",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link="#impianti",
                     )
@@ -398,8 +380,7 @@ class NotificationService:
                         f"unmanaged:{c['id']}",
                         "crit",
                         "Punto di Accesso Non Gestito" if len(names) == 1 else "Punti di Accesso Non Gestiti",
-                        f"{c['name']} · {_names(names)}: il controller legge tessere e pulsanti ma non decide, quindi "
-                        "la porta non si apre. Rimedia con Fai Gestire al Controller nella pagina del controller.",
+                        f"{c['name']} · {_names(names)}",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link=f"#impianti/c{c['id']}",
                         weight=len(names),
@@ -413,8 +394,7 @@ class NotificationService:
                         "Pulsante Senza Permesso di Apertura"
                         if len(names) == 1
                         else "Pulsanti Senza Permesso di Apertura",
-                        f"{c['name']} · {_names(names)}: il controller nega l'apertura, quindi la porta non si apre. "
-                        "Rimedia con Dai il Permesso nella pagina del controller.",
+                        f"{c['name']} · {_names(names)}",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link=f"#impianti/c{c['id']}",
                         weight=len(names),
@@ -427,9 +407,7 @@ class NotificationService:
                         f"inputs:{c['id']}",
                         "warn",
                         "Ingresso da Riscrivere" if len(names) == 1 else "Ingressi da Riscrivere",
-                        f"{c['name']} · {_names(names)}: sul controller la programmazione non è quella salvata "
-                        "nell'app. Rimedia aprendo l'ingresso nella pagina del controller e premendo Scrivi sul "
-                        "Controller, anche con le stesse impostazioni.",
+                        f"{c['name']} · {_names(names)}",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link=f"#impianti/c{c['id']}",
                         weight=len(names),
@@ -441,8 +419,7 @@ class NotificationService:
                         f"zone:{c['id']}",
                         "warn",
                         "Fuso Orario del Controller",
-                        f"{c['name']} · fuso orario {c.get('time_zone') or 'sconosciuto'}, diverso da quello di "
-                        f"Home Assistant ({c.get('ha_time_zone')}): le fasce orarie scattano all'ora sbagliata.",
+                        f"{c['name']} · {c.get('time_zone') or 'sconosciuto'} invece di {c.get('ha_time_zone')}",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link=f"#impianti/c{c['id']}/stato",
                     )
@@ -466,8 +443,7 @@ class NotificationService:
                         "clock:home_assistant",
                         "low",
                         "Orologio di Home Assistant",
-                        f"Home Assistant è {_offset_text(-offset)} rispetto a {c['name']}, "
-                        "che è sincronizzato via NTP: controlla il server NTP di Home Assistant.",
+                        f"{_capital(_offset_text(-offset))} rispetto a {c['name']}",
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link="#impianti",
                         weight=_offset_weight(offset),
@@ -481,10 +457,7 @@ class NotificationService:
                     "categories",
                     "crit",
                     "Tipologie Non Aggiornate sul Controller",
-                    "Le ultime modifiche a porte e aree non sono ancora sul controller, che applica le tipologie "
-                    "com'erano prima. "
-                    + (f"{_sentence(error)} " if error else "")
-                    + "L'app riprova dopo ogni sincronizzazione con il controller.",
+                    _sentence(error) if error else "Nuovo tentativo alla prossima sincronizzazione.",
                     str(pending.get("at") or "") or now.isoformat(timespec="seconds"),
                     link="#persone/tipologie",
                 )
@@ -496,15 +469,8 @@ class NotificationService:
                 "Tessera Non Presente sul Controller"
                 if missing["count"] == 1
                 else "Tessere Non Presenti sul Controller",
-                (
-                    f"{plural(missing['count'], 'tessera', 'tessere')} di "
-                    f"{plural(missing['persons'], 'persona', 'persone')} "
-                    + (
-                        "non è più sul controller: riscrivila o toglila dall'app."
-                        if missing["count"] == 1
-                        else "non sono più sul controller: riscrivile o toglile dall'app."
-                    )
-                ),
+                f"{plural(missing['count'], 'tessera', 'tessere')} di "
+                f"{plural(missing['persons'], 'persona', 'persone')}",
                 missing["since"],
                 link="#persone/mancanti",
                 # Altre tessere sparite dopo la presa visione (per esempio un reset): torna da gestire
@@ -529,11 +495,7 @@ class NotificationService:
                 f"backup-verify:{backup_verify.get('at') or ''}",
                 "warn",
                 "Backup Rovinato" if damaged == 1 else "Backup Rovinati",
-                (
-                    f"{damaged} backup non si possono ripristinare: file mancanti o rovinati."
-                    if damaged != 1
-                    else "Un backup non si può ripristinare: file mancanti o rovinati."
-                ),
+                f"{damaged} backup con file mancanti o rovinati" if damaged != 1 else "File mancanti o rovinati",
                 backup_verify.get("at") or now.isoformat(timespec="seconds"),
                 link="#impianti/backup",
             )
@@ -561,12 +523,36 @@ class NotificationService:
                 now.isoformat(timespec="seconds"),
                 link="#impostazioni/generale",
             )
-        titles = {"allarme": "Allarme Porta", "manomissione": "Manomissione"}
-        if levels["door_alarm"] != "off":
-            alarms = self.db.list_events(kind="allarme,manomissione", since=since, limit=MAX_EVENTS)
-            for group in _groups(alarms, lambda e: (e["kind"], e.get("door") or "", e.get("detail") or "")):
-                last = group[-1]
-                add_group("door_alarm", "crit", titles[last["kind"]], _capital(last.get("detail") or ""), group)
+        for group in alarm_groups:
+            last = group[-1]
+            detail = last.get("detail") or ""
+            if last["kind"] == "allarme":
+                add_group("door_alarm", "crit", "Allarme Porta", _capital(detail), group)
+            elif last.get("door"):
+                add_group("door_alarm", "crit", "Manomissione", "", group)
+            elif detail == TILTED:
+                add_group("door_alarm", "crit", "Controller Inclinato", "", group)
+            elif detail == CASING_OPEN:
+                c = by_name.get(last.get("source") or "")
+                current = casing_current.get(id(group))
+                # Ancora aperto: resta come un guasto (nella barra in alto anche dopo la presa visione) finché non si
+                # chiude, e torna da gestire ogni REMIND_AFTER come gli altri guasti che durano
+                extra = (
+                    {"fault": True, "weight": _reminder_weight(c.get("casing_since") or last["ts"], now)}
+                    if current and levels["casing"] != "off"
+                    else {}
+                )
+                closed = not current and c is not None and c.get("casing_open") is not None and not c.get("unreachable")
+                add_group(
+                    "door_alarm",
+                    "crit",
+                    "Coperchio del Controller Aperto",
+                    "Richiuso" if closed else "",
+                    group,
+                    **extra,
+                )
+            else:
+                add_group("door_alarm", "crit", "Manomissione", _capital(detail), group)
         if levels["denied"] != "off" or levels["unknown_card"] != "off":
             denied = self.db.list_events(kind="negato", since=since, limit=MAX_EVENTS)
 
@@ -738,7 +724,7 @@ def _events_why(ws: dict | None, mqtt_configured: bool, mqtt_connected: bool, co
         parts.append("MQTT: controller non collegato al broker")
     else:
         parts.append("MQTT: il controller non pubblica sul broker")
-    return "; ".join(parts)
+    return " · ".join(parts)
 
 
 def _episode_id(item_id: str, since: str) -> str:
