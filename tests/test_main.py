@@ -441,6 +441,28 @@ def test_open_casing_through_api(client):
     assert client.get("/api/summary").json()["faults"] == []
 
 
+def test_open_casing_and_its_alarm_once_in_the_top_bar(client):
+    from datetime import UTC, datetime
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    state.notifications.set_levels({"mqtt": "off"}, "test")
+    since = datetime.now(tz=UTC).replace(microsecond=0).isoformat()
+    name = state.db.list_controllers()[0]["name"]
+    state.db.add_event(ts=since, kind="manomissione", detail="coperchio del controller aperto", source=name)
+    state.monitor.casing_open, state.monitor.casing_since = True, since
+    summary = client.get("/api/summary").json()
+    # Una voce sola, tra i guasti finché resta aperto
+    [fault] = summary["faults"]
+    assert (fault["title"], fault["type"]) == ("Coperchio del Controller Aperto", "door_alarm")
+    assert summary["alarms"] == []
+    assert [i["title"] for i in client.get("/api/notifications").json()["items"]] == [fault["title"]]
+    # Richiuso: allarme da prendere in visione, non più guasto
+    state.monitor.casing_open = False
+    summary = client.get("/api/summary").json()
+    assert summary["faults"] == [] and [a["id"] for a in summary["alarms"]] == [fault["id"]]
+
+
 def test_controller_log_read_at_every_round_without_live_events(client):
     from app import main
 

@@ -166,6 +166,9 @@ def event_from_ws(notification: dict) -> Event | None:
 # valore. Non tutti i dati: un campo in più su un canale farebbe sembrare diversi due eventi uguali
 EVENT_IDENTITY = ("DoorToken", "AccessPointToken", "IdPointToken", "port", "CredentialToken", "Card", "State", "state")
 EVENT_IDENTITY += ("Open", "Active")
+# Sorgenti di eventi che l'app non usa ma conta: due interfacce di rete o due ingressi alla stessa ora sono due eventi
+# (in loco il 31/10: Network/Lost di "Any" ed "eth0" con la stessa ora)
+EVENT_IDENTITY += ("interface", "InputToken")
 # Eventi recenti ricordati per riconoscere quelli arrivati due volte (WebSocket e MQTT)
 RECENT_EVENTS = 2048
 

@@ -193,7 +193,7 @@ async def test_controller_time_zone_compared_with_home_assistant(monitor, contro
         controllers=[{**state.as_dict(), "id": controller_row}],
     )
     assert [(i["type"], i["title"]) for i in items] == [("clock", "Fuso Orario del Controller")]
-    assert "UTC, diverso da quello di Home Assistant (Europe/Rome)" in items[0]["text"]
+    assert items[0]["text"] == "Quadro Teatro · UTC invece di Europe/Rome"
 
     controller.time_zone = "Europe/Berlin"
     await monitor.recheck_clock(db.get_controller(controller_row))
@@ -359,8 +359,7 @@ def test_controller_off_the_broker_with_another_controller_down(db):
     )
     fault = next(i for i in items if i["id"] == "events@2026-10-29T11:33:00+00:00")
     assert fault["severity"] == "crit" and fault["ts"] == "2026-10-29T11:33:00+00:00"
-    assert fault["text"].startswith("Quadro Hall risponde ma passaggi e allarmi non arrivano in diretta")
-    assert "(MQTT: controller non collegato al broker)" in fault["text"]
+    assert fault["text"] == "Quadro Hall · MQTT: controller non collegato al broker"
 
 
 def _broker_fault(service, now, since="2026-10-29T11:33:00+00:00"):
@@ -421,7 +420,7 @@ def test_home_assistant_clock_notification(db):
     )
     # Una sola notifica anche con più controller: l'orologio sbagliato è quello di Home Assistant
     assert [(i["title"], i["severity"]) for i in items] == [("Orologio di Home Assistant", "low")]
-    assert items[0]["text"].startswith("Home Assistant è 96 s indietro rispetto a Quadro")
+    assert items[0]["text"] == "96 s indietro rispetto a Quadro"
 
 
 def test_numbered_migrations_copy_old_database(tmp_path):
@@ -509,7 +508,7 @@ async def test_access_points_the_controller_does_not_manage_are_a_fault(monitor,
     assert [(i["title"], i["type"], i["severity"]) for i in items] == [
         ("Punto di Accesso Non Gestito", "programming", "crit")
     ]
-    assert items[0]["text"].startswith("Quadro Teatro · Ingresso: il controller legge tessere e pulsanti")
+    assert items[0]["text"] == "Quadro Teatro · Ingresso"
 
     controller.access_controllers["Axis-x AccessController"]["AccessPoint"] = ["ap-in"]
     await monitor.recheck_managed(db.get_controller(controller_row))
@@ -586,7 +585,7 @@ async def test_rex_inputs_without_permission_are_a_fault(monitor, controller, co
         controllers=[{**state.as_dict(), "id": controller_row}],
     )
     assert [(i["title"], i["severity"]) for i in items] == [("Pulsante Senza Permesso di Apertura", "crit")]
-    assert items[0]["text"].startswith("Quadro Teatro · Pulsante Portineria: il controller nega l'apertura")
+    assert items[0]["text"] == "Quadro Teatro · Pulsante Portineria"
 
     # Con il profilo per le aperture senza tessera l'avviso sparisce al controllo successivo
     controller.profiles["rex"] = {
@@ -680,3 +679,109 @@ def test_casing_opened_again_is_a_new_fault(db):
     # Il tipo si può spegnere da solo, senza spegnere gli allarmi delle porte
     service.set_levels({"casing": "off"}, "admin")
     assert _casing_fault(service, now) == []
+
+
+def test_open_casing_with_its_alarm_is_one_notification(db):
+    # Collaudo 31/10: "Coperchio del Controller Aperto" e "Manomissione · Coperchio del controller aperto", stessa ora
+    service = NotificationService(db, settle=timedelta(0))
+    now = datetime(2026, 10, 31, 10, 30, tzinfo=UTC)
+    since = "2026-10-31T10:08:12+00:00"
+    db.add_event(ts=since, kind="manomissione", detail="coperchio del controller aperto", source="Rack Portineria")
+    items = _casing_fault(service, now, since=since)
+    assert [(i["type"], i["title"], i["text"], i["door"]) for i in items] == [
+        ("door_alarm", "Coperchio del Controller Aperto", "", "Rack Portineria")
+    ]
+    [open_item] = items
+    # Finché resta aperto è un guasto: dopo la presa visione resta nella barra e torna da gestire ogni 4 ore
+    assert open_item["fault"] is True and open_item["severity"] == "crit"
+    service.mark_seen([open_item["id"]], items)
+    assert service.listing(_casing_fault(service, now + timedelta(hours=1), since=since))["open"] == 0
+    assert service.listing(_casing_fault(service, now + timedelta(hours=4), since=since))["open"] == 1
+    # Richiuso: la stessa voce, già vista, resta nelle 24 ore degli allarmi
+    closed = _casing_fault(service, now + timedelta(hours=5), casing_open=False, since="2026-10-31T15:00:00+00:00")
+    [closed_item] = closed
+    assert (closed_item["id"], closed_item["text"], closed_item["fault"]) == (open_item["id"], "Richiuso", False)
+    assert service.listing(closed)["open"] == 0
+    # Oltre le 24 ore dell'allarme, ancora aperto: torna il guasto dello stato
+    later = _casing_fault(service, now + timedelta(hours=25), since=since)
+    assert [(i["type"], i["id"]) for i in later] == [("casing", f"casing:1@{since}")]
+    # Allarmi delle porte spenti: resta il guasto dello stato
+    service.set_levels({"door_alarm": "off"}, "admin")
+    assert [i["type"] for i in _casing_fault(service, now, since=since)] == ["casing"]
+
+
+def test_casing_opened_before_and_again_now(db):
+    service = NotificationService(db, settle=timedelta(0))
+    now = datetime(2026, 10, 31, 10, 30, tzinfo=UTC)
+    db.add_event(
+        ts="2026-10-31T06:00:00+00:00",
+        kind="manomissione",
+        detail="coperchio del controller aperto",
+        source="Rack Portineria",
+    )
+    db.add_event(
+        ts="2026-10-31T10:08:12+00:00",
+        kind="manomissione",
+        detail="coperchio del controller aperto",
+        source="Rack Portineria",
+    )
+    items = _casing_fault(service, now, since="2026-10-31T10:08:12+00:00")
+    # Quella di adesso è il guasto. L'apertura delle 6 non dice "Richiuso": con il coperchio ancora aperto può essere
+    # la stessa, ripetuta dal controller al riavvio (il registro la scrive a ogni avvio)
+    assert [(i["text"], i["fault"]) for i in items] == [("", True), ("", False)]
+    # Chiuso adesso: tutte e due richiuse
+    closed = _casing_fault(service, now, casing_open=False, since="2026-10-31T10:20:00+00:00")
+    assert [(i["text"], i["fault"]) for i in closed] == [("Richiuso", False), ("Richiuso", False)]
+    # Controller che non risponde: non si sa se è ancora aperto, niente guasto e niente "Richiuso"
+    unknown = _casing_fault(service, now, unreachable=True, since="2026-10-31T10:08:12+00:00")
+    assert [(i["type"], i["text"]) for i in unknown if i["type"] == "door_alarm"] == [
+        ("door_alarm", ""),
+        ("door_alarm", ""),
+    ]
+
+
+def test_controller_and_door_tamper_titles(db):
+    service = NotificationService(db, settle=timedelta(0))
+    now = datetime(2026, 10, 31, 10, 30, tzinfo=UTC)
+    db.add_event(
+        ts="2026-10-31T10:00:00+00:00", kind="manomissione", detail="controller inclinato", source="Rack Portineria"
+    )
+    db.add_event(
+        ts="2026-10-31T10:01:00+00:00", kind="manomissione", detail="manomissione porta", source="porta", door="porta"
+    )
+    db.add_event(ts="2026-10-31T10:02:00+00:00", kind="allarme", detail="porta forzata", source="porta", door="porta")
+    items = _casing_fault(service, now, casing_open=False)
+    assert sorted((i["title"], i["text"]) for i in items) == [
+        ("Allarme Porta", "Porta forzata"),
+        ("Controller Inclinato", ""),
+        ("Manomissione", ""),
+    ]
+
+
+async def test_cover_opened_and_closed_again_is_still_one_notification(db, controller, settings):
+    # Revisione 0.24.1: aperto, chiuso e riaperto entro 5 minuti. La riga del registro diventa
+    # "coperchio del controller aperto · ripetuta" e la notifica tornava doppia, con il titolo "Manomissione"
+    from app.events import Event, EventMonitor
+    from app.service import AccessService
+
+    db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "Rack Portineria", "verify_ssl": 0})
+    monitor = EventMonitor(prefix="x", door_token="porta")
+    access = AccessService(db, controller, settings, monitor)
+    start = datetime(2026, 10, 31, 10, 8, 12, tzinfo=UTC)
+    for seconds, value in ((0, "1"), (60, "0"), (120, "1")):
+        event = Event(
+            "Device", "Device/Casing/Open/$source/Name/Casing", start + timedelta(seconds=seconds), {"Open": value}
+        )
+        monitor.apply_event(event)
+        access.record_event(event)
+    assert [e["detail"] for e in db.list_events()] == ["coperchio del controller aperto · ripetuta"]
+    service = NotificationService(db, settle=timedelta(0))
+    items = _casing_fault(service, start + timedelta(minutes=10), since=monitor.casing_since)
+    assert [(i["type"], i["title"], i["fault"]) for i in items] == [
+        ("door_alarm", "Coperchio del Controller Aperto", True)
+    ]
+    # Anche il controller inclinato più volte di seguito ha il suo titolo
+    for seconds in (0, 40):
+        access.record_event(Event("Device", "Device/Tampering/TiltDetected", start + timedelta(seconds=seconds), {}))
+    titles = [i["title"] for i in _casing_fault(service, start + timedelta(minutes=10), since=monitor.casing_since)]
+    assert sorted(titles) == ["Controller Inclinato", "Coperchio del Controller Aperto"]

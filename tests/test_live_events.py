@@ -259,7 +259,7 @@ def test_live_events_fault_follows_websocket_and_mqtt(db):
     # MQTT non configurato sul controller (facoltativo) e WebSocket che non si collega da 10 minuti
     [fault] = _events_fault(db, down, now)
     assert fault["id"] == "events@2026-10-31T08:50:00+00:00" and fault["title"] == "Eventi del Controller Non Arrivano"
-    assert "(WebSocket: risposta 401; MQTT: il controller non pubblica sul broker)" in fault["text"]
+    assert fault["text"] == "WebSocket: risposta 401 · MQTT: il controller non pubblica sul broker"
     # Con il WebSocket collegato, o con il controller sul broker, gli eventi arrivano: nessun guasto
     assert _events_fault(db, {"connected": True, "down_since": None, "error": ""}, now) == []
     assert _events_fault(db, down, now, controller_online=True) == []
@@ -274,8 +274,9 @@ def test_broker_needed_only_for_home_assistant_with_the_websocket(db):
     now = datetime(2026, 10, 31, 9, 0, tzinfo=UTC)
     live = {"connected": True, "down_since": None, "error": ""}
     [none] = _events_fault(db, live, now, mqtt_configured=False, mqtt_connected=False)
-    assert none["id"] == "mqtt:none" and none["text"].startswith("Home Assistant non riceve stato")
-    assert none["text"].endswith("Gli eventi del controller arrivano comunque con il WebSocket.")
+    assert (
+        none["id"] == "mqtt:none" and none["text"] == "Home Assistant senza collegamento all'app. Installa Mosquitto."
+    )
     # Senza l'integrazione con Home Assistant il broker non serve
     assert _events_fault(db, live, now, mqtt_configured=False, mqtt_connected=False, ha_integration=False) == []
 
@@ -526,12 +527,12 @@ def test_broker_needed_for_intercoms_too(db):
     [none] = _events_fault(
         db, live, now, mqtt_configured=False, mqtt_connected=False, ha_integration=False, intercoms=True
     )
-    assert none["id"] == "mqtt:none" and none["text"].startswith("Le chiamate e le aperture dei videocitofoni")
+    assert none["id"] == "mqtt:none" and none["text"] == "Videocitofoni senza collegamento all'app. Installa Mosquitto."
     [lost] = _events_fault(
         db, live, now, mqtt_connected=False, intercoms=True, mqtt_disconnected_since="2026-10-31T08:00:00+00:00"
     )
     assert lost["title"] == "Collegamento MQTT Perso"
-    assert "Home Assistant non riceve stato, pulsanti ed eventi dell'app; le chiamate" in lost["text"]
+    assert lost["text"] == "Home Assistant e videocitofoni senza collegamento all'app."
 
 
 def test_initial_state_from_the_site_controller():
@@ -592,3 +593,11 @@ def test_access_token_never_in_the_log(caplog):
     assert live.last_error == "indirizzo del controller non valido"
     assert caplog.records and all("SEGRETO" not in r.getMessage() for r in caplog.records)
     assert any("wssession=***" in r.getMessage() for r in caplog.records)
+
+
+def test_events_of_different_sources_at_the_same_time_are_two():
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    for interface in ("Any", "eth0"):
+        lost = notify("tns1:Device/tnsaxis:Network/Lost", {"interface": interface}, {"lost": "0"}, 1793310909289)
+        assert monitor.apply_event(event_from_ws(lost["params"]["notification"]), True) is True
+    assert monitor.categories["Device"].count == 2

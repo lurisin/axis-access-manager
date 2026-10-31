@@ -698,9 +698,12 @@ def create_app(
             "unknown_cards": len(state.db.list_unknown_cards()) if user.can("persone") else 0,
             "sync": state.last_sync,
             "notifications": listing["open"] if listing else 0,
-            # Barra in alto: guasti finché durano, allarmi finché non se ne prende visione
+            # Barra in alto: guasti finché durano, allarmi finché non se ne prende visione. Il coperchio ancora aperto
+            # è un allarme che dura: sta tra i guasti, non anche tra gli allarmi
             "faults": [_brief(i) for i in listing["items"] if i["fault"]] if listing else [],
-            "alarms": [_brief(i) for i in listing["items"] if i["type"] == "door_alarm" and not i["seen"]]
+            "alarms": [
+                _brief(i) for i in listing["items"] if i["type"] == "door_alarm" and not i["seen"] and not i["fault"]
+            ]
             if listing
             else [],
             # Per mostrare le telecamere delle porte con il nome di Home Assistant
