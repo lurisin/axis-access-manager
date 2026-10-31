@@ -40,6 +40,7 @@ from .health import (
 )
 from .installation import MAX_CONTROLLERS, InstallationService, check_host, same_controller
 from .intercom import IntercomBridge, IntercomSettings
+from .live_events import LiveEvents
 from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
 from .programming import DIRECTIONS, INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
@@ -648,6 +649,11 @@ def create_app(
                 "entities": [c["name"] for _, _, c in state.bridge._entities()] if cfg.ha_integration else [],
             },
             "doors": _doors_status(state),
+            # Eventi in diretta: da dove arrivano ("websocket", "mqtt" o "") e com'è il WebSocket (None: non usato)
+            "live": {
+                "source": events_source(state),
+                "websocket": state.live_events.status() if getattr(state, "live_events", None) else None,
+            },
             "options": {
                 "default_group": state.service.default_group,
                 "event_retention_days": cfg.event_retention_days,
@@ -789,6 +795,8 @@ def create_app(
                 "controller_online": reachable,
                 # Eventi del controller in arrivo: senza broker no
                 "mqtt_connected": bool(state.mqtt) and monitor.connected and monitor.controller_online is not False,
+                # Eventi in diretta: "websocket", "mqtt" o "" (solo letture periodiche)
+                "events_source": events_source(state),
                 "casing_open": monitor.casing_open,
                 # Ultima lettura dello stato con le API del controller
                 "state_read_at": monitor.state_read_at or None,
@@ -1782,6 +1790,10 @@ async def _start_runtime(app: FastAPI) -> None:
     state.monitor_task = (
         asyncio.create_task(state.monitor.run(state.mqtt)) if state.mqtt and cfg.mqtt_topic_prefix else None
     )
+    # Eventi in diretta dal WebSocket del controller principale: la fonte principale, MQTT è facoltativo
+    live = cfg.a1210_host and callable(getattr(state.raw_controller, "ws_session", None))
+    state.live_events = LiveEvents(state.monitor, state.raw_controller, lambda: _responding(state)) if live else None
+    state.live_task = asyncio.create_task(state.live_events.run()) if state.live_events else None
     # Contatori di oggi in Home Assistant ripubblicati a mezzanotte
     state.bridge.start()
     if not hasattr(state, "places_key"):
@@ -1813,11 +1825,12 @@ async def _stop_listening(app: FastAPI, offline: bool = True) -> tuple:
         # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
         # ordinata il broker scarta il messaggio di addio)
         await bridge.stop(offline)
-    task = getattr(state, "monitor_task", None)
-    if task:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    for name in ("monitor_task", "live_task"):
+        task = getattr(state, name, None)
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     return state.raw_controller, state.service.lock, [state.monitor, *state.intercoms], state.readers
 
 
@@ -2147,6 +2160,8 @@ def _current_notifications(state) -> list[dict]:
         primary_id=(state.installation.primary or {}).get("id"),
         controller_offline_since=state.monitor.controller_offline_since,
         mqtt_disconnected_since=state.monitor.disconnected_since,
+        ws=state.live_events.status() if getattr(state, "live_events", None) else None,
+        ha_integration=bool(state.settings.ha_integration),
         door_names={d["door_token"]: d["name"] for d in state.doors},
         cameras=[
             {
@@ -2283,8 +2298,10 @@ async def _health_loop(app: FastAPI) -> None:
             if before != state.controller.paused:
                 state.service.notify_change()
             if _responding(state) != responding:
-                # Non risponde più: stato sconosciuto subito. Torna a rispondere: lettura completa subito
+                # Non risponde più: stato sconosciuto subito. Torna a rispondere: lettura completa e WebSocket subito
                 state.state_wake.set()
+                if getattr(state, "live_events", None):
+                    state.live_events.wake.set()
             await _recover_if_needed(state)
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo dei controller non riuscito")
@@ -2293,10 +2310,12 @@ async def _health_loop(app: FastAPI) -> None:
 
 
 async def _recover_if_needed(state) -> None:
-    """Dopo l'avvio o un'interruzione (broker perso, controller offline), appena gli eventi tornano ad arrivare
-    si recuperano quelli persi dal registro interno del controller."""
+    """Eventi del controller dal suo registro interno: dopo l'avvio o un'interruzione degli eventi in diretta
+    (WebSocket o broker persi, controller offline) quelli persi; senza eventi in diretta, a ogni giro (ogni
+    HEALTH_INTERVAL secondi), così passaggi e allarmi arrivano nel registro anche senza WebSocket né MQTT."""
     monitor = state.monitor
-    pending = state.recover_pending or monitor.outages != state.recover_outages
+    live = events_live(state)
+    pending = state.recover_pending or monitor.outages != state.recover_outages or not live
     if not pending:
         # Nessuna interruzione da recuperare: il registro è completo fin qui. Il punto da cui recuperare si fissa
         # adesso e non al recupero, quando gli eventi arrivati in diretta dopo l'interruzione lo avrebbero già
@@ -2307,14 +2326,10 @@ async def _recover_if_needed(state) -> None:
     health = state.health.states.get(primary["id"]) if primary else None
     if not health or not health.online or state.controller.paused:
         return
-    if state.mqtt and (not monitor.connected or monitor.controller_online is False):
-        return
     outages = monitor.outages
+    # Registro dell'app ancora vuoto (primo avvio): da quando è stato fissato il punto, cioè dall'avvio o dall'ultimo
+    # recupero senza eventi in diretta
     last, marked_at = state.recover_from
-    if not last:
-        # Primo avvio: niente da recuperare, gli eventi arrivano da ora
-        state.recover_pending, state.recover_outages = False, outages
-        return
     try:
         start = datetime.fromisoformat(last)
     except ValueError:
@@ -2331,7 +2346,12 @@ async def _recover_if_needed(state) -> None:
     except VapixError as err:
         _LOGGER.warning("Eventi persi non recuperati dal controller: %s", err)
         return
-    state.recover_pending, state.recover_outages = False, outages
+    # Senza eventi in diretta resta da fare: anche il primo giro dopo il loro ritorno, per gli eventi tra questo
+    # recupero e il ritorno
+    state.recover_pending, state.recover_outages = not live, outages
+    if not live:
+        # Il registro dell'app è completo fino a qui: il giro dopo legge solo gli eventi nuovi
+        state.recover_from = _recover_mark(state)
     state.last_recovery = {"at": _now(), "since": since.isoformat(timespec="seconds"), "events": recovered}
     if recovered:
         _LOGGER.info("Recuperati %s eventi dal registro del controller", recovered)
@@ -2358,9 +2378,20 @@ async def _input_changed(state) -> None:
 
 
 def events_live(state) -> bool:
-    """Gli eventi del controller principale arrivano in diretta: app collegata al broker e controller collegato."""
+    """Gli eventi del controller principale arrivano in diretta: WebSocket collegato, oppure app e controller
+    collegati al broker MQTT. Un controller mai visto sul broker (MQTT non configurato sul controller, ora
+    facoltativo) non conta."""
+    return state.monitor.ws_live or mqtt_live(state)
+
+
+def mqtt_live(state) -> bool:
     monitor = state.monitor
-    return bool(state.mqtt) and monitor.connected and monitor.controller_online is not False
+    return bool(state.mqtt) and monitor.connected and monitor.controller_online is True
+
+
+def events_source(state) -> str:
+    """Da dove arrivano gli eventi in diretta: "websocket", "mqtt" o "" (nessuna fonte, solo letture periodiche)."""
+    return "websocket" if state.monitor.ws_live else "mqtt" if mqtt_live(state) else ""
 
 
 def _responding(state) -> bool | None:

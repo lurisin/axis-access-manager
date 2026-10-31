@@ -43,8 +43,9 @@ TYPES = {
         "urgent",
     ),
     "mqtt": (
-        "Collegamento MQTT Perso",
-        "L'app non riceve più gli eventi dal broker MQTT, oppure non c'è nessun broker MQTT.",
+        "Eventi in Diretta e MQTT",
+        "Gli eventi del controller non arrivano in diretta (né con il WebSocket né con MQTT), oppure l'app non è "
+        "collegata al broker MQTT che porta stato, pulsanti ed eventi in Home Assistant.",
         "urgent",
     ),
     "unknown_card": ("Tessere Sconosciute", "Tessere non registrate passate sul lettore.", "urgent"),
@@ -116,6 +117,9 @@ EXPIRING = timedelta(days=7)
 GROUP_WINDOW = timedelta(minutes=5)
 # Un guasto di collegamento preso visione torna da gestire ogni tanto, finché dura
 REMIND_AFTER = timedelta(hours=4)
+# Il WebSocket che non si collega diventa un guasto dopo questo tempo: un tentativo fallito e riuscito al successivo
+# non lo è
+WS_GRACE = timedelta(minutes=1)
 MAX_EVENTS = 500
 SEVERITY_ORDER = {"crit": 0, "warn": 1, "low": 2}
 SETTING_LEVELS = "notifications"
@@ -188,6 +192,8 @@ class NotificationService:
         primary_id: int | None = None,
         controller_offline_since: str = "",
         mqtt_disconnected_since: str = "",
+        ws: dict | None = None,
+        ha_integration: bool = True,
         door_names: dict[str, str],
         cameras: list[dict] | None = None,
         controllers: list[dict] | None = None,
@@ -201,7 +207,9 @@ class NotificationService:
         """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente.
 
         db_recovery: cosa ha fatto all'avvio il controllo del database (backup_copy.recover), "" se era sano.
-        ha_copy_error: perché l'ultima copia per il backup di Home Assistant non è stata aggiornata."""
+        ha_copy_error: perché l'ultima copia per il backup di Home Assistant non è stata aggiornata.
+        ws: stato del WebSocket degli eventi (LiveEvents.status), None se l'app non lo usa.
+        ha_integration: l'integrazione con Home Assistant, che passa dal broker MQTT, è attiva."""
         now = now or datetime.now(tz=UTC)
         levels = self.levels()
         since = (now - RECENT).astimezone(UTC).isoformat(timespec="seconds")
@@ -268,7 +276,10 @@ class NotificationService:
                 link=link,
             )
 
-        if controller_configured:
+        ws_live = bool(ws and ws.get("connected"))
+        # Il broker serve a Home Assistant; agli eventi del controller basta il WebSocket (vedi il guasto più sotto)
+        still = " Gli eventi del controller arrivano comunque con il WebSocket." if ws_live else ""
+        if controller_configured and ha_integration:
             if not mqtt_configured:
                 # Il broker si cerca di nuovo ogni minuto (main._wait_for_broker): la notifica sparisce da sola
                 add(
@@ -276,9 +287,9 @@ class NotificationService:
                     "mqtt:none",
                     "crit",
                     "Nessun Broker MQTT",
-                    "Gli eventi del controller non arrivano all'app: registro e stato porta non si aggiornano. "
-                    "Installa l'add-on Mosquitto o imposta il broker nelle opzioni dell'add-on: l'app lo cerca di "
-                    "nuovo ogni minuto, senza riavvio.",
+                    "Home Assistant non riceve stato, pulsanti ed eventi dell'app. Installa l'add-on Mosquitto o "
+                    "imposta il broker nelle opzioni dell'add-on: l'app lo cerca di nuovo ogni minuto, senza riavvio."
+                    + still,
                     now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                 )
@@ -288,11 +299,13 @@ class NotificationService:
                     _episode_id("mqtt", mqtt_disconnected_since),
                     "crit",
                     "Collegamento MQTT Perso",
-                    "Gli eventi del controller non arrivano all'app: registro e stato porta non si aggiornano.",
+                    "L'app non è più collegata al broker MQTT: Home Assistant non riceve stato, pulsanti ed eventi "
+                    "dell'app." + still,
                     mqtt_disconnected_since or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                     weight=_reminder_weight(mqtt_disconnected_since, now),
                 )
+        if controller_configured:
             controllers = controllers or []
             unreachable = [c for c in controllers if c.get("unreachable")]
             for c in unreachable:
@@ -312,20 +325,22 @@ class NotificationService:
             primary = next((c for c in controllers if c.get("id") == primary_id), None) if primary_id else None
             checked = [primary] if primary else controllers
             reachable = bool(checked) and all(c.get("online") is True for c in checked)
-            if mqtt_connected and controller_online is False and reachable:
-                # Il controller risponde all'app ma non pubblica sul broker
+            events_since = _events_down_since(ws, mqtt_connected, controller_online, controller_offline_since, now)
+            if reachable and events_since:
+                # Il controller risponde all'app ma i suoi eventi non arrivano: né WebSocket né MQTT
                 name = f"{primary['name']} risponde" if primary and len(controllers) > 1 else "Il controller risponde"
+                why = _events_why(ws, mqtt_configured, mqtt_connected, controller_online)
                 add(
                     "mqtt",
-                    _episode_id("mqtt:controller", controller_offline_since),
+                    _episode_id("events", events_since),
                     "crit",
                     "Eventi del Controller Non Arrivano",
-                    f"{name} ma non è collegato al broker MQTT: passaggi e allarmi non arrivano in diretta. "
-                    "Lo stato si rilegge dal controller ogni 10 secondi, e i passaggi persi si "
-                    "recuperano quando il controller torna collegato.",
-                    controller_offline_since or now.isoformat(timespec="seconds"),
+                    f"{name} ma passaggi e allarmi non arrivano in diretta ({why}). Lo stato si rilegge dal "
+                    "controller ogni 10 secondi e i passaggi arrivano nel registro ogni 30 secondi dal registro "
+                    "del controller, senza foto.",
+                    events_since,
                     link="#impianti/stato",
-                    weight=_reminder_weight(controller_offline_since, now),
+                    weight=_reminder_weight(events_since, now),
                 )
             elif not unreachable and (sync.get("ok") is False or (controller_online is False and not controllers)):
                 detail = sync.get("error") if sync.get("ok") is False else "il controller non è raggiungibile"
@@ -683,6 +698,36 @@ def _reminder_weight(since: str, now: datetime) -> int:
     if start is None or now <= start:
         return 0
     return int((now - start) / REMIND_AFTER)
+
+
+def _events_down_since(
+    ws: dict | None, mqtt_connected: bool, controller_online: bool | None, offline_since: str, now: datetime
+) -> str:
+    """Da quando gli eventi del controller non arrivano in diretta; "" se arrivano o non si sa ancora. Con il
+    WebSocket: da quando non riesce a collegarsi (da almeno WS_GRACE), se nemmeno MQTT li porta. Senza (nessun
+    controller che lo permetta): da quando il controller risulta scollegato dal broker."""
+    if mqtt_connected and controller_online is True:
+        return ""
+    if ws is None:
+        if mqtt_connected and controller_online is False:
+            return offline_since or now.isoformat(timespec="seconds")
+        return ""
+    down = _parse(ws.get("down_since") or "") if not ws.get("connected") else None
+    return ws["down_since"] if down and now - down >= WS_GRACE else ""
+
+
+def _events_why(ws: dict | None, mqtt_configured: bool, mqtt_connected: bool, controller_online: bool | None) -> str:
+    """Perché gli eventi non arrivano, fonte per fonte."""
+    parts = [f"WebSocket: {ws.get('error') or 'non collegato'}"] if ws is not None else []
+    if not mqtt_configured:
+        parts.append("MQTT: nessun broker")
+    elif not mqtt_connected:
+        parts.append("MQTT: app non collegata al broker")
+    elif controller_online is False:
+        parts.append("MQTT: controller non collegato al broker")
+    else:
+        parts.append("MQTT: il controller non pubblica sul broker")
+    return "; ".join(parts)
 
 
 def _episode_id(item_id: str, since: str) -> str:

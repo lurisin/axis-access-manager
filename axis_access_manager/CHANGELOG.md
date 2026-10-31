@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.24.0
+
+Eventi del controller in diretta con il WebSocket: MQTT sul controller diventa facoltativo.
+
+- **WebSocket del controller.** L'app si collega al WebSocket dell'A1210 (`/vapix/ws-data-stream`) con l'utente e la password del controller e riceve in diretta tessere lette, accessi concessi e negati, stato e allarmi delle porte, ingressi, coperchio e avvio. Sul controller non c'è niente da configurare. È la fonte principale degli eventi, anche con il controller collegato al broker.
+- **MQTT del controller facoltativo.** Se il controller pubblica anche sul broker, gli eventi arrivano da tutte e due le parti ma contano una volta sola: nel registro un passaggio compare una volta. Senza MQTT del controller, nella scheda Stato la riga Controller dice «Non Pubblica sul Broker · facoltativo». Il broker resta necessario per le entità in Home Assistant.
+- **Collegamento che cade.** Se il WebSocket cade (riavvio del controller, rete interrotta) l'app riprova dopo 5, 10, 30 e poi ogni 60 secondi, e subito quando il controller torna a rispondere. Al ritorno rilegge lo stato per intero e recupera dal registro del controller i passaggi persi. Appena collegato il controller manda lo stato attuale: aggiorna porte e ingressi, ma non fa righe nel registro.
+- **Senza eventi in diretta, registro ogni 30 secondi.** Con il WebSocket e MQTT tutti e due fermi, i passaggi arrivano nel registro ogni 30 secondi dal registro del controller (senza foto) invece che solo al ritorno degli eventi. Al collaudo del 29 ottobre, con il controller scollegato dal broker, il registro restava fermo per ore.
+- **Scheda Stato: Eventi in Diretta.** Il riquadro degli eventi mostra da dove arrivano (WebSocket o MQTT), il WebSocket collegato e da quando (o il motivo per cui non si collega), l'ultima tessera letta, gli eventi AccessControl e gli eventi persi. Sotto, il broker MQTT: serve a Home Assistant. Nel cruscotto la riga Eventi in Diretta dice WebSocket, MQTT o Non in Arrivo.
+- **Guasti.** «Eventi del Controller Non Arrivano» compare quando il controller risponde ma da più di un minuto non arrivano eventi né dal WebSocket né da MQTT, con il motivo di tutti e due. «Nessun Broker MQTT» e «Collegamento MQTT Perso» riguardano solo Home Assistant: compaiono solo con Entità in Home Assistant attiva e dicono se gli eventi arrivano comunque con il WebSocket. Il tipo di notifica si chiama ora Eventi in Diretta e MQTT.
+
 ## 0.23.1
 
 - **Coperchio del controller aperto, anche nell'app.** Al collaudo del 30 ottobre il coperchio era aperto dall'avvio del controller: in Home Assistant Coperchio Controller Aperto era acceso, nell'app si vedeva solo nel riquadro Stato Impianto del cruscotto. Ora:

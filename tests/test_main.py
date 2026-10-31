@@ -441,6 +441,35 @@ def test_open_casing_through_api(client):
     assert client.get("/api/summary").json()["faults"] == []
 
 
+def test_controller_log_read_at_every_round_without_live_events(client):
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    calls = []
+    original = state.service.recover_events
+
+    async def spy(since):
+        calls.append(since)
+        return await original(since)
+
+    state.service.recover_events = spy
+    # Né WebSocket né MQTT: passaggi e allarmi dal registro del controller a ogni giro
+    assert main.events_source(state) == ""
+    client.portal.call(main._recover_if_needed, state)
+    client.portal.call(main._recover_if_needed, state)
+    assert len(calls) >= 2 and state.recover_pending is True
+    # Eventi in diretta di nuovo: un ultimo giro per quelli tra l'ultimo recupero e il ritorno, poi basta
+    state.monitor.ws_live = True
+    assert main.events_source(state) == "websocket"
+    before = len(calls)
+    client.portal.call(main._recover_if_needed, state)
+    client.portal.call(main._recover_if_needed, state)
+    assert len(calls) == before + 1 and state.recover_pending is False
+    live = client.get("/api/status").json()["live"]
+    assert live == {"source": "websocket", "websocket": None}
+
+
 def test_status_reports_database(client):
     data = client.get("/api/status").json()
     assert data["database"]["schema"] >= 2

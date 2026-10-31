@@ -7,6 +7,7 @@ import hashlib
 import logging
 import socket
 import ssl
+from urllib.parse import urlencode
 
 import httpx
 
@@ -99,6 +100,7 @@ class A1210Client:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.host = host
+        self.verify_ssl = verify_ssl
         options = {"auth": httpx.DigestAuth(username, password), "verify": verify_ssl, "timeout": 10}
         try:
             self._client = httpx.AsyncClient(base_url=f"https://{host}", transport=transport, **options)
@@ -240,6 +242,46 @@ class A1210Client:
             writer.close()
         digest = hashlib.sha256(der).hexdigest().upper()
         return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2)) if der else ""
+
+    # Eventi in diretta con il WebSocket (vedi live_events)
+
+    async def ws_session(self) -> str:
+        """Gettone per aprire il WebSocket degli eventi: il collegamento WebSocket non fa il digest, il gettone
+        nell'indirizzo sì (prova al banco del 25/10: 20 caratteri). Quanto dura non si sa: se ne chiede uno nuovo a
+        ogni collegamento."""
+        if self._invalid_host:
+            raise ControllerUnreachable("indirizzo del controller non valido")
+        if self._client.is_closed:
+            raise ControllerUnreachable("il controller non risponde (collegamento chiuso)")
+        try:
+            response = await self._client.get("/axis-cgi/wssession.cgi")
+        except (httpx.HTTPError, httpx.InvalidURL) as err:
+            _LOGGER.debug("/axis-cgi/wssession.cgi: %r", err)
+            raise ControllerUnreachable(f"il controller non risponde ({_network_reason(err)})") from err
+        except RuntimeError as err:
+            if not self._client.is_closed:
+                raise
+            raise ControllerUnreachable("il controller non risponde (collegamento chiuso)") from err
+        if response.status_code == 401:
+            raise VapixError("credenziali del controller non valide")
+        token = response.text.strip()
+        if response.status_code != 200 or not token or not token.isalnum():
+            _LOGGER.info("Il controller ha risposto %s a wssession.cgi: %s", response.status_code, response.text[:200])
+            raise VapixError(f"il controller non dà l'accesso al WebSocket (risposta {response.status_code})")
+        return token
+
+    def ws_url(self, token: str) -> str:
+        """Indirizzo del WebSocket degli eventi, con il gettone di ws_session."""
+        return f"wss://{self.host}/vapix/ws-data-stream?{urlencode({'wssession': token, 'sources': 'events'})}"
+
+    def ws_ssl(self) -> ssl.SSLContext:
+        """Stesse regole del client: certificato verificato solo se richiesto. Il controller sostituito si riconosce
+        dall'impronta del certificato (controllo periodico), e allora il WebSocket non si apre."""
+        context = ssl.create_default_context()
+        if not self.verify_ssl:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        return context
 
     async def fetch_events(self, start: str, limit: int = 1000, row_id: int | None = None) -> tuple[list[dict], bool]:
         """Registro eventi interno del controller (fino a 30.000), dal più vecchio; True se ce ne sono altri."""
