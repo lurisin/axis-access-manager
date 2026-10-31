@@ -25,6 +25,36 @@ from .backup_copy import ha_copy_error, ha_copy_path, update_copies
 from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .controller_state import POLL_LIVE, POLL_WITHOUT_EVENTS, StateKeeper
 from .db import DB_PATH, Database, local_day_start
+from .direct import (
+    COOKIE,
+    COOKIE_HTTPS,
+    COOKIE_MAX_AGE,
+    DIRECT_PORT,
+    PASSWORD_MAX,
+    REQUEST_HEADER,
+    SESSION_UNUSED,
+    TEMPORARY_VALID,
+    TOUCH_EVERY,
+    DirectError,
+    DirectServer,
+    LoginLimiter,
+    PasswordHasher,
+    cert_name_problem,
+    client_ip,
+    is_direct,
+    new_token,
+    normalize_username,
+    password_problem,
+    session_valid,
+    short_agent,
+    temporary_expired,
+    temporary_password,
+    token_hash,
+)
+from .direct import (
+    SETTING as DIRECT_SETTING,
+)
+from .direct import load_settings as load_direct_settings
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS, renamed_tokens
 from .ha import HomeAssistant
@@ -57,7 +87,7 @@ from .service import (
     plural,
 )
 from .transfer import events_csv, import_persons, persons_csv, read_import
-from .users import PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
+from .users import ADMIN, PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
 from .vapix import A1210Client, ControllerGuard, ControllerUnreachable, VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -66,6 +96,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 # Con Ingress le richieste arrivano solo dal Supervisor
 INGRESS_PROXY = "172.30.32.2"
+# Accesso diretto: senza sessione si possono solo aprire la pagina, entrare e uscire; con la password provvisoria anche
+# vedere chi si è e cambiarla
+DIRECT_PUBLIC = {("GET", "/"), ("HEAD", "/"), ("POST", "/api/login"), ("POST", "/api/logout")}
+DIRECT_MUST_CHANGE = DIRECT_PUBLIC | {("GET", "/api/me"), ("POST", "/api/password")}
+DIRECT_LOGIN = "accedi con nome utente e password"
 
 # Eventi per cui salvare un'istantanea della telecamera
 # Istantanea sempre: rifiuti, citofono, allarmi, aperture a distanza e dai pulsanti (chi passa senza tessera).
@@ -351,10 +386,36 @@ class AppUserIn(BaseModel):
     perms: list[str] = []
 
 
+class LoginIn(BaseModel):
+    username: str = Field("", max_length=200)
+    # Il limite prima del calcolo della password: niente calcoli su testi enormi
+    password: str = Field("", max_length=PASSWORD_MAX * 4)
+
+
+class PasswordIn(BaseModel):
+    current: str = Field("", max_length=PASSWORD_MAX * 4)
+    new: str = Field("", max_length=PASSWORD_MAX * 4)
+
+
+class DirectAccessIn(BaseModel):
+    enabled: bool = False
+    https: bool = False
+    certfile: str = Field("fullchain.pem", max_length=100)
+    keyfile: str = Field("privkey.pem", max_length=100)
+
+
+class LoginRequired(Exception):
+    """Accesso diretto senza una sessione valida."""
+
+
 def current_user(request: Request) -> AppUser:
-    """Utente dell'app riconosciuto dalle intestazioni che Ingress aggiunge a ogni richiesta."""
+    """Utente dell'app riconosciuto dalle intestazioni che Ingress aggiunge a ogni richiesta, o dalla sessione
+    dell'accesso diretto (messa da _direct_guard)."""
     user = getattr(request.state, "user", None)
     if user is None:
+        if is_direct(request):
+            # Dall'accesso diretto mai le intestazioni di Ingress né l'accesso locale: solo una sessione valida
+            raise LoginRequired
         user = request.app.state.users.resolve(
             request.headers.get("X-Remote-User-Name") or "",
             request.headers.get("X-Remote-User-Display-Name") or "",
@@ -374,6 +435,8 @@ def need(*perms: str, any_of: bool = False) -> Any:
     def check(request: Request) -> AppUser:
         user = current_user(request)
         allowed = any(user.can(p) for p in perms) if any_of else user.can(*perms)
+        if not allowed and ADMIN in perms and is_direct(request):
+            raise HTTPException(status_code=403, detail="si fa solo dall'app dentro Home Assistant")
         if not allowed:
             # Le descrizioni contengono virgole: ognuna tra virgolette, separate dal punto e virgola
             missing = [f"«{PERMISSIONS[p]}»" for p in perms if not user.can(p)]
@@ -505,9 +568,12 @@ def create_app(
     db_path: Path | str | None = None,
     home_assistant: HomeAssistant | None = None,
     scheduled_backups: bool | None = None,
+    direct_port: int | None = None,
 ) -> FastAPI:
     if allow_any_client is None:
         allow_any_client = os.environ.get("AAM_ALLOW_ANY_CLIENT") == "1"
+    if direct_port is None:
+        direct_port = int(os.environ.get("AAM_DIRECT_PORT") or DIRECT_PORT)
     if scheduled_backups is None:
         # I test li spengono: un backup che parte da solo cambierebbe notifiche e attività sotto i loro piedi
         scheduled_backups = os.environ.get("AAM_SCHEDULED_BACKUPS", "1") != "0"
@@ -528,6 +594,11 @@ def create_app(
             _LOGGER.info("Copia del database prima dell'aggiornamento: %s", app.state.db.copied)
         app.state.users = UserDirectory(app.state.db, options.readonly_users)
         app.state.users.add_status_permission()
+        # Accesso diretto (fuori da Home Assistant): impostazioni, tentativi sbagliati, calcolo delle password, server
+        app.state.direct_settings = load_direct_settings(app.state.db)
+        app.state.login_limiter = LoginLimiter()
+        app.state.hasher = PasswordHasher()
+        app.state.direct = DirectServer(app, port=direct_port, log_level=options.log_level)
         app.state.installation = InstallationService(app.state.db)
         app.state.installation.migrate_from_options(options)
         app.state.installation.ensure_default_site()
@@ -556,6 +627,7 @@ def create_app(
         # Stato del controller da rileggere subito: tornato a rispondere, ingresso programmato
         app.state.state_wake = asyncio.Event()
         await _start_runtime(app)
+        await app.state.direct.apply(app.state.direct_settings)
         maintenance = asyncio.create_task(_maintenance(app))
         health = asyncio.create_task(_health_loop(app))
         tasks = [maintenance, health, asyncio.create_task(_state_loop(app))]
@@ -565,6 +637,8 @@ def create_app(
             # Il broker del Supervisor può arrivare dopo (Mosquitto installato ora): lo si cerca di nuovo
             tasks.append(asyncio.create_task(_wait_for_broker(app)))
         yield
+        await app.state.direct.stop()
+        app.state.hasher.close()
         for task in tasks:
             task.cancel()
             try:
@@ -581,11 +655,21 @@ def create_app(
     app = FastAPI(title="Axis Access Manager", lifespan=lifespan, docs_url=None, redoc_url=None)
 
     @app.middleware("http")
-    async def only_ingress(request: Request, call_next):
+    async def access_guard(request: Request, call_next):
+        if is_direct(request):
+            return await _direct_guard(request, call_next)
         client = request.client.host if request.client else ""
         if not allow_any_client and client not in (INGRESS_PROXY, "127.0.0.1"):
             return JSONResponse({"detail": "accesso consentito solo da Home Assistant"}, status_code=403)
         return await call_next(request)
+
+    @app.exception_handler(LoginRequired)
+    async def login_required(request: Request, err: LoginRequired) -> JSONResponse:
+        return JSONResponse({"detail": DIRECT_LOGIN, "login": True}, status_code=401)
+
+    @app.exception_handler(DirectError)
+    async def direct_error(request: Request, err: DirectError) -> JSONResponse:
+        return JSONResponse({"detail": str(err)}, status_code=err.status)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, err: ServiceError) -> JSONResponse:
@@ -615,6 +699,7 @@ def create_app(
     @app.get("/api/me")
     async def me(request: Request) -> dict:
         user = current_user(request)
+        password = request.app.state.db.get_password(user.username)
         perms = list(PERMISSIONS) if user.can("utenti") else [p for p in PERMISSIONS if p in user.perms]
         return {
             "user": user.label,
@@ -628,6 +713,10 @@ def create_app(
             "version": __version__,
             # Fuso di Home Assistant (per esempio Europe/Rome, vuoto se sconosciuto): ore e giorni come nel server
             "time_zone": ha_time_zone(),
+            # Accesso diretto: pagina aperta fuori da Home Assistant, password dell'utente e se è provvisoria
+            "direct": is_direct(request),
+            "has_password": password is not None,
+            "must_change": bool(password and password["must_change"]) and is_direct(request),
         }
 
     @app.get("/api/status", dependencies=[need("impianti", "import_export", "utenti", any_of=True)])
@@ -1694,8 +1783,9 @@ def create_app(
 
     @app.get("/api/users", dependencies=[need("utenti")])
     async def users(request: Request) -> dict:
+        state = request.app.state
         return {
-            "users": request.app.state.users.list(),
+            "users": _users_with_access(state),
             "permissions": PERMISSIONS,
             "roles": {key: {"label": label, "perms": perms} for key, (label, perms) in ROLES.items()},
         }
@@ -1713,7 +1803,330 @@ def create_app(
         request.app.state.users.delete(username, user)
         return {"ok": True}
 
+    # ---------- Accesso diretto ----------
+
+    @app.post("/api/login")
+    async def login(body: LoginIn, request: Request) -> JSONResponse:
+        if not is_direct(request):
+            raise HTTPException(status_code=404, detail="il login serve solo per l'accesso diretto")
+        state = request.app.state
+        ip = client_ip(request)
+        username = normalize_username(body.username)
+        # Un nome non valido conta come un utente qualsiasi: niente calcoli diversi da rivelare
+        key = username or "?"
+        wait = state.login_limiter.blocked(ip, key)
+        if wait:
+            return JSONResponse({"detail": f"troppi tentativi sbagliati: riprova tra {_minutes(wait)}"}, 429)
+        for blocked in state.login_limiter.attempt(ip, key):
+            _LOGGER.warning("Accesso diretto bloccato per troppi tentativi: %s", _block_text(blocked))
+            state.db.add_audit("sistema", "accesso diretto bloccato per troppi tentativi", _block_text(blocked))
+        password = state.db.get_password(username) if username else None
+        row = state.db.get_app_user(username) if username else None
+        stored = password["hash"] if password and row else None
+        if not await state.hasher.verify(body.password, stored):
+            return JSONResponse({"detail": "nome utente o password errati"}, 401)
+        label = row["name"] or row["username"]
+        if temporary_expired(password, datetime.now(tz=UTC)):
+            state.db.add_audit(label, "password provvisoria scaduta", "accesso diretto rifiutato")
+            return JSONResponse({"detail": "password provvisoria scaduta: chiedine una nuova all'amministratore"}, 401)
+        state.login_limiter.success(ip, key)
+        agent = request.headers.get("user-agent") or ""
+        token, digest = new_token()
+        state.db.add_session(digest, row["username"], password["set_at"], ip, agent)
+        state.db.add_audit(label, "accesso diretto", f"{ip or 'indirizzo non visibile'} · {short_agent(agent)}")
+        response = JSONResponse({"ok": True, "must_change": bool(password["must_change"])})
+        _set_session_cookie(response, request, token)
+        return response
+
+    @app.post("/api/logout")
+    async def logout(request: Request) -> JSONResponse:
+        if not is_direct(request):
+            raise HTTPException(status_code=404, detail="l'uscita serve solo per l'accesso diretto")
+        digest = getattr(request.state, "session_digest", None)
+        if digest:
+            request.app.state.db.delete_session(digest)
+            request.app.state.db.add_audit(current_user(request).label, "uscita dall'accesso diretto")
+        response = JSONResponse({"ok": True})
+        _clear_session_cookie(response, request)
+        return response
+
+    @app.post("/api/password")
+    async def change_password(body: PasswordIn, request: Request) -> JSONResponse:
+        """Password dell'accesso diretto cambiata da chi la usa, con quella attuale (anche la provvisoria)."""
+        state = request.app.state
+        user = current_user(request)
+        password = state.db.get_password(user.username)
+        if password is None:
+            raise HTTPException(status_code=400, detail="il tuo utente non ha l'accesso diretto")
+        direct = is_direct(request)
+        ip = client_ip(request) if direct else "home-assistant"
+        wait = state.login_limiter.blocked(ip, user.username)
+        if wait:
+            raise HTTPException(status_code=429, detail=f"troppi tentativi sbagliati: riprova tra {_minutes(wait)}")
+        blocked = state.login_limiter.attempt(ip, user.username)
+        for key in blocked:
+            state.db.add_audit("sistema", "cambio password bloccato per troppi tentativi", _block_text(key))
+        if not await state.hasher.verify(body.current, password["hash"]):
+            if blocked and direct and getattr(request.state, "session_digest", None):
+                # Chi prova a indovinare la password da una sessione rimasta aperta la perde
+                state.db.delete_session(request.state.session_digest)
+            raise HTTPException(status_code=400, detail="password attuale errata")
+        state.login_limiter.success(ip, user.username)
+        problem = password_problem(body.new, user.username)
+        if not problem and body.new == body.current:
+            problem = "la nuova password deve essere diversa da quella attuale"
+        if problem:
+            raise HTTPException(status_code=400, detail=problem)
+        # Tutte le sessioni chiuse; chi l'ha cambiata da qui resta dentro con una sessione nuova
+        set_at = state.db.set_password(user.username, await state.hasher.hash(body.new), False, user.label)
+        state.db.add_audit(user.label, "password dell'accesso diretto cambiata")
+        response = JSONResponse({"ok": True})
+        if direct:
+            token, digest = new_token()
+            state.db.add_session(digest, user.username, set_at, ip, request.headers.get("user-agent") or "")
+            _set_session_cookie(response, request, token)
+        return response
+
+    @app.post("/api/users/{username}/password")
+    async def temporary_user_password(username: str, request: Request, user: Admin) -> dict:
+        """Password provvisoria per l'accesso diretto, da cambiare al primo accesso. Si vede solo qui."""
+        state = request.app.state
+        target = state.db.get_app_user(username.strip().lower())
+        if target is None:
+            raise HTTPException(status_code=404, detail="utente non trovato")
+        temporary = temporary_password()
+        set_at = state.db.set_password(target["username"], await state.hasher.hash(temporary), True, user.label)
+        state.login_limiter.unblock(target["username"])
+        state.db.add_audit(
+            user.label, "password provvisoria per l'accesso diretto", target["name"] or target["username"]
+        )
+        expires = datetime.fromisoformat(set_at) + TEMPORARY_VALID
+        return {"password": temporary, "expires": expires.isoformat(timespec="seconds")}
+
+    @app.delete("/api/users/{username}/password")
+    async def remove_user_password(username: str, request: Request, user: Admin) -> dict:
+        state = request.app.state
+        target = state.db.get_app_user(username.strip().lower())
+        if target is None:
+            raise HTTPException(status_code=404, detail="utente non trovato")
+        closed = state.db.delete_password(target["username"])
+        state.db.add_audit(
+            user.label, "accesso diretto tolto", f"{target['name'] or target['username']} · {_sessions_text(closed)}"
+        )
+        return {"ok": True, "closed": closed}
+
+    @app.delete("/api/users/{username}/sessions")
+    async def close_user_sessions(username: str, request: Request, user: Admin) -> dict:
+        state = request.app.state
+        target = state.db.get_app_user(username.strip().lower())
+        if target is None:
+            raise HTTPException(status_code=404, detail="utente non trovato")
+        closed = state.db.delete_sessions(target["username"])
+        state.db.add_audit(
+            user.label, "sessioni dell'accesso diretto chiuse", f"{target['name'] or target['username']} · {closed}"
+        )
+        return {"ok": True, "closed": closed}
+
+    @app.get("/api/direct-access", dependencies=[need("utenti")])
+    async def direct_access(request: Request) -> dict:
+        return _direct_access_view(request.app.state)
+
+    @app.put("/api/direct-access")
+    async def save_direct_access(body: DirectAccessIn, request: Request, user: Admin) -> dict:
+        state = request.app.state
+        settings = {
+            "enabled": body.enabled,
+            "https": body.https,
+            "certfile": body.certfile.strip(),
+            "keyfile": body.keyfile.strip(),
+        }
+        if settings["https"]:
+            for key in ("certfile", "keyfile"):
+                problem = cert_name_problem(settings[key])
+                if problem:
+                    raise HTTPException(status_code=422, detail=problem)
+        before = state.direct_settings
+        state.db.set_setting(DIRECT_SETTING, json.dumps(settings))
+        state.direct_settings = settings
+        await state.direct.apply(settings)
+        if before.get("https") != settings["https"]:
+            # Il cookie ha un altro nome con HTTPS: le sessioni di prima non servono più
+            state.db.delete_sessions()
+        what = (
+            "spento"
+            if not settings["enabled"]
+            else f"attivo con {'HTTPS (' + settings['certfile'] + ')' if settings['https'] else 'HTTP'}"
+        )
+        state.db.add_audit(user.label, "accesso diretto " + what, state.direct.error)
+        return _direct_access_view(state)
+
+    @app.delete("/api/direct-access/sessions")
+    async def close_all_sessions(request: Request, user: Admin) -> dict:
+        closed = request.app.state.db.delete_sessions()
+        request.app.state.db.add_audit(user.label, "tutte le sessioni dell'accesso diretto chiuse", str(closed))
+        return {"ok": True, "closed": closed}
+
     return app
+
+
+def _session_cookie_name(request: Request) -> str:
+    return COOKIE_HTTPS if request.url.scheme == "https" else COOKIE
+
+
+def _set_session_cookie(response: Response, request: Request, token: str) -> None:
+    https = request.url.scheme == "https"
+    response.set_cookie(
+        _session_cookie_name(request),
+        token,
+        max_age=COOKIE_MAX_AGE,
+        path="/",
+        httponly=True,
+        samesite="strict",
+        secure=https,
+    )
+
+
+def _clear_session_cookie(response: Response, request: Request) -> None:
+    https = request.url.scheme == "https"
+    response.delete_cookie(_session_cookie_name(request), path="/", httponly=True, samesite="strict", secure=https)
+
+
+def _same_origin(request: Request) -> bool:
+    """Modifica partita da questa pagina: Origin (se c'è) uguale all'indirizzo dell'accesso diretto, e il browser non
+    la segna come arrivata da un altro sito."""
+    origin = request.headers.get("origin")
+    if origin is not None and origin != f"{request.url.scheme}://{request.headers.get('host', '')}":
+        return False
+    return request.headers.get("sec-fetch-site", "same-origin") in ("same-origin", "none")
+
+
+def _direct_session(request: Request) -> tuple[str, AppUser] | None:
+    """Sessione dell'accesso diretto valida, con il suo utente (senza i permessi da amministratore: la gestione di
+    utenti, password e impostazioni si fa solo da Home Assistant)."""
+    token = request.cookies.get(_session_cookie_name(request))
+    if not token:
+        return None
+    state = request.app.state
+    digest = token_hash(token)
+    session = state.db.get_session(digest)
+    if session is None:
+        return None
+    password = state.db.get_password(session["username"])
+    now = datetime.now(tz=UTC)
+    user = state.users.direct_user(session["username"]) if session_valid(session, password, now) else None
+    if user is None:
+        state.db.delete_session(digest)
+        return None
+    if ADMIN in user.perms:
+        user = AppUser(user.username, user.name, {p for p in PERMISSIONS if p != ADMIN})
+    request.state.must_change = bool(password["must_change"])
+    last = datetime.fromisoformat(session["last_seen"])
+    request.state.session_touched = now - last > TOUCH_EVERY
+    if request.state.session_touched:
+        state.db.touch_session(digest, client_ip(request))
+    return digest, user
+
+
+async def _direct_guard(request: Request, call_next):
+    """Richieste dell'accesso diretto: solo con una sessione, modifiche solo dalla pagina dell'app."""
+    state = request.app.state
+    path, method = request.url.path, request.method
+    if not state.direct_settings.get("enabled"):
+        return _secure(JSONResponse({"detail": "accesso diretto spento"}, status_code=403), path)
+    if method not in ("GET", "HEAD") and (request.headers.get(REQUEST_HEADER) != "1" or not _same_origin(request)):
+        return _secure(JSONResponse({"detail": "richiesta rifiutata"}, status_code=403), path)
+    found = _direct_session(request)
+    if found is None:
+        if (method, path) in DIRECT_PUBLIC:
+            return _secure(await call_next(request), path)
+        response = JSONResponse({"detail": DIRECT_LOGIN, "login": True}, status_code=401)
+        if request.cookies.get(_session_cookie_name(request)):
+            _clear_session_cookie(response, request)
+        return _secure(response, path)
+    digest, user = found
+    request.state.user = user
+    request.state.session_digest = digest
+    if request.state.must_change and (method, path) not in DIRECT_MUST_CHANGE:
+        detail = {"detail": "cambia prima la password provvisoria", "must_change": True}
+        return _secure(JSONResponse(detail, status_code=403), path)
+    response = await call_next(request)
+    if request.state.session_touched and "set-cookie" not in response.headers:
+        # Il cookie si rinnova: la sessione resta aperta oltre i 400 giorni che i browser concedono a un cookie
+        _set_session_cookie(response, request, request.cookies[_session_cookie_name(request)])
+    return _secure(response, path)
+
+
+def _secure(response: Response, path: str) -> Response:
+    """Intestazioni di sicurezza dell'accesso diretto (con Ingress la pagina sta dentro Home Assistant)."""
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = (
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'"
+    )
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if path.startswith("/api/") and "cache-control" not in response.headers:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _minutes(seconds: int) -> str:
+    minutes = max(1, (seconds + 59) // 60)
+    return "1 minuto" if minutes == 1 else f"{minutes} minuti"
+
+
+def _block_text(key: tuple) -> str:
+    kind = key[0]
+    if kind == "pair":
+        return f"utente {key[2]} da {key[1] or 'indirizzo non visibile'}"
+    if kind == "ip":
+        return f"indirizzo {key[1]}"
+    return f"utente {key[1]}"
+
+
+def _sessions_text(count: int) -> str:
+    return "nessuna sessione aperta" if not count else plural(count, "sessione chiusa", "sessioni chiuse")
+
+
+def _users_with_access(state) -> list[dict]:
+    """Utenti della pagina Utenti, con l'accesso diretto: password (provvisoria, scaduta) e sessioni aperte."""
+    passwords = state.db.list_passwords()
+    sessions: dict[str, list[dict]] = {}
+    for row in state.db.list_sessions():
+        sessions.setdefault(row["username"].lower(), []).append(
+            {
+                "created_at": row["created_at"],
+                "last_seen": row["last_seen"],
+                "ip": row["ip"],
+                "device": short_agent(row["agent"]),
+            }
+        )
+    now = datetime.now(tz=UTC)
+    result = []
+    for user in state.users.list():
+        password = passwords.get(user["username"].lower())
+        access = None
+        if password:
+            expires = datetime.fromisoformat(password["set_at"]) + TEMPORARY_VALID if password["must_change"] else None
+            access = {
+                "temporary": bool(password["must_change"]),
+                "expired": temporary_expired(password, now),
+                "expires": expires.isoformat(timespec="seconds") if expires else None,
+                "set_at": password["set_at"],
+                "sessions": sessions.get(user["username"].lower(), []),
+            }
+        result.append({**user, "direct": access})
+    return result
+
+
+def _direct_access_view(state) -> dict:
+    sessions = state.db.list_sessions()
+    return {
+        "settings": state.direct_settings,
+        "status": state.direct.status(),
+        "sessions": len(sessions),
+        "users": len(state.db.list_passwords()),
+        "unused_days": SESSION_UNUSED.days,
+    }
 
 
 # Operazioni ancora in corso sul client del controller (comandi di Home Assistant e del citofono, sincronizzazione,
@@ -2695,6 +3108,10 @@ async def _maintenance(app: FastAPI) -> None:
                 state.ha.delete_snapshots(state.db.prune_events(state.settings.event_retention_days))
             except Exception:  # noqa: BLE001 - si riprova il giorno dopo
                 _LOGGER.exception("Pulizia del registro non riuscita")
+            # Sessioni dell'accesso diretto non usate da troppo tempo
+            unused = (datetime.now(tz=UTC) - SESSION_UNUSED).isoformat(timespec="seconds")
+            if closed := state.db.purge_sessions(unused):
+                state.db.add_audit("sistema", "sessioni dell'accesso diretto non usate chiuse", str(closed))
             last_prune = loop.time()
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(state.sync_wake.wait(), delay)

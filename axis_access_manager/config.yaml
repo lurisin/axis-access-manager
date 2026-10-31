@@ -1,5 +1,5 @@
 name: Axis Access Manager
-version: "0.24.1"
+version: "0.25.0"
 slug: axis_access_manager
 description: Gestione tessere e controllo accessi per il controller Axis A1210
 url: https://github.com/lurisin/axis-access-manager
@@ -12,9 +12,16 @@ panel_icon: mdi:card-account-details
 panel_title: Controllo Accessi
 panel_admin: false
 homeassistant_api: true
-# Istantanee delle telecamere in Media → axis_access_manager
+# Istantanee delle telecamere in Media → axis_access_manager. ssl: certificato di Home Assistant per l'accesso diretto
 map:
   - media:rw
+  - ssl:ro
+# Accesso diretto per il personale (fuori da Home Assistant): chiusa finché non le si assegna una porta nella scheda
+# Rete dell'add-on, e va accesa anche nelle impostazioni dell'app
+ports:
+  8100/tcp: null
+ports_description:
+  8100/tcp: Accesso diretto all'app per il personale
 services:
   - mqtt:want
 # Copia coerente del database subito prima di ogni backup di Home Assistant

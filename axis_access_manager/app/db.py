@@ -158,6 +158,24 @@ CREATE TABLE IF NOT EXISTS audit (
     action TEXT NOT NULL,
     detail TEXT NOT NULL DEFAULT ''
 );
+-- Accesso diretto (fuori da Home Assistant): password degli utenti e sessioni aperte. Fuori dai backup dell'app
+CREATE TABLE IF NOT EXISTS app_user_passwords (
+    username TEXT PRIMARY KEY COLLATE NOCASE,
+    hash TEXT NOT NULL,
+    must_change INTEGER NOT NULL DEFAULT 1,
+    set_at TEXT NOT NULL,
+    set_by TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    username TEXT NOT NULL COLLATE NOCASE,
+    password_set_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    ip TEXT NOT NULL DEFAULT '',
+    agent TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS sessions_username ON sessions(username);
 """
 
 # Fino alla 0.17 si aggiungevano solo colonne: (tabella, colonna, definizione). Sono la versione 1 dello schema.
@@ -1072,7 +1090,88 @@ class Database:
         )
 
     def delete_app_user(self, username: str) -> None:
-        self._execute("DELETE FROM app_users WHERE username = ?", (username,))
+        with self._lock:
+            # Con l'utente se ne vanno la password e le sessioni dell'accesso diretto
+            for table in ("app_users", "app_user_passwords", "sessions"):
+                self._conn.execute(f"DELETE FROM {table} WHERE username = ?", (username,))
+            self._commit()
+
+    # Accesso diretto: password e sessioni
+
+    def get_password(self, username: str) -> dict | None:
+        rows = self._query("SELECT * FROM app_user_passwords WHERE username = ?", (username,))
+        return rows[0] if rows else None
+
+    def list_passwords(self) -> dict[str, dict]:
+        return {row["username"].lower(): row for row in self._query("SELECT * FROM app_user_passwords")}
+
+    def set_password(self, username: str, password_hash: str, must_change: bool, by: str) -> str:
+        """Password nuova; le sessioni aperte con quella di prima si chiudono. Restituisce l'ora (set_at)."""
+        set_at = datetime.now(tz=UTC).isoformat(timespec="microseconds")
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO app_user_passwords (username, hash, must_change, set_at, set_by) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(username) DO UPDATE SET hash = excluded.hash, must_change = excluded.must_change, "
+                "set_at = excluded.set_at, set_by = excluded.set_by",
+                (username, password_hash, int(must_change), set_at, by),
+            )
+            self._conn.execute("DELETE FROM sessions WHERE username = ?", (username,))
+            self._commit()
+        return set_at
+
+    def delete_password(self, username: str) -> int:
+        """Niente più accesso diretto: password e sessioni tolte. Restituisce quante sessioni erano aperte."""
+        with self._lock:
+            self._conn.execute("DELETE FROM app_user_passwords WHERE username = ?", (username,))
+            closed = self._conn.execute("DELETE FROM sessions WHERE username = ?", (username,)).rowcount
+            self._commit()
+        return closed
+
+    def move_credentials(self, old: str, new: str) -> None:
+        """Nome utente cambiato: password e sessioni lo seguono."""
+        with self._lock:
+            self._conn.execute("DELETE FROM app_user_passwords WHERE username = ?", (new,))
+            self._conn.execute("UPDATE app_user_passwords SET username = ? WHERE username = ?", (new, old))
+            self._conn.execute("DELETE FROM sessions WHERE username = ?", (new,))
+            self._conn.execute("UPDATE sessions SET username = ? WHERE username = ?", (new, old))
+            self._commit()
+
+    def add_session(self, digest: str, username: str, password_set_at: str, ip: str, agent: str) -> None:
+        now = now_iso()
+        self._execute(
+            "INSERT INTO sessions (token_hash, username, password_set_at, created_at, last_seen, ip, agent) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (digest, username, password_set_at, now, now, ip, agent[:300]),
+        )
+
+    def get_session(self, digest: str) -> dict | None:
+        rows = self._query("SELECT * FROM sessions WHERE token_hash = ?", (digest,))
+        return rows[0] if rows else None
+
+    def touch_session(self, digest: str, ip: str) -> None:
+        self._execute("UPDATE sessions SET last_seen = ?, ip = ? WHERE token_hash = ?", (now_iso(), ip, digest))
+
+    def delete_session(self, digest: str) -> None:
+        self._execute("DELETE FROM sessions WHERE token_hash = ?", (digest,))
+
+    def delete_sessions(self, username: str | None = None) -> int:
+        """Sessioni chiuse: di un utente, o tutte. Restituisce quante."""
+        with self._lock:
+            if username is None:
+                closed = self._conn.execute("DELETE FROM sessions").rowcount
+            else:
+                closed = self._conn.execute("DELETE FROM sessions WHERE username = ?", (username,)).rowcount
+            self._commit()
+        return closed
+
+    def list_sessions(self) -> list[dict]:
+        return self._query("SELECT username, created_at, last_seen, ip, agent FROM sessions ORDER BY last_seen DESC")
+
+    def purge_sessions(self, unused_before: str) -> int:
+        with self._lock:
+            closed = self._conn.execute("DELETE FROM sessions WHERE last_seen < ?", (unused_before,)).rowcount
+            self._commit()
+        return closed
 
     # Tessere sconosciute
 
