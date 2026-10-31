@@ -3,7 +3,8 @@ WebSocket, da MQTT e dal registro del controller e nel Registro deve comparire u
 
 I messaggi WebSocket sono quelli registrati al banco il 25/10 (/mnt/project-files/03_ws_events.log, terzo giro):
 una tessera sconosciuta (c0110b18, con il diniego doppio /Card e senza) e una valida (04a11a34). Le copie MQTT
-hanno il formato con cui l'A1210 pubblica sul broker: sorgenti nel topic dopo $source e stessa ora dell'evento.
+hanno il formato con cui l'A1210 pubblica sul broker: sorgenti nel topic dopo $source e stessa ora dell'evento al
+millisecondo (verificato in loco il 31/10 sui messaggi conservati di DoorMode e Casing/Open).
 """
 
 import asyncio
@@ -86,7 +87,9 @@ def mqtt_message(topic, ts, source, data):
     """Topic e payload come li pubblica l'A1210 con il prefisso dell'app."""
     path = "/".join(level.rsplit(":", 1)[-1] for level in topic.split("/"))
     sources = "/".join(f"{k}/{v}" for k, v in source.items())
-    body = {"topic": topic, "timestamp": ts, "serial": "B8A44FE6A074"}
+    # Come i messaggi conservati letti sul broker in loco il 31/10: namespace onvif:/axis: nel payload, stessa ora
+    payload_topic = topic.replace("tnsaxis:", "axis:").replace("tns1:", "onvif:")
+    body = {"topic": payload_topic, "timestamp": ts, "serial": "B8A44FE6A074"}
     body["message"] = {"source": source, "key": {}, "data": data}
     return f"{PREFIX}/eventi/{path}/$source/{sources}", json.dumps(body).encode()
 
