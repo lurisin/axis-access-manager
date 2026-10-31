@@ -206,6 +206,17 @@
   /* Impostazioni: le due schede del backup affiancate, i tipi di notifica su due colonne quando c'è posto */
   .bk-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr)); gap: 16px; align-items: start; margin-bottom: 16px; }
   .bk-cols > .card { margin: 0; }
+  /* Accesso diretto: login e cambio della password al posto dell'app */
+  .auth { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+  .auth-card { width: min(100%, 400px); margin: 0; }
+  .auth-card h2 { margin-bottom: 14px; }
+  .auth-card .row { margin-top: 6px; }
+  .auth-err { color: var(--err); margin: 0 0 10px; }
+  .temp-pass { display: block; font-size: 24px; letter-spacing: 2px; text-align: center; padding: 14px; margin: 4px 0 12px;
+               background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; user-select: all; }
+  .sess-list { margin: 0; padding: 0; list-style: none; }
+  .sess-list li { padding: 6px 0; border-top: 1px solid var(--border); }
+  .sess-list li:first-child { border-top: 0; }
   @media (min-width: 1400px) {
     .list.two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 0; }
     .list.two-col > .item:nth-child(2) { border-top: none; }
@@ -882,9 +893,11 @@ async function api(path, options = {}) {
   const method = options.method || "GET";
   let res;
   try {
+    // X-AAM-Request: dall'accesso diretto le modifiche senza questa intestazione si rifiutano (un altro sito non può
+    // mandarla)
     res = await fetch(path, {
       method,
-      headers: options.body !== undefined ? {"Content-Type": "application/json"} : {},
+      headers: options.body !== undefined ? {"Content-Type": "application/json", "X-AAM-Request": "1"} : {"X-AAM-Request": "1"},
       body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
     });
   } catch (err) {
@@ -893,6 +906,9 @@ async function api(path, options = {}) {
       : "collegamento con l'add-on interrotto: la modifica potrebbe essere stata fatta lo stesso, controlla prima di riprovare");
   }
   const data = await res.json().catch(() => ({}));
+  // Accesso diretto: sessione chiusa o mai aperta, oppure password provvisoria ancora da cambiare
+  if (res.status === 401 && data?.login) { showAuth("login"); const err = new Error(data.detail); err.login = true; throw err; }
+  if (res.status === 403 && data?.must_change) { showAuth("change"); const err = new Error(data.detail); err.login = true; throw err; }
   if (!res.ok) {
     // Senza un messaggio dell'app l'errore viene da Home Assistant: l'add-on si sta riavviando o non risponde
     const fromApp = typeof data?.detail === "string";
@@ -906,6 +922,102 @@ async function api(path, options = {}) {
     throw new Error(message);
   }
   return data;
+}
+
+// ---------- Accesso diretto: login, cambio password, uscita ----------
+// Al posto dell'app: login (sessione chiusa o mai aperta) o cambio della password provvisoria.
+// Subito dopo il login la provvisoria appena scritta non si chiede di nuovo
+function showAuth(mode, current = "") {
+  if (document.body.dataset.auth === mode) return;
+  document.body.dataset.auth = mode;
+  $$("dialog").forEach((d) => { if (d.open) d.close(); });
+  $(".app").hidden = true;
+  let box = $("#auth");
+  if (!box) { box = document.createElement("div"); box.id = "auth"; box.className = "auth"; document.body.append(box); }
+  const login = mode === "login";
+  box.innerHTML = `<form class="card auth-card">
+    <h2>${icon(login ? "lock" : "user")}${login ? "Controllo Accessi" : "Cambia Password"}</h2>
+    ${login ? field("Nome Utente", `<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required>`)
+      : `<input name="username" autocomplete="username" value="${esc(store.me.username || "")}" hidden>`}
+    ${current ? `<input name="password" type="password" hidden>` : field(login ? "Password" : "Password Provvisoria", `<input name="password" type="password" autocomplete="current-password" maxlength="512" required>`)}
+    ${login ? "" : passwordFields()}
+    <p class="auth-err" id="auth-err" role="alert" hidden></p>
+    <div class="row"><button type="submit" class="primary">${login ? "Accedi" : "Salva"}</button>${login ? "" : `<button type="button" class="ghost" id="auth-out">${icon("exit")}Esci</button>`}</div>
+  </form>`;
+  paintIcons(box);
+  const form = $("form", box), error = $("#auth-err", box);
+  if (current) $("[name=password]", form).value = current;
+  const fail = (message) => { error.textContent = cap(message); error.hidden = false; };
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const button = $("button[type=submit]", form);
+    error.hidden = true;
+    const password = $("[name=password]", form).value;
+    button.disabled = true;
+    try {
+      if (login) {
+        const result = await api("api/login", {method: "POST", body: {username: $("[name=username]", form).value, password}});
+        if (result.must_change) {
+          store.me = await api("api/me");
+          showAuth("change", password);
+          return;
+        }
+      } else {
+        const fresh = checkNewPassword(form);
+        if (fresh === null) return;
+        await api("api/password", {method: "POST", body: {current: password, new: fresh}});
+      }
+      location.reload();
+    } catch (err) { fail(err.message); }
+    finally { button.disabled = false; }
+  };
+  if ($("#auth-out", box)) $("#auth-out", box).onclick = logout;
+  $("input:not([hidden])", form)?.focus();
+}
+
+const passwordFields = () => field("Nuova Password", `<input name="new" type="password" autocomplete="new-password" minlength="10" maxlength="128" required>`, "Almeno 10 caratteri.")
+  + field("Ripeti Nuova Password", `<input name="repeat" type="password" autocomplete="new-password" maxlength="128" required>`);
+
+// Nuova password dai campi, o null (con l'errore accanto) se le due non sono uguali
+function checkNewPassword(form) {
+  const fresh = $("[name=new]", form).value, repeat = $("[name=repeat]", form);
+  if (fresh !== repeat.value) {
+    const error = $("#auth-err", form) || $("#pw-err", form);
+    error.textContent = "Le due password non sono uguali.";
+    error.hidden = false;
+    repeat.focus();
+    return null;
+  }
+  return fresh;
+}
+
+async function logout() {
+  try { await api("api/logout", {method: "POST"}); } catch (err) { /* si ricarica comunque */ }
+  location.reload();
+}
+
+// Menu dell'utente in fondo alla barra: utenti (amministratore in Home Assistant), password, uscita
+async function userMenu() {
+  const me = store.me;
+  const actions = [{label: "Chiudi", value: null}];
+  if (me.admin && !me.direct) actions.push({label: "Utenti", value: "users"});
+  if (me.has_password) actions.push({label: "Cambia Password", value: "password"});
+  if (me.direct) actions.push({label: "Esci", kind: "primary", value: "logout"});
+  const choice = await modal({title: me.user, body: props([["Ruolo", esc(me.role || "Personalizzato")], ["Nome Utente", `<code>${esc(me.username)}</code>`],
+    ...(me.direct ? [["Accesso", "Diretto, fuori da Home Assistant"]] : [])]), actions});
+  if (choice === "logout") logout();
+  else if (choice === "password") changePassword();
+  else if (choice === "users") location.hash = "#impostazioni/utenti";
+}
+
+async function changePassword() {
+  const body = `${field("Password Attuale", `<input name="password" type="password" autocomplete="current-password" maxlength="512" required>`)}${passwordFields()}<p class="auth-err" id="pw-err" role="alert" hidden></p>`;
+  const done = await modal({title: "Cambia Password", body, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+    const fresh = checkNewPassword(dlg);
+    if (fresh === null) return false;
+    return (await run(() => api("api/password", {method: "POST", body: {current: $("[name=password]", dlg).value, new: fresh}}))) ? true : false;
+  }}]});
+  if (done) toast("Password cambiata");
 }
 
 // Finestra separata da #modal: l'errore può arrivare mentre un'altra finestra è aperta
@@ -4421,13 +4533,14 @@ async function restoreBackup(b, data, part = "") {
 }
 
 async function viewSettings(el, sub) {
-  const tabs = [["generale", "Generale"], ...(store.me.admin ? [["notifiche", "Notifiche"], ["backup", "Backup"], ["utenti", "Utenti"], ["attivita", "Attività"]] : [])];
+  const tabs = [["generale", "Generale"], ...(store.me.admin ? [["notifiche", "Notifiche"], ["backup", "Backup"], ["utenti", "Utenti"], ["accesso", "Accesso Diretto"], ["attivita", "Attività"]] : [])];
   const tab = tabs.some(([k]) => k === sub) ? sub : "generale";
   el.innerHTML = `${tabs.length > 1 ? `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impostazioni/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>` : ""}<div id="st-body">${loadingBox()}</div>`;
   const body = $("#st-body");
   if (tab === "notifiche") return viewNotificationSettings(body);
   if (tab === "backup") return viewBackupSettings(body);
   if (tab === "utenti") return viewUsers(body);
+  if (tab === "accesso") return viewDirectAccess(body);
   if (tab === "attivita") return viewAudit(body);
   // Solo l'applicazione: lo stato di controller, porte, MQTT e citofoni è nella pagina del controller
   let s;
@@ -4487,16 +4600,20 @@ async function viewUsers(body) {
   try { data = await api("api/users"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   if (!body.isConnected) return;
   const roleLabel = (u) => data.roles[u.role]?.label || "Personalizzato";
-  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Gli utenti sono quelli di Home Assistant: chi apre l'app per la prima volta viene aggiunto con "Solo Stato" e qui gli dai i permessi. Puoi anche aggiungerli prima, con il loro nome utente.</p>
+  const access = (u) => !u.direct ? "" : u.direct.expired ? '<span class="pill err">Provvisoria Scaduta</span>'
+    : u.direct.temporary ? '<span class="pill warn">Password Provvisoria</span>'
+    : `<span class="pill ok">Accesso Diretto${u.direct.sessions.length ? ` · ${u.direct.sessions.length}` : ""}</span>`;
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Chi apre l'app da Home Assistant entra con "Solo Stato". Il personale senza Home Assistant entra dall'accesso diretto con una password provvisoria.</p>
     <button type="button" class="primary" id="u-new">${icon("plus")}Nuovo Utente</button></div>
     <div class="card flush"><div class="list">${data.users.map((u) => `<div class="item">
       <div class="avatar ${u.perms.length ? "" : "off"}">${esc(initials(u.name || u.username))}</div>
       <div class="grow"><div class="title">${esc(u.name || u.username)}${u.username === store.me.username ? ' <span class="muted" style="font-weight:400">· tu</span>' : ""}</div>
-        <div class="meta"><code>${esc(u.username)}</code><span class="pill ${u.admin ? "accent" : u.perms.length ? "" : "warn"}">${esc(roleLabel(u))}</span><span>${u.last_seen ? "ultimo accesso " + esc(relTime(u.last_seen)) : "mai entrato"}</span></div></div>
+        <div class="meta"><code>${esc(u.username)}</code><span class="pill ${u.admin ? "accent" : u.perms.length ? "" : "warn"}">${esc(roleLabel(u))}</span>${access(u)}<span>${u.last_seen ? "ultimo accesso " + esc(relTime(u.last_seen)) : "mai entrato"}</span></div></div>
       <div class="row item-actions"><button type="button" class="small" data-u-edit="${esc(u.username)}">${icon("edit")}Permessi</button>
+        <button type="button" class="small" data-u-direct="${esc(u.username)}">${icon("lock")}Accesso Diretto</button>
         ${u.username === store.me.username ? "" : `<button type="button" class="small danger" data-u-del="${esc(u.username)}">Elimina</button>`}</div></div>`).join("")}</div></div>`;
   paintIcons(body);
-  const form = (u) => `${u ? "" : field("Nome Utente di Home Assistant", `<input name="username" autocomplete="off" placeholder="es. mario">`, "Lo trovi in Impostazioni → Persone → Utenti di Home Assistant.")}
+  const form = (u) => `${u ? "" : field("Nome Utente", `<input name="username" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="es. mario">`, "Quello di Home Assistant, o uno nuovo per il personale.")}
     ${field("Nome", `<input name="name" maxlength="100" value="${esc(u?.name || "")}" placeholder="facoltativo">`)}
     ${field("Ruolo", `<select name="role">${Object.entries(data.roles).map(([k, r]) => `<option value="${k}" ${(u ? u.role : "solo_stato") === k ? "selected" : ""}>${esc(r.label)}</option>`).join("")}<option value="personalizzato" ${u?.role === "personalizzato" ? "selected" : ""}>Personalizzato</option></select>`)}
     <div class="field"><label>Permessi</label><div class="perm-list">${Object.entries(data.permissions).map(([k, label]) => `<label><input type="checkbox" name="perm" value="${k}" ${(u ? u.perms : data.roles.solo_stato.perms).includes(k) ? "checked" : ""}>${esc(label)}</label>`).join("")}</div>
@@ -4520,9 +4637,11 @@ async function viewUsers(body) {
   body.onclick = async (e) => {
     const b = e.target.closest("button");
     if (!b) return;
-    const u = data.users.find((x) => x.username === (b.dataset.uEdit || b.dataset.uDel));
+    const u = data.users.find((x) => x.username === (b.dataset.uEdit || b.dataset.uDel || b.dataset.uDirect));
     if (!u) return;
-    if (b.dataset.uEdit) {
+    if (b.dataset.uDirect) {
+      if (await directAccessBox(u, data.direct_enabled)) render();
+    } else if (b.dataset.uEdit) {
       if (await modal({title: "Permessi di " + (u.name || u.username), body: form(u), onOpen: bind, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: save(u)}]})) {
         if (u.username === store.me.username) location.reload(); else render();
       }
@@ -4530,6 +4649,76 @@ async function viewUsers(body) {
         await run(() => api(`api/users/${encodeURIComponent(u.username)}`, {method: "DELETE"}), "Utente eliminato")) render();
   };
 }
+// Accesso diretto di un utente: stato, computer collegati, password provvisoria, chiusura delle sessioni
+async function directAccessBox(u, enabled) {
+  const d = u.direct, name = u.name || u.username, path = `api/users/${encodeURIComponent(u.username)}`;
+  const sessions = d?.sessions || [];
+  const info = !d ? `<p style="margin:0">Senza accesso diretto.</p>` : props([
+    ["Password", d.expired ? `${statusDot("err")} Provvisoria, scaduta` : d.temporary ? `${statusDot("warn")} Provvisoria, scade ${esc(fmtDateTime(d.expires))}` : `${statusDot("ok")} Scelta dall'utente`],
+    ["Impostata", esc(fmtDateTime(d.set_at))],
+    ["Collegato Su", sessions.length ? `<ul class="sess-list">${sessions.map((x) => `<li>${esc(x.device)}${x.ip ? ` · <code>${esc(x.ip)}</code>` : ""}<br><span class="muted small-text">usata ${esc(relTime(x.last_seen))}</span></li>`).join("")}</ul>` : "Nessun computer"],
+  ]);
+  const off = enabled ? "" : `<div class="alert info" style="margin-top:12px">${icon("lock")}<div class="grow"><b>Accesso Diretto Spento</b>Si accende in Impostazioni → Accesso Diretto.</div></div>`;
+  const actions = [{label: "Chiudi", value: null}];
+  if (d) actions.push({label: "Togli Accesso", kind: "danger", value: "remove"});
+  if (sessions.length) actions.push({label: "Chiudi Sessioni", value: "close"});
+  actions.push({label: d ? "Nuova Password Provvisoria" : "Password Provvisoria", kind: "primary", value: "temporary"});
+  const choice = await modal({title: `Accesso Diretto di ${name}`, body: info + off, actions});
+  if (choice === "temporary") {
+    if (d && !d.temporary && !await confirmBox("Nuova Password Provvisoria", `La password di <b>${esc(name)}</b> smette di valere e i suoi computer escono.`, "Crea")) return false;
+    const result = await run(() => api(`${path}/password`, {method: "POST"}));
+    if (!result) return false;
+    await modal({title: `Password Provvisoria di ${name}`, body: `<code class="temp-pass">${esc(result.password)}</code><p class="hint" style="margin:0">Si vede solo ora. Al primo accesso va cambiata. Scade ${esc(fmtDateTime(result.expires))}.</p>`,
+      actions: [{label: "Copia", onClick: async () => { try { await navigator.clipboard.writeText(result.password); toast("Copiata"); } catch (err) { toast("Copia non riuscita: selezionala e copiala", true); } return false; }}, {label: "Fatto", kind: "primary", value: true}]});
+    return true;
+  }
+  if (choice === "close") return Boolean(await run(() => api(`${path}/sessions`, {method: "DELETE"}), "Sessioni chiuse"));
+  if (choice === "remove" && await confirmBox("Togli Accesso Diretto", `<b>${esc(name)}</b> non potrà più entrare dall'accesso diretto e i suoi computer escono.`, "Togli", true)) {
+    return Boolean(await run(() => api(`${path}/password`, {method: "DELETE"}), "Accesso diretto tolto"));
+  }
+  return false;
+}
+
+// Impostazioni → Accesso Diretto: acceso o spento, HTTP o HTTPS con il certificato di Home Assistant, stato e sessioni
+async function viewDirectAccess(body) {
+  let data;
+  try { data = await api("api/direct-access"); } catch (err) { body.innerHTML = errorBox("Accesso Diretto Non Leggibile", err); return; }
+  if (!body.isConnected) return;
+  const s = data.settings, st = data.status;
+  const row = (ic, title, desc, control) => `<div class="item"><div class="ev-icon k-accent">${icon(ic)}</div><div class="grow"><div class="title">${esc(title)}</div><div class="meta">${desc}</div></div>${control}</div>`;
+  const select = (key, options, value) => `<select data-da="${key}" style="width:auto">${options.map(([v, label]) => `<option value="${v}" ${String(value) === v ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
+  const text = (key) => `<input data-da="${key}" value="${esc(s[key])}" maxlength="100" spellcheck="false" style="width:180px">`;
+  const state = !s.enabled ? `${statusDot("")} Spento` : st.running ? `${statusDot("ok")} In Ascolto · ${st.https ? "HTTPS" : "HTTP"}` : `${statusDot("err")} Non Avviato: ${esc(st.error || "errore")}`;
+  const scheme = s.https ? "https" : "http";
+  body.innerHTML = `<div class="bk-cols"><div class="card flush"><h2>${icon("lock")}Accesso Diretto</h2>
+    <div class="list bk-set">
+      ${row("lock", "Accesso Diretto", "Per il personale, dalla rete interna.", select("enabled", [["true", "Attivo"], ["false", "Spento"]], s.enabled))}
+      ${row("shield", "Protocollo", "HTTPS solo con un certificato in Home Assistant.", select("https", [["false", "HTTP"], ["true", "HTTPS"]], s.https))}
+      ${s.https ? row("card", "Certificato", "Nella cartella ssl di Home Assistant.", text("certfile")) + row("card", "Chiave", "Nella cartella ssl di Home Assistant.", text("keyfile")) : ""}
+    </div></div>
+    <div class="card"><h2>${icon("chip")}Stato</h2>${props([
+      ["Stato", state],
+      ["Indirizzo", `<code>${scheme}://IP-di-Home-Assistant:porta</code>`],
+      ["Porta nel Container", `<code>${st.port}</code>`],
+      ["Utenti con Password", String(data.users)],
+      ["Sessioni Aperte", `${data.sessions}${data.sessions ? ` <button type="button" class="small" id="da-close">Chiudi Tutte</button>` : ""}`],
+    ])}<p class="hint">La porta si assegna nella scheda Rete dell'add-on. Solo rete interna. Una sessione resta aperta finché non si esce, o fino a ${data.unused_days} giorni senza uso.</p></div></div>`;
+  paintIcons(body);
+  const save = async () => {
+    const value = (key) => $(`[data-da="${key}"]`, body)?.value;
+    const next = {enabled: value("enabled") === "true", https: value("https") === "true", certfile: value("certfile") ?? s.certfile, keyfile: value("keyfile") ?? s.keyfile};
+    if (s.https !== next.https && data.sessions && !await confirmBox("Cambiare Protocollo?", "I computer collegati dovranno rientrare.", "Cambia")) { render(); return; }
+    const result = await run(() => api("api/direct-access", {method: "PUT", body: next}));
+    if (result && result.settings.enabled && !result.status.running) toast(`Accesso diretto non avviato: ${result.status.error}`, true);
+    render();
+  };
+  $$("[data-da]", body).forEach((el) => { el.onchange = save; });
+  if ($("#da-close", body)) $("#da-close", body).onclick = async () => {
+    if (await confirmBox("Chiudi Tutte le Sessioni", "Tutti i computer dell'accesso diretto dovranno rientrare.", "Chiudi", true) &&
+        await run(() => api("api/direct-access/sessions", {method: "DELETE"}), "Sessioni chiuse")) render();
+  };
+}
+
 async function loadAudit(more = false) {
   const body = $("#audit"), btn = $("#audit-more");
   if (!body) return;
@@ -4583,7 +4772,12 @@ async function start() {
   initNav();
   try {
     store.me = await api("api/me");
-  } catch (err) { /* la pagina funziona anche senza */ }
+  } catch (err) {
+    // Accesso diretto senza sessione: c'è già la pagina di login
+    if (err.login) return;
+    /* la pagina funziona anche senza */
+  }
+  if (store.me.must_change) { showAuth("change"); return; }
   // Nasconde pagine e pulsanti per cui l'utente non ha il permesso
   ALL_PERMS.forEach((perm) => document.body.classList.toggle("no-" + perm, !can(perm)));
   $$("#nav a[data-route]").forEach((a) => { a.hidden = !allowedRoute(a.dataset.route); });
@@ -4595,7 +4789,9 @@ async function start() {
     $("#nav-user-name").textContent = store.me.user;
     $("#nav-user-role").textContent = store.me.role || "Personalizzato";
     user.title = `${store.me.user}${store.me.admin ? " · gestisci gli utenti" : ""}`;
-    if (store.me.admin) { user.href = "#impostazioni/utenti"; user.dataset.routeLink = "impostazioni"; }
+    // Con la password dell'accesso diretto (o dall'accesso diretto) il menu: cambio password e uscita
+    if (store.me.has_password || store.me.direct) { user.href = "#"; user.onclick = (e) => { e.preventDefault(); userMenu(); }; }
+    else if (store.me.admin) { user.href = "#impostazioni/utenti"; user.dataset.routeLink = "impostazioni"; }
   }
   await loadSummary();
   // Gli aggiornamenti periodici (avvisi in alto, add-on non raggiungibile, ricarica dopo un aggiornamento)

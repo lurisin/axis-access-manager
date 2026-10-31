@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.25.0
+
+Accesso diretto all'app per il personale, fuori da Home Assistant, con il suo login.
+
+- **Accesso diretto.** Reception, pulizie e manutenzione usano l'app da un computer della rete interna, all'indirizzo `http://IP-di-Home-Assistant:porta`, senza un account di Home Assistant. Spento finché l'amministratore non assegna la porta nella scheda Rete dell'add-on e non lo accende in **Impostazioni → Accesso Diretto**. HTTP di serie, senza avvisi del browser; HTTPS solo con un certificato già presente in Home Assistant.
+- **Login e password provvisoria.** In **Utenti → Accesso Diretto** l'amministratore crea una password provvisoria (si vede una volta, vale 7 giorni). Al primo accesso l'app ne chiede una nuova, di almeno 10 caratteri.
+- **Computer sempre collegato.** Dopo il login non si rientra più: la sessione resta aperta finché non si preme **Esci**, o fino a 90 giorni senza uso. L'amministratore vede i computer collegati di ogni utente e può chiuderne le sessioni, dare una nuova password provvisoria o togliere l'accesso; **Chiudi Tutte** fa uscire tutti.
+- **Menu dell'utente.** In basso a sinistra: Cambia Password ed Esci.
+- **Sicurezza.** Password salvate solo come impronta (scrypt), blocco dopo troppi tentativi sbagliati, protezione dalle richieste di altri siti. Dall'accesso diretto vale il ruolo dell'utente; utenti, Accesso Diretto, Attività e ripristino dei backup restano all'app dentro Home Assistant. Password e sessioni non sono nei backup dell'app.
+
 ## 0.24.1
 
 Pagine di Impianti a tutta larghezza e notifiche più brevi.

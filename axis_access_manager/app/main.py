@@ -1786,6 +1786,7 @@ def create_app(
         state = request.app.state
         return {
             "users": _users_with_access(state),
+            "direct_enabled": state.direct_settings.get("enabled", False),
             "permissions": PERMISSIONS,
             "roles": {key: {"label": label, "perms": perms} for key, (label, perms) in ROLES.items()},
         }
