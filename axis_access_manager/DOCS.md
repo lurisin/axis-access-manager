@@ -153,7 +153,7 @@ La creazione da zero di porte e lettori (tipo di serratura, protocollo OSDP del 
 
 ## Utenti e permessi
 
-Gli utenti sono quelli di Home Assistant, riconosciuti dall'app con il loro id di Home Assistant: se cambia il nome utente i permessi lo seguono, e chi prende in seguito il vecchio nome utente non li eredita. Fa eccezione l'ultimo amministratore rimasto: se il suo account di Home Assistant viene ricreato con lo stesso nome utente, o Home Assistant viene reinstallato, i permessi restano al nome utente, così l'app non resta senza amministratori (in Attività compare "unico amministratore passato a un nuovo account di Home Assistant"). Chi entra senza nome utente (accesso con LDAP, OIDC o simili) ha un suo utente `id:…` e parte con "Solo Stato" come gli altri. In Impostazioni → Utenti l'amministratore assegna un ruolo o sceglie i permessi a spunta:
+Gli utenti sono quelli di Home Assistant, riconosciuti dall'app con il loro id di Home Assistant: se cambia il nome utente i permessi lo seguono, e chi prende in seguito il vecchio nome utente non li eredita. Fa eccezione l'ultimo amministratore rimasto: se il suo account di Home Assistant viene ricreato con lo stesso nome utente, o Home Assistant viene reinstallato, i permessi restano al nome utente, così l'app non resta senza amministratori (in Attività compare "unico amministratore passato a un nuovo account di Home Assistant"). Chi entra senza nome utente (accesso con LDAP, OIDC o simili) ha un suo utente `id:…` e parte con "Solo Stato" come gli altri. Il personale senza Home Assistant si aggiunge con un nome utente nuovo ed entra dall'[accesso diretto](#accesso-diretto-per-il-personale). In Impostazioni → Utenti l'amministratore assegna un ruolo o sceglie i permessi a spunta:
 
 | Ruolo | Cosa può fare |
 | --- | --- |
@@ -168,6 +168,23 @@ Gli utenti sono quelli di Home Assistant, riconosciuti dall'app con il loro id d
 Permessi singoli, una spunta ciascuno: vedere cruscotto, porte e notifiche; vedere persone, tessere e tipologie; registrare, modificare, sospendere ed eliminare persone e tessere; vedere il registro accessi e le foto; vedere fasce orarie e festività; modificare tipologie, fasce orarie e festività; esportare e importare file CSV; configurare controller, porte, videocitofoni e telecamere e programmare il controller; vedere, creare, bloccare e confrontare i backup (sbloccare, ripristinare ed eliminare restano agli amministratori); gestire gli utenti dell'app e vedere le attività (amministratore).
 
 Ogni permesso mostra le sue sezioni: togliendo la spunta la sezione sparisce dal menu e il server rifiuta i suoi dati. Impostazioni compare a chi può esportare e importare, configurare gli impianti o gestire gli utenti. Dopo l'accesso l'utente arriva sulla prima sezione che gli è permessa: con il solo registro entra direttamente nel Registro. Deve restare sempre almeno un amministratore.
+
+## Accesso diretto per il personale
+
+Il personale senza un account di Home Assistant (reception, pulizie, manutenzione) può usare l'app da un computer o da un tablet della rete interna, con nome utente e password dell'app. È spento finché non lo accende un amministratore:
+
+1. In Home Assistant, **Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione → Rete**: scrivi una porta accanto a «Accesso diretto all'app per il personale» (per esempio `8100`) e salva.
+2. Nell'app, **Impostazioni → Accesso Diretto**: Accesso Diretto **Attivo**. Lo stato diventa «In Ascolto».
+3. **Impostazioni → Utenti → Nuovo Utente**: un nome utente senza spazi (per esempio `reception`) e il ruolo, di solito **Tessere**. Poi **Accesso Diretto → Password Provvisoria**: si vede una volta sola, vale 7 giorni.
+4. Sul computer del personale apri `http://IP-di-Home-Assistant:8100` e salvalo tra i preferiti. Con HTTP l'indirizzo deve essere l'IP o un nome della rete interna (per esempio `homeassistant.local`): un nome pubblico viene rifiutato. Al primo accesso l'app chiede una password nuova, di almeno 10 caratteri, che non contenga il nome utente.
+
+Il computer resta collegato: non si rifà il login finché non si preme **Esci** (menu dell'utente in basso a sinistra), o dopo 90 giorni senza usarlo. In **Utenti → Accesso Diretto** l'amministratore vede su quali computer è collegato ogni utente e da quando lo usa, e può chiudere le sue sessioni, dargli una nuova password provvisoria (la vecchia smette di valere e i suoi computer escono) o togliergli l'accesso. **Chiudi Tutte** in Impostazioni → Accesso Diretto fa uscire tutti. Un ruolo cambiato vale subito, senza rientrare.
+
+- **Solo rete interna.** Non inoltrare la porta dal router verso internet. Sul MikroTik conviene permetterla solo dalla rete del personale.
+- **Solo HTTP.** Sulla rete interna basta, e il browser non mostra avvisi di certificato. Per questo la porta non va mai resa raggiungibile da fuori.
+- **Cosa si può fare.** Quello che permette il ruolo dell'utente. Utenti, password degli altri, Accesso Diretto, Attività e ripristino dei backup restano all'app dentro Home Assistant, anche per un amministratore.
+- **Tentativi sbagliati.** Dopo 5 tentativi sbagliati lo stesso computer aspetta 15 minuti. Dopo 20 da uno stesso indirizzo, o 30 in un'ora per lo stesso utente, aspettano tutti quelli da quell'indirizzo o con quell'utente. Se Home Assistant non vede l'indirizzo dei computer (tutti arrivano dalla rete interna di Docker), contano come un indirizzo solo, con un limite di 40. Una nuova password provvisoria sblocca l'utente. I blocchi sono in Attività e nel log dell'add-on.
+- **Backup.** Password e sessioni non sono nei backup dell'app: dopo un ripristino su un'altra installazione si danno nuove password provvisorie.
 
 ## Home Assistant
 
@@ -372,4 +389,4 @@ Qui restano solo i passaggi automatici delle versioni più vecchie, utili a chi 
 
 ## Sicurezza
 
-L'add-on non espone porte: risponde solo alle richieste che arrivano da Home Assistant tramite Ingress, e ogni richiesta è controllata con i permessi dell'utente. La password del controller resta nel database dell'add-on, non viene mai rimandata alla pagina e si usa solo con l'indirizzo e l'utente salvati. Ogni modifica è registrata con il nome dell'utente di Home Assistant. L'add-on non invia mai comandi di sblocco prolungato alla porta.
+Senza l'accesso diretto l'add-on non espone porte: risponde solo alle richieste che arrivano da Home Assistant tramite Ingress. Con l'accesso diretto risponde anche sulla porta scelta, solo a chi ha fatto il login, e ignora le intestazioni di Home Assistant. Ogni richiesta è controllata con i permessi dell'utente. Le password dell'accesso diretto sono salvate solo come impronta (scrypt), le sessioni solo come impronta del token. La password del controller resta nel database dell'add-on, non viene mai rimandata alla pagina e si usa solo con l'indirizzo e l'utente salvati. Ogni modifica è registrata con il nome dell'utente di Home Assistant. L'add-on non invia mai comandi di sblocco prolungato alla porta.

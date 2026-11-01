@@ -213,17 +213,27 @@ class UserDirectory:
     def _move(self, old: str, new: str, reason: str) -> None:
         row = self.db.get_app_user(old)
         self.db.save_app_user(new, row["name"], row["perms"])
+        # Password e sessioni dell'accesso diretto seguono l'utente
+        self.db.move_credentials(old, new)
         self.db.delete_app_user(old)
         self.db.add_audit("sistema", reason, f"{row['name'] or old}: {old} → {new}")
 
     def _touch(self, username: str, display_name: str, row: dict) -> None:
         # Al massimo una scrittura al minuto per utente
         now = time.monotonic()
-        if now - self._seen.get(username, -120) < 60 and row["name"]:
+        if now - self._seen.get(username, -120) < 60 and (row["name"] or not display_name):
             return
         self._seen[username] = now
         # Il nome scelto nella pagina Utenti resta: quello di Home Assistant serve solo se manca
         self.db.touch_app_user(username, "" if row["name"] else display_name)
+
+    def direct_user(self, username: str) -> AppUser | None:
+        """Utente di una sessione dell'accesso diretto, con i permessi di adesso; None se non c'è più."""
+        row = self.db.get_app_user(username)
+        if row is None:
+            return None
+        self._touch(row["username"], "", row)
+        return AppUser(row["username"], row["name"], set(row["perms"]))
 
     def _has_admin(self) -> bool:
         return any(ADMIN in u["perms"] for u in self.db.list_app_users())
@@ -237,8 +247,8 @@ class UserDirectory:
 
     def save(self, username: str, name: str, perms: list[str], by: AppUser, create: bool) -> dict:
         username = username.strip().lower()
-        if not username or len(username) > 100 or any(c.isspace() for c in username):
-            raise UserError("nome utente non valido: usa il nome utente di Home Assistant, senza spazi")
+        if not username or len(username) > 100 or any(c.isspace() or ord(c) < 32 for c in username):
+            raise UserError("nome utente non valido: senza spazi, al massimo 100 caratteri")
         name = " ".join(name.split())[:100]
         perms = normalize_perms(perms)
         with self._lock:
