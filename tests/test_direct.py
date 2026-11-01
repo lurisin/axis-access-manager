@@ -614,3 +614,30 @@ def test_real_server_closes_requests_whose_body_never_arrives(clients, monkeypat
         time.sleep(0.3)
         slow.sendall(body)
         assert slow.recv(20).startswith(b"HTTP/1.1 401")
+
+
+def test_expired_temporary_password_on_the_limit_leaves_no_block(clients):
+    ingress, site, app = clients
+    enable(ingress)
+    temporary = staff(ingress)
+    old = (datetime.now(tz=UTC) - timedelta(days=8)).isoformat(timespec="microseconds")
+    with app.state.db._lock:
+        app.state.db._conn.execute("UPDATE app_user_passwords SET set_at = ? WHERE username = 'maria'", (old,))
+        app.state.db._conn.commit()
+    for _ in range(4):
+        login(site, "maria", "sbagliata-123")
+    response = login(site, "maria", temporary)
+    assert response.status_code == 401 and "scaduta" in response.json()["detail"]
+    assert not app.state.login_limiter.blocked_until
+
+
+def test_only_a_wrong_current_password_is_flagged(clients):
+    ingress, site, _ = clients
+    enable(ingress)
+    temporary = staff(ingress)
+    login(site, "maria", temporary)
+    wrong = site.post("/api/password", json={"current": "sbagliata-123", "new": NEW_PASSWORD}, headers=SAFE)
+    assert wrong.status_code == 400 and wrong.json()["current_wrong"] is True
+    # La nuova non va bene: la pagina tiene la provvisoria che ha in memoria
+    weak = site.post("/api/password", json={"current": temporary, "new": "maria-12345678"}, headers=SAFE)
+    assert weak.status_code == 400 and "current_wrong" not in weak.json()

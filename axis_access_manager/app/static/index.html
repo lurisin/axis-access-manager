@@ -919,7 +919,9 @@ async function api(path, options = {}) {
     // controller (credenziali, richiesta rifiutata, scritture sospese) riprovando tornerebbero uguali
     const unreachable = data?.unreachable ?? (fromApp && data.detail.startsWith("il controller non risponde"));
     if (res.status === 502 && unreachable && method !== "GET" && !NO_RETRY.includes(path) && await retryBox(message)) return api(path, options);
-    throw new Error(message);
+    const err = new Error(message);
+    err.data = data;
+    throw err;
   }
   return data;
 }
@@ -975,8 +977,9 @@ function showAuth(mode, current = "", message = "") {
       }
       location.reload();
     } catch (err) {
-      // La provvisoria tenuta in memoria non va più (cambiata da un'altra scheda): si chiede di nuovo
-      if (current && !err.login) showAuth("change", "", err.message);
+      // La provvisoria tenuta in memoria non va più (cambiata da un'altra scheda): si chiede di nuovo. Per gli altri
+      // errori (nuova password non valida, troppe richieste) resta tutto com'è
+      if (current && err.data?.current_wrong) showAuth("change", "", err.message);
       else if (!err.login) fail(err.message);
     } finally { button.disabled = false; }
   };

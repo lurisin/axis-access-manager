@@ -1827,6 +1827,8 @@ def create_app(
             return JSONResponse({"detail": "nome utente o password errati"}, 401)
         label = row["name"] or row["username"]
         if temporary_expired(password, datetime.now(tz=UTC)):
+            # Password giusta, anche se scaduta: un blocco scattato con questo tentativo non vale
+            state.login_limiter.success(ip, key, started)
             state.db.add_audit(label, "password provvisoria scaduta", "accesso diretto rifiutato")
             return JSONResponse({"detail": "password provvisoria scaduta: chiedine una nuova all'amministratore"}, 401)
         # Un blocco scattato con questo tentativo non vale: la password era giusta
@@ -1872,7 +1874,8 @@ def create_app(
             if blocked and direct and getattr(request.state, "session_digest", None):
                 # Chi prova a indovinare la password da una sessione rimasta aperta la perde
                 state.db.delete_session(request.state.session_digest)
-            raise HTTPException(status_code=400, detail="password attuale errata")
+            # current_wrong: la pagina richiede la password attuale (quella tenuta in memoria non va più)
+            return JSONResponse({"detail": "password attuale errata", "current_wrong": True}, 400)
         state.login_limiter.success(ip, user.username, blocked)
         problem = password_problem(body.new, user.username)
         if not problem and body.new == body.current:
