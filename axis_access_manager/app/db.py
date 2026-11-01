@@ -1077,11 +1077,17 @@ class Database:
         return rows[0]
 
     def save_app_user(self, username: str, name: str, perms: list[str]) -> None:
-        self._execute(
-            "INSERT INTO app_users (username, name, perms, created_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(username) DO UPDATE SET name = excluded.name, perms = excluded.perms",
-            (username, name, json.dumps(perms), now_iso()),
-        )
+        with self._lock:
+            if not self._conn.execute("SELECT 1 FROM app_users WHERE username = ?", (username,)).fetchone():
+                # Un utente nuovo non eredita password o sessioni rimaste di un utente con lo stesso nome
+                self._conn.execute("DELETE FROM app_user_passwords WHERE username = ?", (username,))
+                self._conn.execute("DELETE FROM sessions WHERE username = ?", (username,))
+            self._conn.execute(
+                "INSERT INTO app_users (username, name, perms, created_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(username) DO UPDATE SET name = excluded.name, perms = excluded.perms",
+                (username, name, json.dumps(perms), now_iso()),
+            )
+            self._commit()
 
     def touch_app_user(self, username: str, name: str) -> None:
         self._execute(
@@ -1105,10 +1111,21 @@ class Database:
     def list_passwords(self) -> dict[str, dict]:
         return {row["username"].lower(): row for row in self._query("SELECT * FROM app_user_passwords")}
 
-    def set_password(self, username: str, password_hash: str, must_change: bool, by: str) -> str:
-        """Password nuova; le sessioni aperte con quella di prima si chiudono. Restituisce l'ora (set_at)."""
+    def set_password(
+        self, username: str, password_hash: str, must_change: bool, by: str, expected_set_at: str | None = None
+    ) -> str | None:
+        """Password nuova; le sessioni aperte con quella di prima si chiudono. Restituisce l'ora (set_at), o None se
+        l'utente non c'è più o (con expected_set_at) la password non è più quella letta prima."""
         set_at = datetime.now(tz=UTC).isoformat(timespec="microseconds")
         with self._lock:
+            if not self._conn.execute("SELECT 1 FROM app_users WHERE username = ?", (username,)).fetchone():
+                return None
+            if expected_set_at is not None:
+                row = self._conn.execute(
+                    "SELECT set_at FROM app_user_passwords WHERE username = ?", (username,)
+                ).fetchone()
+                if row is None or row[0] != expected_set_at:
+                    return None
             self._conn.execute(
                 "INSERT INTO app_user_passwords (username, hash, must_change, set_at, set_by) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(username) DO UPDATE SET hash = excluded.hash, must_change = excluded.must_change, "

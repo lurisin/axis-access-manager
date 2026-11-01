@@ -2,12 +2,15 @@
 delle richieste e server sulla porta propria."""
 
 import json
+import socket
 import subprocess
 from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
+from fastapi.responses import Response
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app import direct
 from app.backup import common_snapshot
@@ -15,12 +18,13 @@ from app.direct import (
     COOKIE,
     LoginLimiter,
     hash_password,
+    host_problem,
     mark_direct,
     password_problem,
     temporary_password,
     verify_password,
 )
-from app.main import create_app
+from app.main import _secure, create_app
 from app.users import UserDirectory
 
 ADMIN = {"X-Remote-User-Name": "admin", "X-Remote-User-Id": "id-admin", "X-Remote-User-Display-Name": "Admin"}
@@ -404,3 +408,189 @@ def test_https_with_the_home_assistant_certificate(clients, tmp_path):
     cookie = response.headers["set-cookie"]
     assert cookie.startswith("__Host-aam_session=") and "Secure" in cookie and "HttpOnly" in cookie
     assert "SameSite=strict" in cookie
+
+
+def test_host_header_cannot_change_the_checked_path(clients):
+    ingress, site, _ = clients
+    enable(ingress)
+    temporary = staff(ingress)
+    assert login(site, "maria", temporary).status_code == 200
+    # Con la password provvisoria si può solo cambiarla: un Host con / e ? non fa vedere al controllo un altro percorso
+    assert site.get("/api/persons").status_code == 403
+    assert site.get("/api/persons", headers={"host": "hotel.lan/api/me?"}).status_code == 400
+    assert (
+        site.post("/api/persons", json={"name": "X"}, headers={**SAFE, "host": "hotel.lan/api/me?"}).status_code == 400
+    )
+    # Lo schema delle API non si pubblica
+    assert ingress.get("/openapi.json").status_code == 404
+    assert site.get("/openapi.json", headers={"host": "hotel.lan/api/login?"}).status_code == 400
+
+
+def test_public_names_refused_over_http(clients):
+    ingress, site, _ = clients
+    enable(ingress)
+    staff(ingress)
+    # DNS rebinding: una pagina di un altro sito che punta all'IP di Home Assistant ha il suo nome nell'Host
+    evil = {**SAFE, "host": "evil.example:8100", "origin": "http://evil.example:8100"}
+    assert site.post("/api/login", json={"username": "maria", "password": "x" * 12}, headers=evil).status_code == 421
+    page = site.get("/", headers={"host": "evil.example:8100"})
+    assert page.status_code == 421 and "indirizzo IP" in page.text
+    for host in ("192.168.1.10:8100", "[fe80::1]:8100", "homeassistant.local:8100", "homeassistant:8100"):
+        assert site.get("/", headers={"host": host}).status_code == 200, host
+
+
+@pytest.mark.parametrize(
+    ("host", "https", "ok"),
+    [
+        ("10.103.200.5:8100", False, True),
+        ("10.103.200.5", False, True),
+        ("[fd00::5]:8100", False, True),
+        ("ha.hotel.lan:8100", False, True),
+        ("homeassistant.local", False, True),
+        ("reception-pc", False, True),
+        ("accessi.hotel.it:8100", False, False),
+        ("accessi.hotel.it:8100", True, True),
+        ("hotel.lan/api/me?", True, False),
+        ("hotel.lan:8100 x", False, False),
+        ("user@hotel.lan", False, False),
+        ("", False, False),
+    ],
+)
+def test_host_problem(host, https, ok):
+    assert (host_problem(host, https) == "") is ok
+
+
+def test_request_body_limits(clients):
+    ingress, site, _ = clients
+    enable(ingress)
+    staff(ingress)
+    huge = {"username": "maria", "password": "x" * 20000}
+    response = site.post("/api/login", json=huge, headers=SAFE)
+    assert response.status_code == 413 and response.json()["detail"] == "richiesta troppo grande"
+
+    def chunks():
+        yield b'{"username": "maria", "password": "'
+        yield b"x" * 20000
+        yield b'"}'
+
+    # Senza Content-Length (a pezzi) il limite vale lo stesso
+    chunked = site.post("/api/login", content=chunks(), headers={**SAFE, "content-type": "application/json"})
+    assert chunked.status_code == 413
+    big = site.post("/api/import/persons", content=b"x" * (direct.BODY_LIMIT + 1), headers=SAFE)
+    assert big.status_code == 413
+    # Un login normale passa
+    assert login(site, "maria", "x" * 12).status_code == 401
+
+
+def test_no_websockets_on_direct_access(clients):
+    ingress, site, _ = clients
+    enable(ingress)
+    with pytest.raises(WebSocketDisconnect), site.websocket_connect("/api/me"):
+        pass
+
+
+def test_no_browser_cache_for_api_answers_on_direct_access():
+    # Le foto degli eventi hanno una cache di un giorno: dall'accesso diretto no, su un PC condiviso resterebbero
+    photo = _secure(Response(b"jpeg", headers={"Cache-Control": "max-age=86400"}), "/api/events/7/snapshot")
+    assert photo.headers["cache-control"] == "no-store"
+    page = _secure(Response(b"html", headers={"Cache-Control": "no-cache"}), "/")
+    assert page.headers["cache-control"] == "no-cache"
+
+
+def test_limiter_keeps_counting_across_a_block():
+    now = [0.0]
+    limiter = LoginLimiter(clock=lambda: now[0])
+    allowed = 0
+    # Un tentativo ogni 5 secondi per un'ora, da 50 indirizzi diversi: per l'utente al massimo 30 più uno a blocco
+    for i in range(720):
+        ip = f"10.0.1.{i % 50}"
+        if not limiter.blocked(ip, "maria"):
+            limiter.attempt(ip, "maria")
+            allowed += 1
+        now[0] += 5
+    assert 30 <= allowed <= 34
+
+
+def test_limiter_counts_hidden_addresses_together():
+    now = [0.0]
+    limiter = LoginLimiter(clock=lambda: now[0])
+    # PC dietro il gateway Docker (indirizzo non visibile): un nome utente diverso a ogni tentativo non basta
+    for i in range(20):
+        limiter.attempt("", f"utente{i}")
+    assert limiter.blocked("", "un-altro") > 0
+    assert limiter.blocked("10.0.0.9", "un-altro") == 0
+
+
+def test_limiter_memory_is_bounded():
+    now = [0.0]
+    limiter = LoginLimiter(clock=lambda: now[0], max_keys=100)
+    for i in range(2000):
+        for _ in range(5):
+            limiter.attempt(f"10.1.{i // 250}.{i % 250}", f"utente{i}")
+    assert len(limiter.failures) <= 100 and len(limiter.blocked_until) <= 100
+    # Quelli recenti restano
+    assert limiter.blocked("10.1.7.249", "utente1999") > 0
+
+
+def test_login_refused_without_counting_when_hashing_is_busy(clients, monkeypatch):
+    ingress, site, app = clients
+    enable(ingress)
+    staff(ingress)
+    monkeypatch.setattr(app.state.hasher, "full", lambda: True)
+    response = login(site, "maria", "x" * 12)
+    assert response.status_code == 429 and "troppe richieste" in response.json()["detail"]
+    assert not app.state.login_limiter.failures
+
+
+def test_password_change_loses_to_admin_removal(clients, monkeypatch):
+    ingress, site, app = clients
+    enable(ingress)
+    temporary = staff(ingress)
+    assert login(site, "maria", temporary).status_code == 200
+    real_hash = app.state.hasher.hash
+
+    async def hash_while_admin_removes_access(password):
+        result = await real_hash(password)
+        app.state.db.delete_password("maria")
+        return result
+
+    monkeypatch.setattr(app.state.hasher, "hash", hash_while_admin_removes_access)
+    response = site.post("/api/password", json={"current": temporary, "new": NEW_PASSWORD}, headers=SAFE)
+    assert response.status_code == 409
+    assert app.state.db.get_password("maria") is None
+    assert not app.state.db.list_sessions()
+
+
+def test_new_user_does_not_inherit_leftover_credentials(db):
+    db.save_app_user("maria", "Maria", ["persone"])
+    set_at = db.set_password("maria", "scrypt$x", False, "admin")
+    db.add_session("abc", "maria", set_at, "", "")
+    # Righe rimaste senza l'utente (scritte mentre veniva eliminato)
+    with db._lock:
+        db._conn.execute("DELETE FROM app_users WHERE username = 'maria'")
+        db._conn.commit()
+    assert db.set_password("maria", "scrypt$y", False, "admin") is None
+    db.save_app_user("maria", "Maria Nuova", ["stato"])
+    assert db.get_password("maria") is None and db.get_session("abc") is None
+
+
+def test_real_server_closes_slow_and_extra_connections(clients, monkeypatch):
+    ingress, _, app = clients
+    monkeypatch.setattr(direct, "HEADER_TIMEOUT", 0.3)
+    monkeypatch.setattr(direct, "MAX_CONNECTIONS_PER_IP", 3)
+    enable(ingress)
+    port = app.state.direct.bound_port
+    # Richiesta mai finita: il server chiude la connessione
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as slow:
+        slow.sendall(b"GET / HTTP/1.1\r\nHost: hotel.lan\r\n")
+        assert slow.recv(100) == b""
+    monkeypatch.setattr(direct, "HEADER_TIMEOUT", 5)
+    sockets = [socket.create_connection(("127.0.0.1", port), timeout=5) for _ in range(4)]
+    try:
+        # Oltre il limite per indirizzo: chiusa subito
+        assert sockets[3].recv(100) == b""
+        sockets[0].sendall(b"GET / HTTP/1.1\r\nHost: hotel.lan\r\nConnection: close\r\n\r\n")
+        assert sockets[0].recv(20).startswith(b"HTTP/1.1 200")
+    finally:
+        for sock in sockets:
+            sock.close()

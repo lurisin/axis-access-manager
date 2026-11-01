@@ -176,14 +176,14 @@ Il personale senza un account di Home Assistant (reception, pulizie, manutenzion
 1. In Home Assistant, **Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione → Rete**: scrivi una porta accanto a «Accesso diretto all'app per il personale» (per esempio `8100`) e salva.
 2. Nell'app, **Impostazioni → Accesso Diretto**: Accesso Diretto **Attivo**. Lo stato diventa «In Ascolto».
 3. **Impostazioni → Utenti → Nuovo Utente**: un nome utente senza spazi (per esempio `reception`) e il ruolo, di solito **Tessere**. Poi **Accesso Diretto → Password Provvisoria**: si vede una volta sola, vale 7 giorni.
-4. Sul computer del personale apri `http://IP-di-Home-Assistant:8100` e salvalo tra i preferiti. Al primo accesso l'app chiede una password nuova, di almeno 10 caratteri, che non contenga il nome utente.
+4. Sul computer del personale apri `http://IP-di-Home-Assistant:8100` e salvalo tra i preferiti. Con HTTP l'indirizzo deve essere l'IP o un nome della rete interna (per esempio `homeassistant.local`): un nome pubblico viene rifiutato. Al primo accesso l'app chiede una password nuova, di almeno 10 caratteri, che non contenga il nome utente.
 
 Il computer resta collegato: non si rifà il login finché non si preme **Esci** (menu dell'utente in basso a sinistra), o dopo 90 giorni senza usarlo. In **Utenti → Accesso Diretto** l'amministratore vede su quali computer è collegato ogni utente e da quando lo usa, e può chiudere le sue sessioni, dargli una nuova password provvisoria (la vecchia smette di valere e i suoi computer escono) o togliergli l'accesso. **Chiudi Tutte** in Impostazioni → Accesso Diretto fa uscire tutti. Un ruolo cambiato vale subito, senza rientrare.
 
 - **Solo rete interna.** Non inoltrare la porta dal router verso internet. Sul MikroTik conviene permetterla solo dalla rete del personale.
 - **HTTP o HTTPS.** Con HTTP il browser non mostra avvisi ed è la scelta consigliata sulla rete interna. HTTPS solo con un certificato vero già presente nella cartella `ssl` di Home Assistant (per esempio Let's Encrypt, con il nome usato nell'indirizzo): con un certificato autofirmato il browser mostrerebbe un avviso a ogni computer. Cambiando protocollo i computer collegati devono rientrare.
 - **Cosa si può fare.** Quello che permette il ruolo dell'utente. Utenti, password degli altri, Accesso Diretto, Attività e ripristino dei backup restano all'app dentro Home Assistant, anche per un amministratore.
-- **Tentativi sbagliati.** Dopo 5 tentativi sbagliati lo stesso computer aspetta 15 minuti (oltre 20 da uno stesso indirizzo o 30 in un'ora per lo stesso utente, aspettano tutti). Una nuova password provvisoria sblocca l'utente. I blocchi sono in Attività e nel log dell'add-on.
+- **Tentativi sbagliati.** Dopo 5 tentativi sbagliati lo stesso computer aspetta 15 minuti. Dopo 20 da uno stesso indirizzo, o 30 in un'ora per lo stesso utente, aspettano tutti quelli da quell'indirizzo o con quell'utente. Se Home Assistant non vede l'indirizzo dei computer (tutti arrivano dalla rete interna di Docker), contano come un indirizzo solo. Una nuova password provvisoria sblocca l'utente. I blocchi sono in Attività e nel log dell'add-on.
 - **Backup.** Password e sessioni non sono nei backup dell'app: dopo un ripristino su un'altra installazione si danno nuove password provvisorie.
 
 ## Home Assistant

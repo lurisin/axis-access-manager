@@ -16,10 +16,11 @@ import hmac
 import ipaddress
 import json
 import logging
+import re
 import secrets
 import socket
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import uvicorn
+from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from .db import Database
 
@@ -92,14 +94,31 @@ COMMON_PASSWORDS = {
 # Password provvisorie: 12 caratteri senza quelli che si confondono (0/o, 1/l/i), a gruppi di 4
 TEMP_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 
-# Tentativi sbagliati: (indirizzo, utente) 5 in 15 minuti; indirizzo 20 in 15 minuti; utente da qualunque indirizzo
-# 30 in un'ora. Poi 15 minuti di blocco. Il tentativo conta prima del controllo della password: anche quelli in
-# parallelo
+# Tentativi sbagliati: (indirizzo, utente) 5 in 15 minuti; indirizzo 20 in 15 minuti (i PC dietro il gateway Docker
+# contano come un indirizzo solo); utente da qualunque indirizzo 30 in un'ora. Poi 15 minuti di blocco, e ogni
+# tentativo sbagliato finché il conto resta sopra il limite ne fa scattare un altro. Il tentativo conta prima del
+# controllo della password: anche quelli in parallelo
 LIMITS = (("pair", 5, 15 * 60), ("ip", 20, 15 * 60), ("user", 30, 3600))
 BLOCK_SECONDS = 15 * 60
+# Conti tenuti in memoria al massimo: oltre si dimenticano i più vecchi
+LIMITER_KEYS = 20000
 # Calcoli della password in parallelo e in coda: oltre, la richiesta si rifiuta subito
 HASH_WORKERS = 2
 HASH_QUEUE = 8
+
+# Connessioni al server dell'accesso diretto: HEADER_TIMEOUT secondi per mandare la richiesta, al massimo
+# MAX_CONNECTIONS_PER_IP aperte da un indirizzo (il gateway Docker è uno solo) e MAX_CONNECTIONS in tutto
+HEADER_TIMEOUT = 10
+MAX_CONNECTIONS_PER_IP = 100
+MAX_CONNECTIONS = 400
+# Corpo delle richieste: login e password piccoli, il resto (importazione CSV) fino a BODY_LIMIT
+BODY_LIMIT = 5 * 1024 * 1024
+SMALL_BODY_LIMIT = 16 * 1024
+SMALL_BODY_PATHS = ("/api/login", "/api/logout", "/api/password")
+# Nome nell'indirizzo: in HTTP solo un IP o un nome della rete interna (contro il DNS rebinding); in HTTPS lo
+# controlla il certificato
+_HOST = re.compile(r"^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?::[0-9]{1,5})?$")
+LOCAL_SUFFIXES = (".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain", ".intranet", ".private")
 
 
 class DirectError(Exception):
@@ -172,6 +191,9 @@ def normalize_username(value: str) -> str:
     return username
 
 
+BUSY = "troppe richieste di accesso in questo momento: riprova tra poco"
+
+
 class PasswordHasher:
     """Calcoli scrypt su thread propri, al massimo HASH_WORKERS insieme e HASH_QUEUE in attesa: i tentativi in massa non
     occupano i thread dell'app (database, controller) e oltre la coda si rifiutano subito."""
@@ -182,9 +204,12 @@ class PasswordHasher:
         # Hash di una password a caso: chi non esiste costa quanto chi sbaglia la password
         self._dummy = ""
 
+    def full(self) -> bool:
+        return self._waiting >= HASH_WORKERS + HASH_QUEUE
+
     async def _run(self, func, *args):
-        if self._waiting >= HASH_WORKERS + HASH_QUEUE:
-            raise DirectError("troppe richieste di accesso in questo momento: riprova tra poco", 429)
+        if self.full():
+            raise DirectError(BUSY, 429)
         self._waiting += 1
         try:
             return await asyncio.get_running_loop().run_in_executor(self._pool, func, *args)
@@ -213,17 +238,20 @@ class PasswordHasher:
 class LoginLimiter:
     """Tentativi sbagliati in memoria (all'avvio dell'add-on si riparte da zero)."""
 
-    failures: dict[tuple, deque] = field(default_factory=dict)
-    blocked_until: dict[tuple, float] = field(default_factory=dict)
+    # In ordine di ultimo tentativo e di fine del blocco: i più vecchi si tolgono dall'inizio
+    failures: OrderedDict[tuple, deque] = field(default_factory=OrderedDict)
+    blocked_until: OrderedDict[tuple, float] = field(default_factory=OrderedDict)
     clock: Callable[[], float] = time.monotonic
+    max_keys: int = LIMITER_KEYS
 
     @staticmethod
     def _keys(ip: str, username: str) -> list[tuple[tuple, int, int]]:
+        # ip vuoto: PC dietro il gateway Docker, contati insieme
         keys = []
         for kind, limit, window in LIMITS:
             if kind == "pair":
                 keys.append(((kind, ip, username), limit, window))
-            elif kind == "ip" and ip:
+            elif kind == "ip":
                 keys.append(((kind, ip), limit, window))
             elif kind == "user":
                 keys.append(((kind, username), limit, window))
@@ -246,13 +274,16 @@ class LoginLimiter:
         now = self.clock()
         started = []
         for key, limit, window in self._keys(ip, username):
-            times = self.failures.setdefault(key, deque())
+            times = self.failures.pop(key, None) or deque()
+            self.failures[key] = times
             while times and times[0] <= now - window:
                 times.popleft()
             times.append(now)
+            # Il conto non si azzera col blocco: finito il blocco, un altro sbaglio sopra il limite blocca di nuovo
+            # (per l'utente al massimo 30 tentativi in un'ora, più uno ogni blocco)
             if len(times) >= limit and self.blocked_until.get(key, 0) <= now:
+                self.blocked_until.pop(key, None)
                 self.blocked_until[key] = now + BLOCK_SECONDS
-                times.clear()
                 started.append(key)
         self._prune(now)
         return started
@@ -276,10 +307,17 @@ class LoginLimiter:
                 del store[key]
 
     def _prune(self, now: float) -> None:
-        if len(self.failures) < 5000:
-            return
-        for key in [k for k, times in self.failures.items() if not times or times[-1] <= now - 3600]:
+        longest = max(window for _, _, window in LIMITS)
+        while self.failures:
+            key, times = next(iter(self.failures.items()))
+            if len(self.failures) <= self.max_keys and times and times[-1] > now - longest:
+                break
             del self.failures[key]
+        while self.blocked_until:
+            key, until = next(iter(self.blocked_until.items()))
+            if len(self.blocked_until) <= self.max_keys and until > now:
+                break
+            del self.blocked_until[key]
 
 
 def client_ip(request) -> str:
@@ -291,6 +329,23 @@ def client_ip(request) -> str:
     except ValueError:
         return ""
     return host
+
+
+def host_problem(host: str, https: bool) -> str:
+    """Perché il nome nell'indirizzo (intestazione Host) non va bene; vuoto se va bene."""
+    if not host or not _HOST.match(host):
+        return "indirizzo non valido"
+    if https:
+        return ""
+    name = host[1 : host.index("]")] if host.startswith("[") else host.rsplit(":", 1)[0]
+    try:
+        ipaddress.ip_address(name)
+        return ""
+    except ValueError:
+        pass
+    if "." not in name or name.lower().endswith(LOCAL_SUFFIXES):
+        return ""
+    return "indirizzo non accettato: apri l'app con l'indirizzo IP di Home Assistant"
 
 
 # ---------- Sessioni ----------
@@ -392,20 +447,149 @@ def cert_name_problem(name: str) -> str:
 
 
 def mark_direct(app):
-    """L'app vista dal server dell'accesso diretto: richieste segnate, senza le intestazioni di Ingress."""
+    """L'app vista dal server dell'accesso diretto: richieste segnate, senza le intestazioni di Ingress, con il corpo
+    limitato (BODY_LIMIT, SMALL_BODY_LIMIT per login e password)."""
 
     async def direct_app(scope, receive, send):
-        if scope["type"] in ("http", "websocket"):
+        if scope["type"] == "websocket":
+            # L'app non ha WebSocket: dall'accesso diretto si rifiutano tutti
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        if scope["type"] == "http":
             scope = dict(scope)
             scope[DIRECT_SCOPE] = True
             scope["headers"] = [(k, v) for k, v in scope.get("headers", []) if k.lower() not in INGRESS_HEADERS]
+            limit = SMALL_BODY_LIMIT if scope.get("path") in SMALL_BODY_PATHS else BODY_LIMIT
+            length = next((v for k, v in scope["headers"] if k.lower() == b"content-length"), None)
+            if length is not None and (not length.strip().isdigit() or int(length) > limit):
+                await _too_large(send)
+                return
+            receive, send = _limit_body(receive, send, limit)
         await app(scope, receive, send)
 
     return direct_app
 
 
+async def _too_large(send) -> None:
+    body = json.dumps({"detail": "richiesta troppo grande"}).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+                (b"cache-control", b"no-store"),
+                (b"x-content-type-options", b"nosniff"),
+                (b"connection", b"close"),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+def _limit_body(receive, send, limit: int):
+    """Corpo letto al massimo fino a limit: oltre, risposta 413 (se l'app non ha già risposto) e per l'app il client
+    se n'è andato."""
+    state = {"read": 0, "started": False, "rejected": False}
+
+    async def limited_receive():
+        if state["read"] > limit:
+            return {"type": "http.disconnect"}
+        message = await receive()
+        if message["type"] == "http.request":
+            state["read"] += len(message.get("body", b""))
+            if state["read"] > limit:
+                if not state["started"]:
+                    state["rejected"] = True
+                    await _too_large(send)
+                return {"type": "http.disconnect"}
+        return message
+
+    async def guarded_send(message):
+        if state["rejected"]:
+            return
+        if message["type"] == "http.response.start":
+            state["started"] = True
+        await send(message)
+
+    return limited_receive, guarded_send
+
+
 def is_direct(request) -> bool:
     return request.scope.get(DIRECT_SCOPE) is True
+
+
+class _GuardedH11(H11Protocol):
+    """HTTP del server dell'accesso diretto: chiude le connessioni che non mandano la richiesta entro HEADER_TIMEOUT
+    (uvicorn le terrebbe aperte per sempre) e rifiuta le connessioni oltre i limiti per indirizzo e in tutto."""
+
+    _header_timer: asyncio.TimerHandle | None = None
+    _ip = ""
+
+    def connection_made(self, transport) -> None:  # type: ignore[override]
+        super().connection_made(transport)
+        counts = _connections_per_ip(self.server_state)
+        self._ip = self.client[0] if self.client else ""
+        counts[self._ip] = counts.get(self._ip, 0) + 1
+        if counts[self._ip] > MAX_CONNECTIONS_PER_IP or len(self.connections) > MAX_CONNECTIONS:
+            transport.close()
+            return
+        self._arm_header_timer()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        self._cancel_header_timer()
+        counts = _connections_per_ip(self.server_state)
+        left = counts.get(self._ip, 1) - 1
+        if left > 0:
+            counts[self._ip] = left
+        else:
+            counts.pop(self._ip, None)
+        super().connection_lost(exc)
+
+    def on_response_complete(self) -> None:
+        super().on_response_complete()
+        # Pronta per la prossima richiesta: anche quella deve arrivare in tempo
+        if not self.transport.is_closing():
+            self._arm_header_timer()
+
+    def _arm_header_timer(self) -> None:
+        self._cancel_header_timer()
+        self._header_timer = self.loop.call_later(HEADER_TIMEOUT, self._header_timeout)
+
+    def _cancel_header_timer(self) -> None:
+        if self._header_timer is not None:
+            self._header_timer.cancel()
+            self._header_timer = None
+
+    def _header_timeout(self) -> None:
+        self._header_timer = None
+        # Richiesta arrivata e non ancora finita: la sta gestendo l'app
+        if self.cycle is not None and not self.cycle.response_complete:
+            return
+        if not self.transport.is_closing():
+            self.transport.close()
+
+
+def _connections_per_ip(server_state) -> dict[str, int]:
+    counts = getattr(server_state, "aam_per_ip", None)
+    if counts is None:
+        counts = server_state.aam_per_ip = {}
+    return counts
+
+
+def _raise_open_files() -> None:
+    """Più file aperti consentiti (fino al massimo del sistema): le connessioni dell'accesso diretto non tolgono posto
+    a Ingress, al controller e al database."""
+    try:
+        import resource
+
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = 65536 if hard == resource.RLIM_INFINITY else min(hard, 65536)
+        if soft != resource.RLIM_INFINITY and soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except (ImportError, ValueError, OSError):
+        _LOGGER.debug("Limite dei file aperti non cambiato", exc_info=True)
 
 
 class _Server(uvicorn.Server):
@@ -475,9 +659,12 @@ class DirectServer:
                 if not path.is_file():
                     raise DirectError(f"{path.name} non trovato nella cartella ssl di Home Assistant")
             ssl_args = {"ssl_certfile": str(certfile), "ssl_keyfile": str(keyfile)}
+        _raise_open_files()
         config = uvicorn.Config(
             mark_direct(self.app),
             lifespan="off",
+            http=_GuardedH11,
+            ws="none",
             proxy_headers=False,
             server_header=False,
             access_log=False,

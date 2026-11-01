@@ -8,7 +8,7 @@ Accesso diretto all'app per il personale, fuori da Home Assistant, con il suo lo
 - **Login e password provvisoria.** In **Utenti → Accesso Diretto** l'amministratore crea una password provvisoria (si vede una volta, vale 7 giorni). Al primo accesso l'app ne chiede una nuova, di almeno 10 caratteri.
 - **Computer sempre collegato.** Dopo il login non si rientra più: la sessione resta aperta finché non si preme **Esci**, o fino a 90 giorni senza uso. L'amministratore vede i computer collegati di ogni utente e può chiuderne le sessioni, dare una nuova password provvisoria o togliere l'accesso; **Chiudi Tutte** fa uscire tutti.
 - **Menu dell'utente.** In basso a sinistra: Cambia Password ed Esci.
-- **Sicurezza.** Password salvate solo come impronta (scrypt), blocco dopo troppi tentativi sbagliati, protezione dalle richieste di altri siti. Dall'accesso diretto vale il ruolo dell'utente; utenti, Accesso Diretto, Attività e ripristino dei backup restano all'app dentro Home Assistant. Password e sessioni non sono nei backup dell'app.
+- **Sicurezza.** Password salvate solo come impronta (scrypt), blocco dopo troppi tentativi sbagliati, protezione dalle richieste di altri siti e dai nomi pubblici nell'indirizzo, limiti alla dimensione delle richieste e alle connessioni lasciate a metà, foto mai nella cache del browser. Dall'accesso diretto vale il ruolo dell'utente; utenti, Accesso Diretto, Attività e ripristino dei backup restano all'app dentro Home Assistant. Password e sessioni non sono nei backup dell'app.
 
 ## 0.24.1
 

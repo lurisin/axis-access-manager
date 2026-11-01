@@ -16,7 +16,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -26,6 +26,7 @@ from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .controller_state import POLL_LIVE, POLL_WITHOUT_EVENTS, StateKeeper
 from .db import DB_PATH, Database, local_day_start
 from .direct import (
+    BUSY,
     COOKIE,
     COOKIE_HTTPS,
     COOKIE_MAX_AGE,
@@ -41,6 +42,7 @@ from .direct import (
     PasswordHasher,
     cert_name_problem,
     client_ip,
+    host_problem,
     is_direct,
     new_token,
     normalize_username,
@@ -652,7 +654,7 @@ def create_app(
         await app.state.ha.aclose()
         app.state.db.close()
 
-    app = FastAPI(title="Axis Access Manager", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="Axis Access Manager", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
     @app.middleware("http")
     async def access_guard(request: Request, call_next):
@@ -1818,6 +1820,9 @@ def create_app(
         wait = state.login_limiter.blocked(ip, key)
         if wait:
             return JSONResponse({"detail": f"troppi tentativi sbagliati: riprova tra {_minutes(wait)}"}, 429)
+        # Calcoli della password tutti occupati: rifiutato prima di contare il tentativo
+        if state.hasher.full():
+            return JSONResponse({"detail": BUSY}, 429)
         for blocked in state.login_limiter.attempt(ip, key):
             _LOGGER.warning("Accesso diretto bloccato per troppi tentativi: %s", _block_text(blocked))
             state.db.add_audit("sistema", "accesso diretto bloccato per troppi tentativi", _block_text(blocked))
@@ -1864,6 +1869,8 @@ def create_app(
         wait = state.login_limiter.blocked(ip, user.username)
         if wait:
             raise HTTPException(status_code=429, detail=f"troppi tentativi sbagliati: riprova tra {_minutes(wait)}")
+        if state.hasher.full():
+            raise HTTPException(status_code=429, detail=BUSY)
         blocked = state.login_limiter.attempt(ip, user.username)
         for key in blocked:
             state.db.add_audit("sistema", "cambio password bloccato per troppi tentativi", _block_text(key))
@@ -1878,8 +1885,12 @@ def create_app(
             problem = "la nuova password deve essere diversa da quella attuale"
         if problem:
             raise HTTPException(status_code=400, detail=problem)
-        # Tutte le sessioni chiuse; chi l'ha cambiata da qui resta dentro con una sessione nuova
-        set_at = state.db.set_password(user.username, await state.hasher.hash(body.new), False, user.label)
+        # Tutte le sessioni chiuse; chi l'ha cambiata da qui resta dentro con una sessione nuova. Se nel frattempo
+        # l'amministratore ha tolto l'accesso, dato un'altra password o eliminato l'utente, vale la sua scelta
+        new_hash = await state.hasher.hash(body.new)
+        set_at = state.db.set_password(user.username, new_hash, False, user.label, expected_set_at=password["set_at"])
+        if set_at is None:
+            raise HTTPException(status_code=409, detail="password cambiata o tolta nel frattempo: rientra")
         state.db.add_audit(user.label, "password dell'accesso diretto cambiata")
         response = JSONResponse({"ok": True})
         if direct:
@@ -1897,6 +1908,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="utente non trovato")
         temporary = temporary_password()
         set_at = state.db.set_password(target["username"], await state.hasher.hash(temporary), True, user.label)
+        if set_at is None:
+            raise HTTPException(status_code=404, detail="utente non trovato")
         state.login_limiter.unblock(target["username"])
         state.db.add_audit(
             user.label, "password provvisoria per l'accesso diretto", target["name"] or target["username"]
@@ -1975,7 +1988,7 @@ def _session_cookie_name(request: Request) -> str:
 
 
 def _set_session_cookie(response: Response, request: Request, token: str) -> None:
-    https = request.url.scheme == "https"
+    https = request.scope.get("scheme") == "https"
     response.set_cookie(
         _session_cookie_name(request),
         token,
@@ -1988,7 +2001,7 @@ def _set_session_cookie(response: Response, request: Request, token: str) -> Non
 
 
 def _clear_session_cookie(response: Response, request: Request) -> None:
-    https = request.url.scheme == "https"
+    https = request.scope.get("scheme") == "https"
     response.delete_cookie(_session_cookie_name(request), path="/", httponly=True, samesite="strict", secure=https)
 
 
@@ -1996,7 +2009,7 @@ def _same_origin(request: Request) -> bool:
     """Modifica partita da questa pagina: Origin (se c'è) uguale all'indirizzo dell'accesso diretto, e il browser non
     la segna come arrivata da un altro sito."""
     origin = request.headers.get("origin")
-    if origin is not None and origin != f"{request.url.scheme}://{request.headers.get('host', '')}":
+    if origin is not None and origin != f"{request.scope.get('scheme')}://{request.headers.get('host', '')}":
         return False
     return request.headers.get("sec-fetch-site", "same-origin") in ("same-origin", "none")
 
@@ -2031,7 +2044,14 @@ def _direct_session(request: Request) -> tuple[str, AppUser] | None:
 async def _direct_guard(request: Request, call_next):
     """Richieste dell'accesso diretto: solo con una sessione, modifiche solo dalla pagina dell'app."""
     state = request.app.state
-    path, method = request.url.path, request.method
+    # Il percorso che usa il router: request.url.path si ricostruisce anche dall'intestazione Host
+    path, method = request.scope["path"], request.method
+    problem = host_problem(request.headers.get("host", ""), request.scope.get("scheme") == "https")
+    if problem:
+        status = 400 if problem == "indirizzo non valido" else 421
+        if path.startswith("/api/"):
+            return _secure(JSONResponse({"detail": problem}, status_code=status), path)
+        return _secure(PlainTextResponse(problem[0].upper() + problem[1:], status_code=status), path)
     if not state.direct_settings.get("enabled"):
         return _secure(JSONResponse({"detail": "accesso diretto spento"}, status_code=403), path)
     if method not in ("GET", "HEAD") and (request.headers.get(REQUEST_HEADER) != "1" or not _same_origin(request)):
@@ -2065,7 +2085,8 @@ def _secure(response: Response, path: str) -> Response:
     )
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "no-referrer"
-    if path.startswith("/api/") and "cache-control" not in response.headers:
+    # Anche le foto: su un PC condiviso non restano nella cache del browser dopo l'uscita
+    if path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
     return response
 
