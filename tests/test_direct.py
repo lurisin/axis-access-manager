@@ -2,8 +2,9 @@
 delle richieste e server sulla porta propria."""
 
 import json
+import logging
 import socket
-import subprocess
+import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -350,7 +351,7 @@ def test_passwords_and_sessions_stay_out_of_backups(clients):
 def test_real_server_on_its_own_port(clients):
     ingress, _, app = clients
     status = enable(ingress)["status"]
-    assert status["running"] is True and status["https"] is False
+    assert status["running"] is True
     port = app.state.direct.bound_port
     base = f"http://127.0.0.1:{port}"
     assert httpx.get(f"{base}/", timeout=5).status_code == 200
@@ -360,54 +361,6 @@ def test_real_server_on_its_own_port(clients):
     assert off["status"]["running"] is False
     with pytest.raises(httpx.ConnectError):
         httpx.get(f"{base}/", timeout=2)
-
-
-def test_https_with_the_home_assistant_certificate(clients, tmp_path):
-    ingress, _, app = clients
-    app.state.direct.ssl_dir = tmp_path
-    missing = enable(ingress, https=True)
-    assert missing["status"]["running"] is False
-    assert "fullchain.pem non trovato" in missing["status"]["error"]
-    subprocess.run(
-        [
-            "openssl",
-            "req",
-            "-x509",
-            "-newkey",
-            "ec",
-            "-pkeyopt",
-            "ec_paramgen_curve:prime256v1",
-            "-nodes",
-            "-days",
-            "2",
-            "-subj",
-            "/CN=hotel.lan",
-            "-keyout",
-            str(tmp_path / "privkey.pem"),
-            "-out",
-            str(tmp_path / "fullchain.pem"),
-        ],
-        check=True,
-        capture_output=True,
-    )
-    status = enable(ingress, https=True)["status"]
-    assert status["running"] is True and status["https"] is True
-    port = app.state.direct.bound_port
-    page = httpx.get(f"https://127.0.0.1:{port}/", verify=False, timeout=5)
-    assert page.status_code == 200
-    staff(ingress)
-    temporary = ingress.post("/api/users/maria/password", headers=ADMIN).json()["password"]
-    response = httpx.post(
-        f"https://127.0.0.1:{port}/api/login",
-        json={"username": "maria", "password": temporary},
-        headers=SAFE,
-        verify=False,
-        timeout=5,
-    )
-    assert response.status_code == 200
-    cookie = response.headers["set-cookie"]
-    assert cookie.startswith("__Host-aam_session=") and "Secure" in cookie and "HttpOnly" in cookie
-    assert "SameSite=strict" in cookie
 
 
 def test_host_header_cannot_change_the_checked_path(clients):
@@ -440,24 +393,24 @@ def test_public_names_refused_over_http(clients):
 
 
 @pytest.mark.parametrize(
-    ("host", "https", "ok"),
+    ("host", "ok"),
     [
-        ("10.103.200.5:8100", False, True),
-        ("10.103.200.5", False, True),
-        ("[fd00::5]:8100", False, True),
-        ("ha.hotel.lan:8100", False, True),
-        ("homeassistant.local", False, True),
-        ("reception-pc", False, True),
-        ("accessi.hotel.it:8100", False, False),
-        ("accessi.hotel.it:8100", True, True),
-        ("hotel.lan/api/me?", True, False),
-        ("hotel.lan:8100 x", False, False),
-        ("user@hotel.lan", False, False),
-        ("", False, False),
+        ("10.103.200.5:8100", True),
+        ("10.103.200.5", True),
+        ("[fd00::5]:8100", True),
+        ("ha.hotel.lan:8100", True),
+        ("homeassistant.local", True),
+        ("HomeAssistant.LOCAL:8100", True),
+        ("reception-pc", True),
+        ("accessi.hotel.it:8100", False),
+        ("hotel.lan/api/me?", False),
+        ("hotel.lan:8100 x", False),
+        ("user@hotel.lan", False),
+        ("", False),
     ],
 )
-def test_host_problem(host, https, ok):
-    assert (host_problem(host, https) == "") is ok
+def test_host_problem(host, ok):
+    assert (host_problem(host) == "") is ok
 
 
 def test_request_body_limits(clients):
@@ -515,8 +468,10 @@ def test_limiter_counts_hidden_addresses_together():
     now = [0.0]
     limiter = LoginLimiter(clock=lambda: now[0])
     # PC dietro il gateway Docker (indirizzo non visibile): un nome utente diverso a ogni tentativo non basta
-    for i in range(20):
+    for i in range(direct.HIDDEN_IP_LIMIT - 1):
         limiter.attempt("", f"utente{i}")
+    assert limiter.blocked("", "un-altro") == 0
+    limiter.attempt("", "ultimo")
     assert limiter.blocked("", "un-altro") > 0
     assert limiter.blocked("10.0.0.9", "un-altro") == 0
 
@@ -594,3 +549,68 @@ def test_real_server_closes_slow_and_extra_connections(clients, monkeypatch):
     finally:
         for sock in sockets:
             sock.close()
+
+
+def test_right_password_on_the_fifth_attempt_leaves_no_block(clients):
+    ingress, site, app = clients
+    enable(ingress)
+    temporary = staff(ingress)
+    for _ in range(4):
+        assert login(site, "maria", "sbagliata-123").status_code == 401
+    # Il quinto tentativo arriva al limite, ma la password è giusta: il cambio obbligatorio deve poter partire
+    assert login(site, "maria", temporary).json()["must_change"] is True
+    response = site.post("/api/password", json={"current": temporary, "new": NEW_PASSWORD}, headers=SAFE)
+    assert response.status_code == 200, response.text
+    assert not app.state.login_limiter.blocked_until
+    assert not any("bloccato" in a["action"] for a in app.state.db.list_audit())
+
+
+def test_new_temporary_password_also_clears_the_shared_block(clients):
+    ingress, site, app = clients
+    enable(ingress)
+    temporary = staff(ingress)
+    # Nei test l'indirizzo non è visibile (come dietro il gateway Docker): 40 tentativi con nomi a caso bloccano tutti
+    for i in range(40):
+        login(site, f"nessuno{i}", "sbagliata-123")
+    assert login(site, "maria", temporary).status_code == 429
+    assert any(a["detail"] == "tutti i PC con indirizzo non visibile" for a in app.state.db.list_audit())
+    temporary = ingress.post("/api/users/maria/password", headers=ADMIN).json()["password"]
+    assert login(site, "maria", temporary).status_code == 200
+
+
+def test_direct_server_leaves_process_logging_alone(clients):
+    ingress, _, _ = clients
+    access = logging.getLogger("uvicorn.access")
+    marker = logging.NullHandler()
+    access.addHandler(marker)
+    try:
+        enable(ingress)
+        assert marker in access.handlers
+    finally:
+        access.removeHandler(marker)
+
+
+def test_real_server_closes_requests_whose_body_never_arrives(clients, monkeypatch):
+    ingress, _, app = clients
+    monkeypatch.setattr(direct, "HEADER_TIMEOUT", 0.2)
+    monkeypatch.setattr(direct, "BODY_TIMEOUT", 0.5)
+    enable(ingress)
+    port = app.state.direct.bound_port
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as stalled:
+        stalled.sendall(
+            b"POST /api/login HTTP/1.1\r\nHost: hotel.lan\r\nX-AAM-Request: 1\r\n"
+            b"Content-Type: application/json\r\nContent-Length: 100\r\n\r\n{"
+        )
+        started = time.monotonic()
+        assert stalled.recv(100) == b""
+        assert time.monotonic() - started < 3
+    # Una richiesta lenta ma che arriva passa
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as slow:
+        body = b'{"username": "maria", "password": "sbagliata-123"}'
+        slow.sendall(
+            b"POST /api/login HTTP/1.1\r\nHost: hotel.lan\r\nX-AAM-Request: 1\r\nConnection: close\r\n"
+            b"Content-Type: application/json\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n"
+        )
+        time.sleep(0.3)
+        slow.sendall(body)
+        assert slow.recv(20).startswith(b"HTTP/1.1 401")

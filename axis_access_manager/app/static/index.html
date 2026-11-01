@@ -907,7 +907,7 @@ async function api(path, options = {}) {
   }
   const data = await res.json().catch(() => ({}));
   // Accesso diretto: sessione chiusa o mai aperta, oppure password provvisoria ancora da cambiare
-  if (res.status === 401 && data?.login) { showAuth("login"); const err = new Error(data.detail); err.login = true; throw err; }
+  if ((res.status === 401 || res.status === 403) && data?.login) { showAuth("login"); const err = new Error(data.detail); err.login = true; throw err; }
   if (res.status === 403 && data?.must_change) { showAuth("change"); const err = new Error(data.detail); err.login = true; throw err; }
   if (!res.ok) {
     // Senza un messaggio dell'app l'errore viene da Home Assistant: l'add-on si sta riavviando o non risponde
@@ -927,9 +927,15 @@ async function api(path, options = {}) {
 // ---------- Accesso diretto: login, cambio password, uscita ----------
 // Al posto dell'app: login (sessione chiusa o mai aperta) o cambio della password provvisoria.
 // Subito dopo il login la provvisoria appena scritta non si chiede di nuovo
-function showAuth(mode, current = "") {
-  if (document.body.dataset.auth === mode) return;
+function showAuth(mode, current = "", message = "") {
+  // Già al suo posto (una richiesta periodica): non si rifà, a meno di una password da tenere o di un errore da mostrare
+  if (document.body.dataset.auth === mode && !current && !message) return;
   document.body.dataset.auth = mode;
+  // App nascosta: niente aggiornamenti in sottofondo né avvisi di modifiche non salvate alla ricarica
+  (store.timers || []).forEach(clearInterval);
+  store.timers = [];
+  pageGuard = null;
+  dash.editing = false;
   $$("dialog").forEach((d) => { if (d.open) d.close(); });
   $(".app").hidden = true;
   let box = $("#auth");
@@ -968,9 +974,13 @@ function showAuth(mode, current = "") {
         await api("api/password", {method: "POST", body: {current: password, new: fresh}});
       }
       location.reload();
-    } catch (err) { fail(err.message); }
-    finally { button.disabled = false; }
+    } catch (err) {
+      // La provvisoria tenuta in memoria non va più (cambiata da un'altra scheda): si chiede di nuovo
+      if (current && !err.login) showAuth("change", "", err.message);
+      else if (!err.login) fail(err.message);
+    } finally { button.disabled = false; }
   };
+  if (message) fail(message);
   if ($("#auth-out", box)) $("#auth-out", box).onclick = logout;
   $("input:not([hidden])", form)?.focus();
 }
@@ -1013,11 +1023,34 @@ async function userMenu() {
 async function changePassword() {
   const body = `${field("Password Attuale", `<input name="password" type="password" autocomplete="current-password" maxlength="512" required>`)}${passwordFields()}<p class="auth-err" id="pw-err" role="alert" hidden></p>`;
   const done = await modal({title: "Cambia Password", body, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+    const error = $("#pw-err", dlg);
+    error.hidden = true;
     const fresh = checkNewPassword(dlg);
     if (fresh === null) return false;
-    return (await run(() => api("api/password", {method: "POST", body: {current: $("[name=password]", dlg).value, new: fresh}}))) ? true : false;
+    try {
+      await api("api/password", {method: "POST", body: {current: $("[name=password]", dlg).value, new: fresh}});
+      return true;
+    } catch (err) {
+      // Nella finestra: un avviso in basso resterebbe dietro
+      error.textContent = cap(err.message);
+      error.hidden = false;
+      return false;
+    }
   }}]});
   if (done) toast("Password cambiata");
+}
+
+// Copia negli appunti; senza HTTPS (Home Assistant su http://) navigator.clipboard non c'è: si copia la selezione
+async function copyText(text, el) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch (err) { /* sotto, con la selezione */ }
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const selection = getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  try { return document.execCommand("copy"); } catch (err) { return false; }
 }
 
 // Finestra separata da #modal: l'errore può arrivare mentre un'altra finestra è aperta
@@ -4536,6 +4569,8 @@ async function viewSettings(el, sub) {
   const tabs = [["generale", "Generale"], ...(store.me.admin ? [["notifiche", "Notifiche"], ["backup", "Backup"], ["utenti", "Utenti"], ["accesso", "Accesso Diretto"], ["attivita", "Attività"]] : [])];
   const tab = tabs.some(([k]) => k === sub) ? sub : "generale";
   el.innerHTML = `${tabs.length > 1 ? `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impostazioni/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>` : ""}<div id="st-body">${loadingBox()}</div>`;
+  // Sul telefono le schede scorrono: quella aperta resta in vista
+  $(".segmented a.active", el)?.scrollIntoView({block: "nearest", inline: "nearest"});
   const body = $("#st-body");
   if (tab === "notifiche") return viewNotificationSettings(body);
   if (tab === "backup") return viewBackupSettings(body);
@@ -4640,7 +4675,8 @@ async function viewUsers(body) {
     const u = data.users.find((x) => x.username === (b.dataset.uEdit || b.dataset.uDel || b.dataset.uDirect));
     if (!u) return;
     if (b.dataset.uDirect) {
-      if (await directAccessBox(u, data.direct_enabled)) render();
+      // Sul proprio utente cambia anche il menu in basso: si ricarica, come per i permessi
+      if (await directAccessBox(u, data.direct_enabled)) { if (u.username === store.me.username) location.reload(); else render(); }
     } else if (b.dataset.uEdit) {
       if (await modal({title: "Permessi di " + (u.name || u.username), body: form(u), onOpen: bind, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: save(u)}]})) {
         if (u.username === store.me.username) location.reload(); else render();
@@ -4668,8 +4704,13 @@ async function directAccessBox(u, enabled) {
     if (d && !d.temporary && !await confirmBox("Nuova Password Provvisoria", `La password di <b>${esc(name)}</b> smette di valere e i suoi computer escono.`, "Crea")) return false;
     const result = await run(() => api(`${path}/password`, {method: "POST"}));
     if (!result) return false;
-    await modal({title: `Password Provvisoria di ${name}`, body: `<code class="temp-pass">${esc(result.password)}</code><p class="hint" style="margin:0">Si vede solo ora. Al primo accesso va cambiata. Scade ${esc(fmtDateTime(result.expires))}.</p>`,
-      actions: [{label: "Copia", onClick: async () => { try { await navigator.clipboard.writeText(result.password); toast("Copiata"); } catch (err) { toast("Copia non riuscita: selezionala e copiala", true); } return false; }}, {label: "Fatto", kind: "primary", value: true}]});
+    await modal({title: `Password Provvisoria di ${name}`, body: `<code class="temp-pass">${esc(result.password)}</code><p class="hint" style="margin:0">Si vede solo ora. Al primo accesso va cambiata. Scade ${esc(fmtDateTime(result.expires))}.</p><p class="hint" id="tp-copy" style="margin:6px 0 0" hidden></p>`,
+      actions: [{label: "Copia", onClick: async (dlg) => {
+        const note = $("#tp-copy", dlg);
+        note.textContent = await copyText(result.password, $(".temp-pass", dlg)) ? "Copiata." : "Copia non riuscita: selezionala e copiala.";
+        note.hidden = false;
+        return false;
+      }}, {label: "Fatto", kind: "primary", value: true}]});
     return true;
   }
   if (choice === "close") return Boolean(await run(() => api(`${path}/sessions`, {method: "DELETE"}), "Sessioni chiuse"));
@@ -4679,7 +4720,7 @@ async function directAccessBox(u, enabled) {
   return false;
 }
 
-// Impostazioni → Accesso Diretto: acceso o spento, HTTP o HTTPS con il certificato di Home Assistant, stato e sessioni
+// Impostazioni → Accesso Diretto: acceso o spento, stato e sessioni
 async function viewDirectAccess(body) {
   let data;
   try { data = await api("api/direct-access"); } catch (err) { body.innerHTML = errorBox("Accesso Diretto Non Leggibile", err); return; }
@@ -4687,27 +4728,21 @@ async function viewDirectAccess(body) {
   const s = data.settings, st = data.status;
   const row = (ic, title, desc, control) => `<div class="item"><div class="ev-icon k-accent">${icon(ic)}</div><div class="grow"><div class="title">${esc(title)}</div><div class="meta">${desc}</div></div>${control}</div>`;
   const select = (key, options, value) => `<select data-da="${key}" style="width:auto">${options.map(([v, label]) => `<option value="${v}" ${String(value) === v ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
-  const text = (key) => `<input data-da="${key}" value="${esc(s[key])}" maxlength="100" spellcheck="false" style="width:180px">`;
-  const state = !s.enabled ? `${statusDot("")} Spento` : st.running ? `${statusDot("ok")} In Ascolto · ${st.https ? "HTTPS" : "HTTP"}` : `${statusDot("err")} Non Avviato: ${esc(st.error || "errore")}`;
-  const scheme = s.https ? "https" : "http";
+  const state = !s.enabled ? `${statusDot("")} Spento` : st.running ? `${statusDot("ok")} In Ascolto` : `${statusDot("err")} Non Avviato: ${esc(st.error || "errore")}`;
   body.innerHTML = `<div class="bk-cols"><div class="card flush"><h2>${icon("lock")}Accesso Diretto</h2>
     <div class="list bk-set">
       ${row("lock", "Accesso Diretto", "Per il personale, dalla rete interna.", select("enabled", [["true", "Attivo"], ["false", "Spento"]], s.enabled))}
-      ${row("shield", "Protocollo", "HTTPS solo con un certificato in Home Assistant.", select("https", [["false", "HTTP"], ["true", "HTTPS"]], s.https))}
-      ${s.https ? row("card", "Certificato", "Nella cartella ssl di Home Assistant.", text("certfile")) + row("card", "Chiave", "Nella cartella ssl di Home Assistant.", text("keyfile")) : ""}
     </div></div>
     <div class="card"><h2>${icon("chip")}Stato</h2>${props([
       ["Stato", state],
-      ["Indirizzo", `<code>${scheme}://IP-di-Home-Assistant:porta</code>`],
+      ["Indirizzo", `<code>http://IP-di-Home-Assistant:porta</code>`],
       ["Porta nel Container", `<code>${st.port}</code>`],
       ["Utenti con Password", String(data.users)],
       ["Sessioni Aperte", `${data.sessions}${data.sessions ? ` <button type="button" class="small" id="da-close">Chiudi Tutte</button>` : ""}`],
     ])}<p class="hint">La porta si assegna nella scheda Rete dell'add-on. Solo rete interna. Una sessione resta aperta finché non si esce, o fino a ${data.unused_days} giorni senza uso.</p></div></div>`;
   paintIcons(body);
   const save = async () => {
-    const value = (key) => $(`[data-da="${key}"]`, body)?.value;
-    const next = {enabled: value("enabled") === "true", https: value("https") === "true", certfile: value("certfile") ?? s.certfile, keyfile: value("keyfile") ?? s.keyfile};
-    if (s.https !== next.https && data.sessions && !await confirmBox("Cambiare Protocollo?", "I computer collegati dovranno rientrare.", "Cambia")) { render(); return; }
+    const next = {enabled: $('[data-da="enabled"]', body).value === "true"};
     const result = await run(() => api("api/direct-access", {method: "PUT", body: next}));
     if (result && result.settings.enabled && !result.status.running) toast(`Accesso diretto non avviato: ${result.status.error}`, true);
     render();
@@ -4798,8 +4833,8 @@ async function start() {
   // partono anche se la prima pagina non si carica
   try { await render(); }
   finally {
-    setInterval(loadSummary, 5000);
-    setInterval(refreshView, 15000);
+    // Fermati da showAuth quando la sessione si chiude
+    if (!document.body.dataset.auth) store.timers = [setInterval(loadSummary, 5000), setInterval(refreshView, 15000)];
   }
 }
 start();

@@ -25,8 +25,8 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
+import h11
 import uvicorn
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
@@ -37,9 +37,8 @@ _LOGGER = logging.getLogger(__name__)
 DIRECT_PORT = 8100
 DIRECT_SCOPE = "aam_direct"
 SETTING = "direct_access"
-DEFAULTS = {"enabled": False, "https": False, "certfile": "fullchain.pem", "keyfile": "privkey.pem"}
-# Certificati di Home Assistant (map: ssl:ro)
-SSL_DIR = Path("/ssl")
+# Solo HTTP, sulla rete interna: niente certificati da gestire né avvisi del browser
+DEFAULTS = {"enabled": False}
 # Intestazione che la pagina manda con ogni modifica: un altro sito non può aggiungerla senza un preflight CORS, a cui
 # l'app non risponde
 REQUEST_HEADER = "X-AAM-Request"
@@ -58,7 +57,6 @@ MUST_CHANGE_SESSION = timedelta(hours=1)
 # La password provvisoria vale una settimana: poi l'amministratore ne crea un'altra
 TEMPORARY_VALID = timedelta(days=7)
 COOKIE = "aam_session"
-COOKIE_HTTPS = "__Host-aam_session"
 
 # Password: scrypt con N=2^14, r=8, p=5 (16 MiB, costo pari ai parametri minimi OWASP), sale di 16 byte
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2**14, 8, 5
@@ -99,6 +97,8 @@ TEMP_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 # tentativo sbagliato finché il conto resta sopra il limite ne fa scattare un altro. Il tentativo conta prima del
 # controllo della password: anche quelli in parallelo
 LIMITS = (("pair", 5, 15 * 60), ("ip", 20, 15 * 60), ("user", 30, 3600))
+# PC dietro il gateway Docker: un conto solo per tutti, con un limite più alto
+HIDDEN_IP_LIMIT = 40
 BLOCK_SECONDS = 15 * 60
 # Conti tenuti in memoria al massimo: oltre si dimenticano i più vecchi
 LIMITER_KEYS = 20000
@@ -106,17 +106,18 @@ LIMITER_KEYS = 20000
 HASH_WORKERS = 2
 HASH_QUEUE = 8
 
-# Connessioni al server dell'accesso diretto: HEADER_TIMEOUT secondi per mandare la richiesta, al massimo
-# MAX_CONNECTIONS_PER_IP aperte da un indirizzo (il gateway Docker è uno solo) e MAX_CONNECTIONS in tutto
+# Connessioni al server dell'accesso diretto: HEADER_TIMEOUT secondi per mandare le intestazioni, BODY_TIMEOUT per il
+# corpo, al massimo MAX_CONNECTIONS_PER_IP aperte da un indirizzo (il gateway Docker è uno solo) e MAX_CONNECTIONS in
+# tutto
 HEADER_TIMEOUT = 10
+BODY_TIMEOUT = 30
 MAX_CONNECTIONS_PER_IP = 100
 MAX_CONNECTIONS = 400
 # Corpo delle richieste: login e password piccoli, il resto (importazione CSV) fino a BODY_LIMIT
 BODY_LIMIT = 5 * 1024 * 1024
 SMALL_BODY_LIMIT = 16 * 1024
 SMALL_BODY_PATHS = ("/api/login", "/api/logout", "/api/password")
-# Nome nell'indirizzo: in HTTP solo un IP o un nome della rete interna (contro il DNS rebinding); in HTTPS lo
-# controlla il certificato
+# Nome nell'indirizzo: solo un IP o un nome della rete interna (contro il DNS rebinding)
 _HOST = re.compile(r"^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)(?::[0-9]{1,5})?$")
 LOCAL_SUFFIXES = (".local", ".lan", ".home", ".internal", ".home.arpa", ".localdomain", ".intranet", ".private")
 
@@ -252,7 +253,7 @@ class LoginLimiter:
             if kind == "pair":
                 keys.append(((kind, ip, username), limit, window))
             elif kind == "ip":
-                keys.append(((kind, ip), limit, window))
+                keys.append(((kind, ip), limit if ip else HIDDEN_IP_LIMIT, window))
             elif kind == "user":
                 keys.append(((kind, username), limit, window))
         return keys
@@ -288,8 +289,11 @@ class LoginLimiter:
         self._prune(now)
         return started
 
-    def success(self, ip: str, username: str) -> None:
-        """Password giusta: il tentativo non conta, né quelli sbagliati prima da questo indirizzo."""
+    def success(self, ip: str, username: str, started: list[tuple] | tuple = ()) -> None:
+        """Password giusta: il tentativo non conta, né quelli sbagliati prima da questo indirizzo. started: i blocchi
+        fatti scattare da questo stesso tentativo (contato prima del controllo), che non valgono."""
+        for key in started:
+            self.blocked_until.pop(key, None)
         for key, _, _ in self._keys(ip, username):
             times = self.failures.get(key)
             if times:
@@ -299,10 +303,13 @@ class LoginLimiter:
                     times.pop()
 
     def unblock(self, username: str) -> None:
-        """L'amministratore ha dato una password nuova: l'utente può riprovare subito."""
+        """L'amministratore ha dato una password nuova: l'utente può riprovare subito, anche se il blocco è quello di
+        tutti i PC dietro il gateway Docker."""
         for store in (self.failures, self.blocked_until):
             for key in [
-                k for k in store if (k[0] == "user" and k[1] == username) or (k[0] == "pair" and k[2] == username)
+                k
+                for k in store
+                if (k[0] == "user" and k[1] == username) or (k[0] == "pair" and k[2] == username) or k == ("ip", "")
             ]:
                 del store[key]
 
@@ -331,12 +338,10 @@ def client_ip(request) -> str:
     return host
 
 
-def host_problem(host: str, https: bool) -> str:
+def host_problem(host: str) -> str:
     """Perché il nome nell'indirizzo (intestazione Host) non va bene; vuoto se va bene."""
     if not host or not _HOST.match(host):
         return "indirizzo non valido"
-    if https:
-        return ""
     name = host[1 : host.index("]")] if host.startswith("[") else host.rsplit(":", 1)[0]
     try:
         ipaddress.ip_address(name)
@@ -436,13 +441,6 @@ def load_settings(db: Database) -> dict:
     return settings
 
 
-def cert_name_problem(name: str) -> str:
-    """Nome di un file della cartella ssl di Home Assistant: solo il nome, senza percorso."""
-    if not name or len(name) > 100 or "/" in name or "\\" in name or name.startswith(".") or "\x00" in name:
-        return "nome del file non valido: scrivi solo il nome, come fullchain.pem"
-    return ""
-
-
 # ---------- Server ----------
 
 
@@ -526,13 +524,20 @@ class _GuardedH11(H11Protocol):
 
     _header_timer: asyncio.TimerHandle | None = None
     _ip = ""
+    _deadline_cycle = None
+    _body_deadline = 0.0
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Niente righe per ogni richiesta (senza toccare il log del server principale)
+        self.access_log = False
 
     def connection_made(self, transport) -> None:  # type: ignore[override]
         super().connection_made(transport)
         counts = _connections_per_ip(self.server_state)
         self._ip = self.client[0] if self.client else ""
         counts[self._ip] = counts.get(self._ip, 0) + 1
-        if counts[self._ip] > MAX_CONNECTIONS_PER_IP or len(self.connections) > MAX_CONNECTIONS:
+        if counts[self._ip] > MAX_CONNECTIONS_PER_IP or sum(counts.values()) > MAX_CONNECTIONS:
             transport.close()
             return
         self._arm_header_timer()
@@ -564,9 +569,19 @@ class _GuardedH11(H11Protocol):
 
     def _header_timeout(self) -> None:
         self._header_timer = None
-        # Richiesta arrivata e non ancora finita: la sta gestendo l'app
         if self.cycle is not None and not self.cycle.response_complete:
-            return
+            # Corpo arrivato: la richiesta la sta gestendo l'app, anche se ci mette molto
+            if self.conn.their_state is not h11.SEND_BODY:
+                return
+            # Corpo non ancora arrivato tutto: al massimo BODY_TIMEOUT
+            now = self.loop.time()
+            if self._deadline_cycle is not self.cycle:
+                self._deadline_cycle = self.cycle
+                self._body_deadline = now + BODY_TIMEOUT
+            if now < self._body_deadline:
+                wait = min(HEADER_TIMEOUT, self._body_deadline - now)
+                self._header_timer = self.loop.call_later(wait, self._header_timeout)
+                return
         if not self.transport.is_closing():
             self.transport.close()
 
@@ -603,16 +618,13 @@ class _Server(uvicorn.Server):
 class DirectServer:
     """Avvia, ferma e riavvia il server dell'accesso diretto secondo le impostazioni."""
 
-    def __init__(self, app, port: int = DIRECT_PORT, ssl_dir: Path = SSL_DIR, log_level: str = "info") -> None:
+    def __init__(self, app, port: int = DIRECT_PORT) -> None:
         self.app = app
         self.port = port
-        self.ssl_dir = ssl_dir
-        self.log_level = log_level
         self._server: _Server | None = None
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self.running = False
-        self.https = False
         self.error = ""
         self.since = ""
         # Porta vera (con port=0 nei test la sceglie il sistema)
@@ -621,14 +633,13 @@ class DirectServer:
     def status(self) -> dict:
         return {
             "running": self.running,
-            "https": self.https,
             "error": self.error,
             "since": self.since or None,
             "port": self.port,
         }
 
     async def apply(self, settings: dict) -> None:
-        """Server acceso con le impostazioni date, o spento. Un errore (porta occupata, certificato) resta in error."""
+        """Server acceso con le impostazioni date, o spento. Un errore (porta occupata) resta in error."""
         async with self._lock:
             await self._stop()
             self.error = ""
@@ -646,20 +657,8 @@ class DirectServer:
             await self._stop()
 
     async def _start(self, settings: dict) -> None:
-        https = bool(settings.get("https"))
-        ssl_args = {}
-        if https:
-            for key in ("certfile", "keyfile"):
-                problem = cert_name_problem(settings.get(key) or "")
-                if problem:
-                    raise DirectError(problem)
-            certfile = self.ssl_dir / settings["certfile"]
-            keyfile = self.ssl_dir / settings["keyfile"]
-            for path in (certfile, keyfile):
-                if not path.is_file():
-                    raise DirectError(f"{path.name} non trovato nella cartella ssl di Home Assistant")
-            ssl_args = {"ssl_certfile": str(certfile), "ssl_keyfile": str(keyfile)}
         _raise_open_files()
+        # log_config e log_level None: il logging di tutto il processo (e del server di Ingress) resta com'è
         config = uvicorn.Config(
             mark_direct(self.app),
             lifespan="off",
@@ -667,12 +666,10 @@ class DirectServer:
             ws="none",
             proxy_headers=False,
             server_header=False,
-            access_log=False,
-            log_level=self.log_level,
+            log_config=None,
+            log_level=None,
             timeout_graceful_shutdown=3,
-            **ssl_args,
         )
-        # Errori del certificato qui, non dentro il server
         config.load()
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
@@ -694,9 +691,8 @@ class DirectServer:
             error = self._task.exception() if not self._task.cancelled() else None
             raise error or DirectError("server dell'accesso diretto fermato")
         self.running = True
-        self.https = https
         self.since = datetime.now(tz=UTC).isoformat(timespec="seconds")
-        _LOGGER.info("Accesso diretto in ascolto sulla porta %s (%s)", self.port, "HTTPS" if https else "HTTP")
+        _LOGGER.info("Accesso diretto in ascolto sulla porta %s", self.port)
 
     async def _serve(self, server: _Server, sock: socket.socket) -> None:
         try:

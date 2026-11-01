@@ -12,10 +12,9 @@ panel_icon: mdi:card-account-details
 panel_title: Controllo Accessi
 panel_admin: false
 homeassistant_api: true
-# Istantanee delle telecamere in Media → axis_access_manager. ssl: certificato di Home Assistant per l'accesso diretto
+# Istantanee delle telecamere in Media → axis_access_manager
 map:
   - media:rw
-  - ssl:ro
 # Accesso diretto per il personale (fuori da Home Assistant): chiusa finché non le si assegna una porta nella scheda
 # Rete dell'add-on, e va accesa anche nelle impostazioni dell'app
 ports:
