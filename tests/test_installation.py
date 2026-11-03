@@ -592,3 +592,82 @@ def test_aux_contact_follows_the_normal_state_of_the_input():
     assert monitor.door_contact("porta") == "Closed"
     monitor.aux_contacts = {"porta": ("1", "no")}
     assert monitor.door_contact("porta") == "Open"
+
+
+def test_generic_input_mode_no_nc_whatever_the_normal_state():
+    """Ingresso Generico: acceso secondo la modalità scelta nell'app, con lo stato normale dell'ingresso sul controller
+    di serie ("open") o cambiato ("closed", come IO2 in loco). Senza modalità: come lo dice il controller."""
+    from app.events import EventMonitor
+
+    monitor = EventMonitor(prefix="x")
+    for normal, active, circuit_closed in (
+        ("open", True, True),
+        ("open", False, False),
+        ("closed", True, False),
+        ("closed", False, True),
+    ):
+        monitor.io_normal["1"] = normal
+        monitor.io_ports["1"] = active
+        monitor.input_contacts = {}
+        assert monitor.input_active("1") is active
+        monitor.input_contacts = {"1": "no"}
+        assert monitor.input_active("1") is circuit_closed
+        monitor.input_contacts = {"1": "nc"}
+        assert monitor.input_active("1") is (not circuit_closed)
+    monitor.io_ports.pop("1")
+    assert monitor.input_active("1") is None
+
+
+def test_generic_input_saves_its_mode_and_keeps_the_old_reading(settings, controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    app = create_app(parse_options({}), allow_any_client=True, controller=controller, db_path=tmp_path / "s.db")
+    with TestClient(app) as client:
+        data = {"name": "A1210", "host": "10.0.0.5", "username": "root", "password": "x", "mqtt_topic_prefix": "acc"}
+        controller_id = client.post("/api/controllers", json=data).json()["id"]
+        state = app.state
+        monitor = state.monitor
+        # Come IO2 in loco: stato normale "closed" messo sul controller, contatto NC chiuso (porta chiusa)
+        controller.ports[0].update(state="closed", normalState="closed")
+        # Salvato prima della 0.26.0 (la migrazione toglie la modalità): come lo dice il controller
+        state.db.save_controller_input(controller_id, "IO1", {"name": "Contatto", "role": "alarm", "contact": ""})
+        body = {"name": "Contatto", "role": "alarm", "door": "", "contact": "", "supervised": False}
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        assert state.db.controller_inputs(controller_id)["IO1"]["contact"] == ""
+        assert monitor.input_contacts == {}
+        monitor.io_normal["0"], monitor.io_ports["0"] = "closed", False
+        inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
+        assert inputs["IO1"]["normal"] == "closed" and inputs["IO1"]["active"] is False
+        assert state.bridge.state()["ingressi"]["0"] == "OFF"
+        # NC scelto: circuito chiuso (attivo False con stato normale "closed") = spento, come prima
+        body["contact"] = "nc"
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        assert monitor.input_contacts == {"0": "nc"}
+        inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
+        assert inputs["IO1"]["active"] is False and state.bridge.state()["ingressi"]["0"] == "OFF"
+        body["contact"] = "no"
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        assert state.bridge.state()["ingressi"]["0"] == "ON"
+        # Mai scritto niente sul controller per l'Ingresso Generico
+        assert not [c for c in controller.calls if "port" in str(c[0]).lower()]
+        body["contact"] = "xx"
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 400
+
+
+def test_migration_leaves_old_generic_inputs_without_mode(tmp_path):
+    import sqlite3
+
+    from app.db import Database
+
+    path = tmp_path / "m.db"
+    db = Database(path)
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    db.save_controller_input(controller_id, "IO2", {"name": "Contatto", "role": "alarm", "contact": "no"})
+    db.save_controller_input(controller_id, "IO1", {"name": "Pulsante", "role": "rex", "contact": "no"})
+    db.close()
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA user_version = 7")
+    conn.commit()
+    conn.close()
+    db = Database(path)
+    inputs = db.controller_inputs(controller_id)
+    assert inputs["IO2"]["contact"] == "" and inputs["IO1"]["contact"] == "no"

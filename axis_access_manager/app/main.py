@@ -74,7 +74,15 @@ from .intercom import IntercomBridge, IntercomSettings
 from .live_events import LiveEvents
 from .lock_guard import CHECK_EVERY, LockGuard
 from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
-from .programming import CONTROLLER_INPUTS, DIRECTIONS, INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
+from .programming import (
+    CONTACTS,
+    CONTROLLER_INPUTS,
+    DIRECTIONS,
+    INPUT_ROLES,
+    REX_ROLES,
+    ProgrammingService,
+    is_rex_profile,
+)
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import ProfileNotWritten, RulesService
 from .service import (
@@ -1611,6 +1619,8 @@ def create_app(
         monitor = state.monitor
         for item in data.get("inputs", []):
             item["active"] = monitor.input_active(item["port"], item["role"] in REX_ROLES)
+            # Stato normale dell'ingresso sul controller: la modalità che un Ingresso Generico senza modalità propone
+            item["normal"] = monitor.io_normal.get(item["port"]) if item["port"] is not None else None
             door = item.get("door") or ""
             if item["role"] == "door_monitor" and door:
                 # Il contatto porta non manda Device/IO/Port: vale lo stato della porta (DoorPhysicalState)
@@ -2215,6 +2225,7 @@ async def _start_runtime(app: FastAPI) -> None:
     state.service.clock_offset = lambda: _controller_clock_offset(state)
     state.service.lock_guard = getattr(state, "lock_guard", None)
     state.monitor.aux_contacts = _aux_contacts(state)
+    state.monitor.input_contacts = _input_contacts(state)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
         _LOGGER.info("Motivi di %s dinieghi tradotti in italiano", translated)
     state.db.rename_controller_events("alloggiamento controller aperto", CASING_OPEN, state.service.controller_name())
@@ -2872,11 +2883,26 @@ def _aux_contacts(state) -> dict[str, tuple[str, str]]:
     return result
 
 
+def _input_contacts(state) -> dict[str, str]:
+    """Ingressi Generici del controller principale con la modalità scelta: numero I/O degli eventi → "no"/"nc"."""
+    primary = state.installation.primary
+    if not primary:
+        return {}
+    result = {}
+    for io, row in state.db.controller_inputs(primary["id"]).items():
+        port = CONTROLLER_INPUTS.get(io, ("", None))[1]
+        if row.get("role") == "alarm" and port is not None and row.get("contact") in CONTACTS:
+            result[port] = row["contact"]
+    return result
+
+
 async def _input_changed(state) -> None:
     """Dopo aver programmato un ingresso, o annullato la sua programmazione dallo Storico Modifiche."""
     state.monitor.aux_contacts = _aux_contacts(state)
-    # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
-    await state.bridge.publish_input_names()
+    state.monitor.input_contacts = _input_contacts(state)
+    # I nomi degli ingressi sono anche quelli delle entità di Home Assistant; con il Contatto Porta la porta non ha
+    # Allarme, Preallarme e Manomissione
+    await state.bridge.refresh_entities()
     await state.health.recheck_managed(state.installation.primary)
     # Contatto porta appena collegato o tolto: Contatto Porta subito giusto in Home Assistant
     state.state_keeper.request_full()

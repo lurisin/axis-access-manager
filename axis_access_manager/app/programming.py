@@ -45,13 +45,13 @@ INPUT_ROLES = {
     "intercom": "Relè Citofono",
     "door_monitor": "Sensore Porta",
     "door_contact": "Contatto Porta",
-    "alarm": "Ingresso di Allarme",
+    "alarm": "Ingresso Generico",
 }
 # Ruoli che aprono o sorvegliano una porta: vanno collegati a una porta del controller
 DOOR_ROLES = {"rex", "intercom", "door_monitor", "door_contact"}
 # Contatto porta: sul controller (Sensore Porta, DoorMonitor) o letto solo dall'app su un AUX (Contatto Porta). Con il
-# DoorMonitor il controller tiene la serratura alimentata finché la porta è aperta (prova in loco del 3/11, anche con
-# LockWhenDoorOpens); con il Contatto Porta la serratura resta sempre a tempo e la blocca l'app (vedi lock_guard)
+# DoorMonitor il controller tiene la porta Aperta a Tempo finché non si richiude (in loco il 3/11 un contatto scollegato
+# l'ha tenuta così 5 minuti); con il Contatto Porta la serratura si riblocca sempre a fine tempo (vedi lock_guard)
 CONTACT_ROLES = {"door_monitor", "door_contact"}
 # Ruoli possibili per ogni ingresso: il contatto porta e il REX sono del connettore Door, gli AUX sono liberi. Il
 # Contatto Porta solo sugli ingressi che mandano gli eventi Device/IO/Port
@@ -63,7 +63,10 @@ ALLOWED_ROLES = {
     "EXTERNAL_TAMPER": {"", "alarm"},
     "ALARM": {"", "door_contact", "alarm"},
 }
-CONTACTS = {"no": "Normalmente Aperto", "nc": "Normalmente Chiuso"}
+CONTACTS = {"no": "Normalmente Aperto (NO)", "nc": "Normalmente Chiuso (NC)"}
+# Ingresso Generico salvato prima della 0.26.0, senza modalità scelta: acceso come lo dice il controller (attivo, cioè
+# fuori dallo stato normale impostato sul controller), finché non si sceglie NO o NC
+FOLLOW_CONTROLLER = ""
 # Sensore Porta (DoorMonitor della porta, provato al banco): stato del contatto con la porta aperta e chiusa.
 # Normalmente Aperto: con la porta chiusa il contatto è aperto, aprendo la porta si chiude verso massa
 DOOR_MONITOR_VALUES = {
@@ -671,10 +674,13 @@ class ProgrammingService:
                 raise ServiceError(f"{INPUT_ROLES[role]}: scegli la porta")
             if door not in {d.get("token") for d in await self.controller.door_info_list()}:
                 raise ServiceError("porta non trovata sul controller")
-        # Contatto Porta: Normalmente Chiuso è il consigliato (un cavo tagliato risulta porta aperta)
-        contact = data.get("contact") or ("nc" if role == "door_contact" else "no")
-        if contact not in CONTACTS:
-            raise ServiceError("tipo di contatto non valido")
+        # Contatto Porta: Normalmente Chiuso è il consigliato (un cavo tagliato risulta porta aperta). Ingresso Generico
+        # senza modalità: come lo dice il controller (vedi FOLLOW_CONTROLLER)
+        contact = data.get("contact") or (
+            "nc" if role == "door_contact" else FOLLOW_CONTROLLER if role == "alarm" else "no"
+        )
+        if contact not in CONTACTS and not (role == "alarm" and contact == FOLLOW_CONTROLLER):
+            raise ServiceError("modalità dell'ingresso non valida")
         if role in CONTACT_ROLES:
             self._check_one_contact(controller_id, io, role, door)
         supervised = bool(data.get("supervised"))
@@ -682,10 +688,10 @@ class ProgrammingService:
             raise ServiceError("Sensore Porta: la linea supervisionata non è ancora disponibile")
         if role in ("alarm", "door_contact") and supervised:
             raise ServiceError(f"{INPUT_ROLES[role]}: la linea supervisionata non è disponibile")
-        if role not in REX_ROLES and role not in CONTACT_ROLES:
-            # Per Non Usato e Ingresso di Allarme l'app non scrive niente sul controller: contatto e linea
-            # supervisionata non avrebbero effetto, e Home Assistant mostra l'ingresso com'è. Il Contatto Porta
-            # non scrive niente ma il tipo di contatto serve all'app per sapere quando la porta è aperta
+        if role not in REX_ROLES and role not in CONTACT_ROLES and role != "alarm":
+            # Per Non Usato l'app non scrive niente sul controller: contatto e linea supervisionata non avrebbero
+            # effetto. Contatto Porta e Ingresso Generico non scrivono niente, ma la modalità NO/NC serve all'app per
+            # sapere quando la porta è aperta e quando l'ingresso è acceso
             contact, supervised = "no", False
         name = " ".join(normalize_text(data.get("name"), 64, "nome").split())
         values = {

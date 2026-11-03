@@ -248,6 +248,8 @@ class EventMonitor:
     door_contacts: dict[str, bool] = field(default_factory=dict)
     # Contatto porta su un ingresso AUX (ruolo Contatto Porta, letto solo dall'app): porta → (numero I/O, "no"/"nc")
     aux_contacts: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # Ingressi Generici con la modalità scelta nell'app: numero I/O → "no"/"nc" (senza: come lo dice il controller)
+    input_contacts: dict[str, str] = field(default_factory=dict)
     # Il controller risponde all'app (controllo periodico delle API): None finché non si sa. Quando non risponde lo
     # stato qui sopra si svuota, e app e Home Assistant lo mostrano sconosciuto invece dell'ultimo valore
     reachable: bool | None = None
@@ -395,9 +397,23 @@ class EventMonitor:
         pressione (il REX scatta 40-50 ms dopo il passaggio a 0), e 0 dall'avvio fino alla prima pressione. La
         lettura con le API (getPorts: closed con normalState open, cioè 1) è giusta da subito e vale come un cambio."""
         value = self.io_ports.get(port) if port is not None else None
-        if value is None or not pushbutton:
+        if value is None:
+            return None
+        if port in self.input_contacts:
+            return self._contact_on(port, self.input_contacts[port])
+        if not pushbutton:
             return value
         return port in self.io_changed and not value
+
+    def _contact_on(self, port: str, contact: str) -> bool | None:
+        """Contatto acceso secondo la modalità scelta nell'app, qualunque sia lo stato normale dell'ingresso sul
+        controller: Normalmente Aperto acceso con il circuito chiuso, Normalmente Chiuso con il circuito aperto."""
+        active = self.io_ports.get(port)
+        if active is None:
+            return None
+        # Attivo vuol dire fuori dallo stato normale dell'ingresso: con quello di serie ("open") è il circuito chiuso
+        closed = active if self.io_normal.get(port, "open") == "open" else not active
+        return closed if contact == "no" else not closed
 
     def _track_state(self, event: Event) -> None:
         """Stati che Home Assistant mostra come sensori acceso/spento."""
@@ -437,14 +453,9 @@ class EventMonitor:
         aux = self.aux_contacts.get(token)
         if aux is None:
             return self.door_physical.get(token)
-        port, contact = aux
-        active = self.io_ports.get(port)
-        if active is None:
-            return None
-        # Attivo vuol dire fuori dallo stato normale dell'ingresso: con quello di serie ("open") è il circuito chiuso.
         # Normalmente Aperto: il contatto si chiude quando la porta si apre; Normalmente Chiuso: si apre
-        closed = active if self.io_normal.get(port, "open") == "open" else not active
-        return "Open" if closed == (contact == "no") else "Closed"
+        is_open = self._contact_on(*aux)
+        return None if is_open is None else "Open" if is_open else "Closed"
 
     def contact_configured(self, token: str) -> bool | None:
         """La porta ha un contatto porta: su un AUX o sul controller (None se la configurazione non è stata letta)."""

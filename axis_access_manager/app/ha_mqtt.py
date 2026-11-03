@@ -185,6 +185,8 @@ class HaBridge:
         # Configurazioni conservate dal broker, ricevute a ogni connessione: si svuotano quelle di entità tolte
         monitor.extra_subscriptions[f"{DISCOVERY_PREFIX}/+/{NODE_ID}/+/config"] = self._on_discovery_config
         self._tasks: set[asyncio.Task] = set()
+        # Allarme, Preallarme e Manomissione tolte da Home Assistant (porte con il Contatto Porta): (componente, id)
+        self._hidden: set[tuple[str, str]] = set()
         self._midnight: asyncio.Task | None = None
 
     @property
@@ -254,8 +256,9 @@ class HaBridge:
             "availability_mode": "all",
         }
 
-    def _entities(self) -> list[tuple[str, str, dict]]:
-        """(componente, id oggetto, configurazione) di ogni entità."""
+    def _entities(self, all_conditions: bool = False) -> list[tuple[str, str, dict]]:
+        """(componente, id oggetto, configurazione) di ogni entità. all_conditions: anche Allarme, Preallarme e
+        Manomissione delle porte con il Contatto Porta, che non si pubblicano (vedi _shows_conditions)."""
         common = {"device": self._device()}
         state = {"state_topic": self.state_topic}
         controller = self._availability("controller")
@@ -438,7 +441,9 @@ class HaBridge:
                     },
                 )
             )
-            for key, (name, device_class, icon) in DOOR_CONDITIONS.items():
+            for key, (name, device_class, icon) in (
+                DOOR_CONDITIONS.items() if all_conditions or self._shows_conditions(door["door_token"]) else ()
+            ):
                 path = f"value_json.condizioni['{door['door_token']}'].{key}"
                 entities.append(
                     (
@@ -501,8 +506,13 @@ class HaBridge:
             "json_attributes_template": f"{{{{ {attributes} | tojson }}}}",
         }
 
+    def _shows_conditions(self, token: str) -> bool:
+        """Allarme, Preallarme e Manomissione vengono dal contatto porta del controller (DoorMonitor): una porta con il
+        Contatto Porta letto dall'app non li ha mai, e in Home Assistant non si creano."""
+        return token not in self.monitor.aux_contacts
+
     def _all_object_ids(self) -> list[tuple[str, str]]:
-        ids = [(c, o) for c, o, _ in self._entities()]
+        ids = [(c, o) for c, o, _ in self._entities(all_conditions=True)]
         for extra in (("button", "apri_porta"), ("button", "apri_porta_a_lungo")):
             if extra not in ids:
                 ids.append(extra)
@@ -515,6 +525,7 @@ class HaBridge:
                 await client.publish(self._config_topic(component, object_id), b"", qos=1, retain=True)
             return
         configured = {(c, o) for c, o, _ in self._entities()}
+        self._hidden = {(c, o) for c, o, _ in self._entities(all_conditions=True)} - configured
         for component, object_id in self._all_object_ids():
             if (component, object_id) not in configured:
                 await client.publish(self._config_topic(component, object_id), b"", qos=1, retain=True)
@@ -572,14 +583,22 @@ class HaBridge:
             except Exception:
                 _LOGGER.exception("Stato di mezzanotte non pubblicato in Home Assistant")
 
-    async def publish_input_names(self) -> None:
-        """Ripubblica solo le entità degli ingressi, con il nome scelto nell'app: le altre restano com'erano."""
+    async def refresh_entities(self) -> None:
+        """Dopo un cambio degli ingressi: ripubblica le entità degli ingressi (nome scelto nell'app, classe), e toglie o
+        rimette Allarme, Preallarme e Manomissione delle porte che hanno appena avuto o perso il Contatto Porta. Le
+        altre restano com'erano: lo stato della porta non passa da "sconosciuto"."""
         if not self.enabled:
             return
+        current = {(c, o): config for c, o, config in self._entities()}
+        every = {(c, o): config for c, o, config in self._entities(all_conditions=True)}
+        hidden = set(every) - set(current)
+        for component, object_id in sorted(hidden - self._hidden):
+            await self.monitor.publish(self._config_topic(component, object_id), b"", retain=True)
         ids = {object_id for object_id, _, _ in IO_INPUTS.values()}
-        for component, object_id, config in self._entities():
-            if object_id in ids:
+        for (component, object_id), config in current.items():
+            if object_id in ids or (component, object_id) in self._hidden:
                 await self.monitor.publish(self._config_topic(component, object_id), json.dumps(config), retain=True)
+        self._hidden = hidden
 
     @staticmethod
     def _config_topic(component: str, object_id: str) -> str:

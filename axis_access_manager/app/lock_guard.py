@@ -5,9 +5,10 @@ il controller tiene la porta Aperta a Tempo finché non si richiude, e in loco i
 "aperta" ha tenuto la serratura alimentata 5 minuti.
 
 Qui l'app guarda le porte Aperte a Tempo e le blocca (tdc:LockDoor, mai uno sblocco):
-- quando il contatto porta vede la porta aprirsi durante l'apertura a tempo (prima chiusa, poi aperta): la serratura
-  non serve più. Una porta già aperta al consenso (materiale che entra, porta che si sta chiudendo) non si blocca
-  per questo: chi ha passato la tessera deve poterla spingere, e la serratura si riblocca a fine tempo;
+- solo con cut_on_open (per ora spento, vedi LockGuard): quando il contatto porta vede la porta aprirsi durante
+  l'apertura a tempo (prima chiusa, poi aperta): la serratura non serve più. Una porta già aperta al consenso
+  (materiale che entra, porta che si sta chiudendo) non si blocca per questo: chi ha passato la tessera deve poterla
+  spingere, e la serratura si riblocca a fine tempo;
 - se la porta resta Aperta a Tempo oltre il suo tempo più MARGIN secondi: è un guasto (contatto, configurazione,
   controller), e finisce nel registro come allarme "riblocco forzato".
 Senza eventi in diretta (solo letture ogni 10 s) lo stato in memoria può essere vecchio: per le porte Aperte a Tempo
@@ -78,9 +79,16 @@ class _Grant:
     door_open: bool | None
 
 
+def _no_contact(door: str) -> bool | None:
+    return None
+
+
 class LockGuard:
-    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic, cut_on_open: bool = False) -> None:
         self.clock = clock
+        # Blocco quando il contatto vede la porta aprirsi: spento finché non è provato in loco che tdc:LockDoor
+        # interrompe l'apertura a tempo senza effetti sulle aperture dopo. Resta la rete di sicurezza sul tempo
+        self.cut_on_open = cut_on_open
         self.wake = asyncio.Event()
         self.accesses: dict[str, _Access] = {}
         self.grants: dict[str, _Grant] = {}
@@ -208,14 +216,16 @@ class LockGuard:
             return CHECK_EVERY
         await self._read_times(controller)
         wait = CHECK_EVERY
+        # Senza il blocco all'apertura il contatto non serve
+        read_contact = contact_open if self.cut_on_open else _no_contact
         for door in accessed:
             if not live and not await self._still_accessed(door, monitor, controller, log_alarm, changed):
                 continue
-            access = self._track(door, contact_open(door), live, self.clock())
+            access = self._track(door, read_contact(door), live, self.clock())
             if self._reason(door, access, self.clock()):
                 async with door_lock(door):
                     # Mentre si aspettava (apertura dall'app in corso) può essere arrivato un consenso nuovo
-                    access = self._track(door, contact_open(door), live, self.clock())
+                    access = self._track(door, read_contact(door), live, self.clock())
                     reason = self._reason(door, access, self.clock())
                     if reason:
                         await self._lock(door, access, reason, monitor, controller, log_alarm, changed)

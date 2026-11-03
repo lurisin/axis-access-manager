@@ -72,7 +72,7 @@ class Controller:
 class Setup:
     def __init__(self, mode="Accessed", contact=None, times=None):
         self.clock = Clock()
-        self.guard = LockGuard(clock=self.clock)
+        self.guard = LockGuard(clock=self.clock, cut_on_open=True)
         self.monitor = EventMonitor(prefix="axis")
         self.monitor.door_modes["porta"] = mode
         self.controller = Controller(self.clock, mode, times)
@@ -216,6 +216,22 @@ def test_door_opened_during_access_locks_without_alarm():
     assert s.lock_calls() == [("lock_door", "porta")]
     assert s.alarms == []
     assert s.monitor.door_modes["porta"] == "Locked"
+
+
+def test_cut_on_open_is_off_by_default():
+    """Finché il blocco all'apertura non è provato in loco: la porta che si apre resta a tempo, vale solo il tempo."""
+    s = Setup(contact=False)
+    s.guard.cut_on_open = False
+    s.guard.granted("porta", door_open=False)
+    s.run()
+    s.run(2)
+    s.contact["porta"] = True
+    s.run(OPEN_GRACE)
+    s.run(1)
+    assert s.lock_calls() == [] and s.alarms == []
+    s.run(2 + MARGIN)
+    assert s.lock_calls() == [("lock_door", "porta")] and s.alarms == [("porta", FORCED)]
+    assert LockGuard().cut_on_open is False
 
 
 def test_door_opened_right_after_the_grant():

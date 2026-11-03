@@ -291,6 +291,12 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
             ),
         ],
     ),
+    (
+        8,
+        "Ingressi Generici senza modalità NO/NC: restano come li dice il controller",
+        # Prima della 0.26.0 la modalità degli ingressi di allarme non contava e si salvava sempre "no"
+        ["UPDATE controller_inputs SET contact = '' WHERE role = 'alarm'"],
+    ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 SETTING_APP_VERSION = "app_version"
