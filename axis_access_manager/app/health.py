@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .db import Database, now_iso
-from .programming import CONTROLLER_INPUTS, input_problem, rex_policies, rex_uncovered, unlinked_points
+from .programming import CONTACT_ROLES, CONTROLLER_INPUTS, input_problem, rex_policies, rex_uncovered, unlinked_points
 from .vapix import VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -310,7 +310,7 @@ class HealthMonitor:
 
         assigned = door_configs = None
         # Sensore porta: come la pagina del controller, collegamento e configurazione della porta
-        if any(row.get("role") == "door_monitor" for row in rows.values()):
+        if any(row.get("role") in CONTACT_ROLES for row in rows.values()):
             try:
                 assigned = (await client.list_io())[1]
                 door_configs = await client.list_door_configurations()

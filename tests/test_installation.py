@@ -448,3 +448,261 @@ def test_schema_shows_door_contact_and_last_button_press(settings, controller, t
         state.monitor.door_physical["porta"] = "Unknown"
         inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
         assert inputs["DPS"]["door_open"] is None
+
+
+async def test_aux_door_contact_is_only_read_by_the_app(db, controller):
+    """Contatto Porta su un AUX: il controller non lo usa per la porta (serratura sempre a tempo), nessuna scrittura."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    for io in ("DPS", "REX", "EXTERNAL_TAMPER"):
+        with pytest.raises(ServiceError, match="non disponibile"):
+            await service.update_input(io, {"role": "door_contact", "door": "porta"}, "admin")
+    with pytest.raises(ServiceError, match="linea supervisionata"):
+        await service.update_input("IO2", {"role": "door_contact", "door": "porta", "supervised": True}, "admin")
+    with pytest.raises(ServiceError, match="scegli la porta"):
+        await service.update_input("IO2", {"role": "door_contact"}, "admin")
+
+    calls = len(controller.calls)
+    saved = await service.update_input(
+        "IO2", {"name": "", "role": "door_contact", "door": "porta", "contact": "nc"}, "admin"
+    )
+    assert (saved["name"], saved["role"], saved["door_token"], saved["contact"]) == (
+        "Contatto Porta",
+        "door_contact",
+        "porta",
+        "nc",
+    )
+    assert controller.calls[calls:] == [] and "IO2" not in controller.io_assignments
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config == {"Lock.Type": "FailSecure"}
+    inputs = {i["io"]: i for i in (await service.read())["inputs"]}
+    assert "door_contact" in inputs["IO1"]["roles"] and "door_contact" not in inputs["DPS"]["roles"]
+
+    # Un contatto per porta: né un secondo AUX né il Sensore Porta sul controller
+    with pytest.raises(ServiceError, match="ha già un contatto"):
+        await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+    with pytest.raises(ServiceError, match="ha già un contatto"):
+        await service.update_input("DPS", {"role": "door_monitor", "door": "porta"}, "admin")
+    # Su un'altra porta va bene
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta2"}, "admin")
+
+    # Dal Sensore Porta al Contatto Porta: il DoorMonitor si toglie dalla porta
+    await service.update_input("IO1", {"role": ""}, "admin")
+    await service.update_input("IO2", {"role": ""}, "admin")
+    await service.update_input("DPS", {"role": "door_monitor", "door": "porta", "contact": "no"}, "admin")
+    await service.update_input("DPS", {"role": ""}, "admin")
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta", "contact": "no"}, "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "None"
+
+
+def test_aux_door_contact_in_home_assistant_and_door_state(settings, controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    app = create_app(parse_options({}), allow_any_client=True, controller=controller, db_path=tmp_path / "s.db")
+    with TestClient(app) as client:
+        data = {"name": "A1210", "host": "10.0.0.5", "username": "root", "password": "x", "mqtt_topic_prefix": "acc"}
+        controller_id = client.post("/api/controllers", json=data).json()["id"]
+        door = {"door_token": "porta", "name": "Scala"}
+        assert client.post(f"/api/controllers/{controller_id}/doors", json=door).status_code == 200
+        body = {"name": "", "role": "door_contact", "door": "porta", "contact": "nc", "supervised": False}
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        state = app.state
+        monitor = state.monitor
+        assert monitor.aux_contacts == {"porta": ("0", "nc")}
+        assert monitor.contact_configured("porta") is True
+        # Normalmente Chiuso: ingresso attivo (circuito chiuso) = porta chiusa
+        monitor.io_ports["0"] = True
+        assert monitor.door_contact("porta") == "Closed"
+        monitor.io_ports["0"] = False
+        assert monitor.door_contact("porta") == "Open"
+        inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
+        assert inputs["IO1"]["door_open"] is True
+        ha = state.bridge.state()
+        assert ha["contatti"]["porta"] == "ON" and ha["ingressi"]["0"] == "ON"
+        assert ha["disponibilita"]["contatti"]["porta"] == ("online" if monitor.reachable else "offline")
+        # Il controller senza contatto porta (DoorMonitor) non cambia niente: vale l'AUX
+        monitor.door_contacts["porta"] = False
+        monitor.door_physical.pop("porta", None)
+        assert monitor.door_contact("porta") == "Open" and monitor.contact_configured("porta") is True
+        # Tolto il ruolo: di nuovo il contatto porta del controller
+        body["role"] = ""
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        assert monitor.aux_contacts == {} and monitor.contact_configured("porta") is False
+
+
+async def test_aux_door_contact_and_door_monitors_outside_the_app(db, controller):
+    """Revisione: un Sensore Porta messo a mano (o tornato con un ripristino) e utenti dell'AUX messi fuori dall'app
+    lasciavano il controller a usare il contatto per la porta."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    controller.door_configs["porta"]["Configuration"] += [{"Name": "DoorMonitor.Type", "Value": "Standard"}]
+    monitor = [
+        {"Type": "doorcontrol", "token": "porta", "Usage": u, "MultiIo": False}
+        for u in ("DoorOpenMonitor", "DoorClosedMonitor")
+    ]
+    await controller.set_io_assignment("DPS", "in:pu/gnd", monitor)
+    with pytest.raises(ServiceError, match=r"usa il Sensore Porta \(Ingresso Contatto Porta\)"):
+        await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+
+    # DoorMonitor rimasto senza ingresso, e un REX messo a mano sull'AUX: il Contatto Porta li toglie
+    await controller.set_io_assignment("DPS", "in:pu/gnd", [])
+    rex = [{"Type": "idpoint", "token": "a-mano", "Usage": "REX", "MultiIo": False}]
+    await controller.set_io_assignment("IO1", "inout:pu/gnd", rex)
+    assert service_problem(await service._input_problem("IO1", {"role": "door_contact", "door_token": "porta"}))
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "None"
+    assert controller.io_assignments["IO1"]["IoUser"] == []
+    row = db.controller_inputs(controller_id)["IO1"]
+    assert row["contact"] == "nc" and await service._input_problem("IO1", row) == ""
+
+
+def service_problem(text: str) -> bool:
+    return text in ("sul controller l'ingresso è usato da altro", "sul controller la porta usa ancora il Sensore Porta")
+
+
+async def test_undo_keeps_one_contact_per_door(db, controller):
+    """Revisione: annullare "Sensore Porta → Non Usato" dopo aver messo il Contatto Porta rimetteva il DoorMonitor."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    await service.update_input("DPS", {"role": "door_monitor", "door": "porta", "contact": "no"}, "admin")
+    await service.update_input("DPS", {"role": ""}, "admin")
+    removed = db.list_controller_changes(controller_id)[0]
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+    with pytest.raises(ServiceError, match="ha già un contatto"):
+        await service.undo(removed["id"], "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "None"
+
+
+def test_aux_contact_follows_the_normal_state_of_the_input():
+    """Lo stato normale dell'ingresso (getPorts normalState) si può cambiare sul controller: in loco IO2 è "closed"."""
+    from app.events import EventMonitor, StateSnapshot
+
+    monitor = EventMonitor(prefix="x")
+    monitor.aux_contacts = {"porta": ("1", "nc")}
+    # Stato normale di serie ("open"): attivo = circuito chiuso = porta chiusa con un contatto NC
+    monitor.io_ports["1"] = True
+    assert monitor.door_contact("porta") == "Closed"
+    # Stato normale "closed": attivo = circuito aperto = porta aperta con un contatto NC
+    snapshot = StateSnapshot(at="2026-11-03T15:00:00+00:00", io={"1": True}, io_normal={"1": "closed"})
+    monitor.apply_snapshot(snapshot, 0)
+    assert monitor.door_contact("porta") == "Open"
+    monitor.io_ports["1"] = False
+    assert monitor.door_contact("porta") == "Closed"
+    monitor.aux_contacts = {"porta": ("1", "no")}
+    assert monitor.door_contact("porta") == "Open"
+    # Revisione: lo stato normale cambiato sul controller cambia la lettura, e va detto a Home Assistant
+    snapshot = StateSnapshot(at="2026-11-03T15:01:00+00:00", io={"1": False}, io_normal={"1": "open"})
+    assert monitor.apply_snapshot(snapshot, 0) is True
+    assert monitor.door_contact("porta") == "Closed"
+    snapshot = StateSnapshot(at="2026-11-03T15:02:00+00:00", io={"1": False}, io_normal={"1": "open"})
+    assert monitor.apply_snapshot(snapshot, 0) is False
+
+
+async def test_undo_back_to_aux_contact_keeps_a_door_monitor_used_elsewhere(db, controller):
+    """Revisione: annullare "Contatto Porta → Non Usato" toglieva il Sensore Porta messo poi a mano sul DPS."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+    await service.update_input("IO1", {"role": ""}, "admin")
+    removed = db.list_controller_changes(controller_id)[0]
+    controller.door_configs["porta"]["Configuration"] = [
+        c for c in controller.door_configs["porta"]["Configuration"] if c["Name"] != "DoorMonitor.Type"
+    ] + [{"Name": "DoorMonitor.Type", "Value": "Standard"}]
+    users = [
+        {"Type": "doorcontrol", "token": "porta", "Usage": u, "MultiIo": False}
+        for u in ("DoorOpenMonitor", "DoorClosedMonitor")
+    ]
+    await controller.set_io_assignment("DPS", "in:pu/gnd", users)
+    with pytest.raises(ServiceError, match="usa il Sensore Porta"):
+        await service.undo(removed["id"], "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "Standard"
+
+
+def test_generic_input_mode_no_nc_whatever_the_normal_state():
+    """Ingresso Generico: acceso secondo la modalità scelta nell'app, con lo stato normale dell'ingresso sul controller
+    di serie ("open") o cambiato ("closed", come IO2 in loco). Senza modalità: come lo dice il controller."""
+    from app.events import EventMonitor
+
+    monitor = EventMonitor(prefix="x")
+    for normal, active, circuit_closed in (
+        ("open", True, True),
+        ("open", False, False),
+        ("closed", True, False),
+        ("closed", False, True),
+    ):
+        monitor.io_normal["1"] = normal
+        monitor.io_ports["1"] = active
+        monitor.input_contacts = {}
+        assert monitor.input_active("1") is active
+        monitor.input_contacts = {"1": "no"}
+        assert monitor.input_active("1") is circuit_closed
+        monitor.input_contacts = {"1": "nc"}
+        assert monitor.input_active("1") is (not circuit_closed)
+    monitor.io_ports.pop("1")
+    assert monitor.input_active("1") is None
+
+
+def test_generic_input_saves_its_mode_and_keeps_the_old_reading(settings, controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    app = create_app(parse_options({}), allow_any_client=True, controller=controller, db_path=tmp_path / "s.db")
+    with TestClient(app) as client:
+        data = {"name": "A1210", "host": "10.0.0.5", "username": "root", "password": "x", "mqtt_topic_prefix": "acc"}
+        controller_id = client.post("/api/controllers", json=data).json()["id"]
+        state = app.state
+        monitor = state.monitor
+        # Come IO2 in loco: stato normale "closed" messo sul controller, contatto NC chiuso (porta chiusa)
+        controller.ports[0].update(state="closed", normalState="closed")
+        # Salvato prima della 0.26.0 (la migrazione toglie la modalità): come lo dice il controller
+        state.db.save_controller_input(controller_id, "IO1", {"name": "Contatto", "role": "alarm", "contact": ""})
+        body = {"name": "Contatto", "role": "alarm", "door": "", "contact": "", "supervised": False}
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        assert state.db.controller_inputs(controller_id)["IO1"]["contact"] == ""
+        assert monitor.input_contacts == {}
+        monitor.io_normal["0"], monitor.io_ports["0"] = "closed", False
+        inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
+        assert inputs["IO1"]["normal"] == "closed" and inputs["IO1"]["active"] is False
+        assert state.bridge.state()["ingressi"]["0"] == "OFF"
+        # NC scelto: circuito chiuso (attivo False con stato normale "closed") = spento, come prima
+        body["contact"] = "nc"
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        assert monitor.input_contacts == {"0": "nc"}
+        inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
+        assert inputs["IO1"]["active"] is False and state.bridge.state()["ingressi"]["0"] == "OFF"
+        body["contact"] = "no"
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        assert state.bridge.state()["ingressi"]["0"] == "ON"
+        # Mai scritto niente sul controller per l'Ingresso Generico
+        assert not [c for c in controller.calls if "port" in str(c[0]).lower()]
+        body["contact"] = "xx"
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 400
+
+
+def test_migration_leaves_old_generic_inputs_without_mode(tmp_path):
+    import sqlite3
+
+    from app.db import Database
+
+    path = tmp_path / "m.db"
+    db = Database(path)
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    db.save_controller_input(controller_id, "IO2", {"name": "Contatto", "role": "alarm", "contact": "no"})
+    db.save_controller_input(controller_id, "IO1", {"name": "Pulsante", "role": "rex", "contact": "no"})
+    old = {"name": "Contatto", "role": "alarm", "door_token": "", "contact": "no", "supervised": False}
+    db.add_controller_change("admin", controller_id, "input", "IO2", "IO2", {**old, "name": "Ingresso AUX 2"}, old)
+    rex = {"name": "Pulsante", "role": "rex", "door_token": "porta", "contact": "no", "supervised": False}
+    db.add_controller_change("admin", controller_id, "input", "IO1", "IO1", {**rex, "role": ""}, rex)
+    db.close()
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA user_version = 7")
+    conn.commit()
+    conn.close()
+    db = Database(path)
+    inputs = db.controller_inputs(controller_id)
+    assert inputs["IO2"]["contact"] == "" and inputs["IO1"]["contact"] == "no"
+    # Anche nello Storico Modifiche: Annulla non rimette "no" (revisione)
+    changes = {c["token"]: db.get_controller_change(c["id"]) for c in db.list_controller_changes(controller_id)}
+    assert changes["IO2"]["before"]["contact"] == "" and changes["IO2"]["after"]["contact"] == ""
+    assert changes["IO1"]["before"]["contact"] == "no" and changes["IO1"]["after"]["contact"] == "no"

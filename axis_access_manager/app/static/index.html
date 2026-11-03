@@ -816,8 +816,8 @@ const doorStateRows = (d) => {
   const st = d.state || {};
   const shown = (map, value) => !st.known || !value ? UNKNOWN_STATE : map[value] || ["warn", value];
   const rows = [["Serratura", [doorModeClass(d.mode), doorModeLabel(d.mode)]], ["Contatto Porta", shown(CONTACT_STATES, st.contact)]];
-  // Allarme e preallarme vengono dal contatto porta: senza, non ci sono
-  if (st.contact !== "none") rows.push(["Allarme", shown(DOOR_ALARMS, st.alarm)], ["Preallarme", shown(DOOR_ALARMS, st.warning)]);
+  // Allarme e preallarme vengono dal contatto porta sul controller: senza, o con il contatto su un AUX, non ci sono
+  if (st.contact !== "none" && !st.aux_contact) rows.push(["Allarme", shown(DOOR_ALARMS, st.alarm)], ["Preallarme", shown(DOOR_ALARMS, st.warning)]);
   rows.push(["Manomissione", shown(DOOR_TAMPER, st.tamper)]);
   return rows;
 };
@@ -3485,25 +3485,32 @@ function linksOf(p) {
   return links;
 }
 
-const INPUT_ICONS = {"": "chip", rex: "arrow", intercom: "phone", door_monitor: "door", alarm: "alert"};
-const DOOR_INPUT_ROLES = ["rex", "intercom", "door_monitor"];
+const INPUT_ICONS = {"": "chip", rex: "arrow", intercom: "phone", door_monitor: "door", door_contact: "door", alarm: "chip"};
+const DOOR_INPUT_ROLES = ["rex", "intercom", "door_monitor", "door_contact"];
+const CONTACT_INPUT_ROLES = ["door_monitor", "door_contact"];
 const INPUT_ROLE_HINTS = {
   "": "L'ingresso non fa niente; resta solo lo stato in Home Assistant, se il controller lo manda.",
   rex: "Chiede l'apertura della porta, come un lettore in uscita: per il pulsante della portineria o di uscita. Nel registro le aperture compaiono come Uscita, con il nome dell'ingresso.",
   intercom: "Il contatto del relè del citofono: apre la porta anche con Home Assistant spento. Nel registro le aperture compaiono come Apertura Remota, con il nome dell'ingresso.",
-  door_monitor: "Il contatto magnetico della porta: in Home Assistant compare Contatto Porta (aperta o chiusa) e si attivano gli allarmi di porta forzata e aperta troppo a lungo.",
+  door_monitor: "Contatto della porta gestito dal controller, con gli allarmi di porta forzata e aperta troppo a lungo. Il controller tiene la porta Aperta a Tempo finché non si richiude.",
+  door_contact: "Contatto della porta letto solo dall'app, senza allarmi: Contatto in Home Assistant. La serratura si riblocca sempre a fine tempo.",
   alarm: "Nessuna azione sulla porta: lo stato arriva in Home Assistant con il nome scelto.",
 };
 // Al banco (firmware 10.12) gli AUX usati come pulsante sono rimasti attivi dopo la prima pressione fino al riavvio
 const inputRoleHint = (io, role) => INPUT_ROLE_HINTS[role] || "";
 // Cosa vuol dire il tipo di contatto scelto ("no" o "nc") per il ruolo dell'ingresso
+const DOOR_CONTACT_HINTS = {no: "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre.",
+  nc: "Normalmente Chiuso: con la porta chiusa il contatto è chiuso e si apre quando la porta si apre."};
 const CONTACT_HINTS = {
-  door_monitor: {no: "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre.",
-    nc: "Normalmente Chiuso: con la porta chiusa il contatto è chiuso e si apre quando la porta si apre."},
+  door_contact: {no: DOOR_CONTACT_HINTS.no + " Consigliato Normalmente Chiuso.", nc: DOOR_CONTACT_HINTS.nc + " Consigliato: un cavo tagliato risulta porta aperta."},
+  door_monitor: DOOR_CONTACT_HINTS,
   rex: {no: "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.",
     nc: "Normalmente Chiuso: il contatto si apre quando si preme il pulsante o scatta il relè."},
+  alarm: {no: "Normalmente Aperto: acceso in Home Assistant con il contatto chiuso.",
+    nc: "Normalmente Chiuso: acceso in Home Assistant con il contatto aperto.",
+    "": "Acceso come lo dice il controller."},
 };
-const contactHint = (role, contact = "no") => role === "" || role === "alarm" ? "Con questo ruolo il tipo di contatto non ha effetto."
+const contactHint = (role, contact = "no") => role === "" ? "Con questo ruolo la modalità non ha effetto."
   : (CONTACT_HINTS[role] || CONTACT_HINTS.rex)[contact] || CONTACT_HINTS.rex.no;
 
 function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
@@ -3520,7 +3527,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   const inputMeta = (i) => [p.input_roles?.[i.role] || "Non Usato", linkedDoor(i) ? doorName({token: i.door}) : "", i.pins.join(", ")].filter(Boolean).join(" · ");
   // Il contatto porta non manda lo stato dell'ingresso: vale quello della porta, aperta o chiusa
   const unknownDot = '<span class="dot warn" title="Stato sconosciuto: il controller non risponde, o non è ancora stato letto"></span>';
-  const inputDot = (i) => i.role === "door_monitor" ? (i.door_open === true ? '<span class="dot warn" title="Porta Aperta"></span>' : i.door_open === false ? '<span class="dot ok" title="Porta Chiusa"></span>' : unknownDot)
+  const inputDot = (i) => CONTACT_INPUT_ROLES.includes(i.role) ? (i.door_open === true ? '<span class="dot warn" title="Porta Aperta"></span>' : i.door_open === false ? '<span class="dot ok" title="Porta Chiusa"></span>' : unknownDot)
     : i.port == null ? '<span class="muted" title="Stato non disponibile: il controller non invia eventi per questo ingresso">—</span>'
     : i.active === true ? '<span class="dot warn" title="Attivo"></span>' : i.active === false ? '<span class="dot ok" title="A riposo"></span>' : unknownDot;
   const readerName = (token) => { const r = p.readers.find((x) => x.token === token); return r?.name || token; };
@@ -3680,16 +3687,23 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     if (door && !DOOR_INPUT_ROLES.includes(role)) { toast(`${i.name}: questo ingresso non si collega a una porta`, true); return; }
     const doorOptions = p.doors.map((d) => `<option value="${esc(d.token)}" ${d.token === (door || i.door) ? "selected" : ""}>${esc(doorName(d))}</option>`).join("");
     const startName = role !== i.role && (i.name === i.default_name || Object.values(p.input_roles).includes(i.name)) ? p.input_roles[role] || i.default_name : i.name;
-    // Contatto e linea supervisionata servono solo ai ruoli che l'app scrive sul controller: con Non Usato e Ingresso
-    // di Allarme non hanno effetto. La linea supervisionata solo per pulsante e relè: col contatto porta non è provata al banco
-    const wired = (r) => DOOR_INPUT_ROLES.includes(r);
+    // Modalità NO/NC per tutti i ruoli tranne Non Usato. La linea supervisionata solo per pulsante e relè: col contatto
+    // porta non è provata al banco. Ingresso Generico salvato prima della 0.26.0, senza modalità: quella che dà lo stesso
+    // stato di prima, dallo stato normale dell'ingresso sul controller
+    const wired = (r) => DOOR_INPUT_ROLES.includes(r) || r === "alarm";
+    // Modalità che dà la lettura di adesso (quella del controller): "" se lo stato normale non è ancora stato letto
+    const followMode = i.normal === "closed" ? "nc" : i.normal === "open" ? "no" : "";
+    const startContact = role === "door_contact" && !CONTACT_INPUT_ROLES.includes(i.role) ? "nc"
+      : role === "alarm" && (i.role !== "alarm" || !i.contact) ? followMode : i.contact;
+    // Senza modalità e senza lo stato normale: resta com'è finché non si sceglie NO o NC
+    const contactOptions = (startContact === "" ? [["", "Come sul Controller"]] : []).concat(Object.entries(p.contacts));
     const supervisable = (r) => i.can_supervise && ["rex", "intercom"].includes(r);
     const ok = await modal({title: i.name,
       body: `${i.problem ? `<div class="alert" style="margin:0 0 12px">${icon("alert")}<div class="grow"><b>Da Riscrivere</b>${esc(i.problem[0].toUpperCase() + i.problem.slice(1))}. Premi Scrivi sul Controller: anche con le stesse impostazioni l'app completa la programmazione.</div></div>` : ""}
         ${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? " È anche il nome dell'entità in Home Assistant." : ""} Compare nel registro per le aperture da questo ingresso.`)}
         ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(inputRoleHint(i.io, role))}</span>`)}
         <div data-door-field ${DOOR_INPUT_ROLES.includes(role) ? "" : "hidden"}>${field("Porta", `<select name="door">${doorOptions}</select>`)}</div>
-        <div data-wiring ${wired(role) ? "" : "hidden"}>${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role, i.contact))}</span>`)}
+        <div data-wiring ${wired(role) ? "" : "hidden"}>${field("Modalità Ingresso", `<select name="contact">${contactOptions.map(([k, v]) => `<option value="${esc(k)}" ${k === startContact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role, startContact))}</span>`)}
         <div class="field inline"><input type="checkbox" name="supervised" id="f-sup" ${i.supervised && supervisable(role) ? "checked" : ""} ${supervisable(role) ? "" : "disabled"}><label for="f-sup">Linea Supervisionata</label></div>
         <p class="hint" style="margin-top:-8px">${i.can_supervise ? "Con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. Attivala solo se le resistenze sono montate. Dopo averla tolta, l'ingresso può risultare attivo finché non riavvii il controller." : "Questo ingresso non supporta la linea supervisionata."}</p></div>`,
       onOpen: (dlg) => {
@@ -3706,6 +3720,12 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
           $("[data-door-field]", dlg).hidden = !DOOR_INPUT_ROLES.includes(select.value);
           $("[data-role-hint]", dlg).textContent = inputRoleHint(i.io, select.value);
           $("[data-wiring]", dlg).hidden = !wired(select.value);
+          // Contatto Porta: Normalmente Chiuso consigliato, se l'ingresso non era già un contatto della porta (un Sensore
+          // Porta messo a mano su un AUX ha già la modalità del cablaggio)
+          if (select.value === "door_contact" && !CONTACT_INPUT_ROLES.includes(i.role)) contact.value = "nc";
+          // Ingresso Generico nuovo: la modalità che dà la lettura di adesso
+          else if (select.value === "alarm" && i.role !== "alarm" && followMode) contact.value = followMode;
+          if (select.value !== "alarm" && contact.value === "") contact.value = "no";
           showContact();
           const supervised = $('[name="supervised"]', dlg);
           supervised.disabled = !supervisable(select.value);

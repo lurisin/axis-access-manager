@@ -35,8 +35,10 @@ class StateSnapshot:
     # quando la si sa (dal registro del controller; se no vale l'ora della lettura)
     conditions: dict[str, dict[str, str]] = field(default_factory=dict)
     changed_at: dict[tuple[str, str], str] = field(default_factory=dict)
-    # Ingressi I/O per numero di porta, attivi o no come in Device/IO/Port
+    # Ingressi I/O per numero di porta, attivi o no come in Device/IO/Port, e il loro stato normale (getPorts
+    # normalState: "open" o "closed", cioè il circuito a riposo)
     io: dict[str, bool] = field(default_factory=dict)
+    io_normal: dict[str, str] = field(default_factory=dict)
     # Coperchio aperto; None se non letto. casing_at: ora dell'ultimo cambio (dal registro), vuota se non si sa;
     # casing_before: ora del cambio precedente, al valore opposto (chiuso prima di riaprirlo), vuota se non c'è
     casing: bool | None = None
@@ -236,12 +238,18 @@ class EventMonitor:
     casing_since: str = ""
     system_ready: str = ""
     io_ports: dict[str, bool] = field(default_factory=dict)
+    # Stato normale degli ingressi I/O sul controller ("open": attivo = circuito chiuso; "closed": il contrario)
+    io_normal: dict[str, str] = field(default_factory=dict)
     # Ingressi I/O cambiati dopo il primo valore ricevuto (dall'avvio dell'app o del controller)
     io_changed: set[str] = field(default_factory=set)
     # Porta aperta o chiusa secondo il contatto porta (DoorPhysicalState: Open, Closed, Fault...), per token
     door_physical: dict[str, str] = field(default_factory=dict)
     # Porte con il contatto porta configurato sul controller (DoorMonitor), per token: senza, il contatto non si sa
     door_contacts: dict[str, bool] = field(default_factory=dict)
+    # Contatto porta su un ingresso AUX (ruolo Contatto Porta, letto solo dall'app): porta → (numero I/O, "no"/"nc")
+    aux_contacts: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # Ingressi Generici con la modalità scelta nell'app: numero I/O → "no"/"nc" (senza: come lo dice il controller)
+    input_contacts: dict[str, str] = field(default_factory=dict)
     # Il controller risponde all'app (controllo periodico delle API): None finché non si sa. Quando non risponde lo
     # stato qui sopra si svuota, e app e Home Assistant lo mostrano sconosciuto invece dell'ultimo valore
     reachable: bool | None = None
@@ -389,9 +397,23 @@ class EventMonitor:
         pressione (il REX scatta 40-50 ms dopo il passaggio a 0), e 0 dall'avvio fino alla prima pressione. La
         lettura con le API (getPorts: closed con normalState open, cioè 1) è giusta da subito e vale come un cambio."""
         value = self.io_ports.get(port) if port is not None else None
-        if value is None or not pushbutton:
+        if value is None:
+            return None
+        if port in self.input_contacts:
+            return self._contact_on(port, self.input_contacts[port])
+        if not pushbutton:
             return value
         return port in self.io_changed and not value
+
+    def _contact_on(self, port: str, contact: str) -> bool | None:
+        """Contatto acceso secondo la modalità scelta nell'app, qualunque sia lo stato normale dell'ingresso sul
+        controller: Normalmente Aperto acceso con il circuito chiuso, Normalmente Chiuso con il circuito aperto."""
+        active = self.io_ports.get(port)
+        if active is None:
+            return None
+        # Attivo vuol dire fuori dallo stato normale dell'ingresso: con quello di serie ("open") è il circuito chiuso
+        closed = active if self.io_normal.get(port, "open") == "open" else not active
+        return closed if contact == "no" else not closed
 
     def _track_state(self, event: Event) -> None:
         """Stati che Home Assistant mostra come sensori acceso/spento."""
@@ -424,6 +446,20 @@ class EventMonitor:
             token = door_of_topic(topic) or self.door_token
             self.door_physical[token] = str(data["State"])
             self._mark(("physical", token))
+
+    def door_contact(self, token: str) -> str | None:
+        """Porta aperta o chiusa ("Open", "Closed"; Fault e altri dal controller), None se non si sa. Dal Contatto
+        Porta su un AUX se la porta ce l'ha, se no dal contatto porta del controller (DoorPhysicalState)."""
+        aux = self.aux_contacts.get(token)
+        if aux is None:
+            return self.door_physical.get(token)
+        # Normalmente Aperto: il contatto si chiude quando la porta si apre; Normalmente Chiuso: si apre
+        is_open = self._contact_on(*aux)
+        return None if is_open is None else "Open" if is_open else "Closed"
+
+    def contact_configured(self, token: str) -> bool | None:
+        """La porta ha un contatto porta: su un AUX o sul controller (None se la configurazione non è stata letta)."""
+        return True if token in self.aux_contacts else self.door_contacts.get(token)
 
     def set_door_mode(self, token: str, mode: str) -> None:
         """Modalità della porta saputa dall'app (letta prima di aprire, o appena aperta): vale come un evento."""
@@ -481,6 +517,11 @@ class EventMonitor:
                 ts = snapshot.changed_at.get((token, key), snapshot.at)
                 self.door_conditions.setdefault(token, {})[key] = {"active": active, "state": state, "ts": ts}
                 changed = True
+        if any(self.io_normal.get(port) != normal for port, normal in snapshot.io_normal.items()):
+            # Stato normale cambiato sul controller (o letto la prima volta): cambia la lettura dei Contatti Porta e
+            # degli Ingressi Generici con la modalità scelta
+            self.io_normal.update(snapshot.io_normal)
+            changed = True
         for port, active in snapshot.io.items():
             if fresh(("io", port)):
                 put(self.io_ports, port, active, ("io", port))

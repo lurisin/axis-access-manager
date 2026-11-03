@@ -19,6 +19,8 @@ from .vapix import A1210Client, VapixError
 _LOGGER = logging.getLogger(__name__)
 # Oltre questo scarto l'ora del controller non è credibile neanche se dice di essere sincronizzato
 MAX_CLOCK_CORRECTION = 24 * 3600
+# Eventi del registro letti per trovare l'ultimo consenso a una porta (rete di sicurezza senza eventi in diretta)
+GRANT_LOG_TAIL = 30
 
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
 
@@ -201,8 +203,11 @@ class AccessService:
         # Punto di accesso → porta e lettore → porta, per sapere a quale porta si riferisce un evento
         self.access_point_doors: dict[str, str] = {}
         self.idpoint_doors: dict[str, str] = {}
-        # Un'apertura per volta per porta: il controllo "bloccata" e il comando non si accavallano
+        # Un'apertura per volta per porta: il controllo "bloccata" e il comando non si accavallano (anche con il
+        # blocco della rete di sicurezza, vedi lock_guard)
         self._door_locks: dict[str, asyncio.Lock] = {}
+        # Rete di sicurezza della serratura (lock_guard.LockGuard): consensi ed eventi della porta, None senza
+        self.lock_guard = None
         # Durante il recupero dal registro del controller: eventi segnati come recuperati, e quanti
         self._recovering = False
         self._recovered = 0
@@ -211,6 +216,8 @@ class AccessService:
         # Secondi di cui l'orologio del controller (sincronizzato via NTP) è avanti rispetto a Home Assistant;
         # None se non si sa o se il controller non è sincronizzato
         self.clock_offset: Callable[[], float | None] | None = None
+        # Scarto misurato, anche senza NTP: per l'età dei consensi letti dal registro (rete di sicurezza)
+        self.measured_clock_offset: Callable[[], float | None] | None = None
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         try:
@@ -228,6 +235,41 @@ class AccessService:
     def notify_change(self) -> None:
         """Qualcosa da aggiornare in Home Assistant (per esempio il controller è andato offline)."""
         self._changed()
+
+    def _door_open(self, door: str) -> bool | None:
+        """Porta aperta secondo il contatto porta (sul controller o su un AUX); None se non si sa."""
+        state = self.monitor.door_contact(door) if self.monitor else None
+        return {"Open": True, "Closed": False}.get(state or "")
+
+    def door_lock(self, door: str) -> asyncio.Lock:
+        """Un comando alla porta per volta: apertura dall'app e blocco della rete di sicurezza."""
+        return self._door_locks.setdefault(door, asyncio.Lock())
+
+    async def last_grant(self, door: str) -> tuple[str, float | None] | None:
+        """Ultimo consenso (tessera, pulsante) alla porta nel registro del controller: (impronta, secondi fa), None se
+        non c'è tra gli ultimi eventi. Per la rete di sicurezza della serratura senza eventi in diretta."""
+        entries = await self.controller.latest_events(GRANT_LOG_TAIL)
+        # Scarto misurato dell'orologio del controller, anche senza NTP: senza misura i secondi non si sanno (None)
+        offset = self.measured_clock_offset() if self.measured_clock_offset else None
+        moment = datetime.now(tz=UTC) + timedelta(seconds=offset or 0)
+        for entry in entries:
+            event = event_from_log(entry)
+            if event and event.topic.startswith("AccessControl/AccessGranted") and self._door_of(event) == door:
+                ident = str(entry.get("rowid") or "") or f"{event.timestamp.isoformat()}|{event.topic}"
+                age = (moment - event.timestamp).total_seconds() if offset is not None else None
+                return ident, age
+        return None
+
+    def log_lock_alarm(self, door: str, detail: str) -> None:
+        """Allarme della rete di sicurezza della serratura (vedi lock_guard) nel registro e in Home Assistant."""
+        self.log_event(
+            ts=self.event_now(),
+            kind="allarme",
+            detail=detail,
+            source="App",
+            door=door,
+            ref=event_ref("allarme", door, detail=detail),
+        )
 
     def log_event(self, **fields) -> dict | None:
         """Salva un evento e avvisa chi lo deve elaborare. None se era già nel registro.
@@ -894,7 +936,7 @@ class AccessService:
             raise ServiceError("nessuna porta configurata")
         # Due comandi ravvicinati (doppio tocco, Home Assistant e citofono insieme): il secondo aspetta il primo
         # e trova la porta già aperta, invece di passare anche lui il controllo e far ripartire il tempo
-        async with self._door_locks.setdefault(door, asyncio.Lock()):
+        async with self.door_lock(door):
             stored = self.monitor.door_modes.get(door) if self.monitor else None
             # Senza eventi in diretta (WebSocket non collegato, e broker giù o controller che non pubblica sul broker)
             # la modalità in memoria può essere vecchia anche quando dice "Bloccata": decide sempre il controller
@@ -933,6 +975,9 @@ class AccessService:
                 raise ServiceError(f"la porta non è bloccata ({label}): attendi che si richiuda")
             before = self.monitor.door_modes.get(door) if self.monitor else None
             await self.controller.access_door(door, extended)
+            if self.lock_guard is not None:
+                # Il tempo della rete di sicurezza parte da qui, con il tempo esteso se chiesto
+                self.lock_guard.granted(door, extended, self._door_open(door))
             if self.monitor and self.monitor.door_modes.get(door) == before:
                 # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
                 # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
@@ -956,6 +1001,12 @@ class AccessService:
 
     def record_event(self, event: Event, retained: bool = False) -> None:
         """Salva nel log gli eventi utili. I messaggi conservati dal broker sono già stati registrati."""
+        if self.lock_guard is not None and not retained and not self._recovering:
+            if event.topic.startswith("AccessControl/AccessGranted"):
+                door = self._door_of(event)
+                self.lock_guard.granted(door, door_open=self._door_open(door))
+            elif event.topic.startswith(("Door/State/", "Device/IO/Port")):
+                self.lock_guard.poke()
         if event.topic.startswith("Door/State/DoorMode/"):
             # Anche il valore conservato dal broker aggiorna lo stato in Home Assistant
             self._changed()

@@ -537,6 +537,11 @@ class A1210Client:
             request["UseExtendedTime"] = True
         await self._post("/vapix/doorcontrol", {"tdc:AccessDoor": request})
 
+    async def lock_door(self, door_token: str) -> None:
+        """Riblocca la porta (modo Locked, quello normale): toglie la corrente alla serratura e chiude un'apertura a
+        tempo. Le aperture con tessera, pulsante o dall'app continuano a funzionare come sempre."""
+        await self._post("/vapix/doorcontrol", {"tdc:LockDoor": {"Token": door_token}})
+
 
 # Metodi che cambiano la configurazione del controller: sospesi se il controller all'indirizzo è cambiato
 WRITE_PREFIXES = ("set_", "remove_", "enable_", "disable_", "create_")

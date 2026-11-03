@@ -291,6 +291,12 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
             ),
         ],
     ),
+    (
+        8,
+        "Ingressi Generici senza modalità NO/NC: restano come li dice il controller",
+        # Prima della 0.26.0 la modalità degli ingressi di allarme non contava e si salvava sempre "no"
+        ["UPDATE controller_inputs SET contact = '' WHERE role = 'alarm'"],
+    ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 SETTING_APP_VERSION = "app_version"
@@ -351,6 +357,8 @@ class Database:
                 try:
                     if step == 1:
                         self._add_legacy_columns()
+                    if step == 8:
+                        self._generic_inputs_history()
                     for sql in statements:
                         self._conn.execute(sql)
                     self._conn.execute(f"PRAGMA user_version = {step}")
@@ -372,6 +380,23 @@ class Database:
         except sqlite3.OperationalError:
             return ""
         return row[0] if row else ""
+
+    def _generic_inputs_history(self) -> None:
+        """Migrazione 8 anche nello Storico Modifiche: annullare una modifica di prima della 0.26.0 non rimette
+        "no" su un Ingresso Generico, che ne cambierebbe la lettura."""
+        rows = self._conn.execute("SELECT id, before, after FROM controller_changes WHERE kind = 'input'").fetchall()
+        for row in rows:
+            values = {}
+            for column in ("before", "after"):
+                try:
+                    data = json.loads(row[column])
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(data, dict) and data.get("role") == "alarm" and data.get("contact") == "no":
+                    values[column] = json.dumps({**data, "contact": ""})
+            if values:
+                sets = ", ".join(f"{column} = ?" for column in values)
+                self._conn.execute(f"UPDATE controller_changes SET {sets} WHERE id = ?", (*values.values(), row["id"]))
 
     def _add_legacy_columns(self) -> None:
         for table, column, definition in LEGACY_COLUMNS:

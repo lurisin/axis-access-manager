@@ -864,3 +864,57 @@ def test_clock_offset_only_from_synced_primary_controller():
     assert _controller_clock_offset(state) is None
     state.installation.primary = None
     assert _controller_clock_offset(state) is None
+
+
+async def test_lock_guard_sees_grants_and_door_events(service, controller, db):
+    """Rete di sicurezza della serratura: consensi dal controller e dall'app, eventi della porta, allarme."""
+    from app.lock_guard import FORCED, LockGuard
+
+    guard = LockGuard(clock=lambda: 100.0)
+    service.lock_guard = guard
+    # Il contatto porta al momento del consenso: aperta, chiusa o non si sa
+    service.monitor.door_physical["porta2"] = "Closed"
+    service.record_event(event("AccessControl/AccessGranted/Anonymous/x", {"DoorToken": "porta2"}))
+    grant = guard.grants["porta2"]
+    assert (grant.at, grant.extended, grant.door_open) == (100.0, False, False)
+    guard.wake.clear()
+    service.record_event(event("Door/State/DoorPhysicalState/$source/DoorToken/porta", {"State": "Open"}))
+    assert guard.wake.is_set()
+    # Recuperati dal registro o conservati dal broker: già passati, non contano
+    guard.grants.clear()
+    service.record_event(event("AccessControl/AccessGranted/Anonymous/x", {"DoorToken": "porta2"}), retained=True)
+    service._recovering = True
+    service.record_event(event("AccessControl/AccessGranted/Anonymous/x", {"DoorToken": "porta2"}))
+    service._recovering = False
+    assert guard.grants == {}
+
+    service.monitor.connected, service.monitor.controller_online = True, True
+    service.monitor.door_mode = "Locked"
+    await service.open_door(True, "admin")
+    grant = guard.grants["porta"]
+    assert (grant.at, grant.extended, grant.door_open) == (100.0, True, None)
+
+    # Senza eventi in diretta: l'ultimo consenso alla porta dal registro del controller
+    service.access_point_doors = {"ap2": "porta2"}
+    controller.log_events = [
+        {
+            "rowid": rowid,
+            "UtcTime": ts,
+            "KeyValues": [
+                {"Key": "topic0", "Value": "AccessControl"},
+                {"Key": "topic1", "Value": "AccessGranted"},
+                {"Key": "AccessPointToken", "Value": point},
+            ],
+        }
+        for rowid, ts, point in ((7, "2026-11-03T15:00:00Z", "ap2"), (8, "2026-11-03T15:00:05Z", "ap1"))
+    ]
+    # Orologio del controller non misurato: i secondi non si sanno
+    assert await service.last_grant("porta2") == ("7", None)
+    service.measured_clock_offset = lambda: 0.0
+    found = await service.last_grant("porta2")
+    assert found is not None and found[0] == "7" and found[1] > 0
+    assert await service.last_grant("porta3") is None
+
+    service.log_lock_alarm("porta", FORCED)
+    row = db.list_events(kind="allarme")[0]
+    assert (row["detail"], row["source"], row["door"]) == ("riblocco forzato", "App", "porta")

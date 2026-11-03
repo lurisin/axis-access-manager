@@ -44,20 +44,29 @@ INPUT_ROLES = {
     "rex": "Pulsante Uscita",
     "intercom": "Relè Citofono",
     "door_monitor": "Sensore Porta",
-    "alarm": "Ingresso di Allarme",
+    "door_contact": "Contatto Porta",
+    "alarm": "Ingresso Generico",
 }
 # Ruoli che aprono o sorvegliano una porta: vanno collegati a una porta del controller
-DOOR_ROLES = {"rex", "intercom", "door_monitor"}
-# Ruoli possibili per ogni ingresso: il contatto porta e il REX sono del connettore Door, gli AUX sono liberi
+DOOR_ROLES = {"rex", "intercom", "door_monitor", "door_contact"}
+# Contatto porta: sul controller (Sensore Porta, DoorMonitor) o letto solo dall'app su un AUX (Contatto Porta). Con il
+# DoorMonitor il controller tiene la porta Aperta a Tempo finché non si richiude (in loco il 3/11 un contatto scollegato
+# l'ha tenuta così 5 minuti); con il Contatto Porta la serratura si riblocca sempre a fine tempo (vedi lock_guard)
+CONTACT_ROLES = {"door_monitor", "door_contact"}
+# Ruoli possibili per ogni ingresso: il contatto porta e il REX sono del connettore Door, gli AUX sono liberi. Il
+# Contatto Porta solo sugli ingressi che mandano gli eventi Device/IO/Port
 ALLOWED_ROLES = {
     "DPS": {"", "door_monitor"},
     "REX": {"", "rex", "intercom"},
-    "IO1": {"", "rex", "intercom", "alarm"},
-    "IO2": {"", "rex", "intercom", "alarm"},
+    "IO1": {"", "rex", "intercom", "door_contact", "alarm"},
+    "IO2": {"", "rex", "intercom", "door_contact", "alarm"},
     "EXTERNAL_TAMPER": {"", "alarm"},
-    "ALARM": {"", "alarm"},
+    "ALARM": {"", "door_contact", "alarm"},
 }
-CONTACTS = {"no": "Normalmente Aperto", "nc": "Normalmente Chiuso"}
+CONTACTS = {"no": "Normalmente Aperto (NO)", "nc": "Normalmente Chiuso (NC)"}
+# Ingresso Generico salvato prima della 0.26.0, senza modalità scelta: acceso come lo dice il controller (attivo, cioè
+# fuori dallo stato normale impostato sul controller), finché non si sceglie NO o NC
+FOLLOW_CONTROLLER = ""
 # Sensore Porta (DoorMonitor della porta, provato al banco): stato del contatto con la porta aperta e chiusa.
 # Normalmente Aperto: con la porta chiusa il contatto è aperto, aprendo la porta si chiude verso massa
 DOOR_MONITOR_VALUES = {
@@ -191,6 +200,18 @@ def input_problem(
         other = DOOR_MONITOR_VALUES["nc" if row.get("contact") == "no" else "no"]
         if config and all(config.get(name) == value for name, value in other.items()):
             return "sul controller il tipo di contatto è diverso"
+    elif role == "door_contact":
+        users = next((a.get("IoUser") or [] for a in assigned or [] if a.get("IoName") == io), [])
+        if users:
+            return "sul controller l'ingresso è usato da altro"
+        config = {
+            c.get("Name"): c.get("Value")
+            for c in _door_config(door_configs or [], row.get("door_token") or "").get("Configuration") or []
+        }
+        if config and config.get("DoorMonitor.Type") not in (None, "", "None"):
+            return "sul controller la porta usa ancora il Sensore Porta"
+        if point or idpoint:
+            return "la programmazione di prima non è stata tolta del tutto dal controller"
     elif point or idpoint:
         return "la programmazione di prima non è stata tolta del tutto dal controller"
     return ""
@@ -653,17 +674,22 @@ class ProgrammingService:
                 raise ServiceError(f"{INPUT_ROLES[role]}: scegli la porta")
             if door not in {d.get("token") for d in await self.controller.door_info_list()}:
                 raise ServiceError("porta non trovata sul controller")
-        contact = data.get("contact") or "no"
-        if contact not in CONTACTS:
-            raise ServiceError("tipo di contatto non valido")
+        # Contatto Porta: Normalmente Chiuso è il consigliato (un cavo tagliato risulta porta aperta). Ingresso Generico
+        # senza modalità: come lo dice il controller (vedi FOLLOW_CONTROLLER)
+        contact = data.get("contact") or (
+            "nc" if role == "door_contact" else FOLLOW_CONTROLLER if role == "alarm" else "no"
+        )
+        if contact not in CONTACTS and not (role == "alarm" and contact == FOLLOW_CONTROLLER):
+            raise ServiceError("modalità dell'ingresso non valida")
         supervised = bool(data.get("supervised"))
         if role == "door_monitor" and supervised:
             raise ServiceError("Sensore Porta: la linea supervisionata non è ancora disponibile")
-        if role == "alarm" and supervised:
-            raise ServiceError("Ingresso di Allarme: la linea supervisionata non è disponibile")
-        if role not in REX_ROLES and role != "door_monitor":
-            # Per Non Usato e Ingresso di Allarme l'app non scrive niente sul controller: contatto e linea
-            # supervisionata non avrebbero effetto, e Home Assistant mostra l'ingresso com'è
+        if role in ("alarm", "door_contact") and supervised:
+            raise ServiceError(f"{INPUT_ROLES[role]}: la linea supervisionata non è disponibile")
+        if role not in REX_ROLES and role not in CONTACT_ROLES and role != "alarm":
+            # Per Non Usato l'app non scrive niente sul controller: contatto e linea supervisionata non avrebbero
+            # effetto. Contatto Porta e Ingresso Generico non scrivono niente, ma la modalità NO/NC serve all'app per
+            # sapere quando la porta è aperta e quando l'ingresso è acceso
             contact, supervised = "no", False
         name = " ".join(normalize_text(data.get("name"), 64, "nome").split())
         values = {
@@ -675,6 +701,9 @@ class ProgrammingService:
             "schedule": "",
         }
         async with self.lock:
+            if role in CONTACT_ROLES:
+                # Dentro il lock: due salvataggi insieme non mettono due contatti sulla stessa porta
+                self._check_one_contact(controller_id, io, role, door)
             current = self.db.controller_inputs(controller_id).get(io) or {
                 "name": CONTROLLER_INPUTS[io][0],
                 "role": "",
@@ -688,6 +717,8 @@ class ProgrammingService:
                 current = {**current, **(await self._door_monitor_on_controller(io) or {})}
             if manual and (current.get("role") != "door_monitor" or current.get("door_token") != door):
                 raise ServiceError(f"{INPUT_ROLES[role]}: non disponibile su questo ingresso")
+            if role == "door_contact" and (where := await self._monitor_elsewhere(io, door)):
+                raise ServiceError(f"{INPUT_ROLES[role]}: sul controller la porta usa il Sensore Porta ({where})")
             before = {k: current.get(k) for k in INPUT_SETTINGS}
             # Stesse impostazioni: si riscrive solo se sul controller l'ingresso non è com'è salvato nell'app
             same = {**before, "name": values["name"]} == values
@@ -705,6 +736,20 @@ class ProgrammingService:
             self.db.add_audit(user, "controller programmato", summary)
         return values
 
+    def _check_one_contact(self, controller_id: int, io: str, role: str, door: str) -> None:
+        """Un contatto per porta: sul controller (Sensore Porta) o su un AUX (Contatto Porta), non tutti e due."""
+        other = next(
+            (
+                row
+                for key, row in self.db.controller_inputs(controller_id).items()
+                if key != io and row.get("role") in CONTACT_ROLES and row.get("door_token") == door
+            ),
+            None,
+        )
+        if other:
+            where = other.get("name") or CONTROLLER_INPUTS.get(other["io"], (other["io"],))[0]
+            raise ServiceError(f"{INPUT_ROLES[role]}: la porta ha già un contatto ({where})")
+
     async def _input_problem(self, io: str, row: dict) -> str:
         """Come input_problem, con i dati letti ora dal controller (solo quelli che servono al ruolo)."""
         try:
@@ -717,7 +762,7 @@ class ProgrammingService:
                     profiles=await self.controller.list_access_profiles(),
                     access_controllers=await self.controller.list_access_controllers() or None,
                 )
-            if row.get("role") == "door_monitor":
+            if row.get("role") in CONTACT_ROLES:
                 return input_problem(
                     io,
                     row,
@@ -761,6 +806,8 @@ class ProgrammingService:
                 # un nuovo salvataggio lo completa o, con un altro ruolo, lo toglie
                 partial = values
                 await self._write_door_monitor(io, values)
+            elif values["role"] == "door_contact":
+                await self._free_for_contact(io, values["door_token"])
         except VapixError as err:
             # Resta il ruolo di prima con i token di adesso: la pagina segnala l'ingresso (input_problem) e un nuovo
             # salvataggio, anche con le stesse impostazioni, completa il lavoro
@@ -801,6 +848,35 @@ class ProgrammingService:
             {"Type": "doorcontrol", "token": door, "Usage": usage, "MultiIo": False} for usage in DOOR_MONITOR_USAGES
         ]
         await self.controller.set_io_assignment(io, _plain_mode(io), users)
+
+    async def _monitor_elsewhere(self, io: str, door: str) -> str:
+        """Ingresso che sul controller fa da contatto porta (DoorMonitor) per la porta, se non è questo; "" se non
+        c'è o non si legge. Un Sensore Porta messo a mano, o tornato con un ripristino, nell'app può non esserci."""
+        try:
+            _, assigned = await self.controller.list_io()
+        except VapixError:
+            return ""
+        for item in assigned:
+            name = item.get("IoName") or ""
+            if name != io and any(
+                u.get("Usage") in DOOR_MONITOR_USAGES and u.get("token") == door for u in item.get("IoUser") or []
+            ):
+                return CONTROLLER_INPUTS.get(name, (name, None))[0]
+        return ""
+
+    async def _free_for_contact(self, io: str, door: str) -> None:
+        """Contatto Porta: il controller non deve usare né l'ingresso (utenti messi fuori dall'app) né un contatto
+        per la porta (DoorMonitor rimasto senza ingresso), così la serratura resta sempre a tempo."""
+        _, assigned = await self.controller.list_io()
+        users = next((a.get("IoUser") or [] for a in assigned if a.get("IoName") == io), [])
+        if users:
+            await self.controller.set_io_assignment(io, _plain_mode(io), [])
+        config = {
+            c.get("Name"): c.get("Value")
+            for c in _door_config(await self.controller.list_door_configurations(), door).get("Configuration") or []
+        }
+        if config.get("DoorMonitor.Type") not in (None, "", "None"):
+            await self._set_door_monitor(door, DOOR_MONITOR_OFF, required=False)
 
     async def _clear_door_monitor(self, io: str, door: str) -> None:
         if door:
@@ -1056,6 +1132,18 @@ class ProgrammingService:
             raise ServiceError(f"annulla prima {what} dello stesso oggetto: {'; '.join(later)}")
         async with self.lock:
             if change["kind"] == "input":
+                before = change["before"] or {}
+                if before.get("role") in CONTACT_ROLES:
+                    # Come al salvataggio: la porta può avere avuto un altro contatto dopo questa modifica
+                    door = before.get("door_token") or ""
+                    self._check_one_contact(self.controller_id, change["token"], before["role"], door)
+                    if before["role"] == "door_contact" and (
+                        where := await self._monitor_elsewhere(change["token"], door)
+                    ):
+                        # Il Contatto Porta toglierebbe il Sensore Porta che un altro ingresso usa ancora
+                        raise ServiceError(
+                            f"{INPUT_ROLES['door_contact']}: sul controller la porta usa il Sensore Porta ({where})"
+                        )
                 current = self.db.controller_inputs(self.controller_id).get(change["token"]) or {}
                 await self._apply_input(self.controller_id, change["token"], current, change["before"])
             else:

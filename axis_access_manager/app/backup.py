@@ -192,7 +192,7 @@ FIELD_LABELS = {
     "policies": "Regole",
     "role": "Ruolo",
     "door_token": "Porta",
-    "contact": "Contatto",
+    "contact": "Modalità Ingresso",
     "supervised": "Linea Supervisionata",
     "schedule": "Fascia",
     "assigned": "Assegnato a",
@@ -904,7 +904,8 @@ def controller_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
             {
                 "role": INPUT_ROLES.get(mine.get("role") or "", mine.get("role") or "—"),
                 "door_token": ctx["doors"].get(mine.get("door_token"), mine.get("door_token") or "—"),
-                "contact": CONTACTS.get(mine.get("contact"), "—"),
+                "contact": CONTACTS.get(mine.get("contact"))
+                or ("Come sul Controller" if mine.get("role") == "alarm" else "—"),
                 "schedule": ctx["schedules"].get(mine.get("schedule"), mine.get("schedule") or "—"),
             },
         )

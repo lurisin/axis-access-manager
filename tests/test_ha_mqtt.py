@@ -245,7 +245,7 @@ async def test_renaming_an_input_republishes_only_input_entities(bridge, db, mon
     monkeypatch.setattr(bridge.monitor, "publish", publish)
     controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
     db.save_controller_input(controller_id, "IO2", {"name": "Pulsante Magazzino", "role": "rex", "door_token": "porta"})
-    await bridge.publish_input_names()
+    await bridge.refresh_entities()
     # Niente riconnessione: lo stato della porta e le altre entità non passano da "sconosciuto"
     assert len(sent) == 4 and all("/ingresso_" in topic for topic, _ in sent)
     assert ("homeassistant/binary_sensor/axis_access_manager/ingresso_aux_2/config", "Pulsante Magazzino") in sent
@@ -304,3 +304,40 @@ async def test_device_and_topics_stay_stable(db, settings, monkeypatch):
 def test_seconds_to_midnight():
     noon = time.mktime((2026, 6, 10, 12, 0, 0, 0, 0, -1))
     assert seconds_to_midnight(noon) == 12 * 3600 + 1
+
+
+async def test_door_with_aux_contact_has_no_alarm_entities(bridge, monkeypatch):
+    """Allarme, Preallarme e Manomissione vengono dal DoorMonitor: con il Contatto Porta letto dall'app non ci sono, e
+    l'app le toglie da Home Assistant (cancellate a mano tornerebbero alla connessione successiva)."""
+    topic = "homeassistant/binary_sensor/axis_access_manager/{}_porta/config"
+    conditions = [topic.format(key) for key in ("allarme", "preallarme", "manomissione")]
+    client = FakeClient()
+    await bridge.on_connect(client)
+    assert all(json.loads(client.published[t])["name"] for t in conditions)
+    sent = []
+
+    async def publish(topic, payload, retain=False):
+        sent.append((topic, payload))
+        return True
+
+    monkeypatch.setattr(bridge.monitor, "publish", publish)
+    bridge.monitor.aux_contacts = {"porta": ("1", "nc")}
+    await bridge.refresh_entities()
+    assert [(t, p) for t, p in sent if t in conditions] == [(t, b"") for t in sorted(conditions)]
+    # L'ingresso diventa una porta
+    aux2 = next(json.loads(p) for t, p in sent if t.endswith("/ingresso_aux_2/config"))
+    assert aux2["device_class"] == "door"
+    # Niente cambiato: solo le entità degli ingressi
+    sent.clear()
+    await bridge.refresh_entities()
+    assert sent and all("/ingresso_" in t for t, _ in sent)
+    # Alla connessione successiva restano tolte
+    client = FakeClient()
+    await bridge.on_connect(client)
+    assert all(client.published[t] == b"" for t in conditions)
+    # Contatto Porta tolto: tornano
+    sent.clear()
+    bridge.monitor.aux_contacts = {}
+    await bridge.refresh_entities()
+    back = {t: json.loads(p) for t, p in sent if t in conditions}
+    assert set(back) == set(conditions) and all(c["name"] for c in back.values())
