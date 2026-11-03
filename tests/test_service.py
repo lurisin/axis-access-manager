@@ -908,6 +908,9 @@ async def test_lock_guard_sees_grants_and_door_events(service, controller, db):
         }
         for rowid, ts, point in ((7, "2026-11-03T15:00:00Z", "ap2"), (8, "2026-11-03T15:00:05Z", "ap1"))
     ]
+    # Orologio del controller non misurato: i secondi non si sanno
+    assert await service.last_grant("porta2") == ("7", None)
+    service.measured_clock_offset = lambda: 0.0
     found = await service.last_grant("porta2")
     assert found is not None and found[0] == "7" and found[1] > 0
     assert await service.last_grant("porta3") is None

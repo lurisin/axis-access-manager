@@ -2225,6 +2225,7 @@ async def _start_runtime(app: FastAPI) -> None:
         # Eventi in diretta prima della prima sincronizzazione: senza la mappa finivano sulla porta principale
         state.points_task = asyncio.create_task(_load_access_points(state.service))
     state.service.clock_offset = lambda: _controller_clock_offset(state)
+    state.service.measured_clock_offset = lambda: _controller_clock_offset(state, synced_only=False)
     state.service.lock_guard = getattr(state, "lock_guard", None)
     if state.service.lock_guard is not None:
         # Nuova configurazione (controller cambiato, ripristino): i tempi delle porte si rileggono
@@ -3047,11 +3048,12 @@ def _controllers_health(state) -> list[dict]:
     return result
 
 
-def _controller_clock_offset(state) -> float | None:
-    """Scarto dell'orologio del controller principale rispetto a Home Assistant, solo se è sincronizzato via NTP."""
+def _controller_clock_offset(state, synced_only: bool = True) -> float | None:
+    """Scarto dell'orologio del controller principale rispetto a Home Assistant. synced_only: solo se il controller
+    è sincronizzato via NTP (ore degli eventi nel registro); senza, lo scarto misurato comunque."""
     primary = state.installation.primary
     health = state.health.states.get(primary["id"]) if primary else None
-    if not health or health.clock_offset is None or not controller_synced(health):
+    if not health or health.clock_offset is None or (synced_only and not controller_synced(health)):
         return None
     # Orologio di Home Assistant spostato dopo la misura: lo scarto si corregge subito, non alla rilettura
     return health.clock_offset_now()

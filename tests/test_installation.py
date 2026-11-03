@@ -690,6 +690,10 @@ def test_migration_leaves_old_generic_inputs_without_mode(tmp_path):
     controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
     db.save_controller_input(controller_id, "IO2", {"name": "Contatto", "role": "alarm", "contact": "no"})
     db.save_controller_input(controller_id, "IO1", {"name": "Pulsante", "role": "rex", "contact": "no"})
+    old = {"name": "Contatto", "role": "alarm", "door_token": "", "contact": "no", "supervised": False}
+    db.add_controller_change("admin", controller_id, "input", "IO2", "IO2", {**old, "name": "Ingresso AUX 2"}, old)
+    rex = {"name": "Pulsante", "role": "rex", "door_token": "porta", "contact": "no", "supervised": False}
+    db.add_controller_change("admin", controller_id, "input", "IO1", "IO1", {**rex, "role": ""}, rex)
     db.close()
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA user_version = 7")
@@ -698,3 +702,7 @@ def test_migration_leaves_old_generic_inputs_without_mode(tmp_path):
     db = Database(path)
     inputs = db.controller_inputs(controller_id)
     assert inputs["IO2"]["contact"] == "" and inputs["IO1"]["contact"] == "no"
+    # Anche nello Storico Modifiche: Annulla non rimette "no" (revisione)
+    changes = {c["token"]: db.get_controller_change(c["id"]) for c in db.list_controller_changes(controller_id)}
+    assert changes["IO2"]["before"]["contact"] == "" and changes["IO2"]["after"]["contact"] == ""
+    assert changes["IO1"]["before"]["contact"] == "no" and changes["IO1"]["after"]["contact"] == "no"

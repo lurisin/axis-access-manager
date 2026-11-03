@@ -114,7 +114,10 @@ class Setup:
         if self.log_grant is None:
             return None
         ident, at = self.log_grant
-        # None: orologio del controller un secondo avanti, il consenso sembra sempre appena passato
+        # None: orologio del controller un secondo avanti, il consenso sembra sempre appena passato. "?": orologio del
+        # controller non misurato, i secondi non si sanno
+        if at == "?":
+            return ident, None
         return ident, -1.0 if at is None else self.clock.now - at
 
     def lock_calls(self):
@@ -581,3 +584,18 @@ def test_times_read_during_an_invalidation_are_read_again():
     s.controller.slow_list = True
     asyncio.run(scenario())
     assert s.guard.times_at is None
+
+
+def test_without_a_measured_controller_clock_a_new_log_grant_counts_from_now():
+    """Revisione: con l'orologio del controller indietro e non misurato l'età del consenso era sbagliata, e la rete di
+    sicurezza tagliava in anticipo. Senza misura un consenso nuovo vale da quando si vede, mai da prima."""
+    s = Setup()
+    s.log_grant = ("r1", "?")
+    s.run(live=False)
+    assert s.guard.accesses["porta"].started == s.clock.now
+    s.run(4, live=False)
+    s.log_grant = ("r2", "?")
+    s.run(1 + MARGIN, live=False)
+    assert s.lock_calls() == [] and s.guard.accesses["porta"].started == s.clock.now
+    s.run(5 + MARGIN, live=False)
+    assert s.lock_calls() == [("lock_door", "porta")]

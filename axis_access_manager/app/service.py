@@ -216,6 +216,8 @@ class AccessService:
         # Secondi di cui l'orologio del controller (sincronizzato via NTP) è avanti rispetto a Home Assistant;
         # None se non si sa o se il controller non è sincronizzato
         self.clock_offset: Callable[[], float | None] | None = None
+        # Scarto misurato, anche senza NTP: per l'età dei consensi letti dal registro (rete di sicurezza)
+        self.measured_clock_offset: Callable[[], float | None] | None = None
 
     def _spawn(self, coro: Awaitable[None]) -> None:
         try:
@@ -243,19 +245,19 @@ class AccessService:
         """Un comando alla porta per volta: apertura dall'app e blocco della rete di sicurezza."""
         return self._door_locks.setdefault(door, asyncio.Lock())
 
-    async def last_grant(self, door: str) -> tuple[str, float] | None:
+    async def last_grant(self, door: str) -> tuple[str, float | None] | None:
         """Ultimo consenso (tessera, pulsante) alla porta nel registro del controller: (impronta, secondi fa), None se
         non c'è tra gli ultimi eventi. Per la rete di sicurezza della serratura senza eventi in diretta."""
         entries = await self.controller.latest_events(GRANT_LOG_TAIL)
-        moment = datetime.now(tz=UTC)
-        offset = self.clock_offset() if self.clock_offset else None
-        if offset and abs(offset) < MAX_CLOCK_CORRECTION:
-            moment += timedelta(seconds=offset)
+        # Scarto misurato dell'orologio del controller, anche senza NTP: senza misura i secondi non si sanno (None)
+        offset = self.measured_clock_offset() if self.measured_clock_offset else None
+        moment = datetime.now(tz=UTC) + timedelta(seconds=offset or 0)
         for entry in entries:
             event = event_from_log(entry)
             if event and event.topic.startswith("AccessControl/AccessGranted") and self._door_of(event) == door:
                 ident = str(entry.get("rowid") or "") or f"{event.timestamp.isoformat()}|{event.topic}"
-                return ident, (moment - event.timestamp).total_seconds()
+                age = (moment - event.timestamp).total_seconds() if offset is not None else None
+                return ident, age
         return None
 
     def log_lock_alarm(self, door: str, detail: str) -> None:

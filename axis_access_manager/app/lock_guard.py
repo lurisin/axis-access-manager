@@ -222,7 +222,7 @@ class LockGuard:
         log_alarm: Callable[[str, str], None],
         changed: Callable[[], None],
         live: bool = True,
-        last_grant: Callable[[str], Awaitable[tuple[str, float] | None]] | None = None,
+        last_grant: Callable[[str], Awaitable[tuple[str, float | None] | None]] | None = None,
     ) -> float:
         """Un giro sulle porte Aperte a Tempo. Restituisce tra quanti secondi serve il prossimo.
 
@@ -230,7 +230,7 @@ class LockGuard:
         log_alarm(porta, dettaglio): allarme nel registro. changed(): stato della porta aggiornato.
         live: eventi in diretta (WebSocket o MQTT); senza, lo stato in memoria può essere vecchio di 10 s e i consensi
         di tessere e pulsanti non arrivano: last_grant(porta) dà l'ultimo dal registro del controller, come
-        (impronta, secondi fa)."""
+        (impronta, secondi fa; None se l'orologio del controller non è misurato)."""
         from_log = last_grant if not live else None
         modes = dict(monitor.door_modes)
         for door in [d for d in self.accesses if modes.get(d) != ACCESSED]:
@@ -296,7 +296,7 @@ class LockGuard:
     async def _grant_from_log(
         self,
         door: str,
-        last_grant: Callable[[str], Awaitable[tuple[str, float] | None]],
+        last_grant: Callable[[str], Awaitable[tuple[str, float | None] | None]],
         log_alarm: Callable[[str, str], None],
     ) -> bool:
         """Senza eventi in diretta: un consenso nel registro del controller più nuovo dell'apertura che l'app conosce
@@ -311,17 +311,23 @@ class LockGuard:
         if found is None:
             return False
         ident, age = found
-        if ident == self.log_grants.get(door) or age < -LOG_SKEW:
+        if ident == self.log_grants.get(door) or (age is not None and age < -LOG_SKEW):
             return False
         self.log_grants[door] = ident
-        at = self.clock() - max(age, 0.0)
         access = self.accesses.get(door)
-        if access is None:
-            if age > LOG_GRANT_MAX:
+        if age is None:
+            # Orologio del controller non misurato: un consenso nuovo vale da adesso, mai da prima. Un'apertura appena
+            # vista parte da adesso (_track); quella in corso riparte al più tardi, mai in anticipo
+            if access is None:
                 return False
-        elif at <= access.started + LOG_SAME:
-            return False
+            at = self.clock()
         else:
+            at = self.clock() - max(age, 0.0)
+            if access is None and age > LOG_GRANT_MAX:
+                return False
+        if access is not None:
+            if at <= access.started + LOG_SAME:
+                return False
             self._drop(door, log_alarm)
         self.accesses[door] = _Access(started=at)
         return True
