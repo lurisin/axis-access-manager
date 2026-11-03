@@ -257,8 +257,9 @@ class HaBridge:
         }
 
     def _entities(self, all_conditions: bool = False) -> list[tuple[str, str, dict]]:
-        """(componente, id oggetto, configurazione) di ogni entità. all_conditions: anche Allarme, Preallarme e
-        Manomissione delle porte con il Contatto Porta, che non si pubblicano (vedi _shows_conditions)."""
+        """(componente, id oggetto, configurazione) di ogni entità. all_conditions: anche quelle che con il Contatto
+        Porta non si pubblicano: Allarme, Preallarme e Manomissione della porta (vedi _shows_conditions) e l'entità
+        dell'ingresso, che sarebbe un doppione di Contatto della porta."""
         common = {"device": self._device()}
         state = {"state_topic": self.state_topic}
         controller = self._availability("controller")
@@ -367,18 +368,14 @@ class HaBridge:
                         **state,
                         **controller,
                         "name": names.get(port) or name,
-                        **(
-                            {"device_class": "door"}
-                            if port in contact_ports
-                            else {"device_class": device_class}
-                            if device_class
-                            else {}
-                        ),
+                        **({"device_class": device_class} if device_class else {}),
                         "icon": "mdi:electric-switch",
                         "value_template": f"{{{{ value_json.ingressi['{port}'] }}}}",
                     },
                 )
                 for port, (object_id, name, device_class) in IO_INPUTS.items()
+                # Contatto Porta: in Home Assistant vale Contatto della porta, non un'altra entità con lo stesso stato
+                if all_conditions or port not in contact_ports
             ],
             (
                 "event",
@@ -584,8 +581,8 @@ class HaBridge:
                 _LOGGER.exception("Stato di mezzanotte non pubblicato in Home Assistant")
 
     async def refresh_entities(self) -> None:
-        """Dopo un cambio degli ingressi: ripubblica le entità degli ingressi (nome scelto nell'app, classe), e toglie o
-        rimette Allarme, Preallarme e Manomissione delle porte che hanno appena avuto o perso il Contatto Porta. Le
+        """Dopo un cambio degli ingressi: ripubblica le entità degli ingressi (nome scelto nell'app), e toglie o rimette
+        quelle che il Contatto Porta toglie (Allarme, Preallarme e Manomissione della porta, entità dell'ingresso). Le
         altre restano com'erano: lo stato della porta non passa da "sconosciuto"."""
         if not self.enabled:
             return
@@ -646,7 +643,7 @@ class HaBridge:
 
     def _inputs_state(self) -> dict[str, str]:
         """Stato degli ingressi I/O. Un Contatto Porta su un AUX vale come il Contatto Porta della sua porta (acceso =
-        porta aperta, con il tipo di contatto): le due entità dicono la stessa cosa."""
+        porta aperta, con il tipo di contatto). La sua entità non si pubblica (doppione di Contatto della porta)."""
         doors = {port: door for door, (port, _) in self.monitor.aux_contacts.items()}
         pushbuttons = self._pushbutton_ports()
         return {
