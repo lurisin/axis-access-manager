@@ -528,3 +528,67 @@ def test_aux_door_contact_in_home_assistant_and_door_state(settings, controller,
         body["role"] = ""
         assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
         assert monitor.aux_contacts == {} and monitor.contact_configured("porta") is False
+
+
+async def test_aux_door_contact_and_door_monitors_outside_the_app(db, controller):
+    """Revisione: un Sensore Porta messo a mano (o tornato con un ripristino) e utenti dell'AUX messi fuori dall'app
+    lasciavano il controller a usare il contatto per la porta."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    controller.door_configs["porta"]["Configuration"] += [{"Name": "DoorMonitor.Type", "Value": "Standard"}]
+    monitor = [
+        {"Type": "doorcontrol", "token": "porta", "Usage": u, "MultiIo": False}
+        for u in ("DoorOpenMonitor", "DoorClosedMonitor")
+    ]
+    await controller.set_io_assignment("DPS", "in:pu/gnd", monitor)
+    with pytest.raises(ServiceError, match=r"usa il Sensore Porta \(Ingresso Contatto Porta\)"):
+        await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+
+    # DoorMonitor rimasto senza ingresso, e un REX messo a mano sull'AUX: il Contatto Porta li toglie
+    await controller.set_io_assignment("DPS", "in:pu/gnd", [])
+    rex = [{"Type": "idpoint", "token": "a-mano", "Usage": "REX", "MultiIo": False}]
+    await controller.set_io_assignment("IO1", "inout:pu/gnd", rex)
+    assert service_problem(await service._input_problem("IO1", {"role": "door_contact", "door_token": "porta"}))
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "None"
+    assert controller.io_assignments["IO1"]["IoUser"] == []
+    row = db.controller_inputs(controller_id)["IO1"]
+    assert row["contact"] == "nc" and await service._input_problem("IO1", row) == ""
+
+
+def service_problem(text: str) -> bool:
+    return text in ("sul controller l'ingresso è usato da altro", "sul controller la porta usa ancora il Sensore Porta")
+
+
+async def test_undo_keeps_one_contact_per_door(db, controller):
+    """Revisione: annullare "Sensore Porta → Non Usato" dopo aver messo il Contatto Porta rimetteva il DoorMonitor."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    await service.update_input("DPS", {"role": "door_monitor", "door": "porta", "contact": "no"}, "admin")
+    await service.update_input("DPS", {"role": ""}, "admin")
+    removed = db.list_controller_changes(controller_id)[0]
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+    with pytest.raises(ServiceError, match="ha già un contatto"):
+        await service.undo(removed["id"], "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "None"
+
+
+def test_aux_contact_follows_the_normal_state_of_the_input():
+    """Lo stato normale dell'ingresso (getPorts normalState) si può cambiare sul controller: in loco IO2 è "closed"."""
+    from app.events import EventMonitor, StateSnapshot
+
+    monitor = EventMonitor(prefix="x")
+    monitor.aux_contacts = {"porta": ("1", "nc")}
+    # Stato normale di serie ("open"): attivo = circuito chiuso = porta chiusa con un contatto NC
+    monitor.io_ports["1"] = True
+    assert monitor.door_contact("porta") == "Closed"
+    # Stato normale "closed": attivo = circuito aperto = porta aperta con un contatto NC
+    snapshot = StateSnapshot(at="2026-11-03T15:00:00+00:00", io={"1": True}, io_normal={"1": "closed"})
+    monitor.apply_snapshot(snapshot, 0)
+    assert monitor.door_contact("porta") == "Open"
+    monitor.io_ports["1"] = False
+    assert monitor.door_contact("porta") == "Closed"
+    monitor.aux_contacts = {"porta": ("1", "no")}
+    assert monitor.door_contact("porta") == "Open"

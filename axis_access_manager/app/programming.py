@@ -197,6 +197,18 @@ def input_problem(
         other = DOOR_MONITOR_VALUES["nc" if row.get("contact") == "no" else "no"]
         if config and all(config.get(name) == value for name, value in other.items()):
             return "sul controller il tipo di contatto è diverso"
+    elif role == "door_contact":
+        users = next((a.get("IoUser") or [] for a in assigned or [] if a.get("IoName") == io), [])
+        if users:
+            return "sul controller l'ingresso è usato da altro"
+        config = {
+            c.get("Name"): c.get("Value")
+            for c in _door_config(door_configs or [], row.get("door_token") or "").get("Configuration") or []
+        }
+        if config and config.get("DoorMonitor.Type") not in (None, "", "None"):
+            return "sul controller la porta usa ancora il Sensore Porta"
+        if point or idpoint:
+            return "la programmazione di prima non è stata tolta del tutto dal controller"
     elif point or idpoint:
         return "la programmazione di prima non è stata tolta del tutto dal controller"
     return ""
@@ -659,22 +671,12 @@ class ProgrammingService:
                 raise ServiceError(f"{INPUT_ROLES[role]}: scegli la porta")
             if door not in {d.get("token") for d in await self.controller.door_info_list()}:
                 raise ServiceError("porta non trovata sul controller")
-        contact = data.get("contact") or "no"
+        # Contatto Porta: Normalmente Chiuso è il consigliato (un cavo tagliato risulta porta aperta)
+        contact = data.get("contact") or ("nc" if role == "door_contact" else "no")
         if contact not in CONTACTS:
             raise ServiceError("tipo di contatto non valido")
         if role in CONTACT_ROLES:
-            # Un contatto per porta: sul controller (Sensore Porta) o su un AUX (Contatto Porta), non tutti e due
-            other = next(
-                (
-                    row
-                    for key, row in self.db.controller_inputs(controller_id).items()
-                    if key != io and row.get("role") in CONTACT_ROLES and row.get("door_token") == door
-                ),
-                None,
-            )
-            if other:
-                where = other.get("name") or CONTROLLER_INPUTS.get(other["io"], (other["io"],))[0]
-                raise ServiceError(f"{INPUT_ROLES[role]}: la porta ha già un contatto ({where})")
+            self._check_one_contact(controller_id, io, role, door)
         supervised = bool(data.get("supervised"))
         if role == "door_monitor" and supervised:
             raise ServiceError("Sensore Porta: la linea supervisionata non è ancora disponibile")
@@ -708,6 +710,8 @@ class ProgrammingService:
                 current = {**current, **(await self._door_monitor_on_controller(io) or {})}
             if manual and (current.get("role") != "door_monitor" or current.get("door_token") != door):
                 raise ServiceError(f"{INPUT_ROLES[role]}: non disponibile su questo ingresso")
+            if role == "door_contact" and (where := await self._monitor_elsewhere(io, door)):
+                raise ServiceError(f"{INPUT_ROLES[role]}: sul controller la porta usa il Sensore Porta ({where})")
             before = {k: current.get(k) for k in INPUT_SETTINGS}
             # Stesse impostazioni: si riscrive solo se sul controller l'ingresso non è com'è salvato nell'app
             same = {**before, "name": values["name"]} == values
@@ -725,6 +729,20 @@ class ProgrammingService:
             self.db.add_audit(user, "controller programmato", summary)
         return values
 
+    def _check_one_contact(self, controller_id: int, io: str, role: str, door: str) -> None:
+        """Un contatto per porta: sul controller (Sensore Porta) o su un AUX (Contatto Porta), non tutti e due."""
+        other = next(
+            (
+                row
+                for key, row in self.db.controller_inputs(controller_id).items()
+                if key != io and row.get("role") in CONTACT_ROLES and row.get("door_token") == door
+            ),
+            None,
+        )
+        if other:
+            where = other.get("name") or CONTROLLER_INPUTS.get(other["io"], (other["io"],))[0]
+            raise ServiceError(f"{INPUT_ROLES[role]}: la porta ha già un contatto ({where})")
+
     async def _input_problem(self, io: str, row: dict) -> str:
         """Come input_problem, con i dati letti ora dal controller (solo quelli che servono al ruolo)."""
         try:
@@ -737,7 +755,7 @@ class ProgrammingService:
                     profiles=await self.controller.list_access_profiles(),
                     access_controllers=await self.controller.list_access_controllers() or None,
                 )
-            if row.get("role") == "door_monitor":
+            if row.get("role") in CONTACT_ROLES:
                 return input_problem(
                     io,
                     row,
@@ -781,6 +799,8 @@ class ProgrammingService:
                 # un nuovo salvataggio lo completa o, con un altro ruolo, lo toglie
                 partial = values
                 await self._write_door_monitor(io, values)
+            elif values["role"] == "door_contact":
+                await self._free_for_contact(io, values["door_token"])
         except VapixError as err:
             # Resta il ruolo di prima con i token di adesso: la pagina segnala l'ingresso (input_problem) e un nuovo
             # salvataggio, anche con le stesse impostazioni, completa il lavoro
@@ -821,6 +841,35 @@ class ProgrammingService:
             {"Type": "doorcontrol", "token": door, "Usage": usage, "MultiIo": False} for usage in DOOR_MONITOR_USAGES
         ]
         await self.controller.set_io_assignment(io, _plain_mode(io), users)
+
+    async def _monitor_elsewhere(self, io: str, door: str) -> str:
+        """Ingresso che sul controller fa da contatto porta (DoorMonitor) per la porta, se non è questo; "" se non
+        c'è o non si legge. Un Sensore Porta messo a mano, o tornato con un ripristino, nell'app può non esserci."""
+        try:
+            _, assigned = await self.controller.list_io()
+        except VapixError:
+            return ""
+        for item in assigned:
+            name = item.get("IoName") or ""
+            if name != io and any(
+                u.get("Usage") in DOOR_MONITOR_USAGES and u.get("token") == door for u in item.get("IoUser") or []
+            ):
+                return CONTROLLER_INPUTS.get(name, (name, None))[0]
+        return ""
+
+    async def _free_for_contact(self, io: str, door: str) -> None:
+        """Contatto Porta: il controller non deve usare né l'ingresso (utenti messi fuori dall'app) né un contatto
+        per la porta (DoorMonitor rimasto senza ingresso), così la serratura resta sempre a tempo."""
+        _, assigned = await self.controller.list_io()
+        users = next((a.get("IoUser") or [] for a in assigned if a.get("IoName") == io), [])
+        if users:
+            await self.controller.set_io_assignment(io, _plain_mode(io), [])
+        config = {
+            c.get("Name"): c.get("Value")
+            for c in _door_config(await self.controller.list_door_configurations(), door).get("Configuration") or []
+        }
+        if config.get("DoorMonitor.Type") not in (None, "", "None"):
+            await self._set_door_monitor(door, DOOR_MONITOR_OFF, required=False)
 
     async def _clear_door_monitor(self, io: str, door: str) -> None:
         if door:
@@ -1076,6 +1125,12 @@ class ProgrammingService:
             raise ServiceError(f"annulla prima {what} dello stesso oggetto: {'; '.join(later)}")
         async with self.lock:
             if change["kind"] == "input":
+                before = change["before"] or {}
+                if before.get("role") in CONTACT_ROLES:
+                    # Come al salvataggio: la porta può avere avuto un altro contatto dopo questa modifica
+                    self._check_one_contact(
+                        self.controller_id, change["token"], before["role"], before.get("door_token") or ""
+                    )
                 current = self.db.controller_inputs(self.controller_id).get(change["token"]) or {}
                 await self._apply_input(self.controller_id, change["token"], current, change["before"])
             else:

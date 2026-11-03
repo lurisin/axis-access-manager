@@ -3493,7 +3493,7 @@ const INPUT_ROLE_HINTS = {
   rex: "Chiede l'apertura della porta, come un lettore in uscita: per il pulsante della portineria o di uscita. Nel registro le aperture compaiono come Uscita, con il nome dell'ingresso.",
   intercom: "Il contatto del relè del citofono: apre la porta anche con Home Assistant spento. Nel registro le aperture compaiono come Apertura Remota, con il nome dell'ingresso.",
   door_monitor: "Contatto della porta gestito dal controller: allarmi di porta forzata e aperta troppo a lungo. La serratura resta alimentata finché la porta è aperta.",
-  door_contact: "Contatto della porta letto solo dall'app: Contatto Porta in Home Assistant. La serratura resta a tempo e l'app la blocca appena la porta si apre.",
+  door_contact: "Contatto della porta letto solo dall'app: Contatto Porta in Home Assistant. La serratura resta a tempo e l'app la blocca quando la porta si apre.",
   alarm: "Nessuna azione sulla porta: lo stato arriva in Home Assistant con il nome scelto.",
 };
 // Al banco (firmware 10.12) gli AUX usati come pulsante sono rimasti attivi dopo la prima pressione fino al riavvio
@@ -3502,7 +3502,7 @@ const inputRoleHint = (io, role) => INPUT_ROLE_HINTS[role] || "";
 const DOOR_CONTACT_HINTS = {no: "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre.",
   nc: "Normalmente Chiuso: con la porta chiusa il contatto è chiuso e si apre quando la porta si apre."};
 const CONTACT_HINTS = {
-  door_contact: DOOR_CONTACT_HINTS,
+  door_contact: {no: DOOR_CONTACT_HINTS.no + " Consigliato Normalmente Chiuso.", nc: DOOR_CONTACT_HINTS.nc + " Consigliato: un cavo tagliato risulta porta aperta."},
   door_monitor: DOOR_CONTACT_HINTS,
   rex: {no: "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.",
     nc: "Normalmente Chiuso: il contatto si apre quando si preme il pulsante o scatta il relè."},
@@ -3687,13 +3687,14 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     // Contatto e linea supervisionata servono solo ai ruoli che l'app scrive sul controller: con Non Usato e Ingresso
     // di Allarme non hanno effetto. La linea supervisionata solo per pulsante e relè: col contatto porta non è provata al banco
     const wired = (r) => DOOR_INPUT_ROLES.includes(r);
+    const startContact = role === "door_contact" && i.role !== "door_contact" ? "nc" : i.contact;
     const supervisable = (r) => i.can_supervise && ["rex", "intercom"].includes(r);
     const ok = await modal({title: i.name,
       body: `${i.problem ? `<div class="alert" style="margin:0 0 12px">${icon("alert")}<div class="grow"><b>Da Riscrivere</b>${esc(i.problem[0].toUpperCase() + i.problem.slice(1))}. Premi Scrivi sul Controller: anche con le stesse impostazioni l'app completa la programmazione.</div></div>` : ""}
         ${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? " È anche il nome dell'entità in Home Assistant." : ""} Compare nel registro per le aperture da questo ingresso.`)}
         ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(inputRoleHint(i.io, role))}</span>`)}
         <div data-door-field ${DOOR_INPUT_ROLES.includes(role) ? "" : "hidden"}>${field("Porta", `<select name="door">${doorOptions}</select>`)}</div>
-        <div data-wiring ${wired(role) ? "" : "hidden"}>${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === i.contact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role, i.contact))}</span>`)}
+        <div data-wiring ${wired(role) ? "" : "hidden"}>${field("Contatto", `<select name="contact">${Object.entries(p.contacts).map(([k, v]) => `<option value="${esc(k)}" ${k === startContact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role, startContact))}</span>`)}
         <div class="field inline"><input type="checkbox" name="supervised" id="f-sup" ${i.supervised && supervisable(role) ? "checked" : ""} ${supervisable(role) ? "" : "disabled"}><label for="f-sup">Linea Supervisionata</label></div>
         <p class="hint" style="margin-top:-8px">${i.can_supervise ? "Con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. Attivala solo se le resistenze sono montate. Dopo averla tolta, l'ingresso può risultare attivo finché non riavvii il controller." : "Questo ingresso non supporta la linea supervisionata."}</p></div>`,
       onOpen: (dlg) => {
@@ -3710,6 +3711,8 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
           $("[data-door-field]", dlg).hidden = !DOOR_INPUT_ROLES.includes(select.value);
           $("[data-role-hint]", dlg).textContent = inputRoleHint(i.io, select.value);
           $("[data-wiring]", dlg).hidden = !wired(select.value);
+          // Contatto Porta: Normalmente Chiuso consigliato, se non era già un Contatto Porta salvato
+          if (select.value === "door_contact" && i.role !== "door_contact") contact.value = "nc";
           showContact();
           const supervised = $('[name="supervised"]', dlg);
           supervised.disabled = !supervisable(select.value);

@@ -98,7 +98,7 @@ Il pallino accanto al nome mostra lo stato in tempo reale degli ingressi che lo 
 - **Ruolo**:
   - **Pulsante Uscita**: chiede l'apertura della porta e sblocca la serratura, ad esempio dal pulsante della portineria. Più pulsanti in parallelo sulla stessa linea vanno bene.
   - **Relè Citofono**: il contatto del relè del citofono. Apre la porta anche con Home Assistant spento.
-  - **Contatto Porta** (sugli AUX e sull'ingresso Allarme): il contatto magnetico della porta, letto solo dall'app. Il controller non lo usa per la porta, quindi la serratura resta sempre alimentata solo per il tempo di apertura, anche con la porta tenuta aperta. In Home Assistant compare **Contatto Porta** (e l'entità dell'ingresso dice la stessa cosa), e l'app blocca la serratura appena la porta si apre (vedi [Serratura solo a tempo](#serratura-solo-a-tempo)). Niente allarmi di porta forzata e aperta troppo a lungo. È il ruolo consigliato.
+  - **Contatto Porta** (sugli AUX e sull'ingresso Allarme): il contatto magnetico della porta, letto solo dall'app. Il controller non lo usa per la porta, quindi la serratura resta sempre alimentata solo per il tempo di apertura, anche con la porta tenuta aperta. In Home Assistant compare **Contatto Porta** (e l'entità dell'ingresso dice la stessa cosa), e l'app blocca la serratura quando la porta si apre (vedi [Serratura solo a tempo](#serratura-solo-a-tempo)). Niente allarmi di porta forzata e aperta troppo a lungo. È il ruolo consigliato, con contatto Normalmente Chiuso: un cavo tagliato risulta porta aperta. Lo stato normale dell'ingresso impostato nella pagina web del controller non cambia la lettura: conta il tipo di contatto scelto nell'app.
   - **Sensore Porta** (solo sull'ingresso contatto porta): il contatto magnetico gestito dal controller (DoorMonitor), con gli allarmi di porta forzata e aperta troppo a lungo. **Il controller tiene la serratura alimentata finché la porta è aperta**, anche con "riblocca all'apertura" (provato in loco il 3 novembre con il firmware 10.12): solo per serrature che lo reggono. La linea supervisionata per questo ruolo non è ancora disponibile. Un contatto impostato a mano sul controller (anche su un AUX) viene riconosciuto e si toglie dall'app scegliendo Non Usato.
   - **Ingresso di Allarme**: solo stato in Home Assistant.
   - **Non Usato**.
@@ -130,10 +130,10 @@ Da sapere:
 La serratura non deve restare alimentata a lungo, nemmeno con la porta tenuta aperta per far entrare il materiale. Senza Sensore Porta il controller la alimenta solo per il tempo di apertura (Tempo di Apertura o Apertura Estesa) e la riblocca sempre a fine tempo, anche con Home Assistant o l'add-on spenti.
 
 In più l'app sorveglia ogni porta **Aperta a Tempo** e la blocca (comando di blocco, mai uno sblocco):
-- appena il contatto porta segna la porta aperta; se la porta era già aperta quando è arrivato il consenso, la serratura al più si alimenta per mezzo secondo;
-- se la porta resta Aperta a Tempo oltre il suo tempo più 3 secondi. Questo è un guasto (contatto, configurazione, controller): nel registro e tra le notifiche compare l'allarme **Riblocco Forzato**, e in Home Assistant l'evento `allarme_porta`. Se il controller non si blocca dopo tre tentativi, l'allarme è **Riblocco Non Riuscito**.
+- quando il Contatto Porta vede la porta aprirsi, circa un secondo dopo: la serratura non serve più. Se la porta era già aperta al consenso (materiale che entra), l'app non la blocca per questo: chi ha passato la tessera deve poterla spingere, e la serratura si riblocca a fine tempo. Serve il collegamento in diretta con il controller: senza, vale solo il punto seguente;
+- se la porta resta Aperta a Tempo oltre il suo tempo più 3 secondi. Il tempo conta al massimo 30 secondi (60 per l'apertura estesa), anche se sul controller è stato messo di più. Questo è un guasto (contatto, configurazione, controller): nel registro e tra le notifiche compare l'allarme **Riblocco Forzato**, e in Home Assistant l'evento `allarme_porta`. Se il controller non si blocca dopo tre tentativi, l'allarme è **Riblocco Non Riuscito**.
 
-Prima di bloccare l'app rilegge la porta dal controller: un'apertura già finita non si tocca. Il blocco lascia la porta nella modalità normale, e tessere, pulsanti e aperture dall'app funzionano come sempre.
+Prima di bloccare l'app rilegge la porta dal controller: un'apertura già finita, o una nuova, non si tocca. Il blocco lascia la porta nella modalità normale, e tessere, pulsanti e aperture dall'app funzionano come sempre.
 
 ### Porte, lettori e storico
 

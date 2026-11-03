@@ -232,6 +232,11 @@ class AccessService:
         """Qualcosa da aggiornare in Home Assistant (per esempio il controller è andato offline)."""
         self._changed()
 
+    def _door_open(self, door: str) -> bool | None:
+        """Porta aperta secondo il contatto porta (sul controller o su un AUX); None se non si sa."""
+        state = self.monitor.door_contact(door) if self.monitor else None
+        return {"Open": True, "Closed": False}.get(state or "")
+
     def door_lock(self, door: str) -> asyncio.Lock:
         """Un comando alla porta per volta: apertura dall'app e blocco della rete di sicurezza."""
         return self._door_locks.setdefault(door, asyncio.Lock())
@@ -953,7 +958,7 @@ class AccessService:
             await self.controller.access_door(door, extended)
             if self.lock_guard is not None:
                 # Il tempo della rete di sicurezza parte da qui, con il tempo esteso se chiesto
-                self.lock_guard.granted(door, extended)
+                self.lock_guard.granted(door, extended, self._door_open(door))
             if self.monitor and self.monitor.door_modes.get(door) == before:
                 # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
                 # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
@@ -979,7 +984,8 @@ class AccessService:
         """Salva nel log gli eventi utili. I messaggi conservati dal broker sono già stati registrati."""
         if self.lock_guard is not None and not retained and not self._recovering:
             if event.topic.startswith("AccessControl/AccessGranted"):
-                self.lock_guard.granted(self._door_of(event))
+                door = self._door_of(event)
+                self.lock_guard.granted(door, door_open=self._door_open(door))
             elif event.topic.startswith(("Door/State/", "Device/IO/Port")):
                 self.lock_guard.poke()
         if event.topic.startswith("Door/State/DoorMode/"):

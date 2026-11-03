@@ -2159,6 +2159,7 @@ MONITOR_STATE = (
     "casing_since",
     "system_ready",
     "io_ports",
+    "io_normal",
     "io_changed",
     "categories",
     "last_card",
@@ -2956,23 +2957,25 @@ async def _lock_guard_loop(app: FastAPI) -> None:
     guard: LockGuard = state.lock_guard
     while True:
         guard.wake.clear()
+        wait = CHECK_EVERY
         try:
             monitor = state.monitor
             # Con il controller che non risponde lo stato delle porte è sconosciuto: niente da fare
             if monitor.reachable is not False and _responding(state) is not False:
                 service = state.service
-                await guard.tick(
+                wait = await guard.tick(
                     monitor,
                     state.controller,
                     door_lock=service.door_lock,
                     contact_open=functools.partial(_contact_open, monitor),
                     log_alarm=service.log_lock_alarm,
                     changed=service.notify_change,
+                    live=events_live(state),
                 )
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo della serratura non riuscito")
         with contextlib.suppress(TimeoutError):
-            await asyncio.wait_for(guard.wake.wait(), CHECK_EVERY)
+            await asyncio.wait_for(guard.wake.wait(), wait)
 
 
 def _controllers_health(state) -> list[dict]:

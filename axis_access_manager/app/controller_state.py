@@ -128,6 +128,7 @@ async def read_state(client, doors: list[str], full: bool) -> StateSnapshot:
             # Attivo quando non è nello stato normale, come in Device/IO/Port. Le uscite non sono ingressi
             if port and item.get("direction", "input") == "input" and {value, normal} <= {"open", "closed"}:
                 snapshot.io[port] = value != normal
+                snapshot.io_normal[port] = normal
     try:
         await _read_log(client, snapshot, doors, full)
     except VapixError as err:

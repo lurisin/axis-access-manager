@@ -3,7 +3,18 @@
 import asyncio
 
 from app.events import EventMonitor
-from app.lock_guard import FAILED, FORCED, MARGIN, MAX_ATTEMPTS, OPEN_GRACE, RETRY_AFTER, UNKNOWN_LIMIT, LockGuard
+from app.lock_guard import (
+    CHECK_EVERY,
+    FAILED,
+    FORCED,
+    MARGIN,
+    MAX_ACCESS,
+    MAX_ATTEMPTS,
+    MAX_EXTENDED,
+    OPEN_GRACE,
+    RETRY_AFTER,
+    LockGuard,
+)
 from app.vapix import VapixError
 
 
@@ -18,29 +29,44 @@ class Clock:
 class Controller:
     """Porte con modalità e tempi; LockDoor blocca, a meno che il controller non lo ignori."""
 
-    def __init__(self, mode="Accessed", times=None):
+    def __init__(self, clock, mode="Accessed", times=None):
+        self.clock = clock
         self.modes = {"porta": mode}
         self.times = times if times is not None else {"porta": ("PT5S", "PT20S")}
         self.calls = []
         self.ignore_lock = False
         self.fail_read = False
         self.fail_lock = False
+        self.fail_after_lock = False
+        # Secondi che passano a ogni chiamata (controller lento)
+        self.delay = 0.0
+        # Chiamata durante la lettura della porta (per esempio un consenso che arriva in quel momento)
+        self.on_read = None
 
     async def list_doors(self):
         self.calls.append(("list_doors",))
         return [{"token": t, "AccessTime": a, "ExtendedAccessTime": e} for t, (a, e) in self.times.items()]
 
     async def door_mode(self, door):
+        self.clock.now += self.delay
+        self.calls.append(("door_mode", door))
+        if self.on_read:
+            callback, self.on_read = self.on_read, None
+            callback()
         if self.fail_read:
             raise VapixError("timeout")
         return self.modes.get(door)
 
     async def lock_door(self, door):
+        self.clock.now += self.delay
         self.calls.append(("lock_door", door))
         if self.fail_lock:
             raise VapixError("rifiutato")
         if not self.ignore_lock:
             self.modes[door] = "Locked"
+        if self.fail_after_lock:
+            self.fail_after_lock = False
+            raise VapixError("risposta persa")
 
 
 class Setup:
@@ -49,35 +75,38 @@ class Setup:
         self.guard = LockGuard(clock=self.clock)
         self.monitor = EventMonitor(prefix="axis")
         self.monitor.door_modes["porta"] = mode
-        self.controller = Controller(mode, times)
+        self.controller = Controller(self.clock, mode, times)
         self.contact = {"porta": contact}
         self.alarms = []
         self.changes = 0
         self.locks = {}
+        self.wait = None
 
     def changed(self):
         self.changes += 1
 
-    def run(self, seconds=0.0):
+    def run(self, seconds=0.0, live=True):
         self.clock.now += seconds
-        asyncio.run(
-            self.guard.tick(
-                self.monitor,
-                self.controller,
-                door_lock=lambda d: self.locks.setdefault(d, asyncio.Lock()),
-                contact_open=lambda d: self.contact.get(d),
-                log_alarm=lambda d, detail: self.alarms.append((d, detail)),
-                changed=self.changed,
-            )
+        self.wait = asyncio.run(self.tick(live))
+
+    async def tick(self, live=True):
+        return await self.guard.tick(
+            self.monitor,
+            self.controller,
+            door_lock=lambda d: self.locks.setdefault(d, asyncio.Lock()),
+            contact_open=lambda d: self.contact.get(d),
+            log_alarm=lambda d, detail: self.alarms.append((d, detail)),
+            changed=self.changed,
+            live=live,
         )
 
     def lock_calls(self):
         return [c for c in self.controller.calls if c[0] == "lock_door"]
 
-    def accessed(self, mode="Accessed"):
-        """La porta cambia modalità (evento del controller)."""
-        self.monitor.door_modes["porta"] = mode
-        self.controller.modes["porta"] = mode
+    def accessed(self, mode="Accessed", door="porta"):
+        """La porta cambia modalità sul controller e (evento in diretta) in memoria."""
+        self.monitor.door_modes[door] = mode
+        self.controller.modes[door] = mode
 
 
 def test_normal_opening_is_left_alone():
@@ -97,7 +126,11 @@ def test_overtime_locks_and_logs_alarm():
     s = Setup()
     s.guard.granted("porta")
     s.run()
-    s.run(5 + MARGIN + 0.1)
+    assert s.wait == CHECK_EVERY
+    s.run(5 + MARGIN - 0.5)
+    # Il prossimo giro arriva quando serve, non al secondo pieno
+    assert s.wait == 0.5
+    s.run(0.5)
     assert s.lock_calls() == [("lock_door", "porta")]
     assert s.alarms == [("porta", FORCED)]
     assert s.monitor.door_modes["porta"] == "Locked" and s.changes == 1
@@ -115,6 +148,28 @@ def test_extended_opening_uses_extended_time():
     assert s.lock_calls() == [("lock_door", "porta")]
 
 
+def test_times_beyond_the_app_maximum_are_capped():
+    """Un tempo messo sul controller fuori dall'app non tiene la serratura alimentata oltre i massimi."""
+    s = Setup(times={"porta": ("PT300S", "PT600S")})
+    s.run()
+    s.run(MAX_ACCESS + MARGIN + 0.1)
+    assert s.lock_calls() == [("lock_door", "porta")] and s.alarms == [("porta", FORCED)]
+    s = Setup(times={"porta": ("PT300S", "PT600S")})
+    s.guard.granted("porta", extended=True)
+    s.run()
+    s.run(MAX_EXTENDED + MARGIN + 0.1)
+    assert len(s.lock_calls()) == 1
+
+
+def test_unknown_times_use_the_maximum():
+    s = Setup(times={})
+    s.run()
+    s.run(MAX_ACCESS + MARGIN - 0.1)
+    assert s.lock_calls() == []
+    s.run(0.2)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
 def test_new_grant_restarts_the_time():
     s = Setup()
     s.guard.granted("porta")
@@ -129,7 +184,7 @@ def test_new_grant_restarts_the_time():
 
 
 def test_accessed_seen_without_grant_counts_from_now():
-    """Aperta a Tempo letta con le API (eventi persi): il tempo parte da quando l'app la vede."""
+    """Aperta a Tempo letta con le API (consenso perso): il tempo parte da quando l'app la vede."""
     s = Setup()
     s.run()
     s.run(5 + MARGIN - 0.1)
@@ -151,31 +206,71 @@ def test_old_grant_does_not_count():
 def test_door_opened_during_access_locks_without_alarm():
     """Il controller con il contatto porta tiene la serratura alimentata finché la porta è aperta: si blocca subito."""
     s = Setup(contact=False)
-    s.guard.granted("porta")
+    s.guard.granted("porta", door_open=False)
     s.run()
     s.run(2)
     s.contact["porta"] = True
     s.run()
-    assert s.lock_calls() == []
+    assert s.lock_calls() == [] and s.wait == OPEN_GRACE
     s.run(OPEN_GRACE)
     assert s.lock_calls() == [("lock_door", "porta")]
     assert s.alarms == []
     assert s.monitor.door_modes["porta"] == "Locked"
 
 
-def test_door_already_open_at_grant_locks_at_once():
+def test_door_opened_right_after_the_grant():
+    """Pulsante e porta spinta insieme: il consenso ha visto la porta chiusa, il primo giro la vede già aperta."""
     s = Setup(contact=True)
-    s.guard.granted("porta")
+    s.guard.granted("porta", door_open=False)
     s.run()
     s.run(OPEN_GRACE)
     assert s.lock_calls() == [("lock_door", "porta")]
-    assert s.alarms == []
+
+
+def test_door_already_open_at_grant_is_not_cut():
+    """Porta già aperta (materiale, porta che si sta chiudendo) al consenso: chi ha passato la tessera deve poterla
+    spingere. La serratura si riblocca a fine tempo, come senza contatto."""
+    s = Setup(contact=True)
+    s.guard.granted("porta", door_open=True)
+    s.run()
+    s.run(2)
+    assert s.lock_calls() == []
+    s.accessed("Locked")
+    s.run(5)
+    assert s.lock_calls() == [] and s.alarms == []
+
+
+def test_door_closing_at_grant_then_opened_again_is_cut():
+    s = Setup(contact=True)
+    s.guard.granted("porta", door_open=True)
+    s.run()
+    s.contact["porta"] = False
+    s.run(1)
+    s.contact["porta"] = True
+    s.run(0.5)
+    s.run(OPEN_GRACE)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_contact_stuck_open_does_not_cut_every_access():
+    """Contatto che segna sempre aperta (cavo tagliato, non collegato): le aperture durano il loro tempo."""
+    s = Setup(contact=True)
+    for _ in range(3):
+        s.guard.granted("porta", door_open=True)
+        s.accessed()
+        s.run()
+        s.run(4)
+        s.accessed("Locked")
+        s.run(1)
+    assert s.lock_calls() == []
 
 
 def test_contact_open_only_for_an_instant():
-    s = Setup(contact=True)
-    s.guard.granted("porta")
+    s = Setup(contact=False)
+    s.guard.granted("porta", door_open=False)
     s.run()
+    s.contact["porta"] = True
+    s.run(0.1)
     s.contact["porta"] = False
     s.run(OPEN_GRACE)
     assert s.lock_calls() == []
@@ -217,6 +312,18 @@ def test_lock_error_retries():
     assert s.alarms == [("porta", FORCED)]
 
 
+def test_lock_applied_but_answer_lost_still_logs_the_alarm():
+    s = Setup()
+    s.controller.fail_after_lock = True
+    s.run()
+    s.run(5 + MARGIN + 0.1)
+    assert len(s.lock_calls()) == 1 and s.alarms == []
+    # Il controller l'ha bloccata: l'evento "Bloccata" arriva, e l'allarme resta
+    s.monitor.door_modes["porta"] = "Locked"
+    s.run(1)
+    assert s.alarms == [("porta", FORCED)]
+
+
 def test_read_error_waits():
     s = Setup()
     s.controller.fail_read = True
@@ -227,15 +334,6 @@ def test_read_error_waits():
     s.run(1)
     assert s.lock_calls() == []
     s.run(RETRY_AFTER)
-    assert s.lock_calls() == [("lock_door", "porta")]
-
-
-def test_unknown_times_use_the_maximum():
-    s = Setup(times={})
-    s.run()
-    s.run(UNKNOWN_LIMIT + MARGIN - 0.1)
-    assert s.lock_calls() == []
-    s.run(0.2)
     assert s.lock_calls() == [("lock_door", "porta")]
 
 
@@ -268,3 +366,79 @@ def test_new_access_after_lock_is_tracked_again():
     s.run(1)
     s.run(5 + MARGIN)
     assert len(s.lock_calls()) == 2
+
+
+def test_without_live_events_two_accesses_are_not_merged():
+    """Revisione: solo letture ogni 10 s, il "Bloccata" tra due tessere non si vede. Si rilegge il controller a ogni
+    giro: la seconda apertura ha il suo tempo."""
+    s = Setup()
+    s.run(live=False)
+    s.run(2, live=False)
+    # Fine della prima apertura: in memoria resta Aperta a Tempo (lettura ogni 10 s)
+    s.controller.modes["porta"] = "Locked"
+    s.run(1, live=False)
+    assert s.guard.accesses == {} and s.monitor.door_modes["porta"] == "Locked"
+    # La lettura dei 10 s vede la seconda tessera
+    s.accessed()
+    s.run(4, live=False)
+    s.run(5 + MARGIN - 0.5, live=False)
+    assert s.lock_calls() == [] and s.alarms == []
+    s.run(0.6, live=False)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_without_live_events_the_contact_is_not_used():
+    s = Setup(contact=False)
+    s.run(live=False)
+    s.contact["porta"] = True
+    s.run(1, live=False)
+    s.run(1, live=False)
+    assert s.lock_calls() == []
+
+
+def test_open_from_the_app_while_waiting_is_not_locked():
+    """Revisione: il blocco aspettava la porta occupata da un'apertura dall'app, e poi chiudeva quella nuova."""
+    s = Setup()
+    s.run()
+
+    async def scenario():
+        lock = s.locks.setdefault("porta", asyncio.Lock())
+        await lock.acquire()
+        s.clock.now += 5 + MARGIN + 0.1
+        task = asyncio.create_task(s.tick())
+        await asyncio.sleep(0)
+        # Apertura dall'app: il controller la apre, e il consenso arriva alla rete di sicurezza
+        s.controller.modes["porta"] = "Accessed"
+        s.guard.granted("porta", door_open=False)
+        lock.release()
+        return await task
+
+    asyncio.run(scenario())
+    assert s.lock_calls() == [] and s.alarms == []
+
+
+def test_grant_during_the_read_before_locking():
+    s = Setup()
+    s.run()
+    s.controller.on_read = lambda: s.guard.granted("porta", door_open=False)
+    s.run(5 + MARGIN + 0.1)
+    assert s.lock_calls() == [] and s.alarms == []
+
+
+def test_second_door_keeps_its_grace_with_a_slow_controller():
+    """Revisione: l'ora del giro restava quella di prima delle chiamate al controller per la prima porta."""
+    s = Setup()
+    s.run()
+    s.clock.now += 5 + MARGIN + 0.1
+    # La porta principale è da bloccare (tempo scaduto); intanto la seconda si apre subito dopo il consenso
+    s.controller.times["porta2"] = ("PT5S", "PT20S")
+    s.guard.granted("porta2", door_open=False)
+    s.accessed(door="porta2")
+    s.contact["porta2"] = True
+    s.controller.delay = 0.4
+    s.run()
+    # Bloccata la principale; la seconda aspetta il suo mezzo secondo da quando l'app la vede aperta
+    assert s.lock_calls() == [("lock_door", "porta")]
+    s.controller.delay = 0
+    s.run(OPEN_GRACE)
+    assert s.lock_calls() == [("lock_door", "porta"), ("lock_door", "porta2")]

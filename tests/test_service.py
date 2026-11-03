@@ -872,8 +872,11 @@ async def test_lock_guard_sees_grants_and_door_events(service, controller, db):
 
     guard = LockGuard(clock=lambda: 100.0)
     service.lock_guard = guard
+    # Il contatto porta al momento del consenso: aperta, chiusa o non si sa
+    service.monitor.door_physical["porta2"] = "Closed"
     service.record_event(event("AccessControl/AccessGranted/Anonymous/x", {"DoorToken": "porta2"}))
-    assert guard.grants == {"porta2": (100.0, False)}
+    grant = guard.grants["porta2"]
+    assert (grant.at, grant.extended, grant.door_open) == (100.0, False, False)
     guard.wake.clear()
     service.record_event(event("Door/State/DoorPhysicalState/$source/DoorToken/porta", {"State": "Open"}))
     assert guard.wake.is_set()
@@ -888,7 +891,8 @@ async def test_lock_guard_sees_grants_and_door_events(service, controller, db):
     service.monitor.connected, service.monitor.controller_online = True, True
     service.monitor.door_mode = "Locked"
     await service.open_door(True, "admin")
-    assert guard.grants["porta"] == (100.0, True)
+    grant = guard.grants["porta"]
+    assert (grant.at, grant.extended, grant.door_open) == (100.0, True, None)
 
     service.log_lock_alarm("porta", FORCED)
     row = db.list_events(kind="allarme")[0]
