@@ -681,8 +681,6 @@ class ProgrammingService:
         )
         if contact not in CONTACTS and not (role == "alarm" and contact == FOLLOW_CONTROLLER):
             raise ServiceError("modalità dell'ingresso non valida")
-        if role in CONTACT_ROLES:
-            self._check_one_contact(controller_id, io, role, door)
         supervised = bool(data.get("supervised"))
         if role == "door_monitor" and supervised:
             raise ServiceError("Sensore Porta: la linea supervisionata non è ancora disponibile")
@@ -703,6 +701,9 @@ class ProgrammingService:
             "schedule": "",
         }
         async with self.lock:
+            if role in CONTACT_ROLES:
+                # Dentro il lock: due salvataggi insieme non mettono due contatti sulla stessa porta
+                self._check_one_contact(controller_id, io, role, door)
             current = self.db.controller_inputs(controller_id).get(io) or {
                 "name": CONTROLLER_INPUTS[io][0],
                 "role": "",
@@ -1134,9 +1135,15 @@ class ProgrammingService:
                 before = change["before"] or {}
                 if before.get("role") in CONTACT_ROLES:
                     # Come al salvataggio: la porta può avere avuto un altro contatto dopo questa modifica
-                    self._check_one_contact(
-                        self.controller_id, change["token"], before["role"], before.get("door_token") or ""
-                    )
+                    door = before.get("door_token") or ""
+                    self._check_one_contact(self.controller_id, change["token"], before["role"], door)
+                    if before["role"] == "door_contact" and (
+                        where := await self._monitor_elsewhere(change["token"], door)
+                    ):
+                        # Il Contatto Porta toglierebbe il Sensore Porta che un altro ingresso usa ancora
+                        raise ServiceError(
+                            f"{INPUT_ROLES['door_contact']}: sul controller la porta usa il Sensore Porta ({where})"
+                        )
                 current = self.db.controller_inputs(self.controller_id).get(change["token"]) or {}
                 await self._apply_input(self.controller_id, change["token"], current, change["before"])
             else:

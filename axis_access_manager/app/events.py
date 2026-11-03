@@ -517,7 +517,11 @@ class EventMonitor:
                 ts = snapshot.changed_at.get((token, key), snapshot.at)
                 self.door_conditions.setdefault(token, {})[key] = {"active": active, "state": state, "ts": ts}
                 changed = True
-        self.io_normal.update(snapshot.io_normal)
+        if any(self.io_normal.get(port) != normal for port, normal in snapshot.io_normal.items()):
+            # Stato normale cambiato sul controller (o letto la prima volta): cambia la lettura dei Contatti Porta e
+            # degli Ingressi Generici con la modalità scelta
+            self.io_normal.update(snapshot.io_normal)
+            changed = True
         for port, active in snapshot.io.items():
             if fresh(("io", port)):
                 put(self.io_ports, port, active, ("io", port))

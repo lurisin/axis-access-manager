@@ -7,12 +7,14 @@ from app.lock_guard import (
     CHECK_EVERY,
     FAILED,
     FORCED,
+    LOG_GRANT_MAX,
     MARGIN,
     MAX_ACCESS,
     MAX_ATTEMPTS,
     MAX_EXTENDED,
     OPEN_GRACE,
     RETRY_AFTER,
+    SLOW_RETRY,
     LockGuard,
 )
 from app.vapix import VapixError
@@ -42,9 +44,12 @@ class Controller:
         self.delay = 0.0
         # Chiamata durante la lettura della porta (per esempio un consenso che arriva in quel momento)
         self.on_read = None
+        self.slow_list = False
 
     async def list_doors(self):
         self.calls.append(("list_doors",))
+        if self.slow_list:
+            await asyncio.sleep(0.01)
         return [{"token": t, "AccessTime": a, "ExtendedAccessTime": e} for t, (a, e) in self.times.items()]
 
     async def door_mode(self, door):
@@ -81,6 +86,9 @@ class Setup:
         self.changes = 0
         self.locks = {}
         self.wait = None
+        # Registro del controller senza eventi in diretta: (impronta, ora del consenso sull'orologio del test)
+        self.log_grant = None
+        self.log_reads = 0
 
     def changed(self):
         self.changes += 1
@@ -98,7 +106,16 @@ class Setup:
             log_alarm=lambda d, detail: self.alarms.append((d, detail)),
             changed=self.changed,
             live=live,
+            last_grant=self.last_grant,
         )
+
+    async def last_grant(self, door):
+        self.log_reads += 1
+        if self.log_grant is None:
+            return None
+        ident, at = self.log_grant
+        # None: orologio del controller un secondo avanti, il consenso sembra sempre appena passato
+        return ident, -1.0 if at is None else self.clock.now - at
 
     def lock_calls(self):
         return [c for c in self.controller.calls if c[0] == "lock_door"]
@@ -458,3 +475,109 @@ def test_second_door_keeps_its_grace_with_a_slow_controller():
     s.controller.delay = 0
     s.run(OPEN_GRACE)
     assert s.lock_calls() == [("lock_door", "porta"), ("lock_door", "porta2")]
+
+
+def test_after_the_failure_alarm_it_keeps_trying_slowly():
+    """Revisione: dopo tre blocchi non riusciti la rete di sicurezza si fermava, con la serratura alimentata."""
+    s = Setup()
+    s.controller.ignore_lock = True
+    s.run()
+    s.run(5 + MARGIN + 0.1)
+    for _ in range(MAX_ATTEMPTS - 1):
+        s.run(RETRY_AFTER)
+    assert len(s.lock_calls()) == MAX_ATTEMPTS and s.alarms == [("porta", FAILED)]
+    s.run(SLOW_RETRY - 1)
+    assert len(s.lock_calls()) == MAX_ATTEMPTS
+    s.controller.ignore_lock = False
+    s.run(1)
+    assert len(s.lock_calls()) == MAX_ATTEMPTS + 1 and s.monitor.door_modes["porta"] == "Locked"
+    # Un allarme solo
+    assert s.alarms == [("porta", FAILED)]
+
+
+def test_without_live_events_a_card_in_the_log_restarts_the_time():
+    """Revisione: senza eventi in diretta la tessera passata durante l'apertura non arrivava, e la rete di sicurezza
+    tagliava l'apertura nuova con un falso allarme."""
+    s = Setup()
+    s.guard.granted("porta")
+    s.run(live=False)
+    s.log_grant = ("r1", s.clock.now - 0.1)
+    s.run(3, live=False)
+    # Tessera a +3 nel registro
+    s.log_grant = ("r2", s.clock.now)
+    s.run(5 + MARGIN - 3 + 0.1, live=False)
+    assert s.lock_calls() == [] and s.alarms == []
+    s.run(3 - 0.2, live=False)
+    assert s.lock_calls() == []
+    s.run(0.2, live=False)
+    assert s.lock_calls() == [("lock_door", "porta")] and s.alarms == [("porta", FORCED)]
+
+
+def test_without_live_events_the_access_starts_from_the_log():
+    """Revisione: con la lettura ogni 10 s l'apertura si vedeva tardi e il tempo partiva da lì."""
+    s = Setup()
+    s.log_grant = ("r1", s.clock.now - 4)
+    s.run(live=False)
+    s.run(1 + MARGIN - 0.1, live=False)
+    assert s.lock_calls() == []
+    s.run(0.2, live=False)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_without_live_events_old_or_future_log_grants_are_not_used():
+    s = Setup()
+    # Troppo vecchio per l'apertura appena vista: può venire da altro
+    s.log_grant = ("r1", s.clock.now - LOG_GRANT_MAX - 1)
+    s.run(live=False)
+    started = s.guard.accesses["porta"].started
+    assert started == s.clock.now
+    # Orologio del controller avanti: un consenso nel futuro non fa ripartire il tempo
+    s.log_grant = ("r2", s.clock.now + 20)
+    s.run(5 + MARGIN, live=False)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_the_same_log_grant_restarts_the_time_once():
+    """Orologio del controller un po' avanti: lo stesso consenso non fa ripartire il tempo a ogni giro."""
+    s = Setup()
+    s.run(live=False)
+    s.run(4, live=False)
+    s.log_grant = ("r1", None)
+    s.run(1 + MARGIN, live=False)
+    assert s.lock_calls() == [] and s.guard.accesses["porta"].started == s.clock.now
+    s.run(5 + MARGIN, live=False)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_with_live_events_the_log_is_not_read():
+    s = Setup()
+    s.guard.granted("porta")
+    s.run()
+    s.run(5 + MARGIN + 0.1)
+    assert s.log_reads == 0 and s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_alarm_kept_when_a_new_grant_replaces_an_unconfirmed_forced_lock():
+    """Revisione: blocco per il tempo scaduto accettato, ma una tessera subito dopo: l'allarme si perdeva."""
+    s = Setup()
+    s.run()
+    s.controller.fail_after_lock = True
+    s.run(5 + MARGIN + 0.1)
+    assert len(s.lock_calls()) == 1 and s.alarms == []
+    s.guard.granted("porta")
+    s.run(0.5)
+    assert s.alarms == [("porta", FORCED)]
+
+
+def test_times_read_during_an_invalidation_are_read_again():
+    s = Setup()
+
+    async def scenario():
+        reading = asyncio.create_task(s.guard._read_times(s.controller))
+        await asyncio.sleep(0)
+        s.guard.invalidate_times()
+        await reading
+
+    s.controller.slow_list = True
+    asyncio.run(scenario())
+    assert s.guard.times_at is None

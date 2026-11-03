@@ -3690,7 +3690,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     // porta non è provata al banco. Ingresso Generico salvato prima della 0.26.0, senza modalità: quella che dà lo stesso
     // stato di prima, dallo stato normale dell'ingresso sul controller
     const wired = (r) => DOOR_INPUT_ROLES.includes(r) || r === "alarm";
-    const startContact = role === "door_contact" && i.role !== "door_contact" ? "nc" : i.contact || (i.normal === "closed" ? "nc" : "no");
+    const startContact = role === "door_contact" && !CONTACT_INPUT_ROLES.includes(i.role) ? "nc" : i.contact || (i.normal === "closed" ? "nc" : "no");
     const supervisable = (r) => i.can_supervise && ["rex", "intercom"].includes(r);
     const ok = await modal({title: i.name,
       body: `${i.problem ? `<div class="alert" style="margin:0 0 12px">${icon("alert")}<div class="grow"><b>Da Riscrivere</b>${esc(i.problem[0].toUpperCase() + i.problem.slice(1))}. Premi Scrivi sul Controller: anche con le stesse impostazioni l'app completa la programmazione.</div></div>` : ""}
@@ -3714,8 +3714,9 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
           $("[data-door-field]", dlg).hidden = !DOOR_INPUT_ROLES.includes(select.value);
           $("[data-role-hint]", dlg).textContent = inputRoleHint(i.io, select.value);
           $("[data-wiring]", dlg).hidden = !wired(select.value);
-          // Contatto Porta: Normalmente Chiuso consigliato, se non era già un Contatto Porta salvato
-          if (select.value === "door_contact" && i.role !== "door_contact") contact.value = "nc";
+          // Contatto Porta: Normalmente Chiuso consigliato, se l'ingresso non era già un contatto della porta (un Sensore
+          // Porta messo a mano su un AUX ha già la modalità del cablaggio)
+          if (select.value === "door_contact" && !CONTACT_INPUT_ROLES.includes(i.role)) contact.value = "nc";
           showContact();
           const supervised = $('[name="supervised"]', dlg);
           supervised.disabled = !supervisable(select.value);

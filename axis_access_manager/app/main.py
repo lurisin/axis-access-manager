@@ -1783,6 +1783,8 @@ def create_app(
             mqtt_known=_mqtt_known(state),
         )
         result = await apply(items, body.keys, runtime, user.label)
+        # Tempi delle porte forse ripristinati: la rete di sicurezza della serratura li rilegge
+        state.lock_guard.invalidate_times()
         full = any(s in FULL_SECTIONS for s in body.sections)
         state.db.add_audit(
             user.label,
@@ -2224,6 +2226,9 @@ async def _start_runtime(app: FastAPI) -> None:
         state.points_task = asyncio.create_task(_load_access_points(state.service))
     state.service.clock_offset = lambda: _controller_clock_offset(state)
     state.service.lock_guard = getattr(state, "lock_guard", None)
+    if state.service.lock_guard is not None:
+        # Nuova configurazione (controller cambiato, ripristino): i tempi delle porte si rileggono
+        state.service.lock_guard.invalidate_times()
     state.monitor.aux_contacts = _aux_contacts(state)
     state.monitor.input_contacts = _input_contacts(state)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
@@ -2903,6 +2908,9 @@ async def _input_changed(state) -> None:
     # I nomi degli ingressi sono anche quelli delle entità di Home Assistant; con il Contatto Porta la porta non ha
     # Allarme, Preallarme e Manomissione
     await state.bridge.refresh_entities()
+    # Modalità o ruolo cambiati: Contatto Porta e ingressi subito giusti in Home Assistant, anche se sul controller
+    # non cambia niente
+    state.service.notify_change()
     await state.health.recheck_managed(state.installation.primary)
     # Contatto porta appena collegato o tolto: Contatto Porta subito giusto in Home Assistant
     state.state_keeper.request_full()
@@ -2997,6 +3005,7 @@ async def _lock_guard_loop(app: FastAPI) -> None:
                     log_alarm=service.log_lock_alarm,
                     changed=service.notify_change,
                     live=events_live(state),
+                    last_grant=service.last_grant,
                 )
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo della serratura non riuscito")

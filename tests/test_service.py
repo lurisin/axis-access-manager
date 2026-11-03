@@ -894,6 +894,24 @@ async def test_lock_guard_sees_grants_and_door_events(service, controller, db):
     grant = guard.grants["porta"]
     assert (grant.at, grant.extended, grant.door_open) == (100.0, True, None)
 
+    # Senza eventi in diretta: l'ultimo consenso alla porta dal registro del controller
+    service.access_point_doors = {"ap2": "porta2"}
+    controller.log_events = [
+        {
+            "rowid": rowid,
+            "UtcTime": ts,
+            "KeyValues": [
+                {"Key": "topic0", "Value": "AccessControl"},
+                {"Key": "topic1", "Value": "AccessGranted"},
+                {"Key": "AccessPointToken", "Value": point},
+            ],
+        }
+        for rowid, ts, point in ((7, "2026-11-03T15:00:00Z", "ap2"), (8, "2026-11-03T15:00:05Z", "ap1"))
+    ]
+    found = await service.last_grant("porta2")
+    assert found is not None and found[0] == "7" and found[1] > 0
+    assert await service.last_grant("porta3") is None
+
     service.log_lock_alarm("porta", FORCED)
     row = db.list_events(kind="allarme")[0]
     assert (row["detail"], row["source"], row["door"]) == ("riblocco forzato", "App", "porta")

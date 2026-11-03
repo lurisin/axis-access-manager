@@ -592,6 +592,33 @@ def test_aux_contact_follows_the_normal_state_of_the_input():
     assert monitor.door_contact("porta") == "Closed"
     monitor.aux_contacts = {"porta": ("1", "no")}
     assert monitor.door_contact("porta") == "Open"
+    # Revisione: lo stato normale cambiato sul controller cambia la lettura, e va detto a Home Assistant
+    snapshot = StateSnapshot(at="2026-11-03T15:01:00+00:00", io={"1": False}, io_normal={"1": "open"})
+    assert monitor.apply_snapshot(snapshot, 0) is True
+    assert monitor.door_contact("porta") == "Closed"
+    snapshot = StateSnapshot(at="2026-11-03T15:02:00+00:00", io={"1": False}, io_normal={"1": "open"})
+    assert monitor.apply_snapshot(snapshot, 0) is False
+
+
+async def test_undo_back_to_aux_contact_keeps_a_door_monitor_used_elsewhere(db, controller):
+    """Revisione: annullare "Contatto Porta → Non Usato" toglieva il Sensore Porta messo poi a mano sul DPS."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+    await service.update_input("IO1", {"role": ""}, "admin")
+    removed = db.list_controller_changes(controller_id)[0]
+    controller.door_configs["porta"]["Configuration"] = [
+        c for c in controller.door_configs["porta"]["Configuration"] if c["Name"] != "DoorMonitor.Type"
+    ] + [{"Name": "DoorMonitor.Type", "Value": "Standard"}]
+    users = [
+        {"Type": "doorcontrol", "token": "porta", "Usage": u, "MultiIo": False}
+        for u in ("DoorOpenMonitor", "DoorClosedMonitor")
+    ]
+    await controller.set_io_assignment("DPS", "in:pu/gnd", users)
+    with pytest.raises(ServiceError, match="usa il Sensore Porta"):
+        await service.undo(removed["id"], "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "Standard"
 
 
 def test_generic_input_mode_no_nc_whatever_the_normal_state():

@@ -19,6 +19,8 @@ from .vapix import A1210Client, VapixError
 _LOGGER = logging.getLogger(__name__)
 # Oltre questo scarto l'ora del controller non è credibile neanche se dice di essere sincronizzato
 MAX_CLOCK_CORRECTION = 24 * 3600
+# Eventi del registro letti per trovare l'ultimo consenso a una porta (rete di sicurezza senza eventi in diretta)
+GRANT_LOG_TAIL = 30
 
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
 
@@ -240,6 +242,21 @@ class AccessService:
     def door_lock(self, door: str) -> asyncio.Lock:
         """Un comando alla porta per volta: apertura dall'app e blocco della rete di sicurezza."""
         return self._door_locks.setdefault(door, asyncio.Lock())
+
+    async def last_grant(self, door: str) -> tuple[str, float] | None:
+        """Ultimo consenso (tessera, pulsante) alla porta nel registro del controller: (impronta, secondi fa), None se
+        non c'è tra gli ultimi eventi. Per la rete di sicurezza della serratura senza eventi in diretta."""
+        entries = await self.controller.latest_events(GRANT_LOG_TAIL)
+        moment = datetime.now(tz=UTC)
+        offset = self.clock_offset() if self.clock_offset else None
+        if offset and abs(offset) < MAX_CLOCK_CORRECTION:
+            moment += timedelta(seconds=offset)
+        for entry in entries:
+            event = event_from_log(entry)
+            if event and event.topic.startswith("AccessControl/AccessGranted") and self._door_of(event) == door:
+                ident = str(entry.get("rowid") or "") or f"{event.timestamp.isoformat()}|{event.topic}"
+                return ident, (moment - event.timestamp).total_seconds()
+        return None
 
     def log_lock_alarm(self, door: str, detail: str) -> None:
         """Allarme della rete di sicurezza della serratura (vedi lock_guard) nel registro e in Home Assistant."""
