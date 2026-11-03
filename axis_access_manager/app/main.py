@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -71,6 +72,7 @@ from .health import (
 from .installation import MAX_CONTROLLERS, InstallationService, check_host, same_controller
 from .intercom import IntercomBridge, IntercomSettings
 from .live_events import LiveEvents
+from .lock_guard import CHECK_EVERY, LockGuard
 from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
 from .programming import DIRECTIONS, INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
@@ -623,11 +625,18 @@ def create_app(
         app.state.last_recovery = None
         # Stato del controller da rileggere subito: tornato a rispondere, ingresso programmato
         app.state.state_wake = asyncio.Event()
+        # Rete di sicurezza della serratura: resta la stessa anche con una nuova configurazione
+        app.state.lock_guard = LockGuard()
         await _start_runtime(app)
         await app.state.direct.apply(app.state.direct_settings)
         maintenance = asyncio.create_task(_maintenance(app))
         health = asyncio.create_task(_health_loop(app))
-        tasks = [maintenance, health, asyncio.create_task(_state_loop(app))]
+        tasks = [
+            maintenance,
+            health,
+            asyncio.create_task(_state_loop(app)),
+            asyncio.create_task(_lock_guard_loop(app)),
+        ]
         if scheduled_backups:
             tasks.append(asyncio.create_task(_backup_loop(app)))
         if not app.state.mqtt and supervisor_token():
@@ -1614,6 +1623,8 @@ def create_app(
     @app.put("/api/programming/doors/{token:path}", dependencies=[need("impianti"), before_change()])
     async def program_door(token: str, body: HardwareDoorIn, request: Request) -> dict:
         await request.app.state.programming.update_door(token, body.model_dump(), request_user(request))
+        # Tempi di apertura cambiati: la rete di sicurezza della serratura li rilegge
+        request.app.state.lock_guard.invalidate_times()
         return {"ok": True}
 
     @app.put("/api/programming/readers/{token:path}", dependencies=[need("impianti"), before_change()])
@@ -1650,8 +1661,11 @@ def create_app(
 
     @app.post("/api/programming/changes/{change_id}/undo", dependencies=[need("impianti"), before_change()])
     async def undo_change(change_id: int, request: Request) -> dict:
-        if await request.app.state.programming.undo(change_id, request_user(request)) == "input":
+        kind = await request.app.state.programming.undo(change_id, request_user(request))
+        if kind == "input":
             await _input_changed(request.app.state)
+        elif kind == "door":
+            request.app.state.lock_guard.invalidate_times()
         return {"ok": True}
 
     @app.get("/api/cameras", dependencies=[need("impianti")])
@@ -2195,6 +2209,7 @@ async def _start_runtime(app: FastAPI) -> None:
         # Eventi in diretta prima della prima sincronizzazione: senza la mappa finivano sulla porta principale
         state.points_task = asyncio.create_task(_load_access_points(state.service))
     state.service.clock_offset = lambda: _controller_clock_offset(state)
+    state.service.lock_guard = getattr(state, "lock_guard", None)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
         _LOGGER.info("Motivi di %s dinieghi tradotti in italiano", translated)
     state.db.rename_controller_events("alloggiamento controller aperto", CASING_OPEN, state.service.controller_name())
@@ -2904,6 +2919,40 @@ async def _state_loop(app: FastAPI) -> None:
         interval = POLL_LIVE if events_live(state) else POLL_WITHOUT_EVENTS
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(state.state_wake.wait(), interval)
+
+
+# Contatto porta del controller (DoorPhysicalState) → porta aperta; gli altri valori (Fault...) non si sanno
+CONTACT_OPEN = {"Open": True, "Closed": False}
+
+
+def _contact_open(monitor: EventMonitor, door: str) -> bool | None:
+    """Porta aperta secondo il contatto porta; None senza contatto o con un guasto."""
+    return CONTACT_OPEN.get(monitor.door_physical.get(door, ""))
+
+
+async def _lock_guard_loop(app: FastAPI) -> None:
+    """Rete di sicurezza della serratura (vedi lock_guard): ogni secondo e a ogni evento della porta."""
+    state = app.state
+    guard: LockGuard = state.lock_guard
+    while True:
+        guard.wake.clear()
+        try:
+            monitor = state.monitor
+            # Con il controller che non risponde lo stato delle porte è sconosciuto: niente da fare
+            if monitor.reachable is not False and _responding(state) is not False:
+                service = state.service
+                await guard.tick(
+                    monitor,
+                    state.controller,
+                    door_lock=service.door_lock,
+                    contact_open=functools.partial(_contact_open, monitor),
+                    log_alarm=service.log_lock_alarm,
+                    changed=service.notify_change,
+                )
+        except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
+            _LOGGER.exception("Controllo della serratura non riuscito")
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(guard.wake.wait(), CHECK_EVERY)
 
 
 def _controllers_health(state) -> list[dict]:

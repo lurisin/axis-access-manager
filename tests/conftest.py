@@ -396,6 +396,10 @@ class FakeController:
     async def access_door(self, door_token, extended=False):
         self.calls.append(("access_door", door_token, extended))
 
+    async def lock_door(self, door_token):
+        self.calls.append(("lock_door", door_token))
+        self.door = "Locked"
+
     async def list_access_points(self):
         return [copy.deepcopy(p) for p in self.access_points]
 

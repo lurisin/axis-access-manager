@@ -864,3 +864,32 @@ def test_clock_offset_only_from_synced_primary_controller():
     assert _controller_clock_offset(state) is None
     state.installation.primary = None
     assert _controller_clock_offset(state) is None
+
+
+async def test_lock_guard_sees_grants_and_door_events(service, controller, db):
+    """Rete di sicurezza della serratura: consensi dal controller e dall'app, eventi della porta, allarme."""
+    from app.lock_guard import FORCED, LockGuard
+
+    guard = LockGuard(clock=lambda: 100.0)
+    service.lock_guard = guard
+    service.record_event(event("AccessControl/AccessGranted/Anonymous/x", {"DoorToken": "porta2"}))
+    assert guard.grants == {"porta2": (100.0, False)}
+    guard.wake.clear()
+    service.record_event(event("Door/State/DoorPhysicalState/$source/DoorToken/porta", {"State": "Open"}))
+    assert guard.wake.is_set()
+    # Recuperati dal registro o conservati dal broker: già passati, non contano
+    guard.grants.clear()
+    service.record_event(event("AccessControl/AccessGranted/Anonymous/x", {"DoorToken": "porta2"}), retained=True)
+    service._recovering = True
+    service.record_event(event("AccessControl/AccessGranted/Anonymous/x", {"DoorToken": "porta2"}))
+    service._recovering = False
+    assert guard.grants == {}
+
+    service.monitor.connected, service.monitor.controller_online = True, True
+    service.monitor.door_mode = "Locked"
+    await service.open_door(True, "admin")
+    assert guard.grants["porta"] == (100.0, True)
+
+    service.log_lock_alarm("porta", FORCED)
+    row = db.list_events(kind="allarme")[0]
+    assert (row["detail"], row["source"], row["door"]) == ("riblocco forzato", "App", "porta")

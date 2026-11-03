@@ -201,8 +201,11 @@ class AccessService:
         # Punto di accesso → porta e lettore → porta, per sapere a quale porta si riferisce un evento
         self.access_point_doors: dict[str, str] = {}
         self.idpoint_doors: dict[str, str] = {}
-        # Un'apertura per volta per porta: il controllo "bloccata" e il comando non si accavallano
+        # Un'apertura per volta per porta: il controllo "bloccata" e il comando non si accavallano (anche con il
+        # blocco della rete di sicurezza, vedi lock_guard)
         self._door_locks: dict[str, asyncio.Lock] = {}
+        # Rete di sicurezza della serratura (lock_guard.LockGuard): consensi ed eventi della porta, None senza
+        self.lock_guard = None
         # Durante il recupero dal registro del controller: eventi segnati come recuperati, e quanti
         self._recovering = False
         self._recovered = 0
@@ -228,6 +231,21 @@ class AccessService:
     def notify_change(self) -> None:
         """Qualcosa da aggiornare in Home Assistant (per esempio il controller è andato offline)."""
         self._changed()
+
+    def door_lock(self, door: str) -> asyncio.Lock:
+        """Un comando alla porta per volta: apertura dall'app e blocco della rete di sicurezza."""
+        return self._door_locks.setdefault(door, asyncio.Lock())
+
+    def log_lock_alarm(self, door: str, detail: str) -> None:
+        """Allarme della rete di sicurezza della serratura (vedi lock_guard) nel registro e in Home Assistant."""
+        self.log_event(
+            ts=self.event_now(),
+            kind="allarme",
+            detail=detail,
+            source="App",
+            door=door,
+            ref=event_ref("allarme", door, detail=detail),
+        )
 
     def log_event(self, **fields) -> dict | None:
         """Salva un evento e avvisa chi lo deve elaborare. None se era già nel registro.
@@ -894,7 +912,7 @@ class AccessService:
             raise ServiceError("nessuna porta configurata")
         # Due comandi ravvicinati (doppio tocco, Home Assistant e citofono insieme): il secondo aspetta il primo
         # e trova la porta già aperta, invece di passare anche lui il controllo e far ripartire il tempo
-        async with self._door_locks.setdefault(door, asyncio.Lock()):
+        async with self.door_lock(door):
             stored = self.monitor.door_modes.get(door) if self.monitor else None
             # Senza eventi in diretta (WebSocket non collegato, e broker giù o controller che non pubblica sul broker)
             # la modalità in memoria può essere vecchia anche quando dice "Bloccata": decide sempre il controller
@@ -933,6 +951,9 @@ class AccessService:
                 raise ServiceError(f"la porta non è bloccata ({label}): attendi che si richiuda")
             before = self.monitor.door_modes.get(door) if self.monitor else None
             await self.controller.access_door(door, extended)
+            if self.lock_guard is not None:
+                # Il tempo della rete di sicurezza parte da qui, con il tempo esteso se chiesto
+                self.lock_guard.granted(door, extended)
             if self.monitor and self.monitor.door_modes.get(door) == before:
                 # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
                 # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
@@ -956,6 +977,11 @@ class AccessService:
 
     def record_event(self, event: Event, retained: bool = False) -> None:
         """Salva nel log gli eventi utili. I messaggi conservati dal broker sono già stati registrati."""
+        if self.lock_guard is not None and not retained and not self._recovering:
+            if event.topic.startswith("AccessControl/AccessGranted"):
+                self.lock_guard.granted(self._door_of(event))
+            elif event.topic.startswith(("Door/State/", "Device/IO/Port")):
+                self.lock_guard.poke()
         if event.topic.startswith("Door/State/DoorMode/"):
             # Anche il valore conservato dal broker aggiorna lo stato in Home Assistant
             self._changed()
