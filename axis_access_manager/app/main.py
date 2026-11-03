@@ -74,7 +74,7 @@ from .intercom import IntercomBridge, IntercomSettings
 from .live_events import LiveEvents
 from .lock_guard import CHECK_EVERY, LockGuard
 from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
-from .programming import DIRECTIONS, INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
+from .programming import CONTROLLER_INPUTS, DIRECTIONS, INPUT_ROLES, REX_ROLES, ProgrammingService, is_rex_profile
 from .restore import ALL_SECTIONS, RESTORE_SECTIONS, Runtime, apply, plan, public
 from .rules_service import ProfileNotWritten, RulesService
 from .service import (
@@ -1615,6 +1615,9 @@ def create_app(
             if item["role"] == "door_monitor" and door:
                 # Il contatto porta non manda Device/IO/Port: vale lo stato della porta (DoorPhysicalState)
                 item["door_open"] = DOOR_PHYSICAL.get(monitor.door_physical.get(door, ""))
+            elif item["role"] == "door_contact" and door:
+                # Contatto Porta su un AUX: lo stato dell'ingresso con il tipo di contatto, come in Home Assistant
+                item["door_open"] = DOOR_PHYSICAL.get(monitor.door_contact(door) or "")
             if item["role"] in REX_ROLES and door:
                 # L'ingresso REX non manda Device/IO/Port: almeno l'ora dell'ultima pressione nel Registro
                 item["last_press"] = state.db.last_input_press(door, input_detail(item["io"], item["role"]))
@@ -2210,6 +2213,7 @@ async def _start_runtime(app: FastAPI) -> None:
         state.points_task = asyncio.create_task(_load_access_points(state.service))
     state.service.clock_offset = lambda: _controller_clock_offset(state)
     state.service.lock_guard = getattr(state, "lock_guard", None)
+    state.monitor.aux_contacts = _aux_contacts(state)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
         _LOGGER.info("Motivi di %s dinieghi tradotti in italiano", translated)
     state.db.rename_controller_events("alloggiamento controller aperto", CASING_OPEN, state.service.controller_name())
@@ -2564,14 +2568,16 @@ def _door_state(monitor: EventMonitor, token: str) -> dict:
     (stato del controller, None se non si sa). known: il controller risponde e lo stato è stato letto."""
     if monitor.reachable is not True:
         return {"known": False, "contact": None, "alarm": None, "warning": None, "tamper": None}
-    if monitor.door_contacts.get(token) is False:
+    if monitor.contact_configured(token) is False:
         contact = "none"
     else:
-        contact = {True: "open", False: "closed"}.get(DOOR_PHYSICAL.get(monitor.door_physical.get(token, "")))
+        contact = {True: "open", False: "closed"}.get(DOOR_PHYSICAL.get(monitor.door_contact(token) or ""))
     conditions = monitor.door_conditions.get(token, {})
     return {
         "known": True,
         "contact": contact,
+        # Contatto Porta su un AUX: allarme e preallarme del controller non ci sono
+        "aux_contact": token in monitor.aux_contacts,
         **{
             name: (conditions.get(key) or {}).get("state")
             for name, key in (("alarm", "allarme"), ("warning", "preallarme"), ("tamper", "manomissione"))
@@ -2852,8 +2858,22 @@ def _recover_mark(state) -> tuple[str, datetime]:
     return state.db.last_controller_event(CONTROLLER_KINDS), datetime.now(tz=UTC)
 
 
+def _aux_contacts(state) -> dict[str, tuple[str, str]]:
+    """Contatti Porta su un AUX del controller principale: porta → (numero I/O degli eventi, tipo di contatto)."""
+    primary = state.installation.primary
+    if not primary:
+        return {}
+    result = {}
+    for io, row in state.db.controller_inputs(primary["id"]).items():
+        port = CONTROLLER_INPUTS.get(io, ("", None))[1]
+        if row.get("role") == "door_contact" and row.get("door_token") and port is not None:
+            result[row["door_token"]] = (port, row.get("contact") or "no")
+    return result
+
+
 async def _input_changed(state) -> None:
     """Dopo aver programmato un ingresso, o annullato la sua programmazione dallo Storico Modifiche."""
+    state.monitor.aux_contacts = _aux_contacts(state)
     # I nomi degli ingressi sono anche quelli delle entità di Home Assistant
     await state.bridge.publish_input_names()
     await state.health.recheck_managed(state.installation.primary)
@@ -2927,7 +2947,7 @@ CONTACT_OPEN = {"Open": True, "Closed": False}
 
 def _contact_open(monitor: EventMonitor, door: str) -> bool | None:
     """Porta aperta secondo il contatto porta; None senza contatto o con un guasto."""
-    return CONTACT_OPEN.get(monitor.door_physical.get(door, ""))
+    return CONTACT_OPEN.get(monitor.door_contact(door) or "")
 
 
 async def _lock_guard_loop(app: FastAPI) -> None:

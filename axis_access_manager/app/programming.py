@@ -44,18 +44,24 @@ INPUT_ROLES = {
     "rex": "Pulsante Uscita",
     "intercom": "Relè Citofono",
     "door_monitor": "Sensore Porta",
+    "door_contact": "Contatto Porta",
     "alarm": "Ingresso di Allarme",
 }
 # Ruoli che aprono o sorvegliano una porta: vanno collegati a una porta del controller
-DOOR_ROLES = {"rex", "intercom", "door_monitor"}
-# Ruoli possibili per ogni ingresso: il contatto porta e il REX sono del connettore Door, gli AUX sono liberi
+DOOR_ROLES = {"rex", "intercom", "door_monitor", "door_contact"}
+# Contatto porta: sul controller (Sensore Porta, DoorMonitor) o letto solo dall'app su un AUX (Contatto Porta). Con il
+# DoorMonitor il controller tiene la serratura alimentata finché la porta è aperta (prova in loco del 3/11, anche con
+# LockWhenDoorOpens); con il Contatto Porta la serratura resta sempre a tempo e la blocca l'app (vedi lock_guard)
+CONTACT_ROLES = {"door_monitor", "door_contact"}
+# Ruoli possibili per ogni ingresso: il contatto porta e il REX sono del connettore Door, gli AUX sono liberi. Il
+# Contatto Porta solo sugli ingressi che mandano gli eventi Device/IO/Port
 ALLOWED_ROLES = {
     "DPS": {"", "door_monitor"},
     "REX": {"", "rex", "intercom"},
-    "IO1": {"", "rex", "intercom", "alarm"},
-    "IO2": {"", "rex", "intercom", "alarm"},
+    "IO1": {"", "rex", "intercom", "door_contact", "alarm"},
+    "IO2": {"", "rex", "intercom", "door_contact", "alarm"},
     "EXTERNAL_TAMPER": {"", "alarm"},
-    "ALARM": {"", "alarm"},
+    "ALARM": {"", "door_contact", "alarm"},
 }
 CONTACTS = {"no": "Normalmente Aperto", "nc": "Normalmente Chiuso"}
 # Sensore Porta (DoorMonitor della porta, provato al banco): stato del contatto con la porta aperta e chiusa.
@@ -656,14 +662,28 @@ class ProgrammingService:
         contact = data.get("contact") or "no"
         if contact not in CONTACTS:
             raise ServiceError("tipo di contatto non valido")
+        if role in CONTACT_ROLES:
+            # Un contatto per porta: sul controller (Sensore Porta) o su un AUX (Contatto Porta), non tutti e due
+            other = next(
+                (
+                    row
+                    for key, row in self.db.controller_inputs(controller_id).items()
+                    if key != io and row.get("role") in CONTACT_ROLES and row.get("door_token") == door
+                ),
+                None,
+            )
+            if other:
+                where = other.get("name") or CONTROLLER_INPUTS.get(other["io"], (other["io"],))[0]
+                raise ServiceError(f"{INPUT_ROLES[role]}: la porta ha già un contatto ({where})")
         supervised = bool(data.get("supervised"))
         if role == "door_monitor" and supervised:
             raise ServiceError("Sensore Porta: la linea supervisionata non è ancora disponibile")
-        if role == "alarm" and supervised:
-            raise ServiceError("Ingresso di Allarme: la linea supervisionata non è disponibile")
-        if role not in REX_ROLES and role != "door_monitor":
+        if role in ("alarm", "door_contact") and supervised:
+            raise ServiceError(f"{INPUT_ROLES[role]}: la linea supervisionata non è disponibile")
+        if role not in REX_ROLES and role not in CONTACT_ROLES:
             # Per Non Usato e Ingresso di Allarme l'app non scrive niente sul controller: contatto e linea
-            # supervisionata non avrebbero effetto, e Home Assistant mostra l'ingresso com'è
+            # supervisionata non avrebbero effetto, e Home Assistant mostra l'ingresso com'è. Il Contatto Porta
+            # non scrive niente ma il tipo di contatto serve all'app per sapere quando la porta è aperta
             contact, supervised = "no", False
         name = " ".join(normalize_text(data.get("name"), 64, "nome").split())
         values = {

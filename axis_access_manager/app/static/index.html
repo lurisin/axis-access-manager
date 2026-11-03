@@ -816,8 +816,8 @@ const doorStateRows = (d) => {
   const st = d.state || {};
   const shown = (map, value) => !st.known || !value ? UNKNOWN_STATE : map[value] || ["warn", value];
   const rows = [["Serratura", [doorModeClass(d.mode), doorModeLabel(d.mode)]], ["Contatto Porta", shown(CONTACT_STATES, st.contact)]];
-  // Allarme e preallarme vengono dal contatto porta: senza, non ci sono
-  if (st.contact !== "none") rows.push(["Allarme", shown(DOOR_ALARMS, st.alarm)], ["Preallarme", shown(DOOR_ALARMS, st.warning)]);
+  // Allarme e preallarme vengono dal contatto porta sul controller: senza, o con il contatto su un AUX, non ci sono
+  if (st.contact !== "none" && !st.aux_contact) rows.push(["Allarme", shown(DOOR_ALARMS, st.alarm)], ["Preallarme", shown(DOOR_ALARMS, st.warning)]);
   rows.push(["Manomissione", shown(DOOR_TAMPER, st.tamper)]);
   return rows;
 };
@@ -3485,21 +3485,25 @@ function linksOf(p) {
   return links;
 }
 
-const INPUT_ICONS = {"": "chip", rex: "arrow", intercom: "phone", door_monitor: "door", alarm: "alert"};
-const DOOR_INPUT_ROLES = ["rex", "intercom", "door_monitor"];
+const INPUT_ICONS = {"": "chip", rex: "arrow", intercom: "phone", door_monitor: "door", door_contact: "door", alarm: "alert"};
+const DOOR_INPUT_ROLES = ["rex", "intercom", "door_monitor", "door_contact"];
+const CONTACT_INPUT_ROLES = ["door_monitor", "door_contact"];
 const INPUT_ROLE_HINTS = {
   "": "L'ingresso non fa niente; resta solo lo stato in Home Assistant, se il controller lo manda.",
   rex: "Chiede l'apertura della porta, come un lettore in uscita: per il pulsante della portineria o di uscita. Nel registro le aperture compaiono come Uscita, con il nome dell'ingresso.",
   intercom: "Il contatto del relè del citofono: apre la porta anche con Home Assistant spento. Nel registro le aperture compaiono come Apertura Remota, con il nome dell'ingresso.",
-  door_monitor: "Il contatto magnetico della porta: in Home Assistant compare Contatto Porta (aperta o chiusa) e si attivano gli allarmi di porta forzata e aperta troppo a lungo.",
+  door_monitor: "Contatto della porta gestito dal controller: allarmi di porta forzata e aperta troppo a lungo. La serratura resta alimentata finché la porta è aperta.",
+  door_contact: "Contatto della porta letto solo dall'app: Contatto Porta in Home Assistant. La serratura resta a tempo e l'app la blocca appena la porta si apre.",
   alarm: "Nessuna azione sulla porta: lo stato arriva in Home Assistant con il nome scelto.",
 };
 // Al banco (firmware 10.12) gli AUX usati come pulsante sono rimasti attivi dopo la prima pressione fino al riavvio
 const inputRoleHint = (io, role) => INPUT_ROLE_HINTS[role] || "";
 // Cosa vuol dire il tipo di contatto scelto ("no" o "nc") per il ruolo dell'ingresso
+const DOOR_CONTACT_HINTS = {no: "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre.",
+  nc: "Normalmente Chiuso: con la porta chiusa il contatto è chiuso e si apre quando la porta si apre."};
 const CONTACT_HINTS = {
-  door_monitor: {no: "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre.",
-    nc: "Normalmente Chiuso: con la porta chiusa il contatto è chiuso e si apre quando la porta si apre."},
+  door_contact: DOOR_CONTACT_HINTS,
+  door_monitor: DOOR_CONTACT_HINTS,
   rex: {no: "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.",
     nc: "Normalmente Chiuso: il contatto si apre quando si preme il pulsante o scatta il relè."},
 };
@@ -3520,7 +3524,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
   const inputMeta = (i) => [p.input_roles?.[i.role] || "Non Usato", linkedDoor(i) ? doorName({token: i.door}) : "", i.pins.join(", ")].filter(Boolean).join(" · ");
   // Il contatto porta non manda lo stato dell'ingresso: vale quello della porta, aperta o chiusa
   const unknownDot = '<span class="dot warn" title="Stato sconosciuto: il controller non risponde, o non è ancora stato letto"></span>';
-  const inputDot = (i) => i.role === "door_monitor" ? (i.door_open === true ? '<span class="dot warn" title="Porta Aperta"></span>' : i.door_open === false ? '<span class="dot ok" title="Porta Chiusa"></span>' : unknownDot)
+  const inputDot = (i) => CONTACT_INPUT_ROLES.includes(i.role) ? (i.door_open === true ? '<span class="dot warn" title="Porta Aperta"></span>' : i.door_open === false ? '<span class="dot ok" title="Porta Chiusa"></span>' : unknownDot)
     : i.port == null ? '<span class="muted" title="Stato non disponibile: il controller non invia eventi per questo ingresso">—</span>'
     : i.active === true ? '<span class="dot warn" title="Attivo"></span>' : i.active === false ? '<span class="dot ok" title="A riposo"></span>' : unknownDot;
   const readerName = (token) => { const r = p.readers.find((x) => x.token === token); return r?.name || token; };

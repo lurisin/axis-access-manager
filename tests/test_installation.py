@@ -448,3 +448,83 @@ def test_schema_shows_door_contact_and_last_button_press(settings, controller, t
         state.monitor.door_physical["porta"] = "Unknown"
         inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
         assert inputs["DPS"]["door_open"] is None
+
+
+async def test_aux_door_contact_is_only_read_by_the_app(db, controller):
+    """Contatto Porta su un AUX: il controller non lo usa per la porta (serratura sempre a tempo), nessuna scrittura."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    service = ProgrammingService(db, controller, controller_id, asyncio.Lock())
+    for io in ("DPS", "REX", "EXTERNAL_TAMPER"):
+        with pytest.raises(ServiceError, match="non disponibile"):
+            await service.update_input(io, {"role": "door_contact", "door": "porta"}, "admin")
+    with pytest.raises(ServiceError, match="linea supervisionata"):
+        await service.update_input("IO2", {"role": "door_contact", "door": "porta", "supervised": True}, "admin")
+    with pytest.raises(ServiceError, match="scegli la porta"):
+        await service.update_input("IO2", {"role": "door_contact"}, "admin")
+
+    calls = len(controller.calls)
+    saved = await service.update_input(
+        "IO2", {"name": "", "role": "door_contact", "door": "porta", "contact": "nc"}, "admin"
+    )
+    assert (saved["name"], saved["role"], saved["door_token"], saved["contact"]) == (
+        "Contatto Porta",
+        "door_contact",
+        "porta",
+        "nc",
+    )
+    assert controller.calls[calls:] == [] and "IO2" not in controller.io_assignments
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config == {"Lock.Type": "FailSecure"}
+    inputs = {i["io"]: i for i in (await service.read())["inputs"]}
+    assert "door_contact" in inputs["IO1"]["roles"] and "door_contact" not in inputs["DPS"]["roles"]
+
+    # Un contatto per porta: né un secondo AUX né il Sensore Porta sul controller
+    with pytest.raises(ServiceError, match="ha già un contatto"):
+        await service.update_input("IO1", {"role": "door_contact", "door": "porta"}, "admin")
+    with pytest.raises(ServiceError, match="ha già un contatto"):
+        await service.update_input("DPS", {"role": "door_monitor", "door": "porta"}, "admin")
+    # Su un'altra porta va bene
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta2"}, "admin")
+
+    # Dal Sensore Porta al Contatto Porta: il DoorMonitor si toglie dalla porta
+    await service.update_input("IO1", {"role": ""}, "admin")
+    await service.update_input("IO2", {"role": ""}, "admin")
+    await service.update_input("DPS", {"role": "door_monitor", "door": "porta", "contact": "no"}, "admin")
+    await service.update_input("DPS", {"role": ""}, "admin")
+    await service.update_input("IO1", {"role": "door_contact", "door": "porta", "contact": "no"}, "admin")
+    config = {c["Name"]: c["Value"] for c in controller.door_configs["porta"]["Configuration"]}
+    assert config["DoorMonitor.Type"] == "None"
+
+
+def test_aux_door_contact_in_home_assistant_and_door_state(settings, controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    app = create_app(parse_options({}), allow_any_client=True, controller=controller, db_path=tmp_path / "s.db")
+    with TestClient(app) as client:
+        data = {"name": "A1210", "host": "10.0.0.5", "username": "root", "password": "x", "mqtt_topic_prefix": "acc"}
+        controller_id = client.post("/api/controllers", json=data).json()["id"]
+        door = {"door_token": "porta", "name": "Scala"}
+        assert client.post(f"/api/controllers/{controller_id}/doors", json=door).status_code == 200
+        body = {"name": "", "role": "door_contact", "door": "porta", "contact": "nc", "supervised": False}
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        state = app.state
+        monitor = state.monitor
+        assert monitor.aux_contacts == {"porta": ("0", "nc")}
+        assert monitor.contact_configured("porta") is True
+        # Normalmente Chiuso: ingresso attivo (circuito chiuso) = porta chiusa
+        monitor.io_ports["0"] = True
+        assert monitor.door_contact("porta") == "Closed"
+        monitor.io_ports["0"] = False
+        assert monitor.door_contact("porta") == "Open"
+        inputs = {i["io"]: i for i in client.get("/api/programming").json()["inputs"]}
+        assert inputs["IO1"]["door_open"] is True
+        ha = state.bridge.state()
+        assert ha["contatti"]["porta"] == "ON" and ha["ingressi"]["0"] == "ON"
+        assert ha["disponibilita"]["contatti"]["porta"] == ("online" if monitor.reachable else "offline")
+        # Il controller senza contatto porta (DoorMonitor) non cambia niente: vale l'AUX
+        monitor.door_contacts["porta"] = False
+        monitor.door_physical.pop("porta", None)
+        assert monitor.door_contact("porta") == "Open" and monitor.contact_configured("porta") is True
+        # Tolto il ruolo: di nuovo il contatto porta del controller
+        body["role"] = ""
+        assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
+        assert monitor.aux_contacts == {} and monitor.contact_configured("porta") is False

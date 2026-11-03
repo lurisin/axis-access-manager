@@ -91,18 +91,19 @@ Sotto i lettori, nello stesso schema, ci sono gli **ingressi fisici** del contro
 - i due AUX (Aux pin 3 e 4);
 - gli ingressi Manomissione e Allarme del connettore External.
 
-Il pallino accanto al nome mostra lo stato in tempo reale degli ingressi che lo mandano (AUX, Manomissione e Allarme). Per il Sensore Porta mostra se la porta è aperta o chiusa. L'ingresso REX non manda il suo stato: sotto il nome compare l'ora dell'ultima pressione registrata.
+Il pallino accanto al nome mostra lo stato in tempo reale degli ingressi che lo mandano (AUX, Manomissione e Allarme). Per Sensore Porta e Contatto Porta mostra se la porta è aperta o chiusa. L'ingresso REX non manda il suo stato: sotto il nome compare l'ora dell'ultima pressione registrata.
 
 **Tocca un ingresso e poi una porta** per collegarlo, oppure tocca due volte l'ingresso per aprirne la scheda:
 - **Nome**: è anche il nome dell'entità in Home Assistant, che mantiene il suo identificativo.
 - **Ruolo**:
   - **Pulsante Uscita**: chiede l'apertura della porta e sblocca la serratura, ad esempio dal pulsante della portineria. Più pulsanti in parallelo sulla stessa linea vanno bene.
   - **Relè Citofono**: il contatto del relè del citofono. Apre la porta anche con Home Assistant spento.
-  - **Sensore Porta** (solo sull'ingresso contatto porta): il contatto magnetico della porta. L'app attiva il controllo della porta (DoorMonitor) e collega l'ingresso: in Home Assistant compare **Contatto Porta** e si attivano gli allarmi di porta forzata e aperta troppo a lungo. Normalmente Aperto vuol dire che con la porta chiusa il contatto è aperto. La linea supervisionata per questo ruolo non è ancora disponibile. Un contatto impostato a mano sul controller (anche su un AUX) viene riconosciuto e si toglie dall'app scegliendo Non Usato.
+  - **Contatto Porta** (sugli AUX e sull'ingresso Allarme): il contatto magnetico della porta, letto solo dall'app. Il controller non lo usa per la porta, quindi la serratura resta sempre alimentata solo per il tempo di apertura, anche con la porta tenuta aperta. In Home Assistant compare **Contatto Porta** (e l'entità dell'ingresso dice la stessa cosa), e l'app blocca la serratura appena la porta si apre (vedi [Serratura solo a tempo](#serratura-solo-a-tempo)). Niente allarmi di porta forzata e aperta troppo a lungo. È il ruolo consigliato.
+  - **Sensore Porta** (solo sull'ingresso contatto porta): il contatto magnetico gestito dal controller (DoorMonitor), con gli allarmi di porta forzata e aperta troppo a lungo. **Il controller tiene la serratura alimentata finché la porta è aperta**, anche con "riblocca all'apertura" (provato in loco il 3 novembre con il firmware 10.12): solo per serrature che lo reggono. La linea supervisionata per questo ruolo non è ancora disponibile. Un contatto impostato a mano sul controller (anche su un AUX) viene riconosciuto e si toglie dall'app scegliendo Non Usato.
   - **Ingresso di Allarme**: solo stato in Home Assistant.
   - **Non Usato**.
-- **Porta**: per Pulsante Uscita, Relè Citofono e Sensore Porta.
-- **Contatto**: Normalmente Aperto o Normalmente Chiuso, per Pulsante Uscita, Relè Citofono e Sensore Porta. Ingresso di Allarme e Non Usato non hanno tipo di contatto né linea supervisionata, perché non avrebbero effetto.
+- **Porta**: per Pulsante Uscita, Relè Citofono, Contatto Porta e Sensore Porta. Ogni porta ha un contatto solo, Contatto Porta o Sensore Porta.
+- **Contatto**: Normalmente Aperto o Normalmente Chiuso, per Pulsante Uscita, Relè Citofono, Contatto Porta e Sensore Porta. Normalmente Aperto vuol dire che con la porta chiusa il contatto è aperto. Per il Contatto Porta controlla il pallino aprendo e chiudendo la porta: se è al contrario, cambia il tipo di contatto. Ingresso di Allarme e Non Usato non hanno tipo di contatto né linea supervisionata, perché non avrebbero effetto.
 - **Linea Supervisionata** (solo Pulsante Uscita e Relè Citofono): con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. È consigliata per il citofono esterno.
 
 Con **Scrivi sul Controller**, per Pulsante Uscita e Relè Citofono l'app crea sul controller:
@@ -123,6 +124,16 @@ Da sapere:
 - Sull'A1210 un ingresso, una volta assegnato, non torna mai "mai usato": togliendo il ruolo resta un ingresso semplice libero.
 - Dopo aver tolto la linea supervisionata, l'ingresso può risultare attivo finché non riavvii il controller.
 - Gli **AUX usati come pulsante** funzionano come l'ingresso REX: il controller apre circa 50 millisecondi dopo la pressione.
+
+### Serratura solo a tempo
+
+La serratura non deve restare alimentata a lungo, nemmeno con la porta tenuta aperta per far entrare il materiale. Senza Sensore Porta il controller la alimenta solo per il tempo di apertura (Tempo di Apertura o Apertura Estesa) e la riblocca sempre a fine tempo, anche con Home Assistant o l'add-on spenti.
+
+In più l'app sorveglia ogni porta **Aperta a Tempo** e la blocca (comando di blocco, mai uno sblocco):
+- appena il contatto porta segna la porta aperta; se la porta era già aperta quando è arrivato il consenso, la serratura al più si alimenta per mezzo secondo;
+- se la porta resta Aperta a Tempo oltre il suo tempo più 3 secondi. Questo è un guasto (contatto, configurazione, controller): nel registro e tra le notifiche compare l'allarme **Riblocco Forzato**, e in Home Assistant l'evento `allarme_porta`. Se il controller non si blocca dopo tre tentativi, l'allarme è **Riblocco Non Riuscito**.
+
+Prima di bloccare l'app rilegge la porta dal controller: un'apertura già finita non si tocca. Il blocco lascia la porta nella modalità normale, e tessere, pulsanti e aperture dall'app funzionano come sempre.
 
 ### Porte, lettori e storico
 

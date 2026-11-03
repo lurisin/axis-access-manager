@@ -242,6 +242,8 @@ class EventMonitor:
     door_physical: dict[str, str] = field(default_factory=dict)
     # Porte con il contatto porta configurato sul controller (DoorMonitor), per token: senza, il contatto non si sa
     door_contacts: dict[str, bool] = field(default_factory=dict)
+    # Contatto porta su un ingresso AUX (ruolo Contatto Porta, letto solo dall'app): porta → (numero I/O, "no"/"nc")
+    aux_contacts: dict[str, tuple[str, str]] = field(default_factory=dict)
     # Il controller risponde all'app (controllo periodico delle API): None finché non si sa. Quando non risponde lo
     # stato qui sopra si svuota, e app e Home Assistant lo mostrano sconosciuto invece dell'ultimo valore
     reachable: bool | None = None
@@ -424,6 +426,23 @@ class EventMonitor:
             token = door_of_topic(topic) or self.door_token
             self.door_physical[token] = str(data["State"])
             self._mark(("physical", token))
+
+    def door_contact(self, token: str) -> str | None:
+        """Porta aperta o chiusa ("Open", "Closed"; Fault e altri dal controller), None se non si sa. Dal Contatto
+        Porta su un AUX se la porta ce l'ha, se no dal contatto porta del controller (DoorPhysicalState)."""
+        aux = self.aux_contacts.get(token)
+        if aux is None:
+            return self.door_physical.get(token)
+        port, contact = aux
+        # Ingresso attivo = circuito chiuso. Normalmente Aperto: si chiude quando la porta si apre
+        active = self.io_ports.get(port)
+        if active is None:
+            return None
+        return "Open" if active == (contact == "no") else "Closed"
+
+    def contact_configured(self, token: str) -> bool | None:
+        """La porta ha un contatto porta: su un AUX o sul controller (None se la configurazione non è stata letta)."""
+        return True if token in self.aux_contacts else self.door_contacts.get(token)
 
     def set_door_mode(self, token: str, mode: str) -> None:
         """Modalità della porta saputa dall'app (letta prima di aprire, o appena aperta): vale come un evento."""

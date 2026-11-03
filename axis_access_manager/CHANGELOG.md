@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.26.0
+
+Serratura alimentata solo per il tempo di apertura, anche con la porta tenuta aperta.
+
+- **Il problema.** In loco il 3 novembre, con il contatto porta gestito dal controller (Sensore Porta), la serratura è rimasta alimentata 5 minuti: il contatto, non ancora collegato, segnava la porta sempre aperta e il controller aspettava che si richiudesse. Le prove dopo hanno mostrato che l'A1210 (firmware 10.12) tiene la serratura alimentata finché la porta è aperta anche con "riblocca all'apertura" attivo.
+- **Contatto Porta su un AUX.** Nuovo ruolo per gli ingressi AUX e Allarme: il contatto magnetico della porta letto solo dall'app. Il controller non lo usa, quindi la serratura si riblocca sempre a fine tempo. In Home Assistant **Contatto Porta** dice se la porta è aperta, e l'entità dell'ingresso dice la stessa cosa. Una porta ha un contatto solo: Contatto Porta o Sensore Porta.
+- **Blocco all'apertura e rete di sicurezza.** L'app blocca la porta Aperta a Tempo appena il contatto la segna aperta (se era già aperta al consenso, al più mezzo secondo di alimentazione), e la blocca comunque se resta Aperta a Tempo oltre il suo tempo più 3 secondi, con l'allarme **Riblocco Forzato** nel registro, nelle notifiche e in Home Assistant. Solo comandi di blocco, mai sblocchi; prima di bloccare l'app rilegge la porta dal controller.
+- **Sensore Porta.** La descrizione del ruolo dice che con il contatto sul controller la serratura resta alimentata finché la porta è aperta.
+
 ## 0.25.0
 
 Accesso diretto all'app per il personale, fuori da Home Assistant, con il suo login.

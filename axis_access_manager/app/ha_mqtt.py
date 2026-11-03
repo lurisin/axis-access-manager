@@ -260,6 +260,7 @@ class HaBridge:
         state = {"state_topic": self.state_topic}
         controller = self._availability("controller")
         names = self._input_names()
+        contact_ports = {port for port, _ in self.monitor.aux_contacts.values()}
         entities = [
             (
                 "sensor",
@@ -363,7 +364,13 @@ class HaBridge:
                         **state,
                         **controller,
                         "name": names.get(port) or name,
-                        **({"device_class": device_class} if device_class else {}),
+                        **(
+                            {"device_class": "door"}
+                            if port in contact_ports
+                            else {"device_class": device_class}
+                            if device_class
+                            else {}
+                        ),
                         "icon": "mdi:electric-switch",
                         "value_template": f"{{{{ value_json.ingressi['{port}'] }}}}",
                     },
@@ -588,7 +595,7 @@ class HaBridge:
                 # Senza contatto porta configurato il contatto non c'è: "non disponibile", non sconosciuto
                 "contatti": {
                     d["door_token"]: "online"
-                    if reachable and self.monitor.door_contacts.get(d["door_token"]) is not False
+                    if reachable and self.monitor.contact_configured(d["door_token"]) is not False
                     else "offline"
                     for d in self.doors
                 },
@@ -600,7 +607,7 @@ class HaBridge:
                 d["door_token"]: lock_state(self.monitor.door_modes.get(d["door_token"])) for d in self.doors
             },
             "contatti": {
-                d["door_token"]: on_off(DOOR_PHYSICAL.get(self.monitor.door_physical.get(d["door_token"], "")))
+                d["door_token"]: on_off(DOOR_PHYSICAL.get(self.monitor.door_contact(d["door_token"]) or ""))
                 for d in self.doors
             },
             "accessi_oggi": counts.get("concesso", 0) + counts.get("apertura_remota", 0) + counts.get("uscita", 0),
@@ -614,10 +621,20 @@ class HaBridge:
                 "coperchio": on_off(self.monitor.casing_open),
                 "avvio": self.monitor.system_ready or "None",
             },
-            "ingressi": {
-                port: on_off(self.monitor.input_active(port, port in self._pushbutton_ports())) for port in IO_INPUTS
-            },
+            "ingressi": self._inputs_state(),
             "condizioni": {d["door_token"]: self._conditions(d["door_token"]) for d in self.doors},
+        }
+
+    def _inputs_state(self) -> dict[str, str]:
+        """Stato degli ingressi I/O. Un Contatto Porta su un AUX vale come il Contatto Porta della sua porta (acceso =
+        porta aperta, con il tipo di contatto): le due entità dicono la stessa cosa."""
+        doors = {port: door for door, (port, _) in self.monitor.aux_contacts.items()}
+        pushbuttons = self._pushbutton_ports()
+        return {
+            port: on_off(DOOR_PHYSICAL.get(self.monitor.door_contact(doors[port]) or ""))
+            if port in doors
+            else on_off(self.monitor.input_active(port, port in pushbuttons))
+            for port in IO_INPUTS
         }
 
     def _conditions(self, token: str) -> dict:
