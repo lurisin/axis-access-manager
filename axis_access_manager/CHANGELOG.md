@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.26.1
+
+- **Niente doppione del Contatto Porta in Home Assistant.** Con un ingresso su Contatto Porta l'entità dell'ingresso (per esempio Ingresso AUX 2) non si crea più: aveva lo stesso nome e lo stesso stato di **Contatto** della porta. Torna se l'ingresso cambia ruolo.
+
 ## 0.26.0
 
 Contatto della porta letto solo dall'app e serratura alimentata solo per il tempo di apertura.

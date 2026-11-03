@@ -324,20 +324,22 @@ async def test_door_with_aux_contact_has_no_alarm_entities(bridge, monkeypatch):
     bridge.monitor.aux_contacts = {"porta": ("1", "nc")}
     await bridge.refresh_entities()
     assert [(t, p) for t, p in sent if t in conditions] == [(t, b"") for t in sorted(conditions)]
-    # L'ingresso diventa una porta
-    aux2 = next(json.loads(p) for t, p in sent if t.endswith("/ingresso_aux_2/config"))
-    assert aux2["device_class"] == "door"
-    # Niente cambiato: solo le entità degli ingressi
+    # Anche l'entità dell'ingresso: in loco aveva lo stesso nome e lo stesso stato di Contatto Porta (doppione)
+    aux2 = "homeassistant/binary_sensor/axis_access_manager/ingresso_aux_2/config"
+    assert (aux2, b"") in sent
+    # Niente cambiato: solo le entità degli ingressi rimaste
     sent.clear()
     await bridge.refresh_entities()
-    assert sent and all("/ingresso_" in t for t, _ in sent)
+    assert sent and all("/ingresso_" in t for t, _ in sent) and aux2 not in {t for t, _ in sent}
     # Alla connessione successiva restano tolte
     client = FakeClient()
     await bridge.on_connect(client)
-    assert all(client.published[t] == b"" for t in conditions)
+    assert all(client.published[t] == b"" for t in [*conditions, aux2])
+    assert json.loads(client.published["homeassistant/binary_sensor/axis_access_manager/contatto_porta/config"])
     # Contatto Porta tolto: tornano
     sent.clear()
     bridge.monitor.aux_contacts = {}
     await bridge.refresh_entities()
-    back = {t: json.loads(p) for t, p in sent if t in conditions}
-    assert set(back) == set(conditions) and all(c["name"] for c in back.values())
+    back = {t: json.loads(p) for t, p in sent if t in [*conditions, aux2]}
+    assert set(back) == {*conditions, aux2} and all(c["name"] for c in back.values())
+    assert "device_class" not in back[aux2]
