@@ -910,6 +910,9 @@ function toast(message, error = false) {
     if (el.showPopover && el.matches(":popover-open")) el.hidePopover();
   }, error ? 7000 : 3000);
 }
+// Avviso mostrato con una finestra aperta (per esempio «… salvato», prima che la finestra si chiuda): chiusa l'ultima,
+// torna in basso e non copre la barra in alto. close delle finestre non risale: si riceve in fase di cattura
+document.addEventListener("close", () => { if (!$("dialog[open]")) $("#toast").classList.remove("over"); }, true);
 
 // Prova del collegamento e rilettura dal controller: POST che non modificano niente, quindi senza Riprova
 const NO_RETRY = ["api/controllers/test", "api/sync"];
@@ -4393,7 +4396,7 @@ async function viewBackups(body, part = "") {
   // Backup con l'indice illeggibile: non sono nell'elenco, si eliminano da qui (solo amministratori)
   const unreadable = verify && !verify.ok && data.can_restore ? verify.unreadable || [] : [];
   const idTime = (id) => { const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(id); return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : id; };
-  body.innerHTML = `${error ? `<div class="alert">${icon("alert")}<div class="grow"><b>${error.id ? "Ultimo Backup Incompleto" : "Ultimo Backup Non Riuscito"}</b>${esc(cap(error.error))} ·${esc(relTime(error.at))}</div></div>` : ""}
+  body.innerHTML = `${error ? `<div class="alert">${icon("alert")}<div class="grow"><b>${error.id ? "Ultimo Backup Incompleto" : "Ultimo Backup Non Riuscito"}</b>${esc(cap(error.error))} · ${esc(relTime(error.at))}</div></div>` : ""}
     ${verify && !verify.ok ? `<div class="alert">${icon("alert")}<div class="grow"><b>Backup Rovinati</b>${verify.errors.slice(0, 5).map((e) => esc(e)).join("<br>")}${moreErrors > 0 ? `<br>${moreErrors === 1 ? "e un altro" : `e altri ${moreErrors}`}` : ""}<br><span class="small-text">Questi backup non si possono ripristinare: eliminali e premi Verifica Ora. Gli altri sono a posto.</span>
       ${unreadable.length ? `<div class="row" style="margin-top:8px">${unreadable.map((id) => `<button type="button" class="small danger" data-del-index="${esc(id)}" title="Backup con l'indice illeggibile">${icon("trash")}Elimina ${esc(idTime(id))}</button>`).join("")}</div>` : ""}</div></div>` : ""}
     <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 320px">${intro}</p><button type="button" class="primary" id="bk-new">${icon("plus")}Crea Backup Ora</button></div>

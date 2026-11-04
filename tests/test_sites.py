@@ -196,6 +196,26 @@ def test_area_moved_to_another_site_updates_categories(client, controller):
     assert controller.profiles[token]["AccessPolicy"] == []
 
 
+def test_area_renamed_does_not_read_the_controller(client, controller, monkeypatch):
+    """Area solo rinominata (l'interfaccia manda il nome): niente letture dei profili, che con il controller spento
+    farebbero aspettare il tempo scaduto."""
+    [site] = client.get("/api/locations").json()
+    site_id, area_id = site["id"], site["areas"][0]["id"]
+    rules = [{"target": "site", "target_id": site_id, "schedule": "standard_always"}]
+    client.post("/api/categories", json={"name": "Teatro Tutto", "rules": rules})
+    reads = []
+
+    async def get_access_profiles(tokens):
+        reads.append(tokens)
+        return []
+
+    monkeypatch.setattr(controller, "get_access_profiles", get_access_profiles)
+    assert client.put(f"/api/areas/{area_id}", json={"name": "Platea"}).status_code == 200
+    assert client.put(f"/api/areas/{area_id}", json={"name": "Platea", "site_id": site_id}).status_code == 200
+    assert reads == []
+    assert client.get("/api/locations").json()[0]["areas"][0]["name"] == "Platea"
+
+
 def test_last_passage_is_someone_who_went_through(client):
     """Ultimo passaggio di una porta: chi è passato, non chi è stato rifiutato o ha chiamato al citofono."""
     db = client.app.state.db

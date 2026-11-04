@@ -1444,9 +1444,12 @@ def create_app(
 
     @app.put("/api/areas/{area_id}", dependencies=[need("impianti")])
     async def update_area(area_id: int, body: AreaIn, request: Request) -> dict:
+        before = request.app.state.db.get_area(area_id)
         result = request.app.state.installation.save_area(area_id, 0, body.model_dump(), request_user(request))
-        # Area passata a un'altra struttura (site_id): le tipologie con la riga sulla struttura cambiano porte
-        await _refresh_categories(request.app)
+        # Area passata a un'altra struttura (site_id): le tipologie con la riga sulla struttura cambiano porte. Solo
+        # rinominata: niente da riscrivere e niente letture dal controller
+        if before and body.site_id and body.site_id != before["site_id"]:
+            await _refresh_categories(request.app)
         return result
 
     @app.delete("/api/areas/{area_id}", dependencies=[need("impianti")])
@@ -1983,7 +1986,7 @@ def create_app(
         state.direct_settings = settings
         await state.direct.apply(settings)
         state.db.add_audit(
-            user.label, "accesso diretto " + ("attivo" if settings["enabled"] else "spento"), state.direct.error
+            user.label, "accesso diretto " + ("attivo" if settings["enabled"] else "disattivato"), state.direct.error
         )
         return _direct_access_view(state)
 
