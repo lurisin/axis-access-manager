@@ -291,16 +291,19 @@ async def test_open_door_gives_the_safety_net_its_time_before_the_command(servic
     with pytest.raises(ControllerUnreachable):
         await service.open_door(True, "Luca (Home Assistant)")
     assert during[0] is not None and during[0].extended and guard.grants["porta"] is during[0]
+    # Anche dopo GRANT_WINDOW (Aperta a Tempo vista solo con la lettura dopo)
+    assert guard.extended_at["porta"] == during[0].at
 
     async def refused(door_token, extended=False):
         raise VapixError("il controller ha rifiutato la richiesta")
 
     # Rifiutato dal controller: nessuna apertura, nessun consenso
     guard.grants.clear()
+    guard.extended_at.clear()
     controller.access_door = refused
     with pytest.raises(VapixError):
         await service.open_door(True, "Luca (Home Assistant)")
-    assert guard.grants == {}
+    assert guard.grants == {} and guard.extended_at == {}
 
 
 async def test_recent_extended_openings_from_the_log(service, db):

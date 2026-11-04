@@ -233,6 +233,39 @@ def test_extended_opening_from_before_a_restart_keeps_its_time():
     assert s.guard.accesses["porta"].extended is True
 
 
+def test_extended_opening_seen_only_after_the_grant_window_keeps_its_time():
+    """Apri a Lungo con la risposta del controller persa: l'Aperta a Tempo arriva solo con la lettura dopo (senza
+    eventi in diretta, o con l'evento perso). È l'apertura estesa, dal comando, fino alla sua fine e non oltre."""
+    for live in (True, False):
+        s = Setup(mode="Locked")
+        s.guard.granted("porta", extended=True)
+        start = s.clock.now
+        s.run(live=live)
+        s.accessed()
+        s.run(8, live=live)
+        access = s.guard.accesses["porta"]
+        assert access.extended and access.started == start
+        s.run(20 - 8 + MARGIN - 0.1, live=live)
+        assert s.lock_calls() == [] and s.alarms == []
+        s.run(0.2, live=live)
+        assert s.lock_calls() == [("lock_door", "porta")] and s.alarms == [("porta", FORCED)]
+
+
+def test_withdrawn_extended_grant_leaves_the_normal_time():
+    """Apri a Lungo rifiutato dal controller: un'Aperta a Tempo vista dopo, senza consenso, ha il tempo normale."""
+    s = Setup(mode="Locked")
+    grant = s.guard.granted("porta", extended=True)
+    s.guard.withdraw("porta", grant)
+    assert s.guard.grants == {} and s.guard.extended_at == {}
+    s.run()
+    s.accessed()
+    s.run(8)
+    access = s.guard.accesses["porta"]
+    assert access.extended is False and access.started == s.clock.now
+    s.run(5 + MARGIN + 0.1)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
 def test_times_beyond_the_app_maximum_are_capped():
     """Un tempo messo sul controller fuori dall'app non tiene la serratura alimentata oltre i massimi."""
     s = Setup(times={"porta": ("PT300S", "PT600S")})

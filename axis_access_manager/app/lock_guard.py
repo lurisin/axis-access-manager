@@ -108,11 +108,12 @@ class LockGuard:
         self.times_at: float | None = None
         # Cresce a ogni invalidate_times: una lettura partita prima non vale
         self._times_gen = 0
-        # Ultimo consenso del registro del controller già usato, per porta (senza eventi in diretta)
+        # Ultimo consenso del registro del controller già usato, per porta
         self.log_grants: dict[str, str] = {}
-        # Inizio (ora di clock) dell'ultima apertura estesa dall'app, per porta: un'Aperta a Tempo vista di nuovo
-        # senza consenso prima della sua fine (eventi in ritardo, risposta al comando persa, riavvio dell'add-on) è
-        # ancora quella, con il suo inizio e il suo tempo. Un'apertura con il tempo normale la toglie
+        # Inizio (ora di clock) dell'ultima apertura estesa dall'app, per porta, dal suo consenso: un'Aperta a Tempo
+        # vista senza consenso prima della sua fine (vista solo dopo GRANT_WINDOW, eventi in ritardo, risposta al
+        # comando persa, riavvio dell'add-on) è ancora quella, con il suo inizio e il suo tempo. Un'apertura con il
+        # tempo normale la toglie
         self.extended_at: dict[str, float] = {}
 
     def poke(self) -> None:
@@ -125,6 +126,9 @@ class LockGuard:
         if not door:
             return None
         grant = self.grants[door] = _Grant(self.clock(), extended, door_open)
+        if extended:
+            # Senza eventi in diretta, o con l'evento perso, l'Aperta a Tempo può arrivare dopo GRANT_WINDOW
+            self.extended_at[door] = grant.at
         self.poke()
         return grant
 
@@ -133,6 +137,9 @@ class LockGuard:
         arrivata intanto sì)."""
         if grant is not None and self.grants.get(door) is grant:
             del self.grants[door]
+        if grant is not None and self.extended_at.get(door) == grant.at:
+            # Nemmeno il tempo esteso
+            del self.extended_at[door]
 
     def extended_opened(self, door: str, seconds_ago: float) -> None:
         """Apertura estesa dall'app iniziata seconds_ago secondi fa: dal registro, dopo un riavvio dell'add-on."""

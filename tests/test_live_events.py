@@ -173,6 +173,7 @@ async def test_events_from_the_websocket(quick):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await _shutdown(server)
+    assert monitor.ws_live is False and live.connected is False
 
 
 async def test_initial_state_is_told_by_the_event_time(quick):
@@ -221,7 +222,6 @@ async def test_initial_state_is_told_by_the_event_time(quick):
     tamper = notify("tns1:Door/State/DoorTamper", {"DoorToken": DOOR}, {"State": "TamperDetected"}, old_ms)
     live._notify(tamper, False, opened)
     assert received == [True, False]
-    assert monitor.ws_live is False and live.connected is False
 
 
 async def test_filters_refused_by_the_controller(quick):

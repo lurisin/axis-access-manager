@@ -629,11 +629,14 @@ def test_app_rows_do_not_move_the_recovery_point(client, controller, app_row):
     passage(1, "01")
     client.portal.call(main._recover_if_needed, state)
     service = state.service
+    # Nel ciclo dell'app, come in produzione (le notifiche a Home Assistant partono come compiti)
     if app_row == "allarme":
-        service.log_lock_alarm("porta", FORCED)
+        client.portal.call(service.log_lock_alarm, "porta", FORCED)
     else:
-        service.log_event(
-            ts=service.event_now(), kind="negato", detail="apertura non eseguita: prova", source="Home Assistant"
+        client.portal.call(
+            lambda: service.log_event(
+                ts=service.event_now(), kind="negato", detail="apertura non eseguita: prova", source="Home Assistant"
+            )
         )
     client.portal.call(main._recover_if_needed, state)
     # Passaggi subito dopo, con l'ora del controller: prima dell'ora della riga dell'app
@@ -710,10 +713,11 @@ def test_door_lock_unknown_while_the_controller_does_not_respond(client):
     assert modes() == [None]
     # Mosquitto riavviato: il broker ripete la modalità conservata. Non torna «Bloccata»
     payload = json.dumps({"timestamp": 1758400000000, "message": {"data": {"State": "Locked"}}}).encode()
-    state.monitor.handle("accessi/x/eventi/Door/State/DoorMode/$source/DoorToken/porta", payload, retained=True)
+    topic = "accessi/x/eventi/Door/State/DoorMode/$source/DoorToken/porta"
+    client.portal.call(lambda: state.monitor.handle(topic, payload, retained=True))
     assert modes() == [None]
     # Né per una modalità arrivata in diretta via MQTT con il controller che non risponde alle API
-    state.monitor.handle("accessi/x/eventi/Door/State/DoorMode/$source/DoorToken/porta", payload)
+    client.portal.call(state.monitor.handle, topic, payload)
     assert state.monitor.door_modes == {"porta": "Locked"} and modes() == [None]
 
 

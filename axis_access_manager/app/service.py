@@ -252,7 +252,8 @@ class AccessService:
 
     async def last_grant(self, door: str) -> tuple[str, float | None] | None:
         """Ultimo consenso (tessera, pulsante) alla porta nel registro del controller: (impronta, secondi fa), None se
-        non c'è tra gli ultimi eventi. Per la rete di sicurezza della serratura senza eventi in diretta."""
+        non c'è tra gli ultimi eventi. Per la rete di sicurezza della serratura: senza eventi in diretta, e con gli
+        eventi in diretta prima di bloccare per il tempo scaduto."""
         entries = await self.controller.latest_events(GRANT_LOG_TAIL)
         # Scarto misurato dell'orologio del controller, anche senza NTP: senza misura i secondi non si sanno (None)
         offset = self.measured_clock_offset() if self.measured_clock_offset else None
