@@ -290,6 +290,31 @@ def test_unreadable_database_without_copy_starts_empty_and_says_so(settings, con
     assert _excluded(broken) and broken.read_bytes()[:16] == b"x" * 16
 
 
+def test_started_empty_is_no_longer_a_fault_after_restoring_an_app_backup(settings, controller, tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    with start(settings, controller, data) as client:
+        client.post("/api/persons", json={"name": "Anna Rossi", "card": "04aa", "company": "ACME"})
+        backup = client.post("/api/backups", json={"name": "Prima del danno"}).json()
+    _header(data / DB_NAME)
+    with start(settings, controller, data) as client:
+        preview = client.post(f"/api/backups/{backup['id']}/preview", json={"sections": ["persone"]}).json()
+        keys = [i["key"] for i in preview["items"] if i["default"]]
+        body = {"sections": ["persone"], "keys": keys}
+        assert client.post(f"/api/backups/{backup['id']}/restore", json=body).json()["applied"]
+        [notice] = [i for i in client.get("/api/notifications").json()["items"] if i["type"] == "database"]
+        recovered = client.get("/api/status").json()["database"]["recovered"]
+        faults = [f["title"] for f in client.get("/api/summary").json()["faults"]]
+    # Prima restava un guasto critico, con l'invito a ripristinare un backup di Home Assistant di prima del danno
+    assert notice["title"] == "Database Ripartito Vuoto" and notice["fault"] is False
+    assert "Database Ripartito Vuoto" not in faults
+    assert (
+        recovered["hint"]
+        == notice["text"].split(". ")[-1]
+        == ("Dati ripristinati da un backup dell'app: i backup di Home Assistant fatti da adesso li contengono.")
+    )
+
+
 def test_unreadable_database_and_copy_without_space_to_duplicate_it(settings, controller, tmp_path, monkeypatch):
     data = tmp_path / "data"
     data.mkdir()
@@ -565,6 +590,22 @@ async def test_snapshot_not_taken_when_the_disk_is_nearly_full(tmp_path, monkeyp
     await hass.aclose()
 
 
+async def test_snapshot_skipped_for_the_disk_does_not_blame_the_camera(tmp_path, monkeypatch):
+    usage = SimpleNamespace(total=32 * 1024**3, used=0, free=500 * 1024**2)
+    monkeypatch.setattr(ha_module.shutil, "disk_usage", lambda path: usage)
+    db = Database(tmp_path / DB_NAME)
+    event = db.add_event(ts="2026-11-04T10:00:00+00:00", kind="negato", door="cantina")
+    state = SimpleNamespace(db=db, ha=HomeAssistant(token="token", snapshot_dir=tmp_path / "media"), snapshot_errors={})
+    await main._save_snapshot(state, "camera.cantina", {"id": event, "ts": "2026-11-04T10:00:00+00:00"})
+    # Il motivo resta sull'evento; la telecamera non è guasta. Prima «Telecamera Non Disponibile» per ogni telecamera,
+    # anche dopo aver liberato spazio, fino al prossimo evento della porta
+    [row] = db.list_events()
+    assert row["snapshot_error"] == "spazio su disco quasi esaurito: istantanea non salvata"
+    assert state.snapshot_errors == {}
+    await state.ha.aclose()
+    db.close()
+
+
 def test_nearly_full_disk_is_a_fault(settings, controller, tmp_path, monkeypatch):
     data = tmp_path / "data"
     data.mkdir()
@@ -578,6 +619,29 @@ def test_nearly_full_disk_is_a_fault(settings, controller, tmp_path, monkeypatch
     [notice] = [i for i in items if i["type"] == "database"]
     assert notice["title"] == "Spazio su Disco Quasi Esaurito" and notice["fault"] is True
     assert notice["text"].startswith("Liberi 300 MB su 32,0 GB: le istantanee non si salvano")
+
+
+def test_nearly_full_disk_seen_returns_when_space_keeps_going_down(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    usage = SimpleNamespace(total=32 * 1024**3, used=0, free=900 * 1024**2)
+    with start(settings, controller, data) as client:
+        monkeypatch.setattr(ha_module.shutil, "disk_usage", lambda path: usage)
+
+        def notice():
+            [item] = [i for i in client.get("/api/notifications").json()["items"] if i["id"] == "database:spazio"]
+            return item
+
+        client.post("/api/notifications/seen", json={"ids": ["database:spazio"]})
+        assert notice()["seen"] is True
+        # Prima restava vista fino al disco pieno
+        usage.free = 100 * 1024**2
+        assert notice()["seen"] is False
+        client.post("/api/notifications/seen", json={"ids": ["database:spazio"]})
+        usage.free = 120 * 1024**2
+        assert notice()["seen"] is True
+        usage.free = 10 * 1024**2
+        assert notice()["seen"] is False
 
 
 def test_full_disk_at_startup_deletes_expired_snapshots_and_starts(settings, controller, tmp_path, monkeypatch):

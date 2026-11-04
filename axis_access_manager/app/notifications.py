@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 
 from .backup_copy import RESTORED, STARTED_EMPTY
 from .db import Database
+from .ha import MIN_FREE_SPACE
 from .live_events import FAULT_AFTER
 from .service import CASING_OPEN, TILTED, ServiceError, plural
 
@@ -112,6 +113,10 @@ EMPTY_HINT = (
     "Ripristina l'add-on da un backup di Home Assistant di prima del danno o, se non c'è, un backup dell'app da "
     "Impianti → Backup: i backup di Home Assistant fatti da adesso contengono il database vuoto."
 )
+# Dopo il ripristino di un backup dell'app
+EMPTY_RESTORED_HINT = (
+    "Dati ripristinati da un backup dell'app: i backup di Home Assistant fatti da adesso li contengono."
+)
 
 
 def recovery_title(text: str) -> str:
@@ -121,9 +126,12 @@ def recovery_title(text: str) -> str:
     return "Database Ripristinato dalla Copia" if RESTORED in text else "Database Non Ripristinato"
 
 
-def recovery_hint(text: str) -> str:
-    """Cosa fare dopo il controllo del database all'avvio ("" se non c'è niente da fare)."""
-    return EMPTY_HINT if STARTED_EMPTY in text else ""
+def recovery_hint(text: str, handled: bool = False) -> str:
+    """Cosa fare dopo il controllo del database all'avvio ("" se non c'è niente da fare). handled: dati già
+    ripristinati da un backup dell'app."""
+    if STARTED_EMPTY not in text:
+        return ""
+    return EMPTY_RESTORED_HINT if handled else EMPTY_HINT
 
 
 def _parse(value: str) -> datetime | None:
@@ -195,6 +203,7 @@ class NotificationService:
         backup: dict | None = None,
         backup_verify: dict | None = None,
         db_recovery: str = "",
+        db_recovery_handled: bool = False,
         ha_copy_error: str = "",
         db_copy_error: str = "",
         low_space: tuple[int, int] | None = None,
@@ -204,6 +213,7 @@ class NotificationService:
         """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente.
 
         db_recovery: cosa ha fatto all'avvio il controllo del database (backup_copy.recover), "" se era sano.
+        db_recovery_handled: database ripartito vuoto e poi ripristinato da un backup dell'app.
         ha_copy_error: perché l'ultima copia per il backup di Home Assistant non è stata aggiornata.
         db_copy_error: perché a questo avvio la copia prima dell'aggiornamento non si è fatta.
         low_space: spazio libero e totale del disco, se è quasi esaurito.
@@ -540,11 +550,13 @@ class NotificationService:
                 f"database:avvio:{self.started_at}",
                 "crit",
                 recovery_title(db_recovery),
-                f"{_sentence(db_recovery)} {recovery_hint(db_recovery)}".strip(),
+                f"{_sentence(db_recovery)} {recovery_hint(db_recovery, db_recovery_handled)}".strip(),
                 self.started_at,
                 link="#impostazioni/generale",
-                # Ripristinato: è successo all'avvio e non c'è altro da fare, dopo la presa visione non resta
-                fault=not restored,
+                # Ripristinato (dalla copia all'avvio o, dopo, da un backup dell'app): è successo all'avvio e non c'è
+                # altro da fare, dopo la presa visione non resta. Prima un database ripartito vuoto restava tra i
+                # guasti, con l'invito a ripristinare, anche dopo il ripristino del backup dell'app
+                fault=not restored and not db_recovery_handled,
             )
         if ha_copy_error:
             add(
@@ -591,6 +603,7 @@ class NotificationService:
                 "libera spazio (backup vecchi di Home Assistant, cartella Media, Conservazione Registro più breve).",
                 now.isoformat(timespec="seconds"),
                 link="#impostazioni/generale",
+                weight=_space_weight(*low_space),
             )
         for group in alarm_groups:
             last = group[-1]
@@ -825,6 +838,13 @@ def _episode_id(item_id: str, since: str) -> str:
     """Id di un guasto con l'ora di inizio: se riparte è un'altra notifica, da gestire anche se la precedente era
     stata presa visione. Al collaudo il guasto ripartito con l'aggiornamento dell'add-on restava visto dalle 18:20."""
     return f"{item_id}@{since}" if since else item_id
+
+
+def _space_weight(free: int, total: int) -> int:
+    """Peso dello spazio su disco: sotto un quinto e sotto un ventesimo della soglia la notifica vista torna da
+    gestire. Prima, vista a 900 MB, restava vista fino al disco pieno."""
+    limit = min(MIN_FREE_SPACE, total // 20)
+    return 2 if free < limit // 20 else 1 if free < limit // 5 else 0
 
 
 def _offset_weight(seconds: float | None) -> int:

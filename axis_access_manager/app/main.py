@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
-from .backup_copy import RESTORED, error_reason, ha_copy_error, ha_copy_path, update_copies
+from .backup_copy import RESTORED, STARTED_EMPTY, error_reason, ha_copy_error, ha_copy_path, update_copies
 from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .controller_state import POLL_LIVE, POLL_WITHOUT_EVENTS, StateKeeper
 from .db import DB_PATH, Database, local_day_start
@@ -59,7 +59,7 @@ from .direct import (
 from .direct import load_settings as load_direct_settings
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS, renamed_tokens
-from .ha import HomeAssistant, default_snapshot_dir, delete_old_snapshots, disk_space, low_space
+from .ha import LOW_SPACE, HomeAssistant, default_snapshot_dir, delete_old_snapshots, disk_space, low_space
 from .ha_mqtt import DOOR_PHYSICAL, HaBridge, parse_command, topic_base
 from .health import (
     HEALTH_INTERVAL,
@@ -1897,6 +1897,10 @@ def create_app(
             result = await apply(items, body.keys, runtime, user.label)
         # Tempi delle porte forse ripristinati: la rete di sicurezza della serratura li rilegge
         state.lock_guard.invalidate_times()
+        recovery = getattr(state, "db_recovery", None)
+        if result["applied"] and recovery and STARTED_EMPTY in recovery["text"]:
+            # Database ripartito vuoto all'avvio: con il backup dell'app ripristinato non è più un guasto
+            state.db_recovery = {**recovery, "handled": True, "hint": recovery_hint(recovery["text"], True)}
         full = any(s in FULL_SECTIONS for s in body.sections)
         state.db.add_audit(
             user.label,
@@ -2691,6 +2695,10 @@ async def _save_snapshot(state, camera: str, row: dict) -> None:
         filename, error = "", "errore imprevisto, dettagli nel log dell'add-on"
     if filename or error:
         state.db.set_event_snapshot(row["id"], filename, error)
+    if error.startswith(LOW_SPACE):
+        # Disco quasi pieno: la telecamera non è stata chiesta, e lo dice già il guasto del disco. Prima ogni
+        # telecamera diventava «Telecamera Non Disponibile», e lo restava dopo fino al suo prossimo evento
+        return
     state.snapshot_errors.pop(camera, None)
     if error:
         state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}
@@ -2809,6 +2817,7 @@ def _current_notifications(state) -> list[dict]:
         backup_verify=state.backups.last_verify(),
         # Database ripristinato all'avvio e copia per il backup di Home Assistant non aggiornata ("" se tutto bene)
         db_recovery=(getattr(state, "db_recovery", None) or {}).get("text", ""),
+        db_recovery_handled=bool((getattr(state, "db_recovery", None) or {}).get("handled")),
         ha_copy_error=ha_copy_error(state.db.path) if state.db.path else "",
         db_copy_error=(getattr(state, "db_copy_error", None) or {}).get("text", ""),
         low_space=_low_space(state),
