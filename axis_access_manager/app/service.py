@@ -310,10 +310,9 @@ class AccessService:
             _LOGGER.warning("Evento non salvato nel registro: %s %s", fields.get("kind"), fields.get("door") or "")
             event_id = None
         else:
-            if self.write_error is not None:
-                _LOGGER.info("Registro di nuovo scrivibile")
-                self.write_error = None
-                self._changed()
+            # Nel recupero la riga è salvata solo al commit della pagina (vedi recover_events)
+            if self.write_error is not None and not self._recovering:
+                self.writable_again()
         row = {**fields, "id": event_id}
         row.pop("raw", None)
         if self.after_event:
@@ -322,6 +321,13 @@ class AccessService:
             # Nel recupero Home Assistant si aggiorna una volta per pagina, non per ognuna delle migliaia di righe
             self._changed()
         return row
+
+    def writable_again(self) -> None:
+        """Una scrittura nel registro è riuscita: il guasto «Registro Non Scrivibile» si toglie."""
+        if self.write_error is not None:
+            _LOGGER.info("Registro di nuovo scrivibile")
+            self.write_error = None
+            self._changed()
 
     def note_write_error(self, err: sqlite3.Error) -> None:
         """Registro non scrivibile (disco pieno): guasto finché un evento non si salva, e recupero da rifare."""
@@ -1256,6 +1262,9 @@ class AccessService:
             entries, more = await self.controller.fetch_events(start, RECOVER_PAGE, row_id)
             read += len(entries)
             before = self._recovered
+            # Esiti già visti prima della pagina: se la pagina non si salva i suoi passaggi non sono «già registrati».
+            # Prima, con il disco ancora pieno, il recupero dopo li saltava e si perdevano per sempre
+            decisions = list(self._recent_decisions)
             self._recovering = True
             try:
                 # Una pagina, un commit
@@ -1266,9 +1275,13 @@ class AccessService:
                             self.recover_newest = event.timestamp
                         if event and event.topic.startswith(RECOVER_TOPICS):
                             self.record_event(event)
+            except sqlite3.Error:
+                self._recent_decisions = deque(decisions, maxlen=self._recent_decisions.maxlen)
+                raise
             finally:
                 self._recovering = False
             if self._recovered > before:
+                self.writable_again()
                 self._changed()
             if not more or not entries:
                 break

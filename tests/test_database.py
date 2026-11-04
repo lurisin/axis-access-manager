@@ -698,6 +698,52 @@ async def test_event_not_saved_reaches_home_assistant_and_is_recovered_later(db,
     assert service.write_error is None
 
 
+class _CommitFails:
+    """Connessione che al commit risponde come SQLite con il disco pieno: errore e transazione annullata."""
+
+    def __init__(self, conn):
+        self._real = conn
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def commit(self):
+        if self._real.in_transaction:
+            self._real.rollback()
+            _full()
+
+
+@pytest.mark.parametrize("failure", ["add_event", "commit"])
+async def test_recovery_that_fails_does_not_lose_the_passages(db, controller, settings, monkeypatch, failure):
+    service = AccessService(db, controller, settings, EventMonitor(prefix="accessi/x", door_token="porta"))
+    moment = datetime(2026, 10, 25, 10, 0, 5, tzinfo=UTC)
+    granted = {"AccessPointToken": "ap-in", "Card": "04aa"}
+    keys = [{"Key": f"topic{i}", "Value": t} for i, t in enumerate(("AccessControl", "AccessGranted", "Anonymous"))]
+    values = [{"Key": k, "Value": v} for k, v in granted.items()]
+    controller.log_events = [{"rowid": 1, "UtcTime": "2026-10-25T10:00:05Z", "KeyValues": keys + values}]
+    saved = db.add_event
+    monkeypatch.setattr(db, "add_event", _full)
+    service.record_event(Event("AccessControl", "AccessControl/AccessGranted/Anonymous/", moment, dict(granted)))
+    since = service.write_error["since"]
+    # Disco ancora pieno al primo recupero: la pagina non si salva, nell'aggiunta della riga o al commit
+    if failure == "commit":
+        monkeypatch.setattr(db, "add_event", saved)
+        monkeypatch.setattr(db, "_conn", _CommitFails(db._conn))
+    with pytest.raises(sqlite3.OperationalError):
+        await service.recover_events(moment - timedelta(minutes=1))
+    assert db.list_events() == []
+    # Il guasto resta quello di prima: la notifica non cambia
+    assert service.write_error["since"] == since
+
+    # Spazio di nuovo libero: il passaggio torna nel registro. Prima risultava già registrato e si perdeva per sempre
+    monkeypatch.setattr(db, "add_event", saved)
+    monkeypatch.setattr(db, "_conn", getattr(db._conn, "_real", db._conn))
+    assert await service.recover_events(moment - timedelta(minutes=1)) == 1
+    [row] = db.list_events()
+    assert (row["kind"], row["recovered"]) == ("concesso", 1)
+    assert service.write_error is None
+
+
 def test_unsaved_events_hold_the_recovery_point_until_recovered(settings, controller, tmp_path, monkeypatch):
     data = tmp_path / "data"
     data.mkdir()
