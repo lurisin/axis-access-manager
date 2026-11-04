@@ -75,6 +75,8 @@ RECOVER_TOPICS = (
 )
 RECOVER_PAGE = 1000
 RECOVER_MAX = 30000
+# Scrittura di prova con il registro segnato non scrivibile (vedi AccessService.check_writable)
+SETTING_WRITE_PROBE = "write_probe"
 
 
 # Eventi che cambiano solo lo stato mostrato in Home Assistant (oltre a quanto va nel registro)
@@ -212,6 +214,12 @@ class AccessService:
         self.write_error: dict | None = None
         # Eventi non salvati finora: il recupero dal registro del controller li rimette (vedi main._recover_if_needed)
         self.write_failures = 0
+        # Righe dell'app non salvate (Riblocco Forzato, aperture a distanza, citofono): il registro del controller non
+        # le ha e il recupero non le rimette. Si salvano appena il registro torna scrivibile, senza mandarle di nuovo a
+        # Home Assistant
+        self._unsaved_rows: deque[dict] = deque(maxlen=100)
+        # Dentro record_event: le righe sono eventi del controller
+        self._controller_event = False
         # Punto di accesso → porta e lettore → porta, per sapere a quale porta si riferisce un evento
         self.access_point_doors: dict[str, str] = {}
         self.idpoint_doors: dict[str, str] = {}
@@ -306,13 +314,17 @@ class AccessService:
                 # Il recupero si ferma qui e riparte al giro dopo, dallo stesso punto
                 raise
             # In diretta l'evento arriva lo stesso a Home Assistant (allarmi, accessi, apertura riuscita); nel
-            # registro lo rimette il recupero, se è del controller. Prima si perdeva in silenzio
+            # registro lo rimette il recupero, se è del controller, se no lo salva la prima scrittura che riesce.
+            # Prima si perdeva in silenzio
             _LOGGER.warning("Evento non salvato nel registro: %s %s", fields.get("kind"), fields.get("door") or "")
             event_id = None
+            if not self._controller_event:
+                self._unsaved_rows.append(dict(fields))
         else:
             # Nel recupero la riga è salvata solo al commit della pagina (vedi recover_events)
-            if self.write_error is not None and not self._recovering:
+            if not self._recovering:
                 self.writable_again()
+                self.check_writable()
         row = {**fields, "id": event_id}
         row.pop("raw", None)
         if self.after_event:
@@ -329,8 +341,25 @@ class AccessService:
             self.write_error = None
             self._changed()
 
+    def check_writable(self) -> None:
+        """Righe dell'app rimaste fuori dal registro: si salvano con la loro ora, senza mandarle di nuovo a Home
+        Assistant. Con il registro segnato non scrivibile e niente da salvare si prova una scrittura piccola: prima il
+        guasto restava finché non si salvava un evento nuovo, anche con lo spazio di nuovo libero."""
+        if self.write_error is None and not self._unsaved_rows:
+            return
+        try:
+            if not self._unsaved_rows:
+                self.db.set_setting(SETTING_WRITE_PROBE, now_iso())
+            while self._unsaved_rows:
+                self.db.add_event(**self._unsaved_rows[0])
+                self._unsaved_rows.popleft()
+        except sqlite3.Error as err:
+            _LOGGER.debug("Registro ancora non scrivibile: %s", err)
+            return
+        self.writable_again()
+
     def note_write_error(self, err: sqlite3.Error) -> None:
-        """Registro non scrivibile (disco pieno): guasto finché un evento non si salva, e recupero da rifare."""
+        """Registro non scrivibile (disco pieno): guasto finché una scrittura non riesce, e recupero da rifare."""
         self.write_failures += 1
         if self.write_error is None:
             _LOGGER.error("Registro non scrivibile: %s", err)
@@ -1091,6 +1120,13 @@ class AccessService:
     def record_event(self, event: Event, retained: bool = False) -> None:
         """Salva nel log gli eventi utili. Lo stato mandato dal WebSocket appena collegato (retained) è già stato
         registrato."""
+        self._controller_event = True
+        try:
+            self._record_event(event, retained)
+        finally:
+            self._controller_event = False
+
+    def _record_event(self, event: Event, retained: bool) -> None:
         if self.lock_guard is not None and not retained and not self._recovering:
             if event.topic.startswith("AccessControl/AccessGranted"):
                 door = self._door_of(event)

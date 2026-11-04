@@ -572,8 +572,9 @@ class NotificationService:
                 "crit",
                 "Registro Non Scrivibile",
                 _sentence(f"eventi non salvati nel registro: {write_error['error']}")
-                + " Arrivano lo stesso a Home Assistant; quelli del controller si recuperano dal suo registro quando "
-                "il registro dell'app torna scrivibile.",
+                + " Arrivano lo stesso a Home Assistant. Quando il registro dell'app torna scrivibile quelli del "
+                "controller si recuperano dal suo registro, e quelli dell'app (Riblocco Forzato, aperture a distanza) "
+                "si salvano se intanto l'add-on non è ripartito.",
                 write_error["since"],
                 link="#impostazioni/generale",
             )

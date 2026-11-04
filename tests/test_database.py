@@ -813,6 +813,45 @@ def test_notifications_and_backup_errors_with_the_database_not_writable(settings
         assert state.backups.last_error()["error"] == "backup non salvato: spazio su disco esaurito"
 
 
+def test_app_rows_not_saved_return_to_the_log_when_space_returns(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    with start(settings, controller, data) as client:
+        state = client.app.state
+        client.portal.call(state.health.check_all)
+        saved = state.db.add_event
+        monkeypatch.setattr(state.db, "add_event", _full)
+        # Apertura da Home Assistant con il disco pieno: una riga che il registro del controller non ha
+        assert client.portal.call(state.service.open_door, False, "Luca (Home Assistant)") is True
+        assert "Registro Non Scrivibile" in [i["title"] for i in client.get("/api/summary").json()["faults"]]
+        monkeypatch.setattr(state.db, "add_event", saved)
+        # Spazio di nuovo libero e nessun passaggio: il recupero non trova niente da scrivere
+        for _ in range(2):
+            client.portal.call(main._recover_if_needed, state)
+            main._check_writable(state)
+        faults = client.get("/api/summary").json()["faults"]
+        rows = state.db.list_events(kind="apertura_remota")
+    # Prima il guasto critico restava finché non passava qualcuno, e l'apertura non tornava più nel registro
+    assert [i for i in faults if i["title"] == "Registro Non Scrivibile"] == []
+    assert [(r["source"], r["recovered"]) for r in rows] == [("Luca (Home Assistant)", 0)]
+
+
+def test_not_writable_fault_stays_while_the_test_write_fails(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    with start(settings, controller, data) as client:
+        state = client.app.state
+        state.service.write_error = {"since": "2026-11-04T10:00:00+00:00", "error": "spazio su disco esaurito"}
+        probe = state.db.set_setting
+        monkeypatch.setattr(state.db, "set_setting", _full)
+        main._check_writable(state)
+        # Ancora pieno: il guasto resta, e il recupero non riparte a ogni giro
+        assert state.service.write_error is not None and state.service.write_failures == 0
+        monkeypatch.setattr(state.db, "set_setting", probe)
+        main._check_writable(state)
+        assert state.service.write_error is None
+
+
 # Un anno di registro
 
 

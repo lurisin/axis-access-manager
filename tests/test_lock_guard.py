@@ -18,6 +18,7 @@ from app.lock_guard import (
     SLOW_RETRY,
     LockGuard,
 )
+from app.service import AccessService
 from app.vapix import VapixError
 
 
@@ -745,8 +746,8 @@ def test_without_a_measured_controller_clock_a_new_log_grant_counts_from_now():
 
 
 def test_alarm_that_could_not_be_saved_is_tried_again():
-    """Disco pieno: l'allarme della rete di sicurezza falliva dopo essere stato segnato come fatto, e non arrivava
-    più, nemmeno dopo."""
+    """Allarme della rete di sicurezza che non parte (per esempio una lettura del registro non riuscita): era già
+    segnato come fatto, e non arrivava più, nemmeno dopo. Con il disco pieno vedi il test che segue."""
     s = Setup()
     s.controller.ignore_lock = True
     failures = [sqlite3.OperationalError("database or disk is full")]
@@ -781,3 +782,45 @@ def test_alarm_that_could_not_be_saved_is_tried_again():
     s.clock.now += 1
     asyncio.run(tick())
     assert s.alarms == [("porta", FAILED)]
+
+
+async def test_forced_lock_with_the_disk_full_ends_in_the_log_when_space_returns(db, settings, controller, monkeypatch):
+    """Disco pieno: il Riblocco Forzato arrivava a Home Assistant, ma con log_lock_alarm l'errore non risaliva e
+    l'allarme non entrava più nel registro né nelle notifiche dell'app."""
+    service = AccessService(db, controller, settings, EventMonitor(prefix="accessi/x", door_token="porta"))
+    published = []
+
+    async def after_event(row):
+        published.append((row["kind"], row["detail"], row["id"]))
+
+    def full(**fields):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    service.after_event = after_event
+    s = Setup()
+
+    async def tick():
+        await s.guard.tick(
+            s.monitor,
+            s.controller,
+            door_lock=lambda d: s.locks.setdefault(d, asyncio.Lock()),
+            contact_open=lambda d: s.contact.get(d),
+            log_alarm=service.log_lock_alarm,
+            changed=s.changed,
+        )
+
+    saved = db.add_event
+    monkeypatch.setattr(db, "add_event", full)
+    await tick()
+    s.clock.now += 5 + MARGIN + 0.1
+    await tick()
+    await asyncio.sleep(0)
+    assert s.lock_calls() == [("lock_door", "porta")]
+    assert published == [("allarme", FORCED, None)]
+    monkeypatch.setattr(db, "add_event", saved)
+    service.check_writable()
+    await asyncio.sleep(0)
+    [row] = db.list_events(kind="allarme")
+    assert (row["door"], row["detail"], row["source"]) == ("porta", FORCED, "App")
+    # Una volta sola in Home Assistant
+    assert len(published) == 1 and service.write_error is None

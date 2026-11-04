@@ -2338,6 +2338,8 @@ async def _start_runtime(app: FastAPI) -> None:
     if old_service is not None:
         # Le operazioni ancora in corso con la configurazione di prima e le nuove non si accavallano
         state.service.lock = old_service.lock
+        # Righe dell'app non ancora salvate (registro non scrivibile): restano da salvare
+        state.service._unsaved_rows = old_service._unsaved_rows
         # Porta di ogni punto di accesso e lettore: dal controller, non dalla configurazione dell'app
         state.service.access_point_doors = old_service.access_point_doors
         state.service.idpoint_doors = old_service.idpoint_doors
@@ -2957,12 +2959,31 @@ async def _health_loop(app: FastAPI) -> None:
             if before != state.controller.paused:
                 state.service.notify_change()
             _signal_responding(state)
-            await _recover_if_needed(state)
-            _forget_resolved(state)
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo dei controller non riuscito")
+        # Un passo che non riesce non ferma gli altri
+        try:
+            await _recover_if_needed(state)
+        except Exception:  # noqa: BLE001 - si riprova al giro successivo
+            _LOGGER.exception("Recupero degli eventi persi non riuscito")
+        try:
+            _check_writable(state)
+        except Exception:  # noqa: BLE001 - si riprova al giro successivo
+            _LOGGER.exception("Scrittura di prova nel registro non riuscita")
+        try:
+            _forget_resolved(state)
+        except Exception:  # noqa: BLE001 - si riprova al giro successivo
+            _LOGGER.exception("Prese visione dei guasti risolti non aggiornate")
         state.health_ready.set()
         await asyncio.sleep(HEALTH_INTERVAL)
+
+
+def _check_writable(state) -> None:
+    """Registro segnato non scrivibile, con gli eventi del controller di quel periodo già recuperati: con lo spazio di
+    nuovo libero il guasto si toglie, e le righe dell'app rimaste fuori tornano nel registro (vedi
+    AccessService.check_writable)."""
+    if state.service.write_failures == getattr(state, "recover_failures", 0):
+        state.service.check_writable()
 
 
 def _forget_resolved(state) -> None:
