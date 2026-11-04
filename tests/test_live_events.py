@@ -299,21 +299,26 @@ def test_live_copy_of_an_event_first_seen_as_state_goes_to_the_log():
     assert seen == [True, False]
 
 
-def test_old_broker_messages_do_not_change_the_state_with_the_websocket():
+@pytest.mark.parametrize("ws_live", [True, False])
+def test_old_broker_messages_never_change_the_state(ws_live):
     monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
     monitor.casing_open, monitor.casing_since = False, "2026-10-30T08:00:00+00:00"
-    monitor.ws_live = True
-    # Mosquitto riavviato: ripete il coperchio aperto conservato da settembre
+    monitor.ws_live = ws_live
+    seen = []
+    monitor.on_event = lambda event, retained: seen.append(retained)
+    # Mosquitto riavviato: ripete il coperchio aperto conservato da settembre, anche senza WebSocket (le letture
+    # periodiche guardano solo gli ultimi eventi del registro e non lo correggerebbero)
     old = json.dumps({"timestamp": 1758400000000, "message": {"data": {"Open": "1"}}}).encode()
     monitor.handle(f"{PREFIX}/eventi/Device/Casing/Open/$source/Name/Casing", old, retained=True)
     assert monitor.casing_open is False and monitor.casing_since == "2026-10-30T08:00:00+00:00"
-    # In diretta sì, e senza WebSocket anche i conservati (prima lettura dopo l'avvio)
+    # Né la modalità della porta, con il controller che non risponde e lo stato svuotato
+    monitor.reachable = False
+    locked = json.dumps({"timestamp": 1758400000000, "message": {"data": {"State": "Locked"}}}).encode()
+    monitor.handle(f"{PREFIX}/eventi/Door/State/DoorMode/$source/DoorToken/{DOOR}", locked, retained=True)
+    assert monitor.door_modes == {} and seen == []
+    # In diretta sì
     monitor.handle(f"{PREFIX}/eventi/Device/Casing/Open/$source/Name/Casing", old)
-    assert monitor.casing_open is True
-    monitor.ws_live = False
-    closed = json.dumps({"timestamp": 1758400001000, "message": {"data": {"Open": "0"}}}).encode()
-    monitor.handle(f"{PREFIX}/eventi/Device/Casing/Open/$source/Name/Casing", closed, retained=True)
-    assert monitor.casing_open is False
+    assert monitor.casing_open is True and seen == [False]
 
 
 def _ack():

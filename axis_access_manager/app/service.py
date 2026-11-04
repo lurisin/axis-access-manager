@@ -1002,7 +1002,8 @@ class AccessService:
         return moment.isoformat(timespec="seconds")
 
     def record_event(self, event: Event, retained: bool = False) -> None:
-        """Salva nel log gli eventi utili. I messaggi conservati dal broker sono già stati registrati."""
+        """Salva nel log gli eventi utili. Lo stato mandato dal WebSocket appena collegato (retained) è già stato
+        registrato."""
         if self.lock_guard is not None and not retained and not self._recovering:
             if event.topic.startswith("AccessControl/AccessGranted"):
                 door = self._door_of(event)
@@ -1010,7 +1011,7 @@ class AccessService:
             elif event.topic.startswith(("Door/State/", "Device/IO/Port")):
                 self.lock_guard.poke()
         if event.topic.startswith("Door/State/DoorMode/"):
-            # Anche il valore conservato dal broker aggiorna lo stato in Home Assistant
+            # Anche lo stato mandato dal WebSocket appena collegato aggiorna Home Assistant
             self._changed()
             return
         if event.topic.startswith(STATE_TOPICS) and not self._recovering:

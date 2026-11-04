@@ -2570,7 +2570,8 @@ def _doors_status(state) -> list[dict]:
             "area": places.get(d["id"], {}).get("area", ""),
             "site_id": places.get(d["id"], {}).get("site_id", 0),
             "area_id": places.get(d["id"], {}).get("area_id", 0),
-            "mode": state.monitor.door_modes.get(d["door_token"]),
+            # Con il controller che non risponde, o non ancora letto, la serratura è sconosciuta: mai l'ultimo valore
+            "mode": state.monitor.door_modes.get(d["door_token"]) if state.monitor.reachable is True else None,
             "state": _door_state(state.monitor, d["door_token"]),
             "camera": d["snapshot_camera"],
             "snapshot_on_granted": d["snapshot_on_granted"],

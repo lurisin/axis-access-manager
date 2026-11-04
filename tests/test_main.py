@@ -676,6 +676,34 @@ def test_long_controller_log_is_recovered_over_more_rounds_with_live_events(clie
     assert state.recover_pending is False
 
 
+def test_door_lock_unknown_while_the_controller_does_not_respond(client):
+    import json
+
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    doors = [d["door_token"] for d in state.installation.doors()]
+    client.portal.call(state.state_keeper.tick, state.controller, doors, main._responding(state))
+
+    def modes():
+        return [d["mode"] for d in client.get("/api/summary").json()["doors"]]
+
+    assert modes() == ["Locked"]
+    # Il controller non risponde da un minuto: stato svuotato
+    health = state.health.states[state.installation.primary["id"]]
+    health.online, health.failures = False, 2
+    client.portal.call(state.state_keeper.tick, state.controller, doors, main._responding(state))
+    assert modes() == [None]
+    # Mosquitto riavviato: il broker ripete la modalità conservata. Non torna «Bloccata»
+    payload = json.dumps({"timestamp": 1758400000000, "message": {"data": {"State": "Locked"}}}).encode()
+    state.monitor.handle("accessi/x/eventi/Door/State/DoorMode/$source/DoorToken/porta", payload, retained=True)
+    assert modes() == [None]
+    # Né per una modalità arrivata in diretta via MQTT con il controller che non risponde alle API
+    state.monitor.handle("accessi/x/eventi/Door/State/DoorMode/$source/DoorToken/porta", payload)
+    assert state.monitor.door_modes == {"porta": "Locked"} and modes() == [None]
+
+
 def test_responding_changes_wake_the_websocket_from_any_check(client):
     from app import main
     from app.live_events import LiveEvents
