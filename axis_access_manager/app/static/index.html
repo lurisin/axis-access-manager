@@ -571,6 +571,8 @@
   #toast.error { background: var(--err); color: var(--err-text); }
   /* Con una finestra aperta in alto: in basso coprirebbe i suoi pulsanti */
   #toast.over { inset: 24px auto auto 50%; }
+  /* Errore con una finestra aperta: in cima al suo contenuto e sempre in vista scorrendo, sotto l'intestazione */
+  .dlg-body > .alert.dlg-error { position: sticky; top: 0; z-index: 2; }
   .spinner { width: 18px; height: 18px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%;
              animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -894,6 +896,23 @@ function showActiveTab(el) {
 let toastTimer;
 function toast(message, error = false) {
   const el = $("#toast");
+  // Un errore con una finestra aperta va dentro la finestra, in cima al contenuto, e resta fino al prossimo avviso.
+  // Sopra la finestra, sul telefono, copriva per 7 secondi titolo e × (un tocco sull'avviso chiudeva la finestra)
+  $$(".dlg-error").forEach((box) => box.remove());
+  const open = $$("dialog[open]").pop();
+  const body = error && open ? $(".dlg-body", open) : null;
+  if (body) {
+    const box = document.createElement("div");
+    box.className = "alert err dlg-error";
+    box.setAttribute("role", "alert");
+    Object.assign(box.dataset, {message, at: Date.now()});
+    box.innerHTML = `${icon("alert")}<div class="grow">${esc(cap(message))}</div>`;
+    body.prepend(box);
+    clearTimeout(toastTimer);
+    el.style.display = "none";
+    if (el.showPopover && el.matches(":popover-open")) el.hidePopover();
+    return;
+  }
   el.textContent = cap(message);
   el.className = error ? "error" : "";
   // Sopra una finestra l'avviso non riceve i clic (che vanno alla finestra): non deve nasconderne i pulsanti
@@ -912,7 +931,13 @@ function toast(message, error = false) {
 }
 // Avviso mostrato con una finestra aperta (per esempio «… salvato», prima che la finestra si chiuda): chiusa l'ultima,
 // torna in basso e non copre la barra in alto. close delle finestre non risale: si riceve in fase di cattura
-document.addEventListener("close", () => { if (!$("dialog[open]")) $("#toast").classList.remove("over"); }, true);
+document.addEventListener("close", (e) => {
+  // Errore appena mostrato dentro la finestra che si chiude (per esempio la scheda persona che non si apre): resta in
+  // vista come avviso, nella finestra sotto o in basso
+  const box = e.target instanceof Element ? $(".dlg-error", e.target) : null;
+  if (box && Date.now() - Number(box.dataset.at) < 7000) toast(box.dataset.message, true);
+  if (!$("dialog[open]")) $("#toast").classList.remove("over");
+}, true);
 
 // Prova del collegamento e rilettura dal controller: POST che non modificano niente, quindi senza Riprova
 const NO_RETRY = ["api/controllers/test", "api/sync"];
