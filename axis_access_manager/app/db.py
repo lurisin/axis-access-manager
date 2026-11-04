@@ -309,6 +309,8 @@ WAL_SIZE_LIMIT = 64 * 1024 * 1024
 COMPACT_FREE_PAGES = 16384
 # Pulizia del registro a blocchi, un commit per blocco
 PRUNE_BLOCK = 2000
+# Letture lunghe del registro (vedi Database._read) che girano insieme
+READ_SLOTS = 2
 SETTING_APP_VERSION = "app_version"
 # Numero più alto mai dato a una persona: i numeri delle persone eliminate non si riusano
 SETTING_LAST_PERSON = "persons_last_id"
@@ -343,9 +345,12 @@ class Database:
         self._lock = threading.Lock()
         # Scritture dentro batch(): il commit si fa una volta alla fine
         self._batch = 0
-        # Letture lunghe del registro su una connessione a parte (vedi _read), aperta alla prima
-        self._reader: sqlite3.Connection | None = None
+        # Letture lunghe del registro su connessioni a parte, una per thread (vedi _read), aperte alla prima
+        self._readers = threading.local()
+        self._reader_conns: list[sqlite3.Connection] = []
         self._read_lock = threading.Lock()
+        # Al massimo due letture lunghe insieme: le altre aspettano, e al ciclo dell'app resta il processore
+        self._read_slots = threading.BoundedSemaphore(READ_SLOTS)
         try:
             self._open(str(path), app_version)
         except sqlite3.Error as err:
@@ -470,9 +475,10 @@ class Database:
 
     def close(self) -> None:
         with self._read_lock:
-            if self._reader is not None:
-                self._reader.close()
-                self._reader = None
+            for conn in self._reader_conns:
+                conn.close()
+            self._reader_conns.clear()
+        self._readers = threading.local()
         self._conn.close()
 
     def _query(self, sql: str, params: tuple = ()) -> list[dict]:
@@ -481,16 +487,21 @@ class Database:
 
     def _read(self, sql: str, params: tuple = ()) -> list[dict]:
         """Lettura che con un anno di registro dura secondi (ricerche, ultimi accessi): su una connessione a parte,
-        che con il WAL non aspetta le scritture e non le fa aspettare. Chiamata da un thread (asyncio.to_thread) non
-        ferma l'app: con la connessione unica anche il thread teneva il lock di tutte le altre richieste."""
+        una per thread, che con il WAL non aspetta le scritture e non le fa aspettare. Chiamata da un thread
+        (asyncio.to_thread) non ferma l'app: con la connessione unica anche il thread teneva il lock di tutte le altre
+        richieste."""
         if self.path is None:
             return self._query(sql, params)
-        with self._read_lock:
-            if self._reader is None:
-                self._reader = sqlite3.connect(str(self.path), check_same_thread=False)
-                self._reader.row_factory = sqlite3.Row
-                self._reader.execute("PRAGMA query_only = ON")
-            return [dict(row) for row in self._reader.execute(sql, params).fetchall()]
+        conn = getattr(self._readers, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.path), check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            self._readers.conn = conn
+            with self._read_lock:
+                self._reader_conns.append(conn)
+        with self._read_slots:
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     def _execute(self, sql: str, params: tuple = ()) -> int:
         with self._lock:

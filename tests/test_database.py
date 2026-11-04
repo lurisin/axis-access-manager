@@ -278,6 +278,8 @@ def test_unreadable_database_without_copy_starts_empty_and_says_so(settings, con
         [notice] = [i for i in items if i["type"] == "database"]
         recovered = client.get("/api/status").json()["database"]["recovered"]
     assert notice["title"] == recovered["title"] == "Database Ripartito Vuoto"
+    # Anche nel riquadro Database dell'Add-on: cosa fare, e subito
+    assert recovered["hint"].startswith("Ripristina l'add-on da un backup di Home Assistant")
     assert notice["severity"] == "crit" and notice["fault"] is True
     assert "database vuoto" in notice["text"] and "Impianti → Backup" in notice["text"]
     assert "i backup di Home Assistant fatti da adesso contengono il database vuoto" in notice["text"]
