@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -182,3 +182,50 @@ def test_door_pages_through_api(client):
     assert door["today"] == {"granted": 2, "denied": 1, "alarms": 0}
     dashboard = client.get("/api/dashboard").json()
     assert dashboard["today"]["granted"] + dashboard["today"]["remote"] == door["today"]["granted"]
+
+
+def test_area_moved_to_another_site_updates_categories(client, controller):
+    """Area passata a un'altra struttura con l'API: la tipologia della struttura di prima non apre più le sue porte."""
+    [site] = client.get("/api/locations").json()
+    site_id, area_id = site["id"], site["areas"][0]["id"]
+    hotel = client.post("/api/sites", json={"name": "Hotel"}).json()["id"]
+    rules = [{"target": "site", "target_id": site_id, "schedule": "standard_always"}]
+    token = client.post("/api/categories", json={"name": "Teatro Tutto", "rules": rules}).json()["token"]
+    assert [p["AccessPoint"] for p in controller.profiles[token]["AccessPolicy"]] == ["ap-in"]
+    assert client.put(f"/api/areas/{area_id}", json={"name": "Scala", "site_id": hotel}).json() == {"id": area_id}
+    assert controller.profiles[token]["AccessPolicy"] == []
+
+
+def test_area_renamed_does_not_read_the_controller(client, controller, monkeypatch):
+    """Area solo rinominata (l'interfaccia manda il nome): niente letture dei profili, che con il controller spento
+    farebbero aspettare il tempo scaduto."""
+    [site] = client.get("/api/locations").json()
+    site_id, area_id = site["id"], site["areas"][0]["id"]
+    rules = [{"target": "site", "target_id": site_id, "schedule": "standard_always"}]
+    client.post("/api/categories", json={"name": "Teatro Tutto", "rules": rules})
+    reads = []
+
+    async def get_access_profiles(tokens):
+        reads.append(tokens)
+        return []
+
+    monkeypatch.setattr(controller, "get_access_profiles", get_access_profiles)
+    assert client.put(f"/api/areas/{area_id}", json={"name": "Platea"}).status_code == 200
+    assert client.put(f"/api/areas/{area_id}", json={"name": "Platea", "site_id": site_id}).status_code == 200
+    assert reads == []
+    assert client.get("/api/locations").json()[0]["areas"][0]["name"] == "Platea"
+
+
+def test_last_passage_is_someone_who_went_through(client):
+    """Ultimo passaggio di una porta: chi è passato, non chi è stato rifiutato o ha chiamato al citofono."""
+    db = client.app.state.db
+    now = datetime.now(tz=UTC)
+    db.add_event(ts=(now - timedelta(hours=2)).isoformat(), kind="concesso", door="porta", person_name="Mario Rossi")
+    for minutes, kind in ((50, "negato"), (40, "sconosciuta"), (30, "citofono")):
+        db.add_event(ts=(now - timedelta(minutes=minutes)).isoformat(), kind=kind, door="porta", card="bb22")
+    [door] = client.get("/api/door-overview").json()
+    assert (door["last"]["kind"], door["last"]["person"]) == ("concesso", "Mario Rossi")
+    assert client.get(f"/api/door-detail/{door['id']}").json()["last"] == door["last"]
+    db.add_event(ts=(now - timedelta(minutes=10)).isoformat(), kind="uscita", door="porta")
+    [door] = client.get("/api/door-overview").json()
+    assert door["last"]["kind"] == "uscita"

@@ -104,6 +104,15 @@ def test_off_until_enabled(clients):
     assert ingress.get("/api/direct-access", headers=ADMIN).json()["settings"]["enabled"] is False
 
 
+def test_activity_says_on_and_off(clients):
+    ingress, _, app = clients
+    enable(ingress)
+    assert ingress.put("/api/direct-access", json={"enabled": False}, headers=ADMIN).status_code == 200
+    # Come nell'interfaccia: Attivo e Disattivato
+    actions = [a["action"] for a in app.state.db.list_audit()]
+    assert actions[:2] == ["accesso diretto disattivato", "accesso diretto attivo"]
+
+
 def test_ingress_headers_never_count_on_direct_access(clients):
     ingress, site, app = clients
     enable(ingress)

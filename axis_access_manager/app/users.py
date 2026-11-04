@@ -15,7 +15,7 @@ PERMISSIONS = {
     "persone": "Vedere persone, tessere e tipologie",
     "persone_modifica": "Registrare, modificare, sospendere ed eliminare persone e tessere",
     "registro": "Vedere il registro accessi e le foto",
-    "regole": "Vedere fasce orarie e festività",
+    "regole": "Vedere tipologie, fasce orarie e festività",
     "regole_modifica": "Modificare tipologie, fasce orarie e festività",
     "import_export": "Esportare e importare file CSV",
     "impianti": "Configurare controller, porte, videocitofoni e telecamere e programmare il controller",
