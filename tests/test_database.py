@@ -185,20 +185,21 @@ def _restored_with_index_damage(tmp_path: Path, wal: str) -> Path:
     db.close()
     consistent_copy(path, ha_copy_path(path))
     conn = sqlite3.connect(path)
-    conn.execute("CREATE TABLE prova (n INTEGER)")
-    conn.execute("CREATE INDEX prova_n ON prova(n) WHERE n > 0")
-    conn.executemany("INSERT INTO prova VALUES (?)", [(n,) for n in range(1, 50)])
+    conn.execute("CREATE TABLE prova (n INTEGER, m INTEGER)")
+    conn.execute("CREATE INDEX prova_n ON prova(n)")
+    conn.executemany("INSERT INTO prova VALUES (?, ?)", [(n, n + 1000) for n in range(1, 50)])
     conn.commit()
-    # Indice che non torna con la tabella, come dopo una copia presa a metà: quick_check non lo vede
+    # Indice che non torna con la tabella, come dopo una copia presa a metà: quick_check non lo vede. Le voci sono di n,
+    # la definizione dice m (con la condizione di un indice parziale cambiata, dalla 3.53 SQLite non lo vede più)
     conn.execute("PRAGMA writable_schema = ON")
-    conn.execute("UPDATE sqlite_master SET sql = replace(sql, 'n > 0', 'n > 10') WHERE name = 'prova_n'")
+    conn.execute("UPDATE sqlite_master SET sql = replace(sql, 'prova(n)', 'prova(m)') WHERE name = 'prova_n'")
     conn.commit()
     conn.close()
     assert backup_copy.damage(path) == ""
     # Come nel backup: una scrittura ancora nel WAL
     writer = sqlite3.connect(path)
     writer.execute("PRAGMA journal_mode = WAL")
-    writer.execute("INSERT INTO prova VALUES (100)")
+    writer.execute("INSERT INTO prova VALUES (100, 1100)")
     writer.commit()
     restored = tmp_path / "ripristino"
     restored.mkdir()
