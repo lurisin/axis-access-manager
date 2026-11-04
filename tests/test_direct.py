@@ -336,6 +336,36 @@ def test_full_disk_does_not_stop_direct_access_reads(clients, monkeypatch):
     assert response.json()["detail"] == "spazio su disco esaurito: avvisa l'amministratore"
 
 
+def test_full_disk_does_not_stop_the_first_request_of_the_minute(clients, monkeypatch):
+    """Disco pieno: l'ultimo accesso dell'utente non si salvava e la prima richiesta di ogni minuto rispondeva 500, da
+    Home Assistant (l'app si apriva senza menu) e dall'Accesso Diretto (pagina «Internal Server Error»)."""
+    ingress, site, app = clients
+    enable(ingress)
+    ready(ingress, site)
+    ingress.post("/api/users", json={"username": "anonimo", "name": "", "perms": ["stato"]}, headers=ADMIN)
+    db = app.state.db
+    tries = []
+
+    def full(*args):
+        tries.append(args[0])
+        err = sqlite3.OperationalError("database or disk is full")
+        err.sqlite_errorcode = sqlite3.SQLITE_FULL
+        raise err
+
+    monkeypatch.setattr(db, "touch_app_user", full)
+    # Più di un minuto senza richieste
+    app.state.users._seen.clear()
+    assert ingress.get("/api/me", headers=ADMIN).status_code == 200
+    assert ingress.get("/api/summary", headers=ADMIN).status_code == 200
+    assert site.get("/").status_code == 200
+    assert site.get("/api/persons").status_code == 200
+    # Utente senza nome che entra da Home Assistant con il suo nome: prima falliva a ogni richiesta
+    anonymous = {"X-Remote-User-Name": "anonimo", "X-Remote-User-Display-Name": "Anonimo"}
+    assert [ingress.get("/api/me", headers=anonymous).status_code for _ in range(3)] == [200] * 3
+    # Una scrittura al minuto per utente, anche quando non riesce
+    assert sorted(tries) == ["admin", "anonimo", "maria"]
+
+
 def test_temporary_password_and_its_session_expire(clients):
     ingress, site, app = clients
     enable(ingress)

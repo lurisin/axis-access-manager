@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
 
 from .db import Database
+
+_LOGGER = logging.getLogger(__name__)
 
 # Permesso → descrizione mostrata nella pagina Utenti
 PERMISSIONS = {
@@ -106,6 +110,8 @@ class UserDirectory:
         self.readonly_users = readonly_users
         self._lock = threading.Lock()
         self._seen: dict[str, float] = {}
+        # Ultimo accesso non salvato (disco pieno): si riprova dopo un minuto, anche per il nome che manca
+        self._unsaved: set[str] = set()
 
     def resolve(self, username: str, display_name: str, user_id: str = "") -> AppUser:
         """Utente registrato; chi entra per la prima volta viene aggiunto.
@@ -221,11 +227,20 @@ class UserDirectory:
     def _touch(self, username: str, display_name: str, row: dict) -> None:
         # Al massimo una scrittura al minuto per utente
         now = time.monotonic()
-        if now - self._seen.get(username, -120) < 60 and (row["name"] or not display_name):
+        if now - self._seen.get(username, -120) < 60 and (row["name"] or not display_name or username in self._unsaved):
             return
         self._seen[username] = now
-        # Il nome scelto nella pagina Utenti resta: quello di Home Assistant serve solo se manca
-        self.db.touch_app_user(username, "" if row["name"] else display_name)
+        try:
+            # Il nome scelto nella pagina Utenti resta: quello di Home Assistant serve solo se manca
+            self.db.touch_app_user(username, "" if row["name"] else display_name)
+        except sqlite3.Error as err:
+            # Disco pieno: la richiesta si serve lo stesso. Prima la prima richiesta di ogni minuto rispondeva 500,
+            # anche l'apertura dell'app da Home Assistant
+            if username not in self._unsaved:
+                _LOGGER.warning("Ultimo accesso di %s non salvato: %s", username, err)
+            self._unsaved.add(username)
+            return
+        self._unsaved.discard(username)
 
     def direct_user(self, username: str) -> AppUser | None:
         """Utente di una sessione dell'accesso diretto, con i permessi di adesso; None se non c'è più."""
