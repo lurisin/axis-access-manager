@@ -1276,15 +1276,15 @@ class Database:
         )
         return rows[0]["person_name"] if rows else ""
 
-    def similar_event(self, *, ts: str, ref: str, only_recovered: bool = False) -> bool:
-        """Stesso evento del controller (stessa impronta) già registrato entro un secondo;
-        only_recovered: solo tra i recuperati."""
+    def similar_event(self, *, ts: str, ref: str, only_recovered: bool = False, window: int = 1) -> bool:
+        """Stesso evento del controller (stessa impronta) già registrato entro window secondi (0: nello stesso
+        secondo); only_recovered: solo tra i recuperati."""
         try:
             moment = datetime.fromisoformat(ts)
         except ValueError:
             return False
-        low = (moment - timedelta(seconds=1)).isoformat(timespec="seconds")
-        high = (moment + timedelta(seconds=1)).isoformat(timespec="seconds")
+        low = (moment - timedelta(seconds=window)).isoformat(timespec="seconds")
+        high = (moment + timedelta(seconds=window)).isoformat(timespec="seconds")
         return bool(
             self._query(
                 "SELECT 1 FROM events WHERE ts BETWEEN ? AND ? AND ref = ? AND recovered >= ? LIMIT 1",

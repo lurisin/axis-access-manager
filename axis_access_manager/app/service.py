@@ -59,6 +59,9 @@ DOOR_ALARMS = {
 
 # Eventi registrati dal controller: non si registrano due volte (MQTT e recupero dal registro interno)
 CONTROLLER_KINDS = ("lettura", "sconosciuta", "concesso", "negato", "uscita", "allarme", "manomissione")
+# Allarmi e manomissioni sono anche stato: il controller li rimanda con la loro ora quando il WebSocket si ricollega.
+# Uno già nel registro con la stessa impronta e lo stesso secondo è lo stesso, anche se arriva come in diretta
+STATE_KINDS = ("allarme", "manomissione")
 # Eventi del registro interno del controller che finiscono nel Registro dell'app
 RECOVER_TOPICS = (
     "IdPoint/Request/IdData",
@@ -280,7 +283,7 @@ class AccessService:
         in ritardo può essere già stato recuperato: in quei casi non si registra due volte.
         """
         ref = fields.get("ref") or ""
-        if ref and self.db.similar_event(ts=fields["ts"], ref=ref, only_recovered=not self._recovering):
+        if ref and self._known(fields["kind"], fields["ts"], ref):
             return None
         if self._recovering:
             fields["recovered"] = True
@@ -294,6 +297,13 @@ class AccessService:
             # Nel recupero Home Assistant si aggiorna una volta per pagina, non per ognuna delle migliaia di righe
             self._changed()
         return row
+
+    def _known(self, kind: str, ts: str, ref: str) -> bool:
+        """Evento del controller già nel registro: arrivato in diretta e recuperato (o il contrario), oppure allarme o
+        manomissione rimandati come stato con la loro ora."""
+        if self.db.similar_event(ts=ts, ref=ref, only_recovered=not self._recovering):
+            return True
+        return kind in STATE_KINDS and self.db.similar_event(ts=ts, ref=ref, window=0)
 
     # Sincronizzazione
 
@@ -1123,7 +1133,7 @@ class AccessService:
         quella già nel registro. Vale anche per gli eventi recuperati dal registro del controller, che così non
         rifanno le righe accorpate. Lo stesso evento arrivato via MQTT e dal registro del controller non è una
         ripetizione: al banco il recupero all'avvio aveva segnato "più pressioni" su una pressione sola."""
-        if self.db.similar_event(ts=ts, ref=ref, only_recovered=not self._recovering):
+        if self._known(kind, ts, ref):
             return True
         row = self.db.recent_event(kind, source, door, detail, ts, REPEAT_WINDOWS[kind])
         if row is None:

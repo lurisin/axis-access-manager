@@ -173,6 +173,54 @@ async def test_events_from_the_websocket(quick):
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await _shutdown(server)
+
+
+async def test_initial_state_is_told_by_the_event_time(quick):
+    """Con lo scarto dell'orologio misurato decide l'ora dell'evento, non quando lo si elabora."""
+    offset = -120.0
+    now_ms = int((time.time() + offset) * 1000)
+    old_ms = now_ms - 3600_000
+
+    async def handler(ws):
+        await ws.recv()
+        await ws.send(json.dumps({"apiVersion": "1.0", "context": "aam", "method": "events:configure", "data": {}}))
+        # Porta forzata adesso, nei primi istanti: è un evento in diretta
+        await ws.send(
+            json.dumps(notify("tns1:Door/State/DoorAlarm", {"DoorToken": DOOR}, {"State": "DoorForcedOpen"}, now_ms))
+        )
+        await asyncio.sleep(0.4)
+        # Stato elaborato oltre INITIAL_STATE_SECONDS (ciclo occupato da un recupero): un allarme di un'ora fa
+        await ws.send(
+            json.dumps(notify("tns1:Door/State/DoorTamper", {"DoorToken": DOOR}, {"State": "TamperDetected"}, old_ms))
+        )
+        await asyncio.sleep(0.4)
+
+    server, port = await _controller(handler)
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    received = []
+    monitor.on_event = lambda event, retained: received.append((event.topic.split("/$")[0], retained))
+    live = LiveEvents(monitor, FakeClient(port), lambda: True, clock_offset=lambda: offset)
+    task = asyncio.create_task(live.run())
+    try:
+        await _until(lambda: len(received) == 2)
+        assert received == [("Door/State/DoorAlarm", False), ("Door/State/DoorTamper", True)]
+        # Lo stato aggiorna comunque la manomissione mostrata
+        assert monitor.door_conditions[DOOR]["manomissione"]["active"] is True
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await _shutdown(server)
+    # Senza lo scarto misurato: come prima, da quando arriva
+    monitor = EventMonitor(prefix=PREFIX, door_token=DOOR)
+    live = LiveEvents(monitor, FakeClient(port), lambda: True, clock_offset=lambda: None)
+    received.clear()
+    monitor.on_event = lambda event, retained: received.append(retained)
+    opened = datetime.now(tz=UTC)
+    alarm = notify("tns1:Door/State/DoorAlarm", {"DoorToken": DOOR}, {"State": "DoorForcedOpen"}, now_ms)
+    live._notify(alarm, True, opened)
+    tamper = notify("tns1:Door/State/DoorTamper", {"DoorToken": DOOR}, {"State": "TamperDetected"}, old_ms)
+    live._notify(tamper, False, opened)
+    assert received == [True, False]
     assert monitor.ws_live is False and live.connected is False
 
 

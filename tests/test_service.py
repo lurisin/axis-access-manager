@@ -326,6 +326,32 @@ def test_retained_and_irrelevant_events_are_not_logged(service, db):
     assert db.list_events()[0]["detail"] == "porta forzata"
 
 
+async def test_alarm_sent_again_as_state_is_not_a_new_alarm(service, db):
+    db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210 Banco", "verify_ssl": 0})
+    published = []
+
+    async def after_event(row):
+        published.append(row["detail"])
+
+    service.after_event = after_event
+    at = datetime(2026, 11, 3, 21, 55, 20, 68000, tzinfo=UTC)
+    alarm = Event("Door", "Door/State/DoorAlarm/$source/DoorToken/porta", at, {"State": "DoorForcedOpen"})
+    casing = Event("Device", "Device/Casing/Open/$source/Name/Casing", at, {"Open": "1"})
+    service.record_event(alarm)
+    service.record_event(casing)
+    await asyncio.sleep(0)
+    # Il WebSocket si ricollega e il controller rimanda lo stato con la sua ora, preso per un evento in diretta (ciclo
+    # occupato oltre i primi secondi): niente seconda riga, niente evento a Home Assistant né foto
+    service.record_event(alarm)
+    service.record_event(casing)
+    await asyncio.sleep(0)
+    assert [e["detail"] for e in db.list_events()] == ["coperchio del controller aperto", "porta forzata"]
+    assert published == ["porta forzata", "coperchio del controller aperto"]
+    # Un allarme di un altro secondo è un altro allarme
+    service.record_event(dataclasses.replace(alarm, timestamp=at + timedelta(seconds=1)))
+    assert [e["detail"] for e in db.list_events()].count("porta forzata") == 2
+
+
 async def test_sync_uses_card_description_when_users_unavailable(service, controller, db):
     controller.add_existing("utente_mario", "Mario Rossi", "04aa")
 

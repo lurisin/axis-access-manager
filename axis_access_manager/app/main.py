@@ -2256,6 +2256,7 @@ async def _start_runtime(app: FastAPI) -> None:
             state.raw_controller,
             lambda: _responding(state),
             fingerprint=lambda: (state.installation.primary or {}).get("cert_fingerprint") or "",
+            clock_offset=lambda: _controller_clock_offset(state, synced_only=False),
         )
         if live
         else None
