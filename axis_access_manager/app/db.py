@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import sqlite3
 import threading
@@ -13,6 +14,8 @@ from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
 from .backup_copy import corrupt_error, error_reason, recover, replace_unusable, update_copy
+
+_LOGGER = logging.getLogger(__name__)
 
 DB_PATH = Path("/data/axis_access_manager.db")
 
@@ -304,6 +307,9 @@ SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 # Ultimo accesso di ogni persona e passaggi di una persona senza leggere tutto il registro (un anno: 1,5 milioni).
 # Fuori da SCHEMA: crearlo legge tutto il registro (vedi _open)
 PERSON_INDEX = "CREATE INDEX IF NOT EXISTS events_person ON events(person_id, kind, ts)"
+# Spazio per crearlo: byte per evento (nel WAL e poi nel database, misurati circa 45) e margine per l'avvio
+PERSON_INDEX_ROW = 2 * 64
+PERSON_INDEX_MARGIN = 32 * 1024 * 1024
 # Il WAL torna a questa dimensione dopo ogni checkpoint: una pulizia grande lo lasciava grande quasi come il database
 WAL_SIZE_LIMIT = 64 * 1024 * 1024
 # Pagine libere (dopo una pulizia grande del registro) oltre le quali, in un database senza auto_vacuum, all'avvio si
@@ -419,12 +425,14 @@ class Database:
                     self.copy_error = f"copia del database prima dell'aggiornamento non fatta ({error_reason(err)})"
             self._conn.executescript(SCHEMA)
             try:
-                self._conn.execute(PERSON_INDEX)
+                if self._room_for_person_index():
+                    self._conn.execute(PERSON_INDEX)
             except sqlite3.DatabaseError as err:
-                # Una pagina del registro rovinata (l'ha già detto recover()): l'app parte con i dati, senza l'indice,
-                # e lo si crea a un avvio dopo
-                if not corrupt_error(err):
+                # Una pagina del registro rovinata (l'ha già detto recover()), o il disco pieno: l'app parte con i dati,
+                # senza l'indice, e lo si crea a un avvio dopo. Prima con il disco quasi pieno l'add-on non partiva più
+                if not corrupt_error(err) and (getattr(err, "sqlite_errorcode", 0) & 0xFF) != sqlite3.SQLITE_FULL:
                     raise
+                _LOGGER.warning("Indice degli accessi non creato (%s): si riprova al prossimo avvio", err)
             for step, _, statements in SCHEMA_STEPS:
                 if step <= version:
                     continue
@@ -450,6 +458,25 @@ class Database:
                 )
             self._conn.commit()
             self._compact()
+
+    def _room_for_person_index(self) -> bool:
+        """Spazio su disco per creare l'indice degli accessi, se manca (primo avvio dopo l'aggiornamento alla 0.26.1).
+        Con un registro grande e il disco quasi pieno l'indice riempiva il disco e l'add-on non partiva più."""
+        if self.path is None:
+            return True
+        if self._conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'events_person'").fetchone():
+            return True
+        rows = self._conn.execute("SELECT count(*) FROM events").fetchone()[0]
+        needed = rows * PERSON_INDEX_ROW + PERSON_INDEX_MARGIN
+        try:
+            if shutil.disk_usage(self.path.parent).free >= needed:
+                return True
+        except OSError:
+            return True
+        _LOGGER.warning(
+            "Indice degli accessi non creato: servono %s MB liberi, si riprova al prossimo avvio", needed >> 20
+        )
+        return False
 
     def _compact(self) -> None:
         """Molte pagine libere (una pulizia grande del registro) in un database senza auto_vacuum: il file non si
@@ -558,11 +585,22 @@ class Database:
         self._batch += 1
         try:
             yield
-        finally:
+        except BaseException:
             self._batch -= 1
             if not self._batch:
+                # Tutto o niente: una scrittura non riuscita (disco pieno) non lascia mezze modifiche
                 with self._lock:
+                    self._conn.rollback()
+            raise
+        self._batch -= 1
+        if not self._batch:
+            with self._lock:
+                try:
                     self._conn.commit()
+                except sqlite3.Error:
+                    # Con il disco pieno SQLite può lasciare aperta la transazione: le scritture dopo la salverebbero
+                    self._conn.rollback()
+                    raise
 
     def _insert_new(self, table: str, sql: str, params: tuple, new_id: int | None = None) -> int:
         """Riga nuova con un numero mai dato prima nella tabella (o new_id); sql ha l'id come primo parametro."""

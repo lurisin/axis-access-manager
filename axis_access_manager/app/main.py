@@ -767,6 +767,18 @@ def create_app(
         detail = text if "controller" in text else f"errore del controller: {text}"
         return JSONResponse({"detail": detail, "unreachable": isinstance(err, ControllerUnreachable)}, 502)
 
+    @app.exception_handler(sqlite3.Error)
+    async def database_error(request: Request, err: sqlite3.Error) -> JSONResponse:
+        # Disco pieno: un motivo invece di «Richiesta non riuscita (errore 500)», per esempio alla Presa Visione di
+        # «Registro Non Scrivibile». Gli altri errori del database restano imprevisti, con i dettagli nel log
+        if getattr(err, "sqlite_errorcode", 0) != sqlite3.SQLITE_FULL:
+            raise err
+        _LOGGER.warning("Richiesta %s %s non riuscita: %s", request.method, request.url.path, err)
+        detail = f"{error_reason(err)}: libera spazio"
+        if request.method != "GET":
+            detail = f"{error_reason(err)}: la modifica non è stata salvata, libera spazio e riprova"
+        return JSONResponse({"detail": detail}, status_code=503)
+
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, err: RequestValidationError) -> JSONResponse:
         return JSONResponse({"detail": _validation_text(list(err.errors()))}, status_code=422)
@@ -904,10 +916,14 @@ def create_app(
             titles = ", ".join(f"{i['title']} ({i['text']})" if i["text"] else i["title"] for i in marked[:3])
             more = f" e altre {len(marked) - 3}" if len(marked) > 3 else ""
             if len(marked) == 1:
-                state.db.add_audit(request_user(request), "notifica segnata come vista", titles)
+                action, detail = "notifica segnata come vista", titles
             else:
-                detail = f"{len(marked)} notifiche: {titles}{more}"
-                state.db.add_audit(request_user(request), "notifiche segnate come viste", detail)
+                action, detail = "notifiche segnate come viste", f"{len(marked)} notifiche: {titles}{more}"
+            try:
+                state.db.add_audit(request_user(request), action, detail)
+            except sqlite3.Error as err:
+                # La presa visione è salvata: con il disco pieno non risulta un errore
+                _LOGGER.warning("Attività non salvata (%s): %s", action, err)
         return {"open": after["open"]}
 
     @app.put("/api/notifications/settings", dependencies=[need("utenti")])

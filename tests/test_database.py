@@ -818,7 +818,7 @@ def test_app_rows_not_saved_return_to_the_log_when_space_returns(settings, contr
     data.mkdir()
     with start(settings, controller, data) as client:
         state = client.app.state
-        client.portal.call(state.health.check_all)
+        client.portal.call(state.health_ready.wait)
         saved = state.db.add_event
         monkeypatch.setattr(state.db, "add_event", _full)
         # Apertura da Home Assistant con il disco pieno: una riga che il registro del controller non ha
@@ -828,7 +828,7 @@ def test_app_rows_not_saved_return_to_the_log_when_space_returns(settings, contr
         # Spazio di nuovo libero e nessun passaggio: il recupero non trova niente da scrivere
         for _ in range(2):
             client.portal.call(main._recover_if_needed, state)
-            main._check_writable(state)
+            client.portal.call(main._check_writable, state)
         faults = client.get("/api/summary").json()["faults"]
         rows = state.db.list_events(kind="apertura_remota")
     # Prima il guasto critico restava finché non passava qualcuno, e l'apertura non tornava più nel registro
@@ -841,15 +841,76 @@ def test_not_writable_fault_stays_while_the_test_write_fails(settings, controlle
     data.mkdir()
     with start(settings, controller, data) as client:
         state = client.app.state
+        client.portal.call(state.health_ready.wait)
         state.service.write_error = {"since": "2026-11-04T10:00:00+00:00", "error": "spazio su disco esaurito"}
         probe = state.db.set_setting
         monkeypatch.setattr(state.db, "set_setting", _full)
-        main._check_writable(state)
+        client.portal.call(main._check_writable, state)
         # Ancora pieno: il guasto resta, e il recupero non riparte a ogni giro
         assert state.service.write_error is not None and state.service.write_failures == 0
         monkeypatch.setattr(state.db, "set_setting", probe)
-        main._check_writable(state)
+        client.portal.call(main._check_writable, state)
         assert state.service.write_error is None
+
+
+def test_new_person_with_the_disk_full_leaves_nothing_on_the_controller(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    with start(settings, controller, data) as client:
+        db = client.app.state.db
+        anna = client.post("/api/persons", json={"name": "Anna", "card": "04aa"}).json()
+        users, credentials = set(controller.users), set(controller.credentials)
+        monkeypatch.setattr(db, "add_card", _full)
+        response = client.post("/api/persons", json={"name": "Mario Rossi", "card": "04bb"})
+        # Prima: errore 500 senza motivo, tessera attiva sul controller e assente nell'app; riprovando se ne
+        # aggiungeva un'altra con lo stesso numero
+        assert response.status_code == 400
+        assert response.json()["detail"] == "spazio su disco esaurito: la persona non è stata registrata"
+        assert (set(controller.users), set(controller.credentials)) == (users, credentials)
+        assert [p["name"] for p in client.get("/api/persons").json()] == ["Anna"]
+        # Anche una tessera aggiunta a una persona
+        response = client.post(f"/api/persons/{anna['id']}/cards", json={"card": "04cc"})
+        assert response.json()["detail"] == "spazio su disco esaurito: la tessera non è stata aggiunta"
+        assert set(controller.credentials) == credentials
+        monkeypatch.undo()
+        # Riattivata con il disco pieno: torna sospesa sul controller, come la mostra l'app
+        [card] = anna["cards"]
+        token = card["axis_credential_token"]
+        assert client.patch(f"/api/cards/{card['id']}", json={"enabled": False}).status_code == 200
+        monkeypatch.setattr(db, "set_card_enabled", _full)
+        response = client.patch(f"/api/cards/{card['id']}", json={"enabled": True})
+        assert response.json()["detail"] == "spazio su disco esaurito: la tessera non è stata riattivata"
+        assert controller.credentials[token]["Enabled"] is False
+        # Sospesa con il disco pieno: resta sospesa sul controller, e l'errore lo dice
+        monkeypatch.undo()
+        assert client.patch(f"/api/cards/{card['id']}", json={"enabled": True}).status_code == 200
+        monkeypatch.setattr(db, "set_card_enabled", _full)
+        response = client.patch(f"/api/cards/{card['id']}", json={"enabled": False})
+        assert response.json()["detail"].startswith("spazio su disco esaurito: la tessera è sospesa sul controller")
+        assert controller.credentials[token]["Enabled"] is False
+
+
+def test_seen_with_the_disk_full_says_why(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    with start(settings, controller, data) as client:
+        state = client.app.state
+        # Dopo il primo giro di controllo, che con il registro scrivibile toglierebbe il guasto
+        client.portal.call(state.health_ready.wait)
+        state.service.write_error = {"since": "2026-11-04T10:00:00+00:00", "error": "spazio su disco esaurito"}
+        [notice] = [i for i in client.get("/api/notifications").json()["items"] if i["type"] == "database"]
+        set_setting = state.db.set_setting
+        monkeypatch.setattr(state.db, "set_setting", _full)
+        response = client.post("/api/notifications/seen", json={"ids": [notice["id"]]})
+        # Prima «Richiesta non riuscita (errore 500)», senza motivo
+        assert response.status_code == 503
+        assert response.json()["detail"] == (
+            "spazio su disco esaurito: la modifica non è stata salvata, libera spazio e riprova"
+        )
+        # Presa visione salvata e attività no: non è un errore
+        monkeypatch.setattr(state.db, "set_setting", set_setting)
+        monkeypatch.setattr(state.db, "add_audit", _full)
+        assert client.post("/api/notifications/seen", json={"ids": [notice["id"]]}).json() == {"open": 1}
 
 
 # Un anno di registro
@@ -875,6 +936,47 @@ def test_last_accesses_and_events_of_a_person_use_the_index(tmp_path):
     )
     assert "events_person" in plan("SELECT id FROM events WHERE person_id = ? ORDER BY ts DESC, id DESC LIMIT 50", (1,))
     db.close()
+
+
+def _has_person_index(path: Path) -> bool:
+    conn = sqlite3.connect(path)
+    found = conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'events_person'").fetchone()
+    conn.close()
+    return bool(found)
+
+
+def test_person_index_waits_for_space_and_the_add_on_starts(tmp_path, monkeypatch):
+    path = tmp_path / DB_NAME
+    db = Database(path, "0.26.0")
+    for day in range(1, 4):
+        db.add_event(ts=f"2026-10-0{day}T08:00:00+00:00", kind="concesso", person_id=1)
+    # Come un database della 0.26.0: senza l'indice
+    db._execute("DROP INDEX events_person")
+    db._conn.execute("PRAGMA incremental_vacuum").fetchall()
+    db._conn.commit()
+    db.close()
+    # Disco quasi pieno al primo avvio dopo l'aggiornamento: l'indice riempiva il disco e l'add-on non partiva più
+    monkeypatch.setattr(db_module.shutil, "disk_usage", lambda folder: SimpleNamespace(total=1 << 34, free=1 << 20))
+    Database(path, "0.26.1").close()
+    assert not _has_person_index(path)
+    monkeypatch.undo()
+    # Spazio stimato bene ma finito durante la creazione: si parte lo stesso
+    connect = Database._connect
+
+    def tight(self, name, existed):
+        connect(self, name, existed)
+        pages = self._conn.execute("PRAGMA page_count").fetchone()[0]
+        self._conn.execute(f"PRAGMA max_page_count = {pages}")
+
+    monkeypatch.setattr(Database, "_connect", tight)
+    db = Database(path, "0.26.1")
+    assert db.last_access(1) == "2026-10-03T08:00:00+00:00"
+    db.close()
+    assert not _has_person_index(path)
+    # Con lo spazio, a un avvio dopo
+    monkeypatch.undo()
+    Database(path, "0.26.1").close()
+    assert _has_person_index(path)
 
 
 def test_short_reads_from_the_app_loop_do_not_wait_for_searches(tmp_path):

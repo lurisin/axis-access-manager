@@ -649,17 +649,42 @@ class AccessService:
                 except VapixError:
                     _LOGGER.warning("Utente %s rimasto sul controller dopo un errore", user_token)
                 raise
-            person_id = self.db.add_person(name, user_token)
-            if company or notes:
-                self.db.update_person_details(person_id, company, notes)
-            if category:
-                self.db.set_person_category(person_id, category["id"])
-            self.db.add_card(person_id, number, credential_token, enabled, access)
+            try:
+                # Tutto o niente: una persona senza la sua tessera non resta nell'app
+                with self.db.batch():
+                    person_id = self.db.add_person(name, user_token)
+                    if company or notes:
+                        self.db.update_person_details(person_id, company, notes)
+                    if category:
+                        self.db.set_person_category(person_id, category["id"])
+                    self.db.add_card(person_id, number, credential_token, enabled, access)
+            except sqlite3.Error as err:
+                # Disco pieno: la tessera appena scritta non resta attiva sul controller senza essere nell'app. Prima
+                # restava, e riprovando se ne aggiungeva un'altra con lo stesso numero
+                await self._remove_new(credential_token, user_token)
+                raise ServiceError(f"{error_reason(err)}: la persona non è stata registrata") from err
             detail = f"{name}, tessera {number}" + ("" if enabled else " sospesa")
             detail += f", tipologia {category['name']}" if category else ""
-            self.db.add_audit(user, "persona creata", detail)
+            self._audit(user, "persona creata", detail)
             self._changed()
             return self.db.get_person(person_id)
+
+    async def _remove_new(self, credential_token: str, user_token: str = "") -> None:
+        """Tessera (e utente) appena scritti sul controller e non registrati nell'app: si tolgono. Se non si può, la
+        sincronizzazione la porta nell'app come persona."""
+        try:
+            await self.controller.remove_credential(credential_token)
+            if user_token:
+                await self.controller.remove_user(user_token)
+        except VapixError as err:
+            _LOGGER.warning("Tessera %s rimasta sul controller dopo un errore del database: %s", credential_token, err)
+
+    def _audit(self, user: str, action: str, detail: str) -> None:
+        """Riga di Attività di una modifica già fatta: con il disco pieno la modifica resta, e non risulta un errore."""
+        try:
+            self.db.add_audit(user, action, detail)
+        except sqlite3.Error as err:
+            _LOGGER.warning("Attività non salvata (%s: %s): %s", action, detail, err)
 
     async def add_card(self, person_id: int, card: str, user: str, enabled: bool = True) -> dict:
         """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»)."""
@@ -675,10 +700,15 @@ class AccessService:
             credential_token = await self.controller.set_credential(
                 self._credential(user_token, person["name"], number, access, enabled)
             )
-            self.db.add_card(person_id, number, credential_token, enabled, access)
+            try:
+                self.db.add_card(person_id, number, credential_token, enabled, access)
+            except sqlite3.Error as err:
+                # Come per una persona nuova: la tessera non resta attiva sul controller senza essere nell'app
+                await self._remove_new(credential_token)
+                raise ServiceError(f"{error_reason(err)}: la tessera non è stata aggiunta") from err
             self._changed()
             detail = f"{person['name']}, tessera {number}" + ("" if enabled else " sospesa")
-            self.db.add_audit(user, "tessera aggiunta", detail)
+            self._audit(user, "tessera aggiunta", detail)
             return self.db.get_person(person_id)
 
     async def update_person(
@@ -797,10 +827,24 @@ class AccessService:
                 await self.controller.enable_credential(card["axis_credential_token"])
             else:
                 await self.controller.disable_credential(card["axis_credential_token"])
-            self.db.set_card_enabled(card_id, enabled)
+            try:
+                self.db.set_card_enabled(card_id, enabled)
+            except sqlite3.Error as err:
+                # Disco pieno. Una tessera riattivata torna sospesa sul controller, come la mostra l'app; una sospesa
+                # resta sospesa, e l'app la rilegge alla sincronizzazione. Prima l'errore era senza motivo
+                reason = error_reason(err)
+                if not enabled:
+                    raise ServiceError(
+                        f"{reason}: la tessera è sospesa sul controller, l'app lo mostrerà quando lo spazio torna"
+                    ) from err
+                try:
+                    await self.controller.disable_credential(card["axis_credential_token"])
+                except VapixError:
+                    _LOGGER.warning("Tessera %s non riportata sospesa sul controller", card["number"])
+                raise ServiceError(f"{reason}: la tessera non è stata riattivata") from err
             self._changed()
             person = self.db.get_person(card["person_id"])
-            self.db.add_audit(
+            self._audit(
                 user,
                 "tessera riattivata" if enabled else "tessera sospesa",
                 f"{person['name']}, tessera {card['number']}",
