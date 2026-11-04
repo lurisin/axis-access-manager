@@ -2966,7 +2966,8 @@ async def _health_loop(app: FastAPI) -> None:
             before = state.controller.paused
             primary = state.installation.primary
             was = state.health.states.get(primary["id"]) if primary else None
-            was_down = bool(was and was.failures)
+            # Anche dopo un controllo fallito che non conta (sincronizzazione): si risincronizza appena risponde
+            was_down = bool(was and (was.failures or was.online is False))
             await state.health.check_all()
             now = state.health.states.get(primary["id"]) if primary else None
             if was_down and now is not None and now.online:
@@ -3511,7 +3512,9 @@ async def _sync(state) -> tuple[bool, int]:
         if state.controller.paused:
             state.service.notify_change()
         if not health.online:
-            state.last_sync = {"ok": False, "error": health.error, "result": None, "at": _now()}
+            # check: il motivo viene da quel controllo, che come un attimo senza risposta non fa la notifica (vedi
+            # NotificationService.collect); se il controller non risponde davvero lo dice il controllo periodico
+            state.last_sync = {"ok": False, "error": health.error, "result": None, "at": _now(), "check": True}
             _LOGGER.warning("Sincronizzazione non riuscita: %s", health.error)
             return False, SYNC_RETRY
     if state.controller.paused:

@@ -637,6 +637,11 @@ async def test_controller_back_online_wakes_the_card_sync(monitor, controller, c
     assert await round_with(False) is True  # torna: rilettura subito
     assert await round_with(False) is False
     assert forgotten == [state] * 4
+    # Controllo della sincronizzazione fallito, che non conta tra quelli di fila: al ritorno la rilettura è subito,
+    # non dopo un minuto con l'errore della sincronizzazione
+    controller.offline = True
+    await monitor.check(state.installation.primary, count=False)
+    assert await round_with(False) is True
 
 
 async def test_rex_inputs_without_permission_are_a_fault(monitor, controller, controller_row, db):

@@ -710,6 +710,25 @@ def test_only_the_periodic_check_counts_failures(client, controller):
     assert health.unreachable
 
 
+def test_a_moment_without_answer_at_the_sync_is_not_a_notification(client, controller):
+    """Revisione: un attimo senza risposta proprio al controllo della sincronizzazione faceva comparire subito
+    «Controller Non Raggiungibile», per un minuto, anche con il controller che rispondeva di nuovo."""
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    controller.offline = True
+    ok, _ = client.portal.call(main._sync, state)
+    controller.offline = False
+    assert ok is False and state.last_sync["error"]
+    items = client.get("/api/notifications").json()["items"]
+    assert [i["title"] for i in items if i["type"] == "controller"] == []
+    # Una sincronizzazione che non riesce per altro resta una notifica
+    state.last_sync = {"ok": False, "error": "il controller ha rifiutato la richiesta", "result": None, "at": ""}
+    items = client.get("/api/notifications").json()["items"]
+    assert [i["title"] for i in items if i["type"] == "controller"] == ["Controller Non Raggiungibile"]
+
+
 def test_new_configuration_with_the_same_address_keeps_the_controller_client(
     settings, controller, tmp_path, monkeypatch
 ):

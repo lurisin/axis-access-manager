@@ -350,6 +350,9 @@ class NotificationService:
             primary = next((c for c in controllers if c.get("id") == primary_id), None) if primary_id else None
             checked = [primary] if primary else controllers
             reachable = bool(checked) and all(c.get("online") is True for c in checked)
+            # Sincronizzazione non riuscita, ma non per il suo controllo di chi risponde: un attimo senza risposta non
+            # rende il controller non raggiungibile (lo fa il controllo periodico dopo un minuto)
+            sync_failed = sync.get("ok") is False and not sync.get("check")
             events_since = _events_down_since(ws, mqtt_connected, controller_online, controller_offline_since, now)
             if reachable and events_since:
                 # Il controller risponde all'app ma i suoi eventi non arrivano: né WebSocket né MQTT
@@ -364,8 +367,8 @@ class NotificationService:
                     link="#impianti/stato",
                     weight=_reminder_weight(events_since, now),
                 )
-            elif not unreachable and (sync.get("ok") is False or (controller_online is False and not controllers)):
-                detail = sync.get("error") if sync.get("ok") is False else "il controller non è raggiungibile"
+            elif not unreachable and (sync_failed or (controller_online is False and not controllers)):
+                detail = sync.get("error") if sync_failed else "il controller non è raggiungibile"
                 add(
                     "controller",
                     "controller",
