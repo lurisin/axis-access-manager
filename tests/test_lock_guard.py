@@ -1,6 +1,7 @@
 """Rete di sicurezza della serratura: porta bloccata quando resta Aperta a Tempo oltre il tempo o si apre."""
 
 import asyncio
+import sqlite3
 
 from app.events import EventMonitor
 from app.lock_guard import (
@@ -599,3 +600,42 @@ def test_without_a_measured_controller_clock_a_new_log_grant_counts_from_now():
     assert s.lock_calls() == [] and s.guard.accesses["porta"].started == s.clock.now
     s.run(5 + MARGIN, live=False)
     assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_alarm_that_could_not_be_saved_is_tried_again():
+    """Disco pieno: l'allarme della rete di sicurezza falliva dopo essere stato segnato come fatto, e non arrivava
+    più, nemmeno dopo."""
+    s = Setup()
+    s.controller.ignore_lock = True
+    failures = [sqlite3.OperationalError("database or disk is full")]
+
+    def log_alarm(door, detail):
+        if failures:
+            raise failures.pop()
+        s.alarms.append((door, detail))
+
+    async def tick():
+        return await s.guard.tick(
+            s.monitor,
+            s.controller,
+            door_lock=lambda d: s.locks.setdefault(d, asyncio.Lock()),
+            contact_open=lambda d: s.contact.get(d),
+            log_alarm=log_alarm,
+            changed=s.changed,
+        )
+
+    asyncio.run(tick())
+    s.clock.now += 5 + MARGIN + 0.1
+    asyncio.run(tick())
+    for _ in range(MAX_ATTEMPTS - 2):
+        s.clock.now += RETRY_AFTER
+        asyncio.run(tick())
+    s.clock.now += RETRY_AFTER
+    try:
+        asyncio.run(tick())
+    except sqlite3.OperationalError:
+        pass
+    assert s.alarms == []
+    s.clock.now += 1
+    asyncio.run(tick())
+    assert s.alarms == [("porta", FAILED)]

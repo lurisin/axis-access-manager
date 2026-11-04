@@ -1,0 +1,704 @@
+"""Database dell'add-on sul disco: backup e ripristino di Home Assistant, database rovinato, disco pieno, pulizia del
+registro, un anno di eventi."""
+
+import asyncio
+import errno
+import os
+import sqlite3
+import subprocess
+import sys
+import tarfile
+import threading
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path, PurePath
+from types import SimpleNamespace
+
+import pytest
+import yaml
+from fastapi.testclient import TestClient
+
+from app import backup_copy, main
+from app import db as db_module
+from app import ha as ha_module
+from app.backup_copy import consistent_copy, ha_copy_path, recover, update_copy
+from app.db import SCHEMA_VERSION, Database
+from app.events import Event, EventMonitor
+from app.ha import HomeAssistant
+from app.main import create_app
+from app.service import AccessService
+
+ADDON = Path(__file__).parent.parent / "axis_access_manager"
+CONFIG = yaml.safe_load((ADDON / "config.yaml").read_text())
+DB_NAME = "axis_access_manager.db"
+
+
+def start(settings, controller, data: Path, media: Path | None = None) -> TestClient:
+    ha = HomeAssistant(token="", snapshot_dir=media or data.parent / "media")
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=data / DB_NAME, home_assistant=ha)
+    return TestClient(app)
+
+
+def backup_pre(db_path: Path) -> subprocess.CompletedProcess:
+    """Come il backup_pre del config.yaml: lo script da solo, in un altro processo."""
+    command = CONFIG["backup_pre"].split()
+    assert command[-1].endswith("app/backup_copy.py")
+    return subprocess.run(
+        [sys.executable, str(ADDON / "app" / "backup_copy.py")],
+        env=dict(os.environ, AAM_DB_PATH=str(db_path)),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _excluded(path: Path) -> bool:
+    return any(PurePath(path).match(pattern) for pattern in CONFIG["backup_exclude"])
+
+
+def _add(tar: tarfile.TarFile, origin: Path, arcname: str) -> None:
+    # Come securetar.atomic_contents_add del Supervisor: la cartella, poi ogni voce che backup_exclude non toglie
+    tar.add(origin, arcname=arcname, recursive=False)
+    for item in origin.iterdir():
+        if _excluded(item):
+            continue
+        if item.is_dir() and not item.is_symlink():
+            _add(tar, item, f"{arcname}/{item.name}")
+        else:
+            tar.add(item, arcname=f"{arcname}/{item.name}", recursive=False)
+
+
+def ha_backup(data: Path, archive: Path) -> list[str]:
+    """Backup dell'add-on fatto da Home Assistant con l'add-on acceso: backup_pre, poi /data senza backup_exclude."""
+    backup_pre(data / DB_NAME)
+    with tarfile.open(archive, "w") as tar:
+        _add(tar, data, "data")
+    with tarfile.open(archive) as tar:
+        return tar.getnames()
+
+
+def ha_restore(archive: Path, target: Path) -> Path:
+    """Ripristino di Home Assistant: cartella dei dati svuotata e riempita dal backup."""
+    with tarfile.open(archive) as tar:
+        tar.extractall(target, filter="fully_trusted")
+    return target / "data"
+
+
+def files(folder: Path) -> list[str]:
+    return sorted(p.relative_to(folder).as_posix() for p in folder.rglob("*") if p.is_file())
+
+
+def integrity(path: Path) -> str:
+    conn = sqlite3.connect(path)
+    try:
+        return conn.execute("PRAGMA integrity_check").fetchone()[0]
+    finally:
+        conn.close()
+
+
+# Backup e ripristino di Home Assistant
+
+
+@pytest.mark.parametrize("history", ["installato", "aggiornato", "prima della migrazione"])
+def test_home_assistant_backup_and_restore_with_the_add_on_writing(settings, controller, tmp_path, history):
+    data = tmp_path / "data"
+    data.mkdir()
+    media = tmp_path / "media"
+    if history == "aggiornato":
+        # Versione precedente: al primo avvio di questa si fa la copia in copie_database
+        Database(data / DB_NAME, "0.25.0").close()
+    if history == "prima della migrazione":
+        old = Database(data / DB_NAME, "0.25.0")
+        old._execute(f"PRAGMA user_version = {SCHEMA_VERSION - 1}")
+        old.close()
+    with start(settings, controller, data, media) as client:
+        for i in range(5):
+            assert client.post("/api/persons", json={"name": f"Persona {i}", "card": f"04a{i}"}).status_code == 200
+        assert client.post("/api/backups", json={"name": "Prima dei lavori"}).status_code == 200
+        db = client.app.state.db
+        # Un'istantanea di un evento: sta nella cartella Media, fuori dal backup dell'add-on
+        event_id = db.add_event(ts=datetime.now(tz=UTC).isoformat(timespec="seconds"), kind="negato", door="porta")
+        media.mkdir(exist_ok=True)
+        (media / f"{event_id}_foto.jpg").write_bytes(b"\xff\xd8foto")
+        db.set_event_snapshot(event_id, f"{event_id}_foto.jpg")
+        if history == "prima della migrazione":
+            # Backup fatto dalla versione di prima: database con lo schema di prima
+            db._execute(f"PRAGMA user_version = {SCHEMA_VERSION - 1}")
+            db._execute("UPDATE app_settings SET value = '0.25.0' WHERE key = 'app_version'")
+        stop = threading.Event()
+        written = []
+
+        def writer():
+            # L'add-on scrive per tutto il backup: eventi e WAL che crescono
+            while not stop.is_set():
+                written.append(db.add_event(ts="2026-11-04T10:00:00+00:00", kind="concesso", raw={"p": "x" * 500}))
+                time.sleep(0.001)
+
+        thread = threading.Thread(target=writer)
+        thread.start()
+        try:
+            time.sleep(0.2)
+            names = ha_backup(data, tmp_path / "backup.tar")
+        finally:
+            stop.set()
+            thread.join()
+        at_backup = len(written)
+    assert "data/copia_backup/axis_access_manager.db" in names
+    # Le copie prima degli aggiornamenti e i database danneggiati restano fuori
+    assert not [n for n in names if n.startswith("data/copie_database/") or "_danneggiato_" in n]
+    if history == "aggiornato":
+        assert list((data / "copie_database").iterdir())
+
+    restored = ha_restore(tmp_path / "backup.tar", tmp_path / "ripristino")
+    with start(settings, controller, restored, media) as client:
+        state = client.app.state
+        assert state.db.schema_version == SCHEMA_VERSION
+        assert len(client.get("/api/persons").json()) == 5
+        assert [b["name"] for b in client.get("/api/backups").json()["backups"]] == ["Prima dei lavori"]
+        # Dati del backup: almeno gli eventi scritti fino alla copia per il backup
+        events = state.db._query("SELECT COUNT(*) AS n FROM events WHERE kind = 'concesso'")[0]["n"]
+        assert 0 < events <= at_backup
+        shot = state.db.get_event(event_id)
+        assert shot["snapshot"] and (media / shot["snapshot"]).exists()
+        recovered = state.db_recovery
+        copies = [c["name"] for c in client.get("/api/status").json()["database"]["copies"]]
+        if history == "prima della migrazione":
+            # Schema aggiornato all'avvio, con la copia del database com'era nel backup
+            assert len(copies) == 1 and copies[0].endswith("_v0.25.0.db")
+        else:
+            assert copies == []
+    # Niente di incoerente: né WAL né copie a metà, né accanto al database né accanto alla copia
+    left = files(restored)
+    assert not [n for n in left if n.endswith(("-wal", "-shm", "-journal", ".parziale", ".ripristino"))], left
+    assert integrity(restored / DB_NAME) == "ok"
+    if recovered:
+        # Database preso a metà scrittura: si riparte dalla copia coerente
+        assert backup_copy.RESTORED in recovered["text"]
+
+
+def test_database_and_wal_copied_at_different_moments_use_the_backup_copy(tmp_path):
+    """Il Supervisor copia database e WAL in momenti diversi: gli indici possono non tornare con le tabelle, e
+    quick_check non lo vede. Con il WAL rimasto il controllo all'avvio è completo e si riparte dalla copia."""
+    path = tmp_path / DB_NAME
+    db = Database(path, "0.26.0")
+    db.add_audit("admin", "prima")
+    db.close()
+    consistent_copy(path, ha_copy_path(path))
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE prova (n INTEGER)")
+    conn.execute("CREATE INDEX prova_n ON prova(n) WHERE n > 0")
+    conn.executemany("INSERT INTO prova VALUES (?)", [(n,) for n in range(1, 50)])
+    conn.commit()
+    # Indice che non torna con la tabella, come dopo una copia presa a metà: quick_check non lo vede
+    conn.execute("PRAGMA writable_schema = ON")
+    conn.execute("UPDATE sqlite_master SET sql = replace(sql, 'n > 0', 'n > 10') WHERE name = 'prova_n'")
+    conn.commit()
+    conn.close()
+    assert backup_copy.damage(path) == ""
+    # Come nel backup: una scrittura ancora nel WAL
+    writer = sqlite3.connect(path)
+    writer.execute("PRAGMA journal_mode = WAL")
+    writer.execute("INSERT INTO prova VALUES (100)")
+    writer.commit()
+    restored = tmp_path / "ripristino"
+    restored.mkdir()
+    for suffix in ("", "-wal"):
+        (restored / f"{DB_NAME}{suffix}").write_bytes(Path(f"{path}{suffix}").read_bytes())
+    writer.close()
+    (restored / "copia_backup").mkdir()
+    (restored / "copia_backup" / DB_NAME).write_bytes(ha_copy_path(path).read_bytes())
+
+    message = recover(restored / DB_NAME)
+
+    assert message.startswith("database danneggiato spostato in") and backup_copy.RESTORED in message
+    again = Database(restored / DB_NAME)
+    assert [a["action"] for a in again.list_audit()] == ["prima"]
+    again.close()
+
+
+def test_backup_copy_is_one_file_and_reading_it_leaves_nothing(tmp_path):
+    path = tmp_path / DB_NAME
+    Database(path).close()
+    copy = ha_copy_path(path)
+    # -wal e -shm lasciati accanto alla copia dalle versioni precedenti
+    copy.parent.mkdir()
+    for suffix in ("-wal", "-shm"):
+        Path(f"{copy}{suffix}").write_bytes(b"vecchio")
+    consistent_copy(path, copy)
+    assert files(copy.parent) == [DB_NAME]
+    # Letta in sola lettura (ripristino all'avvio): non resta niente accanto, che poi finiva nel backup
+    reader = sqlite3.connect(f"file:{copy}?mode=ro", uri=True)
+    reader.execute("SELECT count(*) FROM sqlite_master").fetchone()
+    reader.close()
+    assert files(copy.parent) == [DB_NAME]
+
+
+def test_backup_pre_empties_the_wal_while_the_add_on_writes(tmp_path):
+    path = tmp_path / DB_NAME
+    db = Database(path)
+    for i in range(200):
+        db.add_audit("admin", f"riga {i}", "x" * 500)
+    assert Path(f"{path}-wal").stat().st_size > 0
+    backup_pre(path)
+    # Il file del database resta fermo finché il WAL non torna grande: copiato dal Supervisor è coerente
+    assert Path(f"{path}-wal").stat().st_size == 0
+    db.add_audit("admin", "dopo")
+    assert db.list_audit(1)[0]["action"] == "dopo"
+    db.close()
+
+
+# Database che SQLite non apre
+
+
+def _person_and_backup(settings, controller, data: Path) -> None:
+    with start(settings, controller, data) as client:
+        assert client.post("/api/persons", json={"name": "Anna Rossi", "card": "04aa"}).status_code == 200
+        assert client.post("/api/backups", json={"name": "Prima del danno"}).status_code == 200
+
+
+def _header(path: Path) -> None:
+    content = bytearray(path.read_bytes())
+    content[0:16] = b"x" * 16
+    path.write_bytes(bytes(content))
+
+
+def test_unreadable_database_without_copy_starts_empty_and_says_so(settings, controller, tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    _person_and_backup(settings, controller, data)
+    _header(data / DB_NAME)
+
+    # Prima l'add-on non partiva più, e i backup dell'app non si raggiungevano
+    with start(settings, controller, data) as client:
+        # Database nuovo: le Attività di prima non ci sono
+        assert [a["action"] for a in client.app.state.db.list_audit()].count("database controllato all'avvio") == 1
+        assert "persona creata" not in [a["action"] for a in client.app.state.db.list_audit()]
+        assert [b["name"] for b in client.get("/api/backups").json()["backups"]] == ["Prima del danno"]
+        items = client.get("/api/notifications").json()["items"]
+        [notice] = [i for i in items if i["type"] == "database"]
+        recovered = client.get("/api/status").json()["database"]["recovered"]
+    assert notice["title"] == recovered["title"] == "Database Ripartito Vuoto"
+    assert notice["severity"] == "crit" and notice["fault"] is True
+    assert "database vuoto" in notice["text"] and "Impianti → Backup" in notice["text"]
+    assert "i backup di Home Assistant fatti da adesso contengono il database vuoto" in notice["text"]
+    # Il danneggiato è da parte, fuori dai backup di Home Assistant
+    [broken] = data.glob("axis_access_manager_danneggiato_*.db")
+    assert _excluded(broken) and broken.read_bytes()[:16] == b"x" * 16
+
+
+def test_unreadable_database_and_copy_without_space_to_duplicate_it(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    _person_and_backup(settings, controller, data)
+    backup_pre(data / DB_NAME)
+    _header(data / DB_NAME)
+
+    def full(source, target, check=False):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(backup_copy, "consistent_copy", full)
+    with start(settings, controller, data) as client:
+        persons = client.get("/api/persons").json()
+        recovered = client.app.state.db_recovery
+    # Mai un database vuoto con una copia sana: il backup di Home Assistant successivo l'avrebbe sostituita
+    assert [p["name"] for p in persons] == ["Anna Rossi"]
+    assert recovered["title"] == "Database Ripristinato dalla Copia"
+    assert "spostata al posto del database" in recovered["text"]
+    assert not ha_copy_path(data / DB_NAME).exists()
+    assert list(data.glob("axis_access_manager_danneggiato_*.db"))
+
+
+def test_missing_database_with_damaged_copy_says_it_starts_empty(tmp_path):
+    path = tmp_path / DB_NAME
+    ha_copy_path(path).parent.mkdir()
+    ha_copy_path(path).write_bytes(b"rovinata" * 100)
+    assert recover(path).endswith(backup_copy.STARTED_EMPTY)
+
+
+# Copia prima dell'aggiornamento
+
+
+def test_update_copy_failure_does_not_stop_the_add_on(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    Database(data / DB_NAME, "0.25.0").close()
+
+    def full(source, target, check=False):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(backup_copy, "consistent_copy", full)
+    with start(settings, controller, data) as client:
+        state = client.app.state
+        items = client.get("/api/notifications").json()["items"]
+        status = client.get("/api/status").json()["database"]
+        audit = [a for a in state.db.list_audit() if a["action"] == "copia del database prima dell'aggiornamento"]
+        version = state.db.get_setting("app_version")
+    [notice] = [i for i in items if i["type"] == "database"]
+    assert notice["title"] == "Copia Prima dell'Aggiornamento Non Fatta"
+    assert notice["text"].startswith("Copia del database prima dell'aggiornamento non fatta (")
+    assert status["copy_error"]["text"] == audit[0]["detail"]
+    # L'aggiornamento è fatto: al prossimo avvio non si riprova (e non si fallisce) di nuovo
+    assert version != "0.25.0"
+
+
+def test_update_copy_makes_room_before_writing(tmp_path, monkeypatch):
+    path = tmp_path / DB_NAME
+    Database(path).close()
+    for n in range(3):
+        update_copy(path, f"v0.{n}")
+        time.sleep(0.01)
+    copies = tmp_path / "copie_database"
+    seen = []
+    original = backup_copy.consistent_copy
+
+    def spy(source, target, check=False):
+        # Con il disco quasi pieno la nuova copia trova il posto della più vecchia
+        seen.append(len(list(copies.iterdir())))
+        original(source, target, check)
+
+    monkeypatch.setattr(backup_copy, "consistent_copy", spy)
+    update_copy(path, "v0.3")
+    assert seen == [2]
+    assert sorted(p.name.rsplit("_", 1)[-1] for p in copies.iterdir()) == ["v0.1.db", "v0.2.db", "v0.3.db"]
+
+
+# Sessioni dell'accesso diretto dopo il ripristino dalla copia
+
+
+def test_database_restored_from_copy_closes_direct_access_sessions(settings, controller, tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    db = Database(data / DB_NAME)
+    db.save_app_user("reception", "Reception", ["persone"])
+    db.set_password("reception", "hash-vecchio", False, "admin")
+    set_at = db.get_password("reception")["set_at"]
+    db.add_session("sessione-rubata", "reception", set_at, "10.0.0.9", "browser")
+    db.close()
+    backup_pre(data / DB_NAME)
+    _header(data / DB_NAME)
+
+    with start(settings, controller, data) as client:
+        state = client.app.state
+        sessions = state.db.list_sessions()
+        text = state.db_recovery["text"]
+    # Sessione e password della copia tornerebbero buone: le sessioni si chiudono e la notifica lo dice
+    assert sessions == []
+    assert backup_copy.RESTORED in text and "sessioni dell'Accesso Diretto sono state chiuse" in text
+
+
+# Disco pieno e pulizia del registro
+
+
+def _full(*args, **kwargs):
+    err = sqlite3.OperationalError("database or disk is full")
+    err.sqlite_errorcode = sqlite3.SQLITE_FULL
+    raise err
+
+
+def _old_events(db: Database, media: Path, count: int, days: int = 400) -> None:
+    """Eventi oltre la conservazione, uno su dieci con l'istantanea nella cartella Media."""
+    old = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat(timespec="seconds")
+    media.mkdir(exist_ok=True)
+    rows = [(old, f"{n}_foto.jpg" if n % 10 == 0 else "", "x" * 300) for n in range(count)]
+    with db._lock:
+        db._conn.executemany("INSERT INTO events (ts, kind, snapshot, raw) VALUES (?, 'negato', ?, ?)", rows)
+        db._conn.commit()
+    for _, snapshot, _ in rows:
+        if snapshot:
+            (media / snapshot).write_bytes(b"\xff\xd8foto")
+
+
+def _prune_state(db: Database, media: Path, days: int = 30):
+    return SimpleNamespace(
+        db=db,
+        ha=HomeAssistant(token="", snapshot_dir=media),
+        settings=SimpleNamespace(event_retention_days=days),
+    )
+
+
+async def test_prune_goes_in_blocks_and_the_app_keeps_running(tmp_path):
+    db = Database(tmp_path / DB_NAME)
+    media = tmp_path / "media"
+    _old_events(db, media, 5000)
+    db.add_event(ts=datetime.now(tz=UTC).isoformat(timespec="seconds"), kind="concesso")
+    ticks = 0
+
+    async def app_running():
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    other = asyncio.create_task(app_running())
+    await main._prune(_prune_state(db, media))
+    other.cancel()
+    # Un blocco alla volta, e tra un blocco e l'altro l'app va avanti: prima tutto in un colpo, a ciclo fermo
+    assert ticks >= 3
+    assert [e["kind"] for e in db.list_events()] == ["concesso"]
+    assert list(media.iterdir()) == []
+    assert Path(f"{tmp_path / DB_NAME}-wal").stat().st_size == 0
+    db.close()
+
+
+async def test_prune_with_the_disk_full_deletes_snapshots_first(tmp_path, monkeypatch):
+    db = Database(tmp_path / DB_NAME)
+    media = tmp_path / "media"
+    _old_events(db, media, 3000)
+    # Disco pieno: il DELETE non può scrivere il WAL
+    monkeypatch.setattr(db, "delete_events", _full)
+    with pytest.raises(sqlite3.OperationalError):
+        await main._prune(_prune_state(db, media))
+    # Le istantanee del primo blocco sono già cancellate: lo spazio liberato serve al giro dopo. Prima non se ne
+    # cancellava nessuna, né quel giorno né dopo
+    assert len(list(media.iterdir())) == 300 - db_module.PRUNE_BLOCK // 10
+    db.close()
+
+
+async def test_snapshot_not_taken_when_the_disk_is_nearly_full(tmp_path, monkeypatch):
+    usage = SimpleNamespace(total=32 * 1024**3, used=0, free=600 * 1024**2)
+    monkeypatch.setattr(ha_module.shutil, "disk_usage", lambda path: usage)
+    hass = HomeAssistant(token="token", snapshot_dir=tmp_path / "media")
+
+    async def camera(*args, **kwargs):
+        raise AssertionError("la telecamera non va chiesta")
+
+    monkeypatch.setattr(hass._client, "get", camera)
+    assert await hass.save_snapshot("camera.porta", "1_foto") == (
+        "",
+        "spazio su disco quasi esaurito: istantanea non salvata",
+    )
+    # Con più di 1 GB libero sì (il 5% del disco, 1,6 GB su 32 GB, vale solo se è meno)
+    usage.free = 1100 * 1024**2
+    assert not ha_module.low_space(tmp_path / "media")
+    await hass.aclose()
+
+
+def test_nearly_full_disk_is_a_fault(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    real = ha_module.shutil.disk_usage
+    with start(settings, controller, data) as client:
+        assert not [i for i in client.get("/api/notifications").json()["items"] if i["type"] == "database"]
+        nearly_full = SimpleNamespace(total=32 * 1024**3, used=0, free=300 * 1024**2)
+        monkeypatch.setattr(ha_module.shutil, "disk_usage", lambda path: nearly_full)
+        items = client.get("/api/notifications").json()["items"]
+        monkeypatch.setattr(ha_module.shutil, "disk_usage", real)
+    [notice] = [i for i in items if i["type"] == "database"]
+    assert notice["title"] == "Spazio su Disco Quasi Esaurito" and notice["fault"] is True
+    assert notice["text"].startswith("Liberi 300 MB su 32,0 GB: le istantanee non si salvano")
+
+
+def test_full_disk_at_startup_deletes_expired_snapshots_and_starts(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    media = tmp_path / "media"
+    media.mkdir()
+    old, new = media / "1_vecchia.jpg", media / "2_nuova.jpg"
+    for path in (old, new):
+        path.write_bytes(b"\xff\xd8foto")
+    year_ago = time.time() - 400 * 86400
+    os.utime(old, (year_ago, year_ago))
+    real = main.Database
+    attempts = []
+
+    def database(path, version):
+        attempts.append(path)
+        if len(attempts) == 1:
+            # Come su ext4 pieno: SQLite non apre il file, o non crea il -shm
+            raise sqlite3.OperationalError("unable to open database file")
+        return real(path, version)
+
+    monkeypatch.setattr(main, "Database", database)
+    monkeypatch.setattr(main, "low_space", lambda folder: True)
+    with start(settings, controller, data, media) as client:
+        assert client.get("/api/status").status_code == 200
+    # Prima l'add-on non partiva più: la pulizia che avrebbe liberato lo spazio non arrivava mai
+    assert len(attempts) == 2
+    assert not old.exists() and new.exists()
+
+
+def test_space_freed_by_the_prune_goes_back_to_the_disk(tmp_path):
+    path = tmp_path / DB_NAME
+    db = Database(path)
+    assert db._query("PRAGMA auto_vacuum")[0]["auto_vacuum"] == 2
+    assert db._query("PRAGMA journal_size_limit")[0]["journal_size_limit"] == db_module.WAL_SIZE_LIMIT
+    _old_events(db, tmp_path / "media", 20000)
+    db.checkpoint()
+    before = path.stat().st_size
+    while rows := db.expired_events(30):
+        db.delete_events([row["id"] for row in rows])
+    db.checkpoint()
+    # Prima il file restava grande per sempre (e le sue copie con lui), e il WAL quasi quanto il database
+    assert path.stat().st_size < before / 4
+    assert Path(f"{path}-wal").stat().st_size == 0
+    db.close()
+
+
+def test_old_database_with_many_free_pages_is_compacted_at_startup(tmp_path, monkeypatch):
+    path = tmp_path / DB_NAME
+    # Database creato senza auto_vacuum (le versioni precedenti), con un registro grande appena pulito
+    conn = sqlite3.connect(path)
+    conn.executescript(db_module.SCHEMA)
+    conn.executemany("INSERT INTO events (ts, kind, raw) VALUES ('2025-01-01', 'negato', ?)", [("x" * 300,)] * 20000)
+    conn.commit()
+    conn.execute("DELETE FROM events")
+    conn.commit()
+    conn.close()
+    before = path.stat().st_size
+    monkeypatch.setattr(db_module, "COMPACT_FREE_PAGES", 100)
+    db = Database(path)
+    assert db._query("PRAGMA auto_vacuum")[0]["auto_vacuum"] == 2
+    assert path.stat().st_size < before / 4
+    db.close()
+
+
+# Registro non scrivibile
+
+
+async def test_event_not_saved_reaches_home_assistant_and_is_recovered_later(db, controller, settings, monkeypatch):
+    service = AccessService(db, controller, settings, EventMonitor(prefix="accessi/x", door_token="porta"))
+    published = []
+
+    async def after_event(row):
+        published.append(row)
+
+    service.after_event = after_event
+    moment = datetime(2026, 10, 25, 10, 0, 5, tzinfo=UTC)
+    granted = {"AccessPointToken": "ap-in", "Card": "04aa"}
+    saved = db.add_event
+    monkeypatch.setattr(db, "add_event", _full)
+    service.record_event(Event("AccessControl", "AccessControl/AccessGranted/Anonymous/", moment, dict(granted)))
+    # Lo stesso passaggio su un altro topic: Home Assistant lo riceve una volta sola
+    service.record_event(Event("AccessControl", "AccessControl/AccessGranted/Card/", moment, dict(granted)))
+    await asyncio.sleep(0)
+    # Prima l'evento si perdeva in silenzio: niente registro, niente Home Assistant
+    assert [(r["kind"], r["id"]) for r in published] == [("concesso", None)]
+    assert service.write_error["error"] == "spazio su disco esaurito" and service.write_failures == 1
+
+    # Spazio di nuovo libero: il recupero dal registro del controller lo rimette, anche se l'esito era già passato
+    monkeypatch.setattr(db, "add_event", saved)
+    keys = [{"Key": f"topic{i}", "Value": t} for i, t in enumerate(("AccessControl", "AccessGranted", "Anonymous"))]
+    values = [{"Key": k, "Value": v} for k, v in granted.items()]
+    controller.log_events = [{"rowid": 1, "UtcTime": "2026-10-25T10:00:05Z", "KeyValues": keys + values}]
+    assert await service.recover_events(moment - timedelta(minutes=1)) == 1
+    [row] = db.list_events()
+    assert (row["kind"], row["recovered"]) == ("concesso", 1)
+    assert service.write_error is None
+
+
+def test_unsaved_events_hold_the_recovery_point_until_recovered(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    with start(settings, controller, data) as client:
+        state = client.app.state
+        client.portal.call(state.health.check_all)
+        state.monitor.ws_live = True
+        for _ in range(2):
+            client.portal.call(main._recover_if_needed, state)
+        assert state.recover_pending is False
+        calls = []
+        original = state.service.recover_events
+
+        async def recover(since):
+            calls.append(since)
+            if len(calls) == 1:
+                _full()
+            return await original(since)
+
+        state.service.recover_events = recover
+        mark = state.recover_from
+        # Un evento in diretta non salvato (disco pieno)
+        state.service.write_failures += 1
+        state.service.write_error = {"since": "2026-11-04T10:00:00+00:00", "error": "spazio su disco esaurito"}
+        items = client.get("/api/notifications").json()["items"]
+        client.portal.call(main._recover_if_needed, state)
+        # Registro ancora non scrivibile: il punto di recupero resta fermo, e si riprova
+        assert len(calls) == 1 and state.recover_from == mark
+        client.portal.call(main._recover_if_needed, state)
+        client.portal.call(main._recover_if_needed, state)
+    assert len(calls) == 2 and calls[1] == calls[0]
+    [notice] = [i for i in items if i["type"] == "database"]
+    assert notice["title"] == "Registro Non Scrivibile" and notice["severity"] == "crit"
+    assert "Arrivano lo stesso a Home Assistant" in notice["text"]
+
+
+async def test_door_opened_from_home_assistant_with_the_disk_full(db, controller, settings, monkeypatch):
+    monitor = EventMonitor(prefix="accessi/x", door_token="porta")
+    monitor.door_modes["porta"] = "Locked"
+    service = AccessService(db, controller, settings, monitor)
+    published = []
+
+    async def after_event(row):
+        published.append(row["kind"])
+
+    service.after_event = after_event
+    monkeypatch.setattr(db, "add_event", _full)
+    monkeypatch.setattr(db, "add_audit", _full)
+    # La porta si apre: prima risultava un errore e il log diceva "non eseguita"
+    assert await service.open_door(False, "Luca (Home Assistant)") is True
+    await asyncio.sleep(0)
+    assert any(c[0] == "access_door" for c in controller.calls)
+    assert published == ["apertura_remota"]
+
+
+def test_notifications_and_backup_errors_with_the_database_not_writable(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    with start(settings, controller, data) as client:
+        state = client.app.state
+        state.notifications.settled_at = 0
+        state.db.set_setting("notifications_seen", '{"vecchia": 0}')
+        monkeypatch.setattr(state.db, "set_setting", _full)
+        # Prima la barra in alto rispondeva 500 quando doveva dimenticare una notifica vista
+        assert client.get("/api/summary").status_code == 200
+        state.backups._note_error("backup non salvato: spazio su disco esaurito")
+        assert state.backups.last_error()["error"] == "backup non salvato: spazio su disco esaurito"
+
+
+# Un anno di registro
+
+
+def test_last_accesses_and_events_of_a_person_use_the_index(tmp_path):
+    db = Database(tmp_path / DB_NAME)
+    person = db.add_person("Anna", None)
+    for day in (1, 3, 2):
+        db.add_event(ts=f"2026-10-0{day}T08:00:00+00:00", kind="concesso", person_id=person)
+    db.add_event(ts="2026-10-05T08:00:00+00:00", kind="negato", person_id=person)
+    assert db.last_access(person) == "2026-10-03T08:00:00+00:00"
+    assert db.last_accesses() == {person: "2026-10-03T08:00:00+00:00"}
+    assert db.last_access(person + 1) == ""
+
+    def plan(sql: str, params: tuple = ()) -> str:
+        return " ".join(row["detail"] for row in db._query(f"EXPLAIN QUERY PLAN {sql}", params))
+
+    # Senza leggere tutto il registro (1,5 milioni di righe in un anno)
+    assert "events_person" in plan(
+        "SELECT person_id, MAX(ts) AS ts FROM events WHERE person_id IS NOT NULL AND kind = 'concesso' "
+        "GROUP BY person_id"
+    )
+    assert "events_person" in plan("SELECT id FROM events WHERE person_id = ? ORDER BY ts DESC, id DESC LIMIT 50", (1,))
+    db.close()
+
+
+def test_long_reads_do_not_hold_up_the_app(tmp_path):
+    db = Database(tmp_path / DB_NAME)
+    slow = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 4000000) SELECT count(*) FROM n"
+    reading = threading.Event()
+
+    def search():
+        reading.set()
+        db._read(slow)
+
+    thread = threading.Thread(target=search)
+    thread.start()
+    reading.wait()
+    time.sleep(0.05)
+    started = time.monotonic()
+    # Scritture e letture dell'app mentre la ricerca va avanti: prima aspettavano il lock della connessione unica
+    db.add_audit("admin", "durante la ricerca")
+    db.list_persons()
+    waited = time.monotonic() - started
+    still_reading = thread.is_alive()
+    thread.join()
+    assert still_reading and waited < 0.2
+    db.close()

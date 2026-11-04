@@ -28,6 +28,8 @@ HA_COPY_DIR = "copia_backup"
 HA_COPY_ERROR = "errore.txt"
 # Inizio dei messaggi di recover() quando il database è tornato quello della copia
 RESTORED = "ripristinata la copia del backup"
+# Nei messaggi di recover() e replace_unusable() quando l'app riparte da un database nuovo, vuoto
+STARTED_EMPTY = "l'app è ripartita con un database vuoto"
 # Copie prima degli aggiornamenti dello schema o dell'add-on
 UPDATE_COPY_DIR = "copie_database"
 UPDATE_COPIES_KEPT = 3
@@ -58,7 +60,7 @@ def _sync_dir(folder: Path) -> None:
         os.close(fd)
 
 
-def _corrupt(err: sqlite3.Error) -> bool:
+def corrupt_error(err: sqlite3.Error) -> bool:
     return (getattr(err, "sqlite_errorcode", 0) & 0xFF) in CORRUPT_CODES
 
 
@@ -101,8 +103,11 @@ def consistent_copy(source: Path, target: Path, check: bool = False) -> None:
             dst.execute("PRAGMA synchronous = OFF")
             try:
                 _backup(src, dst)
+                # La copia prende il WAL dal database: senza, è un file solo, e leggerla (anche in sola lettura) non
+                # lascia accanto -wal e -shm che finivano nel backup di Home Assistant
+                dst.execute("PRAGMA journal_mode = DELETE")
             except sqlite3.DatabaseError as err:
-                if check and _corrupt(err):
+                if check and corrupt_error(err):
                     raise DamagedError(str(err)) from err
                 raise
             finally:
@@ -114,6 +119,9 @@ def consistent_copy(source: Path, target: Path, check: bool = False) -> None:
         if check and (problem := damage(partial)):
             raise DamagedError(problem)
         os.replace(partial, target)
+        # -wal e -shm della copia di prima (letta in sola lettura dalle versioni precedenti): con questa non c'entrano
+        for suffix in ("-wal", "-shm"):
+            Path(f"{target}{suffix}").unlink(missing_ok=True)
     except BaseException:
         # Un .parziale lasciato sul disco pieno faceva fallire anche il tentativo successivo
         for leftover in (partial, Path(f"{partial}-journal")):
@@ -138,15 +146,20 @@ def damage(path: Path) -> str:
     """Perché il database è rovinato secondo PRAGMA quick_check ("" se è sano).
     Si apre in scrittura: il journal lasciato da un'interruzione SQLite lo riporta indietro da solo, come
     all'apertura normale (in sola lettura non può, e un database sano sembrava rovinato). Gli errori che non
-    dicono "rovinato" (file bloccato, permessi, disco) si sollevano: non vogliono dire danneggiato."""
+    dicono "rovinato" (file bloccato, permessi, disco) si sollevano: non vogliono dire danneggiato.
+    Con il WAL rimasto accanto (add-on non chiuso: spegnimento improvviso, o cartella rimessa da un backup di Home
+    Assistant fatto con l'add-on acceso) il controllo è completo: database e WAL copiati in momenti diversi danno
+    indici che non tornano con le tabelle, e quick_check non lo vede."""
+    wal = Path(f"{path}-wal")
+    check = "integrity_check" if wal.exists() and wal.stat().st_size > 0 else "quick_check"
     try:
         conn = sqlite3.connect(f"file:{path}?mode=rw", uri=True, timeout=30)
         try:
-            result = conn.execute("PRAGMA quick_check").fetchone()[0]
+            result = conn.execute(f"PRAGMA {check}").fetchone()[0]
         finally:
             conn.close()
     except sqlite3.DatabaseError as err:
-        if _corrupt(err):
+        if corrupt_error(err):
             return str(err) or "file rovinato"
         raise
     return "" if result == "ok" else str(result)
@@ -160,7 +173,7 @@ def is_healthy(path: Path) -> bool:
         return False
 
 
-def _reason(err: Exception) -> str:
+def error_reason(err: Exception) -> str:
     if isinstance(err, TimeoutError):
         return "copia troppo lenta"
     full = getattr(err, "errno", None) == errno.ENOSPC or getattr(err, "sqlite_errorcode", 0) == sqlite3.SQLITE_FULL
@@ -203,13 +216,17 @@ def recover(db_path: Path) -> str:
         _LOGGER.error("Database danneggiato: %s", problem)
         problem = "database danneggiato"
     if not copy.exists() or not is_healthy(copy):
+        if not _has_data(db_path):
+            # L'apertura crea un database nuovo
+            return f"{problem} e nessuna copia sana del backup da cui ripartire: {STARTED_EMPTY}"
+        # Il danneggiato resta: se SQLite lo apre l'app parte con quello, se no ci pensa replace_unusable()
         return f"{problem} e nessuna copia sana del backup da cui ripartire"
     # Prima la copia accanto al database: se non riesce (disco pieno) il database resta dov'è e si riprova
     try:
         consistent_copy(copy, restoring)
     except (OSError, sqlite3.Error) as err:
         _LOGGER.error("Copia del backup non ripristinata: %s", err)
-        return f"{problem}, copia del backup non ripristinata ({_reason(err)}): si riprova al prossimo avvio"
+        return f"{problem}, copia del backup non ripristinata ({error_reason(err)}): si riprova al prossimo avvio"
     when = datetime.fromtimestamp(copy.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
     if not _has_data(db_path):
         # Journal senza database: sulla copia la rovinerebbe
@@ -218,6 +235,14 @@ def recover(db_path: Path) -> str:
         os.replace(restoring, db_path)
         _sync_dir(db_path.parent)
         return f"{problem}, {RESTORED} del {when}"
+    broken = _set_aside(db_path)
+    os.replace(restoring, db_path)
+    _sync_dir(db_path.parent)
+    return f"{problem} spostato in {broken.name}, {RESTORED} del {when}"
+
+
+def _set_aside(db_path: Path) -> Path:
+    """Database danneggiato messo da parte, con _danneggiato_ nel nome (fuori dai backup di Home Assistant)."""
     broken = db_path.with_name(f"{db_path.stem}_danneggiato_{datetime.now():%Y%m%d_%H%M%S}{db_path.suffix}")
     # Journal e WAL (con il suo indice -shm) vanno con il file danneggiato: lì servono a chi vuole recuperarne
     # le ultime modifiche, sulla copia la rovinerebbero
@@ -226,9 +251,32 @@ def recover(db_path: Path) -> str:
         if side.exists():
             os.replace(side, Path(f"{broken}{suffix}"))
     os.replace(db_path, broken)
-    os.replace(restoring, db_path)
+    return broken
+
+
+def replace_unusable(db_path: Path) -> str:
+    """Database che SQLite non apre, rimasto al suo posto dopo recover(): nessuna copia sana, o copia che non si è
+    potuta duplicare (disco pieno). Senza questo l'add-on non partiva più, e i backup dell'app non si raggiungevano.
+    Il danneggiato si mette da parte; la copia sana si sposta al posto del database (non serve spazio) e si rifà al
+    prossimo backup di Home Assistant. Mai un database vuoto con una copia sana: il backup successivo la
+    sostituirebbe con quello. Restituisce cosa è successo."""
+    copy = ha_copy_path(db_path)
+    healthy = copy.exists() and is_healthy(copy)
+    broken = _set_aside(db_path)
+    if healthy:
+        when = datetime.fromtimestamp(copy.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
+        os.replace(copy, db_path)
+        _sync_dir(db_path.parent)
+        _sync_dir(copy.parent)
+        return (
+            f"database danneggiato spostato in {broken.name}, {RESTORED} del {when}, spostata al posto del database: "
+            "si rifà al prossimo backup di Home Assistant"
+        )
     _sync_dir(db_path.parent)
-    return f"{problem} spostato in {broken.name}, {RESTORED} del {when}"
+    return (
+        f"database danneggiato spostato in {broken.name} e nessuna copia sana del backup da cui ripartire: "
+        f"{STARTED_EMPTY}"
+    )
 
 
 def update_copy(db_path: Path, reason: str) -> Path:
@@ -236,10 +284,11 @@ def update_copy(db_path: Path, reason: str) -> Path:
     folder = db_path.parent / UPDATE_COPY_DIR
     safe = "".join(c if c.isalnum() or c in ".-" else "_" for c in reason)[:40]
     target = folder / f"{db_path.stem}_{datetime.now():%Y%m%d_%H%M%S}_{safe}{db_path.suffix}"
-    consistent_copy(db_path, target)
+    # Prima si tolgono le copie in più: con il disco quasi pieno la nuova trova il posto della più vecchia
     copies = sorted(folder.glob(f"{db_path.stem}_*{db_path.suffix}"), key=lambda p: p.stat().st_mtime)
-    for old in copies[:-UPDATE_COPIES_KEPT]:
+    for old in copies[: max(len(copies) - UPDATE_COPIES_KEPT + 1, 0)]:
         old.unlink(missing_ok=True)
+    consistent_copy(db_path, target)
     return target
 
 
@@ -254,6 +303,17 @@ def update_copies(db_path: Path) -> list[dict]:
         }
         for p in copies
     ]
+
+
+def _checkpoint(path: Path) -> None:
+    """Scritture del WAL riportate nel database e WAL svuotato, subito prima che Home Assistant copi la cartella con
+    l'add-on acceso: finché il WAL non torna grande il file del database non cambia, e nel backup database e WAL
+    restano coerenti. Le scritture dell'add-on aspettano al massimo il timeout."""
+    conn = sqlite3.connect(path, timeout=2)
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+    finally:
+        conn.close()
 
 
 def main() -> int:
@@ -272,11 +332,15 @@ def main() -> int:
         error = "database danneggiato: resta la copia precedente"
         print(f"Database danneggiato ({err}): la copia precedente in {target} resta", file=sys.stderr)
     except Exception as err:  # noqa: BLE001 - il backup di Home Assistant deve andare avanti
-        error = f"copia non aggiornata ({_reason(err)})"
+        error = f"copia non aggiornata ({error_reason(err)})"
         print(f"Copia del database non riuscita: {err}", file=sys.stderr)
     else:
         error = ""
         print(f"Copia coerente del database pronta in {target}")
+    try:
+        _checkpoint(path)
+    except sqlite3.Error as err:
+        print(f"WAL del database non svuotato prima del backup: {err}", file=sys.stderr)
     with contextlib.suppress(OSError):
         if error:
             status.parent.mkdir(parents=True, exist_ok=True)

@@ -27,6 +27,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import zlib
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -1156,6 +1157,8 @@ class BackupService:
         self.failed_at: datetime | None = None
         # Backup aperti di recente (load), che per OPENED_KEPT non scadono
         self.opened: dict[str, datetime] = {}
+        # Errore che il database non ha potuto salvare (disco pieno): resta per la notifica finché l'add-on gira
+        self._unsaved_error: str | None = None
 
     def _parts_of(self, manifest: dict) -> dict[str, dict]:
         return {key: self.store.read_part(info["hash"]) for key, info in (manifest.get("parts") or {}).items()}
@@ -1267,7 +1270,7 @@ class BackupService:
                 if skip_unchanged and last and hashes == {k: v.get("hash") for k, v in last_info.items()}:
                     if not errors:
                         # Lo stato attuale è già tutto nell'ultimo backup: un errore vecchio non vale più
-                        self.db.set_setting(SETTING_ERROR, "")
+                        self._clear_error()
                     return None
                 self._summarize(manifest, parts, errors, items)
                 self.store.save(manifest)
@@ -1283,7 +1286,7 @@ class BackupService:
         if manifest["errors"]:
             self._note_error("; ".join(manifest["errors"]), manifest["id"])
         else:
-            self.db.set_setting(SETTING_ERROR, "")
+            self._clear_error()
         if expired:
             _LOGGER.info("Backup scaduti eliminati: %s", ", ".join(expired))
         if kind in AUDITED_KINDS:
@@ -1313,11 +1316,23 @@ class BackupService:
             info["summary"] = summary_text([g for g in groups if g["part"] == key])
 
     def _note_error(self, error: str, backup_id: str = "") -> None:
-        self.db.set_setting(SETTING_ERROR, json.dumps({"at": now_iso(), "error": error, "id": backup_id}))
+        value = json.dumps({"at": now_iso(), "error": error, "id": backup_id})
+        try:
+            self.db.set_setting(SETTING_ERROR, value)
+        except sqlite3.Error as err:
+            # Disco pieno: prima l'errore del database prendeva il posto di quello del backup (risposta 500)
+            _LOGGER.warning("Errore del backup non salvato nel database: %s", err)
+            self._unsaved_error = value
+        else:
+            self._unsaved_error = None
+
+    def _clear_error(self) -> None:
+        self.db.set_setting(SETTING_ERROR, "")
+        self._unsaved_error = None
 
     def last_error(self) -> dict | None:
         try:
-            value = json.loads(self.db.get_setting(SETTING_ERROR) or "null")
+            value = json.loads(self._unsaved_error or self.db.get_setting(SETTING_ERROR) or "null")
         except ValueError:
             return None
         return value if isinstance(value, dict) else None

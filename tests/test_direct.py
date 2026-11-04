@@ -4,6 +4,7 @@ delle richieste e server sulla porta propria."""
 import json
 import logging
 import socket
+import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -267,6 +268,33 @@ def test_session_stays_open_until_unused_for_ninety_days(clients):
     db._execute("UPDATE sessions SET last_seen = ?", (stale,))
     assert site.get("/api/persons").status_code == 401
     assert db.list_sessions() == []
+
+
+def test_full_disk_does_not_stop_direct_access_reads(clients, monkeypatch):
+    """Disco pieno: il rinnovo della sessione falliva e ogni richiesta del personale rispondeva 500."""
+    ingress, site, app = clients
+    enable(ingress)
+    ready(ingress, site)
+    db = app.state.db
+    old = (datetime.now(tz=UTC) - timedelta(days=2)).isoformat(timespec="seconds")
+    db._execute("UPDATE sessions SET last_seen = ?", (old,))
+
+    def full(*args):
+        err = sqlite3.OperationalError("database or disk is full")
+        err.sqlite_errorcode = sqlite3.SQLITE_FULL
+        raise err
+
+    monkeypatch.setattr(db, "touch_session", full)
+    response = site.get("/api/persons")
+    assert response.status_code == 200
+    # Sessione non rinnovata: il cookie resta quello di prima
+    assert COOKIE not in response.cookies
+    assert db.list_sessions()[0]["last_seen"] == old
+    # Al login un motivo chiaro invece di un errore senza messaggio
+    monkeypatch.setattr(db, "add_session", full)
+    response = login(site, "maria", NEW_PASSWORD)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "spazio su disco esaurito: avvisa l'amministratore"
 
 
 def test_temporary_password_and_its_session_expire(clients):

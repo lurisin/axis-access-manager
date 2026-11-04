@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import shutil
+import time
 import urllib.parse
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,11 +27,48 @@ PRESS_WINDOW = 15
 MEDIA_DIR = Path("/media")
 SNAPSHOT_DIR = MEDIA_DIR / "axis_access_manager"
 LEGACY_SNAPSHOT_DIR = Path("/data/snapshots")
+# Con meno spazio libero di così (o del 5% del disco, se è meno) le istantanee non si salvano e compare il guasto
+# "Spazio su Disco Quasi Esaurito": su Home Assistant OS la cartella Media sta sul disco del database, e piena di
+# istantanee fermava anche il registro
+MIN_FREE_SPACE = 1024**3
+LOW_SPACE = "spazio su disco quasi esaurito"
 
 
 def default_snapshot_dir() -> Path:
     """Cartella Media se l'add-on la vede (map media:rw), altrimenti quella interna di prima."""
     return SNAPSHOT_DIR if MEDIA_DIR.is_dir() else LEGACY_SNAPSHOT_DIR
+
+
+def disk_space(folder: Path) -> tuple[int, int] | None:
+    """Spazio libero e totale del disco della cartella (o della prima cartella che c'è sopra), None se non si legge."""
+    for path in (folder, *folder.parents):
+        if path.is_dir():
+            try:
+                usage = shutil.disk_usage(path)
+            except OSError:
+                return None
+            return usage.free, usage.total
+    return None
+
+
+def low_space(folder: Path) -> bool:
+    space = disk_space(folder)
+    return space is not None and space[0] < min(MIN_FREE_SPACE, space[1] // 20)
+
+
+def delete_old_snapshots(folder: Path, days: int) -> int:
+    """Istantanee più vecchie della conservazione del registro, dalla data del file: con il disco pieno il database
+    può non aprirsi, e non dice quali sono. Restituisce quante."""
+    limit = time.time() - days * 86400
+    removed = 0
+    for path in folder.glob("*.jpg"):
+        try:
+            if path.stat().st_mtime < limit:
+                path.unlink()
+                removed += 1
+        except OSError as err:
+            _LOGGER.warning("Istantanea %s non cancellata: %s", path, err)
+    return removed
 
 
 class HomeAssistant:
@@ -79,6 +117,9 @@ class HomeAssistant:
         # Solo entità camera.*: un valore salvato da una versione vecchia non deve chiamare altre API
         if not self.available or not valid_camera(camera):
             return "", ""
+        if await asyncio.to_thread(low_space, self.snapshot_dir):
+            _LOGGER.warning("Istantanea da %s non salvata: %s", camera, LOW_SPACE)
+            return "", f"{LOW_SPACE}: istantanea non salvata"
         try:
             response = await self._client.get(f"/camera_proxy/{urllib.parse.quote(camera, safe='')}")
         except httpx.HTTPError as err:
