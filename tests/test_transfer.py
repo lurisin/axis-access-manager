@@ -107,6 +107,20 @@ async def test_import_updates_registered_cards(service, controller, db):
     assert rows[1]["esito"] == "errore" and "stessa persona" in rows[1]["dettaglio"]
 
 
+async def test_import_names_the_owner_of_a_card_with_another_name(service, db):
+    """Tessera registrata a Paolo in una riga con il nome di Giulia: le modifiche vanno a Paolo, e la riga lo dice."""
+    paolo = await service.create_person("Paolo Verdi", "04aa", "admin", company="Edilnord", notes="storico")
+    text = "nome;tessera;gruppo;valida_dal;valida_al;ditta;note\nGiulia Neri;04aa;;;;Pulizie Srl;"
+    for apply in (False, True):
+        [row] = (await import_persons(service, text, GROUPS, "admin", apply=apply))["righe"]
+        assert row["dettaglio"].startswith("tessera di Paolo Verdi (il nome del file non si usa); ditta Edilnord")
+    assert db.get_person(paolo["id"])["company"] == "Pulizie Srl"
+    # Stesso nome scritto in un altro modo: nessuna avvertenza
+    text = "nome;tessera;ditta\n  paolo   VERDI ;04aa;Brillante"
+    [row] = (await import_persons(service, text, GROUPS, "admin", apply=False))["righe"]
+    assert row["dettaglio"] == "ditta Pulizie Srl → Brillante"
+
+
 async def test_export_then_reimport_changes_nothing(service, db):
     """Il file esportato si reimporta com'è, anche risalvato da un foglio di calcolo senza secondi."""
     await service.create_person("Marco", "04123456", "admin", valid_to="2026-12-31T23:59:59", notes="=1+1")

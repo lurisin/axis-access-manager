@@ -390,7 +390,11 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
                     continue
                 if apply:
                     await _update(service, person, existing, changes, user)
-                detail = "; ".join(label for _, label in changes.values()) + note
+                labels = [label for _, label in changes.values()]
+                # Tessera di un'altra persona (passata a qualcun altro?): le modifiche vanno a chi ce l'ha, va detto
+                if name.lower() != " ".join(existing["person_name"].split()).lower():
+                    labels.insert(0, f"tessera di {existing['person_name']} (il nome del file non si usa)")
+                detail = "; ".join(labels) + note
                 outcome.update(esito="aggiornata" if apply else "da aggiornare", dettaglio=detail)
                 results.append(outcome)
                 continue
