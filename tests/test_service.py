@@ -314,6 +314,8 @@ async def test_recent_extended_openings_from_the_log(service, db):
     opening(30, "porta2", "tempo esteso")
     opening(5, "porta2", "")
     opening(90, "porta3", "tempo esteso")
+    # Una riga con l'ora scritta male non ferma l'avvio dell'add-on
+    db.add_event(ts=f"{now:%Y-%m-%dT%H:%M:%S}", kind="apertura_remota", detail="tempo esteso", door="porta4")
     found = service.recent_extended_openings(60)
     # Solo l'ultima apertura di ogni porta, se è estesa e recente
     assert list(found) == ["porta"] and 9 <= found["porta"] <= 12

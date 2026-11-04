@@ -1020,7 +1020,11 @@ class AccessService:
             if door in seen:
                 continue
             seen.add(door)
-            age = (now - datetime.fromisoformat(row["ts"])).total_seconds()
+            try:
+                age = (now - datetime.fromisoformat(row["ts"])).total_seconds()
+            except (TypeError, ValueError):
+                # Ora non leggibile (database ripristinato da una versione vecchia): l'avvio non si ferma per questo
+                continue
             # Una riga nel futuro (orologio spostato) non si sa quando è: non conta
             if door and age >= 0 and (row["detail"] == "tempo esteso" or row["detail"].startswith("tempo esteso, ")):
                 found[door] = age
