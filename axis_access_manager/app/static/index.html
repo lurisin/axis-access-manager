@@ -1058,7 +1058,7 @@ async function changePassword() {
       await api("api/password", {method: "POST", body: {current: $("[name=password]", dlg).value, new: fresh}});
       return true;
     } catch (err) {
-      // Nella finestra: un avviso in basso resterebbe dietro
+      // Nella finestra, accanto ai campi da correggere
       error.textContent = cap(err.message);
       error.hidden = false;
       return false;
