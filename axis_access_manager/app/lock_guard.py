@@ -10,7 +10,9 @@ Qui l'app guarda le porte Aperte a Tempo e le blocca (tdc:LockDoor, mai uno sblo
   (materiale che entra, porta che si sta chiudendo) non si blocca per questo: chi ha passato la tessera deve poterla
   spingere, e la serratura si riblocca a fine tempo;
 - se la porta resta Aperta a Tempo oltre il suo tempo più MARGIN secondi: è un guasto (contatto, configurazione,
-  controller), e finisce nel registro come allarme "riblocco forzato".
+  controller), e finisce nel registro come allarme "riblocco forzato". Prima si guarda nel registro del controller se
+  una tessera o un pulsante ha fatto ripartire il tempo (anche con gli eventi in diretta: un consenso può essere
+  arrivato mentre non c'erano).
 Senza eventi in diretta (solo letture ogni 10 s) lo stato in memoria può essere vecchio: per le porte Aperte a Tempo
 si rilegge il controller a ogni giro, e il contatto non si usa.
 Prima di bloccare si rilegge la porta dal controller: un'apertura già finita, o una nuova, non si tocca.
@@ -260,7 +262,9 @@ class LockGuard:
         log_alarm(porta, dettaglio): allarme nel registro. changed(): stato della porta aggiornato.
         live: eventi in diretta (WebSocket o MQTT); senza, lo stato in memoria può essere vecchio di 10 s e i consensi
         di tessere e pulsanti non arrivano: last_grant(porta) dà l'ultimo dal registro del controller, come
-        (impronta, secondi fa; None se l'orologio del controller non è misurato)."""
+        (impronta, secondi fa; None se l'orologio del controller non è misurato). Con gli eventi in diretta il
+        registro si guarda solo prima di bloccare per il tempo scaduto: un consenso arrivato quando gli eventi in
+        diretta non c'erano (WebSocket tornato a metà apertura, controller che non rispondeva) non si è visto."""
         from_log = last_grant if not live else None
         modes = dict(monitor.door_modes)
         for door in [d for d in self.accesses if modes.get(d) != ACCESSED]:
@@ -283,7 +287,11 @@ class LockGuard:
                 await self._grant_from_log(door, from_log, log_alarm)
             access = self._track(door, read_contact(door), live, self.clock(), log_alarm)
             reason = self._reason(door, access, self.clock())
-            if reason == "tempo" and from_log is not None and await self._grant_from_log(door, from_log, log_alarm):
+            if (
+                reason == "tempo"
+                and last_grant is not None
+                and await self._grant_from_log(door, last_grant, log_alarm, live)
+            ):
                 # Una tessera o un pulsante ha fatto ripartire il tempo: si rifà il conto
                 access = self.accesses[door]
                 reason = self._reason(door, access, self.clock())
@@ -328,10 +336,12 @@ class LockGuard:
         door: str,
         last_grant: Callable[[str], Awaitable[tuple[str, float | None] | None]],
         log_alarm: Callable[[str, str], None],
+        live: bool = False,
     ) -> bool:
-        """Senza eventi in diretta: un consenso nel registro del controller più nuovo dell'apertura che l'app conosce
-        la fa ripartire (o partire, se appena vista). Ogni consenso del registro si usa una volta sola: con l'orologio
-        del controller avanti un consenso vecchio non fa ripartire il tempo a ogni giro.
+        """Un consenso nel registro del controller più nuovo dell'apertura che l'app conosce la fa ripartire (o
+        partire, se appena vista). Ogni consenso del registro si usa una volta sola: con l'orologio del controller
+        avanti un consenso vecchio non fa ripartire il tempo a ogni giro. Con gli eventi in diretta solo con l'orologio
+        del controller misurato: il consenso che ha aperto la porta, già visto in diretta, non la fa ripartire.
         True se l'apertura è cambiata."""
         try:
             found = await last_grant(door)
@@ -341,7 +351,7 @@ class LockGuard:
         if found is None:
             return False
         ident, age = found
-        if ident == self.log_grants.get(door) or (age is not None and age < -LOG_SKEW):
+        if ident == self.log_grants.get(door) or (age is not None and age < -LOG_SKEW) or (live and age is None):
             return False
         self.log_grants[door] = ident
         access = self.accesses.get(door)

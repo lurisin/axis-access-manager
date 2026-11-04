@@ -617,12 +617,56 @@ def test_the_same_log_grant_restarts_the_time_once():
     assert s.lock_calls() == [("lock_door", "porta")]
 
 
-def test_with_live_events_the_log_is_not_read():
+def test_with_live_events_the_log_is_read_only_before_locking():
     s = Setup()
     s.guard.granted("porta")
     s.run()
+    s.run(5 + MARGIN - 0.1)
+    assert s.log_reads == 0
+    s.run(0.2)
+    assert s.log_reads == 1 and s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_live_events_back_during_an_opening_restarted_by_a_card_in_the_log():
+    """Senza eventi in diretta una seconda tessera passa e c'è solo nel registro; poi torna il WebSocket. Alla
+    scadenza della prima apertura il registro dice che il tempo è ripartito: niente blocco in anticipo."""
+    s = Setup()
+    s.log_grant = ("r1", s.clock.now)
+    s.run(live=False)
+    s.run(3, live=False)
+    s.log_grant = ("r2", s.clock.now)
+    second = s.clock.now
+    s.run(0.5)
+    s.clock.now = second - 3 + 5 + MARGIN + 0.1
+    s.run()
+    assert s.lock_calls() == [] and s.alarms == []
+    assert s.guard.accesses["porta"].started == second
+    s.clock.now = second + 5 + MARGIN + 0.1
+    s.run()
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_opening_from_before_the_controller_stopped_answering():
+    """Apertura in memoria quando il controller smette di rispondere; al ritorno la porta è Aperta a Tempo per una
+    tessera passata appena prima: non si blocca subito. Senza tessere nuove (porta rimasta così) sì."""
+    for card, locked in ((True, False), (False, True)):
+        s = Setup()
+        s.guard.granted("porta")
+        s.log_grant = ("r1", s.clock.now)
+        s.run()
+        # Nessun giro mentre il controller non risponde
+        s.clock.now += 100
+        if card:
+            s.log_grant = ("r2", s.clock.now)
+        s.run(0.5)
+        assert bool(s.lock_calls()) is locked
+    # Orologio del controller non misurato: con gli eventi in diretta il registro non fa ripartire il tempo
+    s = Setup()
+    s.guard.granted("porta")
+    s.run()
+    s.log_grant = ("r2", "?")
     s.run(5 + MARGIN + 0.1)
-    assert s.log_reads == 0 and s.lock_calls() == [("lock_door", "porta")]
+    assert s.lock_calls() == [("lock_door", "porta")]
 
 
 def test_alarm_kept_when_a_new_grant_replaces_an_unconfirmed_forced_lock():

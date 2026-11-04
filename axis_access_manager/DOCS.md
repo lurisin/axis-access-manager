@@ -131,7 +131,7 @@ La serratura non deve restare alimentata a lungo, nemmeno con la porta tenuta ap
 
 In più l'app sorveglia ogni porta **Aperta a Tempo**: se resta così oltre il suo tempo più 3 secondi, la blocca (comando di blocco, mai uno sblocco). Il tempo conta al massimo 30 secondi (60 per l'apertura estesa), anche se sul controller è stato messo di più. Questo è un guasto (contatto, configurazione, controller): nel registro e tra le notifiche compare l'allarme **Riblocco Forzato**, e in Home Assistant l'evento `allarme_porta`. Se il controller non si blocca dopo tre tentativi, l'allarme è **Riblocco Non Riuscito**.
 
-Prima di bloccare l'app rilegge la porta dal controller: un'apertura già finita, o una nuova, non si tocca. Il blocco lascia la porta nella modalità normale, e tessere, pulsanti e aperture dall'app funzionano come sempre.
+Prima di bloccare l'app rilegge la porta dal controller: un'apertura già finita, o una nuova, non si tocca. Guarda anche nel registro del controller se una tessera o un pulsante ha fatto ripartire il tempo mentre gli eventi in diretta non arrivavano. Il blocco lascia la porta nella modalità normale, e tessere, pulsanti e aperture dall'app funzionano come sempre.
 
 Il blocco appena il Contatto Porta vede la porta aprirsi è pronto ma spento: si accende dopo una prova in loco.
 
