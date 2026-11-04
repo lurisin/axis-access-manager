@@ -622,6 +622,53 @@ def test_new_address_gets_no_writes_before_the_identity_check(client, controller
     assert response.status_code == 200
 
 
+def test_new_password_for_the_same_controller_keeps_its_state(client, controller):
+    """Revisione: durante il controllo dopo un cambio di password lo stato del controller si svuotava, Home Assistant lo
+    vedeva offline e la rete di sicurezza si fermava fino al giro dopo (10-30 s), anche con lo stesso apparecchio."""
+    import asyncio
+    import threading
+
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    client.portal.call(state.state_keeper.tick, state.controller, ["porta"], True)
+    modes = dict(state.monitor.door_modes)
+    assert state.monitor.reachable is True and modes
+    gate = asyncio.Event()
+    answer = controller.device_info
+
+    async def device_info():
+        await gate.wait()
+        return await answer()
+
+    controller.device_info = device_info
+    ctrl = state.installation.primary
+    body = {"name": ctrl["name"], "mqtt_topic_prefix": ctrl["mqtt_topic_prefix"], "host": ctrl["host"]}
+    body |= {"username": "root", "password": "nuova"}
+    saved = {}
+    change = threading.Thread(
+        target=lambda: saved.update(r=client.put(f"/api/controllers/{ctrl['id']}", json=body)), daemon=True
+    )
+    change.start()
+    for _ in range(200):
+        if state.controller.paused:
+            break
+        threading.Event().wait(0.01)
+    try:
+        # Il giro dello stato mentre il controllo aspetta la risposta
+        paused = state.controller.paused
+        responding = main._responding(state)
+        client.portal.call(state.state_keeper.tick, state.controller, ["porta"], responding)
+    finally:
+        controller.device_info = answer
+        client.portal.call(gate.set)
+        change.join(10)
+    assert "non è ancora stato riconosciuto" in paused and responding is None
+    assert state.monitor.reachable is True and state.monitor.door_modes == modes
+    assert saved["r"].status_code == 200 and main._responding(state) is True
+
+
 def test_new_address_that_does_not_answer_keeps_writes_paused(client, controller):
     """Il controllo del nuovo indirizzo non riesce: le scritture restano sospese finché un controllo non vede chi
     risponde, anche se intanto il controller torna a rispondere. La sincronizzazione fa il suo controllo."""
@@ -972,10 +1019,13 @@ def test_responding_changes_wake_the_websocket_from_any_check(client):
     main._signal_responding(state)
     assert not live.wake.is_set()
     # Controller cambiato: niente "In Collegamento" nel cruscotto, il WebSocket non si prova
+    primary_id = state.installation.primary["id"]
+    state.db.set_controller_identity_change(primary_id, '{"serial": "Y"}')
     state.controller.paused = "il controller è cambiato"
     assert main._events_waiting(state) is False
     main._signal_responding(state)
     assert live.wake.is_set() and state.responding_seen is False
+    state.db.set_controller_identity_change(primary_id, "")
     state.controller.paused = ""
     state.live_events = None
 

@@ -3191,13 +3191,18 @@ def _events_waiting(state) -> bool:
 
 def _responding(state) -> bool | None:
     """Il controller principale risponde all'app: True, False (non risponde da almeno un minuto, o all'indirizzo
-    risponde un controller diverso), None se non si sa ancora (primo controllo non fatto, un solo controllo fallito)."""
+    risponde un controller diverso), None se non si sa ancora (primo controllo non fatto, un solo controllo fallito,
+    chi risponde con l'indirizzo o le credenziali appena cambiati non ancora visto)."""
     primary = state.installation.primary
     health = state.health.states.get(primary["id"]) if primary and primary.get("host") else None
     if health is None:
         return None
-    if health.unreachable or state.controller.paused:
+    if health.unreachable or paused_reason(state.health.with_unsaved_change(primary)):
         return False
+    if state.controller.paused:
+        # Solo il controllo dopo il cambio di indirizzo o credenziali: prima lo stato si svuotava, Home Assistant
+        # vedeva il controller offline e la rete di sicurezza si fermava fino a 30 s, anche con lo stesso apparecchio
+        return None
     return True if health.online else None
 
 
@@ -3241,8 +3246,9 @@ async def _lock_guard_loop(app: FastAPI) -> None:
         wait = CHECK_EVERY
         try:
             monitor = state.monitor
-            # Con il controller che non risponde lo stato delle porte è sconosciuto: niente da fare
-            if monitor.reachable is not False and _responding(state) is not False:
+            # Con il controller che non risponde lo stato delle porte è sconosciuto: niente da fare. Nemmeno con le
+            # scritture sospese: nessun blocco verso un apparecchio non ancora riconosciuto
+            if monitor.reachable is not False and _responding(state) is not False and not state.controller.paused:
                 service = state.service
                 wait = await guard.tick(
                     monitor,
