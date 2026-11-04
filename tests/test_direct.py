@@ -218,6 +218,36 @@ def test_administration_only_from_home_assistant(clients):
     assert site.get("/api/persons").status_code == 200
 
 
+def test_admin_only_on_direct_access_does_not_count_as_the_last_admin(clients):
+    """Revisione: un amministratore che entra solo dall'accesso diretto contava come amministratore. L'ultimo
+    amministratore di Home Assistant poteva togliersi i permessi, e nessuno poteva più gestire utenti e ripristini."""
+    ingress, site, app = clients
+    enable(ingress)
+    ready(ingress, site, "direttore", perms=("utenti",))
+    assert site.get("/api/users").status_code == 403
+    response = ingress.put("/api/users/admin", json={"name": "Admin", "perms": ["stato"]}, headers=ADMIN)
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("serve almeno un amministratore che entra da Home Assistant")
+    assert ingress.delete("/api/users/admin", headers=ADMIN).status_code == 400
+    # Un altro amministratore già entrato da Home Assistant conta
+    luca = {"X-Remote-User-Name": "luca", "X-Remote-User-Id": "id-luca"}
+    ingress.get("/api/me", headers=luca)
+    assert ingress.put("/api/users/luca", json={"perms": ["utenti"]}, headers=ADMIN).status_code == 200
+    assert ingress.put("/api/users/admin", json={"name": "Admin", "perms": ["stato"]}, headers=ADMIN).status_code == 200
+
+
+def test_home_assistant_reinstalled_with_an_admin_only_on_direct_access(db):
+    """Revisione: Home Assistant reinstallato (id nuovo per lo stesso nome utente) con un amministratore solo
+    dell'accesso diretto: i permessi finivano sotto il vecchio id e l'amministratore restava «Solo Stato»."""
+    directory = UserDirectory(db)
+    assert directory.resolve("luca", "Luca", "id-luca").can("utenti")
+    db.save_app_user("direttore", "Direttore", ["utenti"])
+    db.set_password("direttore", hash_password("password-del-direttore"), False, "luca")
+    db.touch_app_user("direttore", "")
+    again = directory.resolve("luca", "Luca", "id-luca-nuovo")
+    assert again.username == "luca" and again.can("utenti")
+
+
 def test_new_temporary_password_removal_and_deletion_close_sessions(clients):
     ingress, site, app = clients
     enable(ingress)

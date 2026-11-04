@@ -258,7 +258,10 @@ class UserDirectory:
             if not create and not existing:
                 raise UserError("utente non trovato")
             if existing and ADMIN in existing["perms"] and ADMIN not in perms and not self._reachable_admins(username):
-                raise UserError("serve almeno un amministratore: dai prima i permessi completi a un altro utente")
+                raise UserError(
+                    "serve almeno un amministratore che entra da Home Assistant: dai prima i permessi completi a un "
+                    "altro utente già entrato da Home Assistant"
+                )
             if create:
                 # Registrato prima del suo primo accesso: lo prende chi entra con questo nome utente
                 self._unbind(username)
@@ -277,19 +280,23 @@ class UserDirectory:
             if username == by.username:
                 raise UserError("non puoi eliminare il tuo utente")
             if ADMIN in existing["perms"] and not self._reachable_admins(username):
-                raise UserError("è l'unico amministratore")
+                raise UserError("è l'unico amministratore che entra da Home Assistant")
             self.db.delete_app_user(username)
             self._unbind(username)
         self.db.add_audit(by.label, "utente eliminato", existing["name"] or username)
 
     def _reachable_admins(self, excluding: str) -> int:
-        """Amministratori diversi da excluding che qualcuno può ancora usare: non conta chi è stato messo da parte
-        sotto l'id di una persona di Home Assistant (id:…) e da allora non è più entrato."""
+        """Amministratori diversi da excluding che qualcuno può ancora usare per gestire l'app: solo chi entra da Home
+        Assistant, cioè è legato a una persona di Home Assistant. Dall'accesso diretto la gestione degli utenti non si
+        fa: un amministratore che entra solo da lì lascerebbe l'app senza nessuno che la gestisca. Non conta nemmeno
+        chi è stato messo da parte sotto l'id di una persona di Home Assistant (id:…) e da allora non è più entrato."""
+        bound = set(self._ids().values())
         return sum(
             1
             for u in self.db.list_app_users()
             if ADMIN in u["perms"]
             and u["username"] != excluding
+            and u["username"] in bound
             and not (u["username"].startswith(ID_PREFIX) and not u["last_seen"])
         )
 
