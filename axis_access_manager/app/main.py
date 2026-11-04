@@ -2850,13 +2850,18 @@ async def _recover_if_needed(state) -> None:
         _LOGGER.warning("Eventi persi non recuperati dal controller: %s", err)
         return
     # Senza eventi in diretta resta da fare: anche il primo giro dopo il loro ritorno, per gli eventi tra questo
-    # recupero e il ritorno
-    state.recover_pending, state.recover_outages, state.recover_periodic = not live, outages, not live
+    # recupero e il ritorno. Anche con gli eventi in diretta se il registro era troppo lungo per un giro: il punto
+    # fissato a ogni giro passerebbe oltre gli eventi non ancora letti
+    more = state.service.recover_more
+    state.recover_pending, state.recover_outages, state.recover_periodic = not live or more, outages, not live
     if state.service.recover_newest is not None:
         state.recover_cutoff = (state.settings.a1210_host, state.service.recover_newest)
     if not live:
         # Il registro dell'app è completo fino a qui
         state.recover_from = _recover_mark(state)
+    elif more and state.service.recover_newest is not None:
+        # Completo solo fino all'ultimo evento letto: quelli arrivati in diretta intanto sono più nuovi
+        state.recover_from = (state.service.recover_newest.isoformat(timespec="seconds"), datetime.now(tz=UTC))
     state.last_recovery = {"at": _now(), "since": since.isoformat(timespec="seconds"), "events": recovered}
     if recovered and announce:
         _LOGGER.info("Recuperati %s eventi dal registro del controller", recovered)

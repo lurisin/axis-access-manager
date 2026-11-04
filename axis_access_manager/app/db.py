@@ -1322,9 +1322,16 @@ class Database:
         self._execute("UPDATE events SET detail = ? WHERE id = ?", (detail, event_id))
 
     def last_controller_event(self, kinds: tuple[str, ...]) -> str:
-        """Ora dell'ultimo evento arrivato dal controller: da lì si recuperano quelli persi."""
+        """Ora dell'ultimo evento arrivato dal controller: da lì si recuperano quelli persi. Senza le righe dello
+        stesso tipo scritte dall'app (allarmi della rete di sicurezza, aperture da Home Assistant non eseguite): hanno
+        l'ora di Home Assistant e, con l'orologio del controller indietro, porterebbero il punto oltre i passaggi
+        ancora da recuperare."""
         marks = ", ".join("?" * len(kinds))
-        rows = self._query(f"SELECT MAX(ts) AS ts FROM events WHERE kind IN ({marks})", kinds)
+        rows = self._query(
+            f"SELECT MAX(ts) AS ts FROM events WHERE kind IN ({marks}) AND NOT (kind = 'allarme' AND source = 'App') "
+            "AND NOT (kind = 'negato' AND instr(detail, 'apertura non eseguita') = 1)",
+            kinds,
+        )
         return rows[0]["ts"] or "" if rows else ""
 
     @staticmethod

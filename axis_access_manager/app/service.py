@@ -213,6 +213,8 @@ class AccessService:
         self._recovered = 0
         # Ora (del controller) dell'evento più recente letto dall'ultimo recupero, None se non ne ha letti
         self.recover_newest: datetime | None = None
+        # L'ultimo recupero si è fermato a RECOVER_MAX righe con altre ancora da leggere: si continua al giro dopo
+        self.recover_more = False
         # Secondi di cui l'orologio del controller (sincronizzato via NTP) è avanti rispetto a Home Assistant;
         # None se non si sa o se il controller non è sincronizzato
         self.clock_offset: Callable[[], float | None] | None = None
@@ -1156,8 +1158,9 @@ class AccessService:
             await self.load_access_points()
         self._recovered = 0
         self.recover_newest = None
+        self.recover_more = False
         row_id, read = None, 0
-        while read < RECOVER_MAX:
+        while True:
             entries, more = await self.controller.fetch_events(start, RECOVER_PAGE, row_id)
             read += len(entries)
             before = self._recovered
@@ -1176,6 +1179,11 @@ class AccessService:
             if self._recovered > before:
                 self._changed()
             if not more or not entries:
+                break
+            if read >= RECOVER_MAX:
+                # L'A1210 tiene fino a 250.000 eventi: il resto al prossimo giro, dall'ultimo letto (recover_newest)
+                _LOGGER.warning("Recupero fermato a %s eventi letti dal registro del controller: si continua", read)
+                self.recover_more = True
                 break
             row_id = entries[-1].get("rowid")
         return self._recovered
