@@ -14,7 +14,7 @@ from .config import Settings
 from .db import Database, now_iso
 from .events import Event, EventMonitor, door_of_topic, event_from_log
 from .rules import RuleError, check_validity, normalize_validity
-from .vapix import A1210Client, VapixError
+from .vapix import A1210Client, ControllerUnreachable, VapixError
 
 _LOGGER = logging.getLogger(__name__)
 # Oltre questo scarto l'ora del controller non è credibile neanche se dice di essere sincronizzato
@@ -986,10 +986,19 @@ class AccessService:
                 label = DOOR_MODES.get(mode, mode)
                 raise ServiceError(f"la porta non è bloccata ({label}): attendi che si richiuda")
             before = self.monitor.door_modes.get(door) if self.monitor else None
-            await self.controller.access_door(door, extended)
-            if self.lock_guard is not None:
-                # Il tempo della rete di sicurezza parte da qui, con il tempo esteso se chiesto
-                self.lock_guard.granted(door, extended, self._door_open(door))
+            # Il tempo della rete di sicurezza parte da qui, con il tempo esteso se chiesto. Prima del comando: con la
+            # risposta persa il controller può avere aperto lo stesso, e un consenso senza apertura scade da solo
+            guard = self.lock_guard
+            grant = guard.granted(door, extended, self._door_open(door)) if guard is not None else None
+            try:
+                await self.controller.access_door(door, extended)
+            except ControllerUnreachable:
+                raise
+            except VapixError:
+                # Rifiutato dal controller: nessuna apertura
+                if guard is not None:
+                    guard.withdraw(door, grant)
+                raise
             if self.monitor and self.monitor.door_modes.get(door) == before:
                 # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
                 # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
@@ -998,6 +1007,24 @@ class AccessService:
         self.log_event(ts=self.event_now(), kind="apertura_remota", detail=detail, source=user, door=door)
         self.db.add_audit(user, "porta aperta", detail)
         return True
+
+    def recent_extended_openings(self, seconds: float) -> dict[str, float]:
+        """Porte aperte dall'app con il tempo esteso negli ultimi seconds secondi, se è la loro ultima apertura a
+        distanza: porta → secondi fa. Per la rete di sicurezza della serratura dopo un riavvio dell'add-on."""
+        now = datetime.fromisoformat(self.event_now())
+        since = (now - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+        found: dict[str, float] = {}
+        seen: set[str] = set()
+        for row in self.db.list_events(kind="apertura_remota", since=since):
+            door = row["door"] or ""
+            if door in seen:
+                continue
+            seen.add(door)
+            age = (now - datetime.fromisoformat(row["ts"])).total_seconds()
+            # Una riga nel futuro (orologio spostato) non si sa quando è: non conta
+            if door and age >= 0 and (row["detail"] == "tempo esteso" or row["detail"].startswith("tempo esteso, ")):
+                found[door] = age
+        return found
 
     # Eventi
 

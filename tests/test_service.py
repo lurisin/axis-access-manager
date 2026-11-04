@@ -275,6 +275,50 @@ async def test_open_door_asks_controller_when_state_unknown(service, controller)
         await service.open_door(False, "admin")
 
 
+async def test_open_door_gives_the_safety_net_its_time_before_the_command(service, controller):
+    from app.lock_guard import LockGuard
+    from app.vapix import ControllerUnreachable
+
+    guard = service.lock_guard = LockGuard()
+    during = []
+
+    async def lost(door_token, extended=False):
+        during.append(guard.grants.get(door_token))
+        raise ControllerUnreachable("il controller non risponde (nessuna risposta in tempo)")
+
+    # Comando eseguito ma risposta persa: il tempo esteso vale già, e resta
+    controller.access_door = lost
+    with pytest.raises(ControllerUnreachable):
+        await service.open_door(True, "Luca (Home Assistant)")
+    assert during[0] is not None and during[0].extended and guard.grants["porta"] is during[0]
+
+    async def refused(door_token, extended=False):
+        raise VapixError("il controller ha rifiutato la richiesta")
+
+    # Rifiutato dal controller: nessuna apertura, nessun consenso
+    guard.grants.clear()
+    controller.access_door = refused
+    with pytest.raises(VapixError):
+        await service.open_door(True, "Luca (Home Assistant)")
+    assert guard.grants == {}
+
+
+async def test_recent_extended_openings_from_the_log(service, db):
+    now = datetime.now(tz=UTC)
+
+    def opening(seconds_ago, door, detail):
+        ts = (now - timedelta(seconds=seconds_ago)).isoformat(timespec="seconds")
+        db.add_event(ts=ts, kind="apertura_remota", detail=detail, source="Luca", door=door)
+
+    opening(10, "porta", "tempo esteso, corriere")
+    opening(30, "porta2", "tempo esteso")
+    opening(5, "porta2", "")
+    opening(90, "porta3", "tempo esteso")
+    found = service.recent_extended_openings(60)
+    # Solo l'ultima apertura di ogni porta, se è estesa e recente
+    assert list(found) == ["porta"] and 9 <= found["porta"] <= 12
+
+
 async def test_card_read_events(service, db):
     await service.create_person("Mario Rossi", "04AA", "admin")
 

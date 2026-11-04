@@ -108,17 +108,34 @@ class LockGuard:
         self._times_gen = 0
         # Ultimo consenso del registro del controller già usato, per porta (senza eventi in diretta)
         self.log_grants: dict[str, str] = {}
+        # Inizio (ora di clock) dell'ultima apertura estesa dall'app, per porta: un'Aperta a Tempo vista di nuovo
+        # senza consenso prima della sua fine (eventi in ritardo, risposta al comando persa, riavvio dell'add-on) è
+        # ancora quella, con il suo inizio e il suo tempo. Un'apertura con il tempo normale la toglie
+        self.extended_at: dict[str, float] = {}
 
     def poke(self) -> None:
         """Un evento che può cambiare lo stato di una porta: controllo subito."""
         self.wake.set()
 
-    def granted(self, door: str, extended: bool = False, door_open: bool | None = None) -> None:
+    def granted(self, door: str, extended: bool = False, door_open: bool | None = None) -> _Grant | None:
         """Consenso alla porta (tessera, pulsante, apertura dall'app): il controller fa ripartire il tempo.
         door_open: il contatto porta in quel momento, prima che la porta si muova."""
-        if door:
-            self.grants[door] = _Grant(self.clock(), extended, door_open)
-            self.poke()
+        if not door:
+            return None
+        grant = self.grants[door] = _Grant(self.clock(), extended, door_open)
+        self.poke()
+        return grant
+
+    def withdraw(self, door: str, grant: _Grant | None) -> None:
+        """Apertura dall'app rifiutata dal controller: il consenso dato prima del comando non vale (una tessera
+        arrivata intanto sì)."""
+        if grant is not None and self.grants.get(door) is grant:
+            del self.grants[door]
+
+    def extended_opened(self, door: str, seconds_ago: float) -> None:
+        """Apertura estesa dall'app iniziata seconds_ago secondi fa: dal registro, dopo un riavvio dell'add-on."""
+        if door and seconds_ago >= 0:
+            self.extended_at[door] = self.clock() - seconds_ago
 
     def invalidate_times(self) -> None:
         """Tempi delle porte cambiati dall'app: si rileggono alla prossima apertura."""
@@ -169,6 +186,12 @@ class LockGuard:
                 self._drop(door, log_alarm)
             started = grant.at if grant else now
             access = _Access(started=started, extended=bool(grant and grant.extended))
+            if grant is None:
+                self._within_extended(door, access, now)
+            elif grant.extended:
+                self.extended_at[door] = grant.at
+            else:
+                self.extended_at.pop(door, None)
             if grant is not None and grant.door_open is False:
                 access.closed_seen = True
             self.accesses[door] = access
@@ -184,6 +207,13 @@ class LockGuard:
         else:
             access.open_since = None
         return access
+
+    def _within_extended(self, door: str, access: _Access, now: float) -> None:
+        """Apertura vista senza consenso prima della fine dell'ultima apertura estesa: è quella, e si blocca al più
+        tardi alla sua fine, mai dopo."""
+        at = self.extended_at.get(door)
+        if at is not None and now < at + self._limit(door, _Access(started=at, extended=True)):
+            access.started, access.extended = at, True
 
     def _deadline(self, door: str, access: _Access) -> float | None:
         """Quando bloccare questa apertura, se niente cambia; None se non c'è più niente da fare."""
@@ -329,6 +359,10 @@ class LockGuard:
             if at <= access.started + LOG_SAME:
                 return False
             self._drop(door, log_alarm)
+        elif door in self.extended_at and at <= self.extended_at[door] + LOG_SAME:
+            # Consenso di prima dell'apertura estesa dall'app (o il suo comando): l'apertura è quella (vedi _track)
+            return False
+        self.extended_at.pop(door, None)
         self.accesses[door] = _Access(started=at)
         return True
 

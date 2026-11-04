@@ -72,7 +72,7 @@ from .health import (
 from .installation import MAX_CONTROLLERS, InstallationService, check_host, same_controller
 from .intercom import IntercomBridge, IntercomSettings
 from .live_events import LiveEvents
-from .lock_guard import CHECK_EVERY, LockGuard
+from .lock_guard import CHECK_EVERY, MAX_EXTENDED, LockGuard
 from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
 from .programming import (
     CONTACTS,
@@ -636,6 +636,9 @@ def create_app(
         # Rete di sicurezza della serratura: resta la stessa anche con una nuova configurazione
         app.state.lock_guard = LockGuard()
         await _start_runtime(app)
+        # Aperture estese dall'app appena prima di un riavvio dell'add-on: la rete di sicurezza non le accorcia
+        for door, ago in app.state.service.recent_extended_openings(MAX_EXTENDED).items():
+            app.state.lock_guard.extended_opened(door, ago)
         await app.state.direct.apply(app.state.direct_settings)
         maintenance = asyncio.create_task(_maintenance(app))
         health = asyncio.create_task(_health_loop(app))

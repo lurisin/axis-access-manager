@@ -168,6 +168,71 @@ def test_extended_opening_uses_extended_time():
     assert s.lock_calls() == [("lock_door", "porta")]
 
 
+def test_extended_opening_seen_again_without_grant_keeps_its_time():
+    """Apri a Lungo subito dopo una tessera, poi in ritardo «Bloccata» e «Aperta a Tempo»: l'apertura ricreata senza
+    consenso resta quella estesa, con il suo inizio, fino alla sua fine e non oltre."""
+    s = Setup()
+    s.guard.granted("porta")
+    s.run()
+    s.clock.now += 5.2
+    s.guard.granted("porta", extended=True)
+    s.run()
+    extended_at = s.clock.now
+    s.monitor.door_modes["porta"] = "Locked"
+    s.run(0.1)
+    assert "porta" not in s.guard.accesses
+    s.monitor.door_modes["porta"] = "Accessed"
+    s.run(0.05)
+    access = s.guard.accesses["porta"]
+    assert access.extended and access.started == extended_at
+    s.run(5 + MARGIN + 1)
+    assert s.lock_calls() == [] and s.alarms == []
+    s.clock.now = extended_at + 20 + MARGIN + 0.1
+    s.run()
+    assert s.lock_calls() == [("lock_door", "porta")] and s.alarms == [("porta", FORCED)]
+
+
+def test_extended_opening_ends_with_a_normal_one():
+    """Una tessera dopo l'apertura estesa la chiude: un'Aperta a Tempo rivista senza consenso ha il tempo normale."""
+    s = Setup()
+    s.guard.granted("porta", extended=True)
+    s.run()
+    s.run(2)
+    s.guard.granted("porta")
+    s.run()
+    s.monitor.door_modes["porta"] = "Locked"
+    s.run(0.1)
+    s.monitor.door_modes["porta"] = "Accessed"
+    s.run(0.1)
+    assert s.guard.accesses["porta"].extended is False
+    s.run(5 + MARGIN + 0.1)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_extended_opening_from_before_a_restart_keeps_its_time():
+    """Add-on riavviato durante un'apertura estesa: dal registro dell'app la rete di sicurezza sa che è estesa."""
+    s = Setup()
+    s.guard.extended_opened("porta", 4.0)
+    s.run()
+    access = s.guard.accesses["porta"]
+    assert access.extended and access.started == s.clock.now - 4
+    s.run(20 - 4 + MARGIN - 0.1)
+    assert s.lock_calls() == []
+    s.run(0.2)
+    assert s.lock_calls() == [("lock_door", "porta")]
+    # Finita da un pezzo: un'apertura vista adesso ha il tempo normale
+    s = Setup()
+    s.guard.extended_opened("porta", 25.0)
+    s.run()
+    assert s.guard.accesses["porta"].extended is False and s.guard.accesses["porta"].started == s.clock.now
+    # Senza eventi in diretta: una tessera nel registro di prima dell'apertura estesa non la accorcia
+    s = Setup()
+    s.guard.extended_opened("porta", 4.0)
+    s.log_grant = ("r1", s.clock.now - 6)
+    s.run(live=False)
+    assert s.guard.accesses["porta"].extended is True
+
+
 def test_times_beyond_the_app_maximum_are_capped():
     """Un tempo messo sul controller fuori dall'app non tiene la serratura alimentata oltre i massimi."""
     s = Setup(times={"porta": ("PT300S", "PT600S")})

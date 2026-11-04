@@ -676,6 +676,19 @@ def test_long_controller_log_is_recovered_over_more_rounds_with_live_events(clie
     assert state.recover_pending is False
 
 
+def test_extended_opening_survives_an_add_on_restart(settings, controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    path = tmp_path / "riavvio.db"
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=path)
+    with TestClient(app) as client:
+        assert client.portal.call(app.state.service.open_door, True, "Luca (Home Assistant)") is True
+    # L'add-on si riavvia subito dopo Apri a Lungo: la rete di sicurezza nuova sa che l'apertura è estesa
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=path)
+    with TestClient(app):
+        guard = app.state.lock_guard
+        assert "porta" in guard.extended_at and guard.clock() - guard.extended_at["porta"] < 10
+
+
 def test_door_lock_unknown_while_the_controller_does_not_respond(client):
     import json
 
