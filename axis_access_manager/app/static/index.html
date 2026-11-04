@@ -563,10 +563,14 @@
   dialog.sheet .dlg-body { flex: 1; background: var(--bg); }
   dialog.image { width: auto; max-width: calc(100vw - 24px); }
   dialog.image img { display: block; max-width: calc(100vw - 26px); max-height: calc(100vh - 120px); }
-  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: calc(100vw - 32px); z-index: 50;
+  /* Nel top layer (popover) come le finestre: inset, margin e border tolgono quelli del popover. Largo quanto il testo:
+     con left: 50% andrebbe a capo a metà schermo */
+  #toast { position: fixed; inset: auto auto 24px 50%; margin: 0; border: 0; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); z-index: 50;
            background: var(--text); color: var(--bg); padding: 10px 18px; border-radius: 10px; display: none;
            box-shadow: 0 8px 24px rgba(0, 0, 0, .25); font-weight: 500; }
   #toast.error { background: var(--err); color: var(--err-text); }
+  /* Con una finestra aperta in alto: in basso coprirebbe i suoi pulsanti */
+  #toast.over { inset: 24px auto auto 50%; }
   .spinner { width: 18px; height: 18px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%;
              animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -706,7 +710,7 @@
 <dialog id="sheet" class="sheet"></dialog>
 <dialog id="modal"></dialog>
 <dialog id="retry"></dialog>
-<div id="toast" role="status"></div>
+<div id="toast" role="status" popover="manual"></div>
 
 <script>
 "use strict";
@@ -818,7 +822,8 @@ const doorStateRows = (d) => {
   const rows = [["Serratura", [doorModeClass(d.mode), doorModeLabel(d.mode)]], ["Contatto Porta", shown(CONTACT_STATES, st.contact)]];
   // Allarme e preallarme vengono dal contatto porta sul controller: senza, o con il contatto su un AUX, non ci sono
   if (st.contact !== "none" && !st.aux_contact) rows.push(["Allarme", shown(DOOR_ALARMS, st.alarm)], ["Preallarme", shown(DOOR_ALARMS, st.warning)]);
-  rows.push(["Manomissione", shown(DOOR_TAMPER, st.tamper)]);
+  // Con il contatto su un AUX la manomissione non arriva (come in Home Assistant): solo se il controller la manda
+  if (!st.aux_contact || st.tamper) rows.push(["Manomissione", shown(DOOR_TAMPER, st.tamper)]);
   return rows;
 };
 // Porte dell'impianto dall'intestazione: nomi e luoghi per registro e cruscotto
@@ -876,15 +881,34 @@ const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const cap = (text) => text ? String(text)[0].toUpperCase() + String(text).slice(1) : text;
 // "Porta Scala A", ma "Porta 1" e non "Porta Porta 1" quando il nome comincia già così (come backup._named)
 const named = (noun, name) => `${name} `.toLowerCase().startsWith(`${noun} `.toLowerCase()) ? name : `${noun} ${name}`;
+// Sul telefono le schede scorrono: quella aperta resta in vista. Solo in orizzontale (scrollIntoView sposterebbe anche
+// la pagina, ridisegnata dopo un salvataggio, fino alle schede)
+function showActiveTab(el) {
+  const tab = $(".segmented a.active", el), bar = tab?.closest(".segmented");
+  if (!bar) return;
+  const t = tab.getBoundingClientRect(), b = bar.getBoundingClientRect();
+  if (t.left < b.left) bar.scrollLeft += t.left - b.left;
+  else if (t.right > b.right) bar.scrollLeft += t.right - b.right;
+}
 
 let toastTimer;
 function toast(message, error = false) {
   const el = $("#toast");
   el.textContent = cap(message);
   el.className = error ? "error" : "";
+  // Sopra una finestra l'avviso non riceve i clic (che vanno alla finestra): non deve nasconderne i pulsanti
+  el.classList.toggle("over", Boolean($("dialog[open]")));
   el.style.display = "block";
+  // Le finestre aperte stanno nel top layer, sopra qualsiasi z-index: riaperto, l'avviso va sopra l'ultima
+  if (el.showPopover) {
+    if (el.matches(":popover-open")) el.hidePopover();
+    el.showPopover();
+  }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.style.display = "none"; }, error ? 7000 : 3000);
+  toastTimer = setTimeout(() => {
+    el.style.display = "none";
+    if (el.showPopover && el.matches(":popover-open")) el.hidePopover();
+  }, error ? 7000 : 3000);
 }
 
 // Prova del collegamento e rilettura dal controller: POST che non modificano niente, quindi senza Riprova
@@ -1544,6 +1568,8 @@ const widgetAllowed = (w) => WIDGETS[w.type] && (!WIDGETS[w.type].perm || can(WI
 // Contenuto di ogni riquadro, dai dati del cruscotto
 const WIDGET_BODY = {
   da_gestire(ctx) {
+    // Notifiche mai lette (errore al primo caricamento): non vuol dire che sia tutto in ordine
+    if (!ctx.notif) return '<h2>Da Gestire<span class="spacer"></span><a class="small-text" href="#notifiche">Notifiche</a></h2><div class="empty">Notifiche non leggibili: riprovo tra poco.</div>';
     const open = (ctx.notif?.items || []).filter((i) => !i.seen);
     const rows = [];
     if (store.summary.configured === false) rows.push(`<div class="item"><div class="ev-icon k-info">${icon("cog")}</div><div class="grow"><div class="title">Impianto da Configurare</div><div class="meta">${can("impianti") ? 'Aggiungi il controller e le porte nella pagina <a href="#impianti">Impianti</a>.' : "Chiedi a un amministratore di configurare l'impianto."}</div></div></div>`);
@@ -1564,7 +1590,8 @@ const WIDGET_BODY = {
   negati_oggi: ({d: {today: t}}) => kpi("Negati Oggi", t.denied, t.unknown ? plural(t.unknown, "tessera sconosciuta", "tessere sconosciute") : "nessuna tessera sconosciuta", t.denied ? "var(--warn)" : ""),
   allarmi_oggi: ({d: {today: t}}) => kpi("Allarmi Oggi", t.alarms, t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme", t.alarms ? "var(--err)" : ""),
   persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">Persone</a>' : ""}`),
-  porte: ({doors}) => `<h2>${doors.length > 1 ? "Porte" : "Porta"}<span class="spacer"></span>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</h2>
+  porte: ({doors}) => !doors ? '<h2>Porte<span class="spacer"></span><a class="small-text" href="#porte">Tutte le Porte</a></h2><div class="empty">Porte non leggibili: riprovo tra poco.</div>'
+    : `<h2>${doors.length > 1 ? "Porte" : "Porta"}<span class="spacer"></span>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</h2>
     ${doors.length ? doorGroups(doors) : `<div class="empty">Nessuna porta configurata.</div>`}`,
   settimana({d}) {
     const max = Math.max(1, ...d.week.map((w) => w.granted + w.denied));
@@ -1588,7 +1615,7 @@ const WIDGET_BODY = {
       : '<div class="empty">Nessuna tessera scade nei prossimi 7 giorni.</div>'}`,
   // Come nella pagina Da Registrare: stessa icona, stesse parole
   da_registrare: ({unknown}) => `<h2>Tessere da Registrare<span class="spacer"></span><a class="small-text" href="#da-registrare">Tutte</a></h2>
-    ${unknown.length ? `<div class="list">${unknown.slice(0, 6).map((c) => `<a class="item" href="#da-registrare"><div class="ev-icon k-warn">${icon("question")}</div><div class="grow"><div class="title"><code>${esc(c.number)}</code></div><div class="meta"><span>ultima lettura ${esc(relTime(c.last_seen))}</span><span>${plural(c.count, "lettura", "letture")}</span></div></div></a>`).join("")}</div>`
+    ${!unknown ? '<div class="empty">Tessere da registrare non leggibili: riprovo tra poco.</div>' : unknown.length ? `<div class="list">${unknown.slice(0, 6).map((c) => `<a class="item" href="#da-registrare"><div class="ev-icon k-warn">${icon("question")}</div><div class="grow"><div class="title"><code>${esc(c.number)}</code></div><div class="meta"><span>ultima lettura ${esc(relTime(c.last_seen))}</span><span>${plural(c.count, "lettura", "letture")}</span></div></div></a>`).join("")}</div>`
       : '<div class="empty">Nessuna tessera da registrare.</div>'}`,
   impianto({d: {system: s}, notif}) {
     const row = (cls, label, value, title = "") => `<div class="dw-sys"${title ? ` title="${esc(title)}"` : ""}><span class="dot ${cls}"></span><span class="grow" style="flex:1;min-width:0">${label}</span><b>${value}</b></div>`;
@@ -1620,8 +1647,9 @@ function kpi(label, value, sub, color = "") {
 
 // Dati dei riquadri del cruscotto
 async function dashData() {
-  const [d, doors, notif, unknown] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => []),
-    api("api/notifications").catch(() => null), can("persone") ? api("api/unknown-cards").catch(() => []) : []]);
+  // Riquadro non letto: null, non vuoto («Tutto in Ordine», «Nessuna porta configurata» sarebbero falsi)
+  const [d, doors, notif, unknown] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => null),
+    api("api/notifications").catch(() => null), can("persone") ? api("api/unknown-cards").catch(() => null) : []]);
   return {d, doors, notif, unknown};
 }
 async function viewDashboard(el) {
@@ -1649,7 +1677,8 @@ async function viewDashboard(el) {
   dash.reload = async () => {
     const fresh = await dashData().catch(() => null);
     if (!fresh || dash.editing || !$("#dash") || !el.isConnected) return;
-    Object.assign(ctx, fresh);
+    // Un riquadro non letto questa volta (un 502 di Ingress) tiene i dati di prima
+    Object.entries(fresh).forEach(([key, value]) => { if (value !== null) ctx[key] = value; });
     stamp();
     $$(".dw[data-w]", el).forEach((w) => { const body = $(".dw-body", w); if (body) morph(body, WIDGET_BODY[w.dataset.w](ctx)); });
   };
@@ -1929,7 +1958,7 @@ async function viewDoorDetail(el, id, doors) {
       <span class="pill ${doorModeClass(d.mode)}" style="font-size:14px;padding:4px 12px"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span>
       <span class="spacer" style="flex:1"></span>${switcher}
     </div>
-    ${d.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${d.errors.map(esc).join("<br>")}</div></div>` : ""}
+    ${d.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${d.errors.map((x) => esc(cap(x))).join("<br>")}</div></div>` : ""}
     <div class="grid kpi" style="margin-bottom:16px">
       ${kpi("Accessi Oggi", d.today.granted, "concessi, aperture remote e uscite, come nel cruscotto")}
       ${kpi("Negati Oggi", d.today.denied, "comprese le tessere sconosciute", d.today.denied ? "var(--warn)" : "")}
@@ -1943,7 +1972,7 @@ async function viewDoorDetail(el, id, doors) {
       <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") && d.controller.id ? `<a class="small-text" href="#impianti/c${d.controller.id}">Configura</a>` : ""}</h2>
         <div class="list" style="margin-top:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div>
         <p class="hint" style="padding:0 18px 14px">L'apertura della porta resta nei pulsanti di Home Assistant.</p></div>
-      ${d.groups ? `<div class="card flush"><h2>Chi Può Entrare<span class="spacer"></span>${can("persone") ? '<a class="small-text" href="#persone/tipologie">Tipologie</a>' : ""}</h2>
+      ${d.groups ? `<div class="card flush"><h2>Chi Può Entrare<span class="spacer"></span>${can("persone") || can("regole") ? `<a class="small-text" href="${categoriesLink()}">Tipologie</a>` : ""}</h2>
         <div class="list" style="margin-top:8px">${d.groups.length ? d.groups.map((g) => `<div class="item"><div class="grow"><div class="title"><span class="swatch c-${esc(g.color)}"></span> ${esc(g.name)}${g.default ? ' <span class="pill accent">Predefinita</span>' : ""}${g.enabled ? "" : ' <span class="pill">Disattivata</span>'}</div><div class="meta">${esc(g.schedule_names.join(", ") || "sempre")}</div></div><div class="side">${plural(g.persons, "persona", "persone")}</div></div>`).join("") : '<div class="empty">Nessuna tipologia apre questa porta.</div>'}</div></div>` : ""}
     </div>
     ${d.events ? `<div class="card flush"><h2>Eventi di Questa Porta<span class="spacer"></span><a class="small-text" href="#registro" id="d-log">Apri nel Registro</a></h2>
@@ -1960,6 +1989,8 @@ async function loadPersons() {
   store.persons = await api("api/persons");
   return store.persons;
 }
+// Le tipologie stanno in Persone; chi ha il permesso Regole ma non Persone le trova in Regole
+const categoriesLink = () => can("persone") ? "#persone/tipologie" : "#regole/tipologie";
 const personTabs = (tab) => `<div class="segmented">${[["", "Persone"], ["tipologie", "Tipologie"]].map(([k, label]) => `<a href="#persone${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`;
 async function viewPersons(el, sub) {
   if (sub === "tipologie") return viewCategories(el);
@@ -2092,7 +2123,7 @@ async function restoreMissing(ids) {
   if (!r) return false;
   if (r.failed.length) {
     await modal({title: "Tessere Non Riscritte", body: `<p style="margin-top:0">${plural(r.restored, "tessera riscritta", "tessere riscritte")}, ${plural(r.failed.length, "non riuscita", "non riuscite")}:</p>
-      <div class="list">${r.failed.map((f) => `<div class="item" style="padding-left:0"><div class="grow"><div class="title">${esc(f.person)} · <code>${esc(f.card)}</code></div><div class="meta">${esc(f.error)}</div></div></div>`).join("")}</div>
+      <div class="list">${r.failed.map((f) => `<div class="item" style="padding-left:0"><div class="grow"><div class="title">${esc(f.person)} · <code>${esc(f.card)}</code></div><div class="meta">${esc(cap(f.error))}</div></div></div>`).join("")}</div>
       <p class="hint">Se manca il profilo di accesso sul controller (dopo un reset), va ripristinata prima la configurazione del controller.</p>`, actions: [{label: "Chiudi", value: true}]});
   } else toast(`${plural(r.restored, "tessera riscritta", "tessere riscritte")} sul controller`);
   loadSummary();
@@ -2480,12 +2511,14 @@ async function viewLog(el) {
       <div id="l-detail" hidden></div>
     </div>`;
   logSelected = 0;
+  showActiveTab(el);
   let timer;
   $$("[data-view]", el).forEach((a) => a.addEventListener("click", (e) => {
     e.preventDefault();
     logFilters.view = a.dataset.view;
     try { localStorage.setItem("aam-log-view", logFilters.view); } catch (err) { /* facoltativo */ }
     $$("[data-view]", el).forEach((x) => x.classList.toggle("active", x === a));
+    showActiveTab(el);
     loadLog();
   }));
   $("#l-q").addEventListener("input", (e) => { logFilters.q = e.target.value.trim(); clearTimeout(timer); timer = setTimeout(() => loadLog(), 300); });
@@ -2623,11 +2656,15 @@ function weekPreview(rules) {
 }
 const showHidden = {group: false, schedule: false};
 async function viewRules(el, sub) {
-  // Le tipologie (con i vecchi gruppi) sono passate in Persone
-  if (sub === "tipologie" || sub === "gruppi") { location.replace("#persone/tipologie"); return; }
-  const tabs = [["fasce", "Fasce Orarie"], ["festivita", "Festività"]];
+  // Le tipologie (con i vecchi gruppi) sono passate in Persone: qui solo per chi non vede le persone
+  if (sub === "gruppi") sub = "tipologie";
+  if (sub === "tipologie" && can("persone")) { location.replace("#persone/tipologie"); return; }
+  const tabs = [["fasce", "Fasce Orarie"], ["festivita", "Festività"], ...(can("persone") ? [] : [["tipologie", "Tipologie"]])];
   const tab = tabs.some(([k]) => k === sub) ? sub : "fasce";
-  el.innerHTML = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#regole/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div><div id="r-body"><div class="loading"><span class="spinner"></span></div></div>`;
+  const segmented = `<div class="segmented">${tabs.map(([k, label]) => `<a href="#regole/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`;
+  if (tab === "tipologie") return viewCategories(el, segmented);
+  el.innerHTML = `${segmented}<div id="r-body"><div class="loading"><span class="spinner"></span></div></div>`;
+  showActiveTab(el);
   const body = $("#r-body");
   if (tab === "festivita") return viewHolidays(body);
   // L'errore di questa lettura, non di una precedente
@@ -2659,8 +2696,9 @@ async function setHidden(kind, token, hidden) {
 }
 
 // Tipologie: chi è la persona, dove e quando entra, quanto dura la tessera. L'app tiene il profilo sul controller.
-async function viewCategories(el) {
-  el.innerHTML = `${personTabs("tipologie")}<div id="c-body">${loadingBox()}</div>`;
+async function viewCategories(el, tabs = personTabs("tipologie")) {
+  el.innerHTML = `${tabs}<div id="c-body">${loadingBox()}</div>`;
+  showActiveTab(el);
   const body = $("#c-body");
   // Lette di nuovo: se la lettura non riesce restano quelle di prima, con l'avviso (store.placesError)
   store.groupsError = "";
@@ -2815,7 +2853,7 @@ async function scheduleEditor(s) {
   const renderRules = (dlg) => {
     $("#rules", dlg).innerHTML = rules.map((r, i) => `<div class="rule-row" data-i="${i}">
       <span class="days">${DAYS.map(([code, letter, name]) => `<button type="button" class="${r.days.includes(code) ? "on" : ""}" data-day="${code}" title="${name}">${letter}</button>`).join("")}</span>
-      <span class="row"><input type="time" data-k="start" value="${esc(r.start)}" step="300"> – <input type="time" data-k="end" value="${esc(r.end === "24:00" ? "23:59" : r.end)}" step="60"></span>
+      <span class="row"><input type="time" data-k="start" value="${esc(r.start)}" step="60"> – <input type="time" data-k="end" value="${esc(r.end === "24:00" ? "23:59" : r.end)}" step="60"></span>
       <button type="button" class="ghost icon-only danger" data-rm title="Togli la riga" aria-label="Togli la riga">${icon("trash")}</button></div>`).join("") || '<p class="muted">Nessun intervallo.</p>';
     $("#preview", dlg).innerHTML = weekPreview(rules.filter((r) => r.start && r.end && r.end > r.start));
   };
@@ -2924,7 +2962,8 @@ function notifCard(i) {
   // Solo verso una pagina permessa (#persone/tipologie, #da-registrare, #impianti/stato…): le altre portano alla home.
   // Di Impianti chi ha solo il permesso Backup vede solo la scheda Backup
   const allowed = (l) => allowedRoute(l.slice(1).split("/")[0]) && (!l.startsWith("#impianti") || can("impianti") || l === "#impianti/backup");
-  const link = i.link && allowed(i.link) ? i.link : "";
+  const target = i.link === "#persone/tipologie" ? categoriesLink() : i.link;
+  const link = target && allowed(target) ? target : "";
   const details = i.event && can("registro") ? `<button type="button" data-n-event="${i.event}">Dettagli</button>`
     : link ? `<a class="btn" href="${esc(link)}">Dettagli</a>` : "";
   const snap = i.snapshot && can("registro")
@@ -3423,6 +3462,7 @@ async function viewController(el, ctrl, tab) {
   tab = ["porte", "lettori", "telecamere", "citofoni", "stato", "storico", "backup"].includes(tab) ? tab : "";
   el.innerHTML = `${controllerHeader(ctrl, tab)}<div id="c-body">${loadingBox()}</div>`;
   paintIcons(el);
+  showActiveTab(el);
   paintControllerState(ctrl);
   bindIdentityAlert(el, ctrl);
   const body = $("#c-body");
@@ -3448,7 +3488,7 @@ async function viewController(el, ctrl, tab) {
   // Ingressi programmati a metà o con oggetti tolti fuori dall'app: scrivendoli di nuovo l'app completa il lavoro
   const broken = (p.inputs || []).filter((i) => i.problem);
   const rewrite = broken.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>${broken.length === 1 ? "Ingresso da Riscrivere" : "Ingressi da Riscrivere"}</b>${broken.map((i) => `${esc(i.name)}: ${esc(i.problem)}`).join("<br>")}<br>Apri l'ingresso e premi Scrivi sul Controller: anche con le stesse impostazioni l'app completa la programmazione.</div></div>` : "";
-  const errors = unmanaged + rexMissing + rewrite + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${p.errors.map(esc).join("<br>")}</div></div>` : "");
+  const errors = unmanaged + rexMissing + rewrite + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${p.errors.map((x) => esc(cap(x))).join("<br>")}</div></div>` : "");
   // Le due riparazioni passano dalla stessa richiesta: ogni pulsante le fa tutte e due
   if (unmanaged || rexMissing) setTimeout(() => body.querySelectorAll("[data-manage]").forEach((button) => {
     const label = button.textContent;
@@ -3693,8 +3733,13 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     const wired = (r) => DOOR_INPUT_ROLES.includes(r) || r === "alarm";
     // Modalità che dà la lettura di adesso (quella del controller): "" se lo stato normale non è ancora stato letto
     const followMode = i.normal === "closed" ? "nc" : i.normal === "open" ? "no" : "";
-    const startContact = role === "door_contact" && !CONTACT_INPUT_ROLES.includes(i.role) ? "nc"
-      : role === "alarm" && (i.role !== "alarm" || !i.contact) ? followMode : i.contact;
+    // Stesso cablaggio: pulsante e relè del citofono, Sensore Porta e Contatto Porta
+    const wiring = (r) => ({intercom: "rex", door_monitor: "door_contact"})[r] || r;
+    // Modalità proposta per un ruolo: quella salvata con lo stesso cablaggio, altrimenti NC per il Contatto Porta, la
+    // lettura di adesso per l'Ingresso Generico, NO per pulsante e relè (un NC rimasto da un contatto li terrebbe premuti)
+    const modeFor = (r) => wiring(r) === wiring(i.role) && i.contact ? i.contact
+      : r === "door_contact" ? "nc" : r === "alarm" ? followMode : "no";
+    const startContact = modeFor(role);
     // Senza modalità e senza lo stato normale: resta com'è finché non si sceglie NO o NC
     const contactOptions = (startContact === "" ? [["", "Come sul Controller"]] : []).concat(Object.entries(p.contacts));
     const supervisable = (r) => i.can_supervise && ["rex", "intercom"].includes(r);
@@ -3712,6 +3757,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
         const showContact = () => { $("[data-contact-hint]", dlg).textContent = contactHint(select.value, contact.value); };
         contact.onchange = showContact;
         showContact();
+        let shown = role;
         select.onchange = () => {
           // Il nome segue il ruolo finché è quello di serie
           if (!name.value.trim() || name.value.trim() === i.default_name || Object.values(p.input_roles).includes(name.value.trim())) {
@@ -3720,11 +3766,12 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
           $("[data-door-field]", dlg).hidden = !DOOR_INPUT_ROLES.includes(select.value);
           $("[data-role-hint]", dlg).textContent = inputRoleHint(i.io, select.value);
           $("[data-wiring]", dlg).hidden = !wired(select.value);
-          // Contatto Porta: Normalmente Chiuso consigliato, se l'ingresso non era già un contatto della porta (un Sensore
-          // Porta messo a mano su un AUX ha già la modalità del cablaggio)
-          if (select.value === "door_contact" && !CONTACT_INPUT_ROLES.includes(i.role)) contact.value = "nc";
-          // Ingresso Generico nuovo: la modalità che dà la lettura di adesso
-          else if (select.value === "alarm" && i.role !== "alarm" && followMode) contact.value = followMode;
+          // Tornati al ruolo di partenza: la sua modalità. Con un altro cablaggio quella proposta per il ruolo (Contatto
+          // Porta NC se l'ingresso non era già un contatto della porta, Ingresso Generico come la lettura di adesso);
+          // tra pulsante e relè, o tra Sensore e Contatto Porta, resta quella scelta
+          if (select.value === role) contact.value = startContact;
+          else if (wiring(select.value) !== wiring(shown)) contact.value = modeFor(select.value) || contact.value;
+          shown = select.value;
           if (select.value !== "alarm" && contact.value === "") contact.value = "no";
           showContact();
           const supervised = $('[name="supervised"]', dlg);
@@ -3941,7 +3988,7 @@ async function controllerStatus(body, ctrl) {
   ]) + (h?.clock_problem ? '<p class="hint" style="color:var(--warn)">Le fasce orarie scattano con l\'ora del controller: imposta un server NTP raggiungibile nel controller (Sistema → Data e Ora).</p>' : "")
     + (h?.zone_differs ? `<p class="hint" style="color:var(--warn)">Le fasce orarie e le festività scattano con l'ora locale del controller: imposta nel controller lo stesso fuso orario di Home Assistant.</p>
       <div class="row" style="margin-top:8px"><button type="button" class="small" id="ctl-zone">${icon("clock")}Usa il Fuso di Home Assistant</button></div>` : "")
-    + (h?.clock_fault === "home_assistant" ? '<p class="hint">A essere sbagliata è l\'ora di Home Assistant: controlla il suo server NTP. Le fasce orarie non ne risentono, perché le applica il controller con la sua ora.</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(c.error)}${connection}</div></div>`;
+    + (h?.clock_fault === "home_assistant" ? '<p class="hint">A essere sbagliata è l\'ora di Home Assistant: controlla il suo server NTP. Le fasce orarie non ne risentono, perché le applica il controller con la sua ora.</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(cap(c.error))}${connection}</div></div>`;
   const cats = Object.entries(m.categories || {});
   const unknown = `${statusDot("")} Sconosciuto <span class="muted">· broker non collegato</span>`;
   // Eventi in diretta: dal WebSocket del controller; MQTT è facoltativo per gli eventi, serve a Home Assistant
@@ -4346,7 +4393,7 @@ async function viewBackups(body, part = "") {
   // Backup con l'indice illeggibile: non sono nell'elenco, si eliminano da qui (solo amministratori)
   const unreadable = verify && !verify.ok && data.can_restore ? verify.unreadable || [] : [];
   const idTime = (id) => { const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})/.exec(id); return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : id; };
-  body.innerHTML = `${error ? `<div class="alert">${icon("alert")}<div class="grow"><b>${error.id ? "Ultimo Backup Incompleto" : "Ultimo Backup Non Riuscito"}</b>${esc(error.error)} · ${esc(relTime(error.at))}</div></div>` : ""}
+  body.innerHTML = `${error ? `<div class="alert">${icon("alert")}<div class="grow"><b>${error.id ? "Ultimo Backup Incompleto" : "Ultimo Backup Non Riuscito"}</b>${esc(cap(error.error))} ·${esc(relTime(error.at))}</div></div>` : ""}
     ${verify && !verify.ok ? `<div class="alert">${icon("alert")}<div class="grow"><b>Backup Rovinati</b>${verify.errors.slice(0, 5).map((e) => esc(e)).join("<br>")}${moreErrors > 0 ? `<br>${moreErrors === 1 ? "e un altro" : `e altri ${moreErrors}`}` : ""}<br><span class="small-text">Questi backup non si possono ripristinare: eliminali e premi Verifica Ora. Gli altri sono a posto.</span>
       ${unreadable.length ? `<div class="row" style="margin-top:8px">${unreadable.map((id) => `<button type="button" class="small danger" data-del-index="${esc(id)}" title="Backup con l'indice illeggibile">${icon("trash")}Elimina ${esc(idTime(id))}</button>`).join("")}</div>` : ""}</div></div>` : ""}
     <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 320px">${intro}</p><button type="button" class="primary" id="bk-new">${icon("plus")}Crea Backup Ora</button></div>
@@ -4558,7 +4605,7 @@ async function restoreBackup(b, data, part = "") {
   const full = sections.includes("controller");
   let mqttPassword = "";
   const keys = await modal({title: "Cosa Cambierà", wide: true,
-    body: `${preview.paused ? `<div class="alert err">${icon("alert")}<div class="grow"><b>Scritture Sospese</b>${esc(preview.paused)}</div></div>` : ""}
+    body: `${preview.paused ? `<div class="alert err">${icon("alert")}<div class="grow"><b>Scritture Sospese</b>${esc(cap(preview.paused))}</div></div>` : ""}
       <p class="muted small-text" style="margin-top:0">${full
         ? "Si scrive nell'ordine dell'elenco, le tessere per ultime. Quello che sul controller c'è ma nel backup no è spuntato solo se il controller è appena stato resettato. La programmazione oraria delle porte non si ripristina: niente sblocchi programmati."
         : "Spunta cosa riportare com'era. Le righe che toglierebbero ciò che è stato aggiunto dopo il backup non sono spuntate: di solito è lavoro fatto nel frattempo, da tenere."} Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
@@ -4592,8 +4639,7 @@ async function viewSettings(el, sub) {
   const tabs = [["generale", "Generale"], ...(store.me.admin ? [["notifiche", "Notifiche"], ["backup", "Backup"], ["utenti", "Utenti"], ["accesso", "Accesso Diretto"], ["attivita", "Attività"]] : [])];
   const tab = tabs.some(([k]) => k === sub) ? sub : "generale";
   el.innerHTML = `${tabs.length > 1 ? `<div class="segmented">${tabs.map(([k, label]) => `<a href="#impostazioni/${k}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>` : ""}<div id="st-body">${loadingBox()}</div>`;
-  // Sul telefono le schede scorrono: quella aperta resta in vista
-  $(".segmented a.active", el)?.scrollIntoView({block: "nearest", inline: "nearest"});
+  showActiveTab(el);
   const body = $("#st-body");
   if (tab === "notifiche") return viewNotificationSettings(body);
   if (tab === "backup") return viewBackupSettings(body);
@@ -4607,6 +4653,10 @@ async function viewSettings(el, sub) {
   // Controllo del database all'avvio ({at, text}) e copia per il backup di Home Assistant: i motivi arrivano in minuscolo
   const dbRecovered = s.database.recovered?.text ? s.database.recovered : null;
   const capFirst = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
+  // Le tipologie solo a chi le vede (permesso Persone o Regole): per gli altri il server le rifiuta
+  const seesCategories = can("persone") || can("regole");
+  // Dal database dell'app: la pagina non aspetta il controller
+  if (seesCategories) await loadCategories();
   const haCard = props([
     ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} Attive, dispositivo "Controllo Accessi"` : `${statusDot("")} Disattivate nelle opzioni`],
     ...(ha.integration ? [["Entità", esc(ha.entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
@@ -4618,11 +4668,10 @@ async function viewSettings(el, sub) {
       <div>
         <div class="card"><h2>${icon("dashboard")}Home Assistant</h2>${haCard}</div>
         <div class="card"><h2>${icon("cog")}Opzioni dell'Add-on</h2>${props([
-          // Dal database dell'app: la pagina non aspetta il controller
-          ["Tipologia Predefinita", esc((await loadCategories(), categoryOf(store.me.default_category)?.name) || "—")],
+          ...(seesCategories ? [["Tipologia Predefinita", esc(categoryOf(store.me.default_category)?.name || "—")]] : []),
           ["Conservazione Registro", plural(o.event_retention_days, "giorno", "giorni")],
           ["Broker MQTT", !m.configured ? `${statusDot("warn")} Nessun Broker: installa l'add-on Mosquitto, l'app lo trova da sola` : o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
-        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione. La tipologia predefinita si sceglie in Persone → Tipologie.</p></div>
+        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Persone" : "Regole"} → Tipologie.` : ""}</p></div>
       </div>
       <div>
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
@@ -4715,9 +4764,9 @@ async function directAccessBox(u, enabled) {
   const info = !d ? `<p style="margin:0">Senza accesso diretto.</p>` : props([
     ["Password", d.expired ? `${statusDot("err")} Provvisoria, scaduta` : d.temporary ? `${statusDot("warn")} Provvisoria, scade ${esc(fmtDateTime(d.expires))}` : `${statusDot("ok")} Scelta dall'utente`],
     ["Impostata", esc(fmtDateTime(d.set_at))],
-    ["Collegato Su", sessions.length ? `<ul class="sess-list">${sessions.map((x) => `<li>${esc(x.device)}${x.ip ? ` · <code>${esc(x.ip)}</code>` : ""}<br><span class="muted small-text">usata ${esc(relTime(x.last_seen))}</span></li>`).join("")}</ul>` : "Nessun computer"],
+    ["Collegato su", sessions.length ? `<ul class="sess-list">${sessions.map((x) => `<li>${esc(x.device)}${x.ip ? ` · <code>${esc(x.ip)}</code>` : ""}<br><span class="muted small-text">usata ${esc(relTime(x.last_seen))}</span></li>`).join("")}</ul>` : "Nessun computer"],
   ]);
-  const off = enabled ? "" : `<div class="alert info" style="margin-top:12px">${icon("lock")}<div class="grow"><b>Accesso Diretto Spento</b>Si accende in Impostazioni → Accesso Diretto.</div></div>`;
+  const off = enabled ? "" : `<div class="alert info" style="margin-top:12px">${icon("lock")}<div class="grow"><b>Accesso Diretto Disattivato</b>Si attiva in Impostazioni → Accesso Diretto.</div></div>`;
   const actions = [{label: "Chiudi", value: null}];
   if (d) actions.push({label: "Togli Accesso", kind: "danger", value: "remove"});
   if (sessions.length) actions.push({label: "Chiudi Sessioni", value: "close"});
@@ -4743,7 +4792,7 @@ async function directAccessBox(u, enabled) {
   return false;
 }
 
-// Impostazioni → Accesso Diretto: acceso o spento, stato e sessioni
+// Impostazioni → Accesso Diretto: attivo o disattivato, stato e sessioni
 async function viewDirectAccess(body) {
   let data;
   try { data = await api("api/direct-access"); } catch (err) { body.innerHTML = errorBox("Accesso Diretto Non Leggibile", err); return; }
@@ -4751,10 +4800,10 @@ async function viewDirectAccess(body) {
   const s = data.settings, st = data.status;
   const row = (ic, title, desc, control) => `<div class="item"><div class="ev-icon k-accent">${icon(ic)}</div><div class="grow"><div class="title">${esc(title)}</div><div class="meta">${desc}</div></div>${control}</div>`;
   const select = (key, options, value) => `<select data-da="${key}" style="width:auto">${options.map(([v, label]) => `<option value="${v}" ${String(value) === v ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
-  const state = !s.enabled ? `${statusDot("")} Spento` : st.running ? `${statusDot("ok")} In Ascolto` : `${statusDot("err")} Non Avviato: ${esc(st.error || "errore")}`;
+  const state = !s.enabled ? `${statusDot("")} Disattivato` : st.running ? `${statusDot("ok")} In Ascolto` : `${statusDot("err")} Non Avviato: ${esc(st.error || "errore")}`;
   body.innerHTML = `<div class="bk-cols"><div class="card flush"><h2>${icon("lock")}Accesso Diretto</h2>
     <div class="list bk-set">
-      ${row("lock", "Accesso Diretto", "Per il personale, dalla rete interna.", select("enabled", [["true", "Attivo"], ["false", "Spento"]], s.enabled))}
+      ${row("lock", "Accesso Diretto", "Per il personale, dalla rete interna.", select("enabled", [["true", "Attivo"], ["false", "Disattivato"]], s.enabled))}
     </div></div>
     <div class="card"><h2>${icon("chip")}Stato</h2>${props([
       ["Stato", state],
