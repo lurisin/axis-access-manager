@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sqlite3
 import unicodedata
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
+from .backup_copy import error_reason
 from .config import Settings
 from .db import Database, now_iso
 from .events import Event, EventMonitor, door_of_topic, event_from_log
@@ -200,6 +202,13 @@ class AccessService:
         self._tasks: set[asyncio.Task] = set()
         # Ultimi esiti del controller: lo stesso diniego arriva su più topic e va registrato una volta
         self._recent_decisions: deque[tuple] = deque(maxlen=20)
+        # Esiti arrivati in diretta e non salvati (registro non scrivibile): valgono per gli altri topic dello stesso
+        # passaggio, non per il recupero, che li deve rimettere nel registro
+        self._unsaved_decisions: deque[tuple] = deque(maxlen=20)
+        # Registro non scrivibile (disco pieno): {"since", "error"} dal primo evento non salvato, None se si scrive
+        self.write_error: dict | None = None
+        # Eventi non salvati finora: il recupero dal registro del controller li rimette (vedi main._recover_if_needed)
+        self.write_failures = 0
         # Punto di accesso → porta e lettore → porta, per sapere a quale porta si riferisce un evento
         self.access_point_doors: dict[str, str] = {}
         self.idpoint_doors: dict[str, str] = {}
@@ -283,7 +292,22 @@ class AccessService:
         if self._recovering:
             fields["recovered"] = True
             self._recovered += 1
-        event_id = self.db.add_event(**fields)
+        try:
+            event_id = self.db.add_event(**fields)
+        except sqlite3.Error as err:
+            self.note_write_error(err)
+            if self._recovering:
+                # Il recupero si ferma qui e riparte al giro dopo, dallo stesso punto
+                raise
+            # In diretta l'evento arriva lo stesso a Home Assistant (allarmi, accessi, apertura riuscita); nel
+            # registro lo rimette il recupero, se è del controller. Prima si perdeva in silenzio
+            _LOGGER.warning("Evento non salvato nel registro: %s %s", fields.get("kind"), fields.get("door") or "")
+            event_id = None
+        else:
+            if self.write_error is not None:
+                _LOGGER.info("Registro di nuovo scrivibile")
+                self.write_error = None
+                self._changed()
         row = {**fields, "id": event_id}
         row.pop("raw", None)
         if self.after_event:
@@ -292,6 +316,14 @@ class AccessService:
             # Nel recupero Home Assistant si aggiorna una volta per pagina, non per ognuna delle migliaia di righe
             self._changed()
         return row
+
+    def note_write_error(self, err: sqlite3.Error) -> None:
+        """Registro non scrivibile (disco pieno): guasto finché un evento non si salva, e recupero da rifare."""
+        self.write_failures += 1
+        if self.write_error is None:
+            _LOGGER.error("Registro non scrivibile: %s", err)
+            self.write_error = {"since": now_iso(), "error": error_reason(err)}
+            self._changed()
 
     # Sincronizzazione
 
@@ -984,7 +1016,11 @@ class AccessService:
                 self.monitor.set_door_mode(door, "Accessed")
         detail = ", ".join(x for x in ("tempo esteso" if extended else "", note) if x)
         self.log_event(ts=self.event_now(), kind="apertura_remota", detail=detail, source=user, door=door)
-        self.db.add_audit(user, "porta aperta", detail)
+        try:
+            self.db.add_audit(user, "porta aperta", detail)
+        except sqlite3.Error as err:
+            # La porta è aperta: con il disco pieno l'apertura risultava non eseguita
+            _LOGGER.warning("Apertura della porta non scritta in Attività: %s", err)
         return True
 
     # Eventi
@@ -1056,7 +1092,7 @@ class AccessService:
             pushed = self._input_source(str(data.get("AccessPointToken") or "")) if card is None else None
             # Stesso esito, stesso punto di accesso, stesso secondo: è lo stesso passaggio
             key = (granted, data.get("AccessPointToken") or door, ts)
-            if key in self._recent_decisions:
+            if key in self._recent_decisions or (key in self._unsaved_decisions and not self._recovering):
                 return
             self._recent_decisions.append(key)
             kind = "concesso" if granted else "negato"
@@ -1068,9 +1104,12 @@ class AccessService:
                 detail = pushed[1] if granted else f"{pushed[1]} · {DENIED_REASONS.get(reason, reason) or 'negato'}"
                 ref = event_ref(kind, door)
                 if not self._repeated(logged, pushed[0], door, ts, detail, ref):
-                    self.log_event(ts=ts, kind=logged, source=pushed[0], detail=detail, raw=data, door=door, ref=ref)
+                    row = self.log_event(
+                        ts=ts, kind=logged, source=pushed[0], detail=detail, raw=data, door=door, ref=ref
+                    )
+                    self._unsaved_decision(key, row)
                 return
-            self.log_event(
+            row = self.log_event(
                 ts=ts,
                 kind=kind,
                 card=card["number"] if card else number,
@@ -1082,6 +1121,7 @@ class AccessService:
                 door=door,
                 ref=event_ref(kind, door),
             )
+            self._unsaved_decision(key, row)
         elif topic.startswith("Door/State/DoorAlarm/") and data.get("State") not in (None, "Normal"):
             state = str(data["State"])
             detail = DOOR_ALARMS.get(state, state)
@@ -1114,6 +1154,12 @@ class AccessService:
             ref = event_ref("manomissione", "", detail=detail)
             if not self._repeated("manomissione", source, "", ts, detail, ref):
                 self.log_event(ts=ts, kind="manomissione", detail=detail, source=source, ref=ref)
+
+    def _unsaved_decision(self, key: tuple, row: dict | None) -> None:
+        """Esito arrivato in diretta e non salvato: il recupero non lo deve saltare come già registrato."""
+        if row is not None and row["id"] is None and key in self._recent_decisions:
+            self._recent_decisions.remove(key)
+            self._unsaved_decisions.append(key)
 
     def _repeated(self, kind: str, source: str, door: str, ts: str, detail: str, ref: str) -> bool:
         """Stesso evento poco prima (rimbalzi, coperchio aperto e chiuso di continuo): non fa una riga nuova, segna

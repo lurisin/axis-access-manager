@@ -208,9 +208,9 @@ class LockGuard:
         fallita) finisce comunque nel registro."""
         access = self.accesses.pop(door, None)
         if access is not None and access.overtime and access.attempts and not access.logged:
-            access.logged = True
             _LOGGER.warning("Porta %s rimasta aperta a tempo oltre il suo tempo: bloccata", door)
             log_alarm(door, FORCED)
+            access.logged = True
 
     async def tick(
         self,
@@ -363,18 +363,19 @@ class LockGuard:
                 monitor.set_door_mode(door, mode)
                 changed()
             if access.overtime and not access.logged:
-                access.logged = True
                 _LOGGER.warning("Porta %s rimasta aperta a tempo oltre il suo tempo: bloccata", door)
                 log_alarm(door, FORCED)
+                # Segnato dopo l'allarme: se non è partito lo rifà la fine dell'apertura (_drop), invece di perderlo
+                access.logged = True
             elif not access.overtime:
                 _LOGGER.info("Porta %s aperta durante l'apertura a tempo: serratura bloccata", door)
             return
         if access.attempts >= MAX_ATTEMPTS:
             # Un allarme solo; poi si riprova più piano, finché la porta resta Aperta a Tempo
             if not access.logged:
-                access.logged = True
                 _LOGGER.error("Porta %s ancora aperta a tempo dopo %s blocchi", door, access.attempts)
                 log_alarm(door, FAILED)
+                access.logged = True
             access.next_try = self.clock() + SLOW_RETRY
             return
         access.next_try = self.clock() + RETRY_AFTER
