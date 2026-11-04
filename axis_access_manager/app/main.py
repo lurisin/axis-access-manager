@@ -2938,7 +2938,8 @@ def _apply_pause(state) -> None:
     """Scritture verso il controller in uso sospese se è cambiato e nessuno ha confermato, o se con l'indirizzo o le
     credenziali appena cambiati un controllo non ha ancora visto chi risponde."""
     before = state.controller.paused
-    state.controller.paused = paused_reason(state.installation.primary) or _identity_pending(state)
+    primary = state.health.with_unsaved_change(state.installation.primary)
+    state.controller.paused = paused_reason(primary) or _identity_pending(state)
     live = getattr(state, "live_events", None)
     if live and before != state.controller.paused:
         # Controller cambiato: il WebSocket aperto si chiude subito. Cambio confermato: si ricollega subito
@@ -3271,7 +3272,7 @@ def _controllers_health(state) -> list[dict]:
         result.append(
             {
                 **health.as_dict(),
-                "identity_change": paused_reason(row),
+                "identity_change": paused_reason(state.health.with_unsaved_change(row)),
                 "clock_problem": clock_problem(health),
                 "clock_fault": clock_fault(health),
                 "clock_synced": controller_synced(health),

@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -148,6 +149,47 @@ async def test_firmware_update_is_not_a_change(monitor, db, controller, controll
     row = db.get_controller(controller_row)
     assert row["firmware"] == "12.0.1" and paused_reason(row) == ""
     assert db.list_audit()[0]["action"] == "firmware del controller aggiornato"
+
+
+def _full(*args):
+    err = sqlite3.OperationalError("database or disk is full")
+    err.sqlite_errorcode = sqlite3.SQLITE_FULL
+    raise err
+
+
+async def test_identity_that_cannot_be_saved_does_not_stop_the_check(
+    monitor, db, controller, controller_row, monkeypatch
+):
+    """Disco pieno con il firmware aggiornato o il controller sostituito: il controllo si fermava a ogni giro (niente
+    orologio, sincronizzazione «Errore imprevisto») e un controller sostituito non sospendeva le scritture."""
+    from types import SimpleNamespace
+
+    from app import main
+
+    await monitor.check_all()
+    state = monitor.states[controller_row]
+    controller.firmware = "12.0.1"
+    for name in ("add_audit", "set_controller_identity", "set_controller_identity_change"):
+        monkeypatch.setattr(db, name, _full)
+    state.answered = 0
+    state.clock_offset = None
+    await monitor.check_all()
+    assert state.online is True and state.answered == 1 and state.clock_offset is not None
+    # Controller sostituito: le scritture si sospendono anche senza poterlo salvare
+    controller.serial, controller.fingerprint = "Y", "CC:DD"
+    await monitor.check_all()
+    app_state = SimpleNamespace(
+        health=monitor,
+        installation=SimpleNamespace(primary=db.get_controller(controller_row)),
+        controller=SimpleNamespace(paused=""),
+    )
+    main._apply_pause(app_state)
+    assert "è cambiato" in app_state.controller.paused
+    # Spazio di nuovo libero: si salva
+    monkeypatch.undo()
+    await monitor.check_all()
+    assert "è cambiato" in paused_reason(db.get_controller(controller_row))
+    assert monitor.unsaved_changes == {}
 
 
 async def test_unreachable_after_two_failures(monitor, controller, controller_row):

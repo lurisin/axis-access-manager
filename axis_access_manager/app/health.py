@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -175,6 +176,8 @@ class HealthMonitor:
         self._locks: dict[int, asyncio.Lock] = {}
         # Indirizzo e credenziali con cui un controllo ha visto chi risponde, per controller (vedi identity_checked)
         self._identified: dict[int, tuple] = {}
+        # Controller cambiato e non ancora salvato (disco pieno), per controller: le scritture si sospendono lo stesso
+        self.unsaved_changes: dict[int, str] = {}
 
     def _client(self, row: dict):
         key = _client_key(row)
@@ -263,7 +266,13 @@ class HealthMonitor:
                 _LOGGER.debug("Certificato di %s non letto: %s", row["name"], err)
         # Chi risponde, prima delle altre letture: con un indirizzo nuovo le scritture aspettano questo (vedi
         # main._apply_pause)
-        self.check_identity(row, state)
+        try:
+            self.check_identity(row, state)
+        except sqlite3.Error as err:
+            # Disco pieno: il controllo va avanti, e si salva a un giro dopo. Prima si fermava qui a ogni giro
+            # (orologio, punti di accesso) e la sincronizzazione risultava «Controller Non Raggiungibile · Errore
+            # imprevisto»
+            _LOGGER.warning("Identità del controller %s non salvata: %s", row["name"], err)
         self._identified[row["id"]] = _client_key(row)
         if state.answered % CLOCK_EVERY == 0:
             await self._clock(client, state)
@@ -373,10 +382,15 @@ class HealthMonitor:
         if changed:
             same = all(pending.get(k) == observed[k] for k in ("serial", "cert_fingerprint"))
             if not same:
-                self.db.set_controller_identity_change(row["id"], json.dumps({**observed, "at": now_iso()}))
+                change = json.dumps({**observed, "at": now_iso()})
+                # Prima in memoria: se non si salva le scritture si sospendono lo stesso (vedi with_unsaved_change)
+                self.unsaved_changes[row["id"]] = change
+                self.db.set_controller_identity_change(row["id"], change)
+                self.unsaved_changes.pop(row["id"], None)
                 self.db.add_audit("sistema", "controller cambiato", f"{row['name']}: {changed}, scritture sospese")
                 _LOGGER.warning("Controller %s cambiato (%s): scritture sospese", row["name"], changed)
             return
+        self.unsaved_changes.pop(row["id"], None)
         if pending:
             # Risponde di nuovo il controller memorizzato: niente da confermare
             self.db.set_controller_identity_change(row["id"], "")
@@ -392,9 +406,14 @@ class HealthMonitor:
         if updates:
             self.db.set_controller_identity(row["id"], {**stored, **updates})
 
+    def with_unsaved_change(self, row: dict | None) -> dict | None:
+        """La riga del controller con il cambio visto e non ancora salvato, per paused_reason."""
+        change = self.unsaved_changes.get(row["id"]) if row else None
+        return {**row, "identity_change": change} if change and not row.get("identity_change") else row
+
     def accept_identity(self, controller_id: int, user: str) -> dict:
         """L'amministratore conferma il controller trovato all'indirizzo: diventa quello memorizzato."""
-        row = self.db.get_controller(controller_id)
+        row = self.with_unsaved_change(self.db.get_controller(controller_id))
         if row is None:
             raise LookupError("controller non trovato")
         pending = row.get("identity_change") or ""
@@ -404,6 +423,7 @@ class HealthMonitor:
         old = {k: row.get(k) or "" for k in IDENTITY_FIELDS}
         self.db.set_controller_identity(controller_id, {k: observed.get(k, "") for k in IDENTITY_FIELDS})
         self.db.set_controller_identity_change(controller_id, "")
+        self.unsaved_changes.pop(controller_id, None)
         self.db.add_audit(user, "cambio del controller confermato", f"{row['name']}: {identity_text(old, observed)}")
         return self.db.get_controller(controller_id)
 
