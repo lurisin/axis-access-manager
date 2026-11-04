@@ -237,9 +237,9 @@ def recover(db_path: Path) -> str:
         consistent_copy(copy, restoring)
     except (OSError, sqlite3.Error) as err:
         _LOGGER.error("Copia del backup non ripristinata: %s", err)
-        # Disco pieno: l'apertura creava un database vuoto, all'avvio dopo non si riprovava più e il backup successivo
-        # sostituiva la copia sana con quello. La copia si sposta al posto del database (non serve spazio), come in
-        # replace_unusable()
+        # Disco pieno: la copia sana si sposta al posto del database (non serve spazio), come in replace_unusable().
+        # Prima, con il database mancante, l'apertura ne creava uno vuoto, all'avvio dopo non si riprovava più e il
+        # backup successivo sostituiva la copia sana con quello
         for suffix in ("-journal", "-wal", "-shm"):
             Path(f"{db_path}{suffix}").unlink(missing_ok=True)
         os.replace(copy, db_path)

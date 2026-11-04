@@ -3007,7 +3007,7 @@ async def _health_loop(app: FastAPI) -> None:
 
 def _extended_openings(state) -> dict[str, float]:
     """Aperture estese dall'app prima del riavvio (vedi AccessService.recent_extended_openings): porta → secondi fa.
-    Con il disco quasi pieno la riga può non essersi salvata (registro non scrivibile): per le altre porte una Aperta
+    Con il disco quasi pieno la riga può non essersi salvata (registro non scrivibile): per le altre porte un'Aperta
     a Tempo trovata senza consenso vale come estesa da adesso. La rete di sicurezza agisce più tardi solo per
     l'apertura in corso al riavvio, e non taglia un'apertura estesa vera con un falso Riblocco Forzato."""
     found = state.service.recent_extended_openings(MAX_EXTENDED)
