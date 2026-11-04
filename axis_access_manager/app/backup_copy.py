@@ -137,9 +137,12 @@ def ha_copy_path(db_path: Path) -> Path:
 def ha_copy_error(db_path: Path) -> str:
     """Perché l'ultima copia per il backup di Home Assistant non è stata aggiornata ("" se è andata bene)."""
     try:
-        return (db_path.parent / HA_COPY_DIR / HA_COPY_ERROR).read_text().strip()
+        text = (db_path.parent / HA_COPY_DIR / HA_COPY_ERROR).read_text().strip()
     except OSError:
         return ""
+    # Il file c'è solo dopo un errore. Vuoto: con il disco pieno si crea, ma il motivo non si scrive. Prima la copia
+    # risultava preparata, in verde
+    return text or "copia non aggiornata (spazio su disco esaurito)"
 
 
 def damage(path: Path) -> str:
@@ -222,36 +225,36 @@ def recover(db_path: Path) -> str:
         # Il danneggiato resta: se SQLite lo apre l'app parte con quello, se no ci pensa replace_unusable()
         return f"{problem} e nessuna copia sana del backup da cui ripartire"
     when = datetime.fromtimestamp(copy.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
-    # Prima la copia accanto al database: se non riesce (disco pieno) il database resta dov'è e si riprova
+    moved = ""
+    if _has_data(db_path):
+        # Il danneggiato si mette da parte subito, prima della copia (lunga). Se l'avvio si interrompe o manca lo
+        # spazio, all'avvio dopo il database manca e si riparte dalla copia. Prima restava al suo posto: il controllo
+        # completo, che vede il danno solo con il WAL accanto (e alla chiusura lo toglie), non lo vedeva più, l'app
+        # partiva con il database rovinato e il backup dopo ne faceva la copia
+        moved = f" spostato in {_set_aside(db_path).name}"
+        _sync_dir(db_path.parent)
     try:
         consistent_copy(copy, restoring)
     except (OSError, sqlite3.Error) as err:
         _LOGGER.error("Copia del backup non ripristinata: %s", err)
-        if _has_data(db_path):
-            return f"{problem}, copia del backup non ripristinata ({error_reason(err)}): si riprova al prossimo avvio"
-        # Database mancante: l'apertura ne creava uno vuoto, all'avvio dopo non si riprovava più e il backup
-        # successivo sostituiva la copia sana con quello. La copia si sposta al posto del database (non serve spazio),
-        # come in replace_unusable()
+        # Disco pieno: l'apertura creava un database vuoto, all'avvio dopo non si riprovava più e il backup successivo
+        # sostituiva la copia sana con quello. La copia si sposta al posto del database (non serve spazio), come in
+        # replace_unusable()
         for suffix in ("-journal", "-wal", "-shm"):
             Path(f"{db_path}{suffix}").unlink(missing_ok=True)
         os.replace(copy, db_path)
         _sync_dir(db_path.parent)
         _sync_dir(copy.parent)
         return (
-            f"{problem}, {RESTORED} del {when}, spostata al posto del database: si rifà al prossimo backup di Home "
-            "Assistant"
+            f"{problem}{moved}, {RESTORED} del {when}, spostata al posto del database: si rifà al prossimo backup di "
+            "Home Assistant"
         )
-    if not _has_data(db_path):
-        # Journal senza database: sulla copia la rovinerebbe
-        for suffix in ("-journal", "-wal", "-shm"):
-            Path(f"{db_path}{suffix}").unlink(missing_ok=True)
-        os.replace(restoring, db_path)
-        _sync_dir(db_path.parent)
-        return f"{problem}, {RESTORED} del {when}"
-    broken = _set_aside(db_path)
+    # Journal senza database: sulla copia la rovinerebbe
+    for suffix in ("-journal", "-wal", "-shm"):
+        Path(f"{db_path}{suffix}").unlink(missing_ok=True)
     os.replace(restoring, db_path)
     _sync_dir(db_path.parent)
-    return f"{problem} spostato in {broken.name}, {RESTORED} del {when}"
+    return f"{problem}{moved}, {RESTORED} del {when}"
 
 
 def _set_aside(db_path: Path) -> Path:
@@ -297,6 +300,10 @@ def update_copy(db_path: Path, reason: str) -> Path:
     folder = db_path.parent / UPDATE_COPY_DIR
     safe = "".join(c if c.isalnum() or c in ".-" else "_" for c in reason)[:40]
     target = folder / f"{db_path.stem}_{datetime.now():%Y%m%d_%H%M%S}_{safe}{db_path.suffix}"
+    # Resti di copie interrotte (spegnimento, o arresto oltre il tempo concesso dal Supervisor): grandi fino al
+    # database, non si vedevano nell'app e non si toglievano più
+    for leftover in folder.glob(f"{db_path.stem}_*{db_path.suffix}.parziale*"):
+        leftover.unlink(missing_ok=True)
     # Prima si tolgono le copie in più: con il disco quasi pieno la nuova trova il posto della più vecchia
     copies = sorted(folder.glob(f"{db_path.stem}_*{db_path.suffix}"), key=lambda p: p.stat().st_mtime)
     for old in copies[: max(len(copies) - UPDATE_COPIES_KEPT + 1, 0)]:

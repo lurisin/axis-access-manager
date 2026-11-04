@@ -700,7 +700,7 @@ def create_app(
         app.state.lock_guard = LockGuard()
         await _start_runtime(app)
         # Aperture estese dall'app appena prima di un riavvio dell'add-on: la rete di sicurezza non le accorcia
-        for door, ago in app.state.service.recent_extended_openings(MAX_EXTENDED).items():
+        for door, ago in _extended_openings(app.state).items():
             app.state.lock_guard.extended_opened(door, ago)
         await app.state.direct.apply(app.state.direct_settings)
         maintenance = asyncio.create_task(_maintenance(app))
@@ -3005,6 +3005,18 @@ async def _health_loop(app: FastAPI) -> None:
         await asyncio.sleep(HEALTH_INTERVAL)
 
 
+def _extended_openings(state) -> dict[str, float]:
+    """Aperture estese dall'app prima del riavvio (vedi AccessService.recent_extended_openings): porta → secondi fa.
+    Con il disco quasi pieno la riga può non essersi salvata (registro non scrivibile): per le altre porte una Aperta
+    a Tempo trovata senza consenso vale come estesa da adesso. La rete di sicurezza agisce più tardi solo per
+    l'apertura in corso al riavvio, e non taglia un'apertura estesa vera con un falso Riblocco Forzato."""
+    found = state.service.recent_extended_openings(MAX_EXTENDED)
+    if state.db.path and low_space(state.db.path.parent):
+        for door in state.doors:
+            found.setdefault(door["door_token"], 0.0)
+    return found
+
+
 def _check_writable(state) -> None:
     """Registro segnato non scrivibile, con gli eventi del controller di quel periodo già recuperati: con lo spazio di
     nuovo libero il guasto si toglie, e le righe dell'app rimaste fuori tornano nel registro (vedi
@@ -3506,6 +3518,12 @@ async def _prune(state) -> None:
         # Il WAL torna piccolo subito, non alla chiusura dell'add-on
         state.db.checkpoint()
         _LOGGER.info("Pulizia del registro: %s eventi oltre la conservazione cancellati", removed)
+    # Istantanee oltre la conservazione senza la loro riga, dalla data del file: quelle degli eventi persi con un
+    # ripristino da Home Assistant (la cartella Media non è nel backup dell'add-on) o con il database ripartito dalla
+    # copia o vuoto. Prima restavano per sempre
+    orphans = await asyncio.to_thread(delete_old_snapshots, state.ha.snapshot_dir, state.settings.event_retention_days)
+    if orphans:
+        _LOGGER.info("Pulizia del registro: %s istantanee senza evento cancellate", orphans)
 
 
 async def _sync(state) -> tuple[bool, int]:

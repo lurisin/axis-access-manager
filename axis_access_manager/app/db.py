@@ -541,7 +541,10 @@ class Database:
                 conn.close()
             self._reader_conns.clear()
         self._readers = threading.local()
-        self._conn.close()
+        # Dopo una scrittura in corso in un altro thread (per esempio la verifica dei backup all'arresto): chiusa sotto
+        # i piedi, SQLite faceva cadere tutto il processo
+        with self._lock:
+            self._conn.close()
 
     def _query(self, sql: str, params: tuple = ()) -> list[dict]:
         with self._lock:

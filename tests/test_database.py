@@ -176,11 +176,9 @@ def test_home_assistant_backup_and_restore_with_the_add_on_writing(settings, con
         assert backup_copy.RESTORED in recovered["text"]
 
 
-@pytest.mark.parametrize("wal", ["con scritture", "vuoto"])
-def test_database_and_wal_copied_at_different_moments_use_the_backup_copy(tmp_path, wal):
-    """Il Supervisor copia database e WAL in momenti diversi: gli indici possono non tornare con le tabelle, e
-    quick_check non lo vede. Con il WAL rimasto il controllo all'avvio è completo e si riparte dalla copia. Anche con
-    il WAL vuoto: copiato subito dopo lo svuotamento del backup_pre, mentre il database cambiava ancora."""
+def _restored_with_index_damage(tmp_path: Path, wal: str) -> Path:
+    """Cartella rimessa da un backup di Home Assistant con database e WAL copiati in momenti diversi: un indice che
+    non torna con la tabella (quick_check non lo vede), il WAL accanto e la copia del backup sana."""
     path = tmp_path / DB_NAME
     db = Database(path, "0.26.0")
     db.add_audit("admin", "prima")
@@ -209,13 +207,55 @@ def test_database_and_wal_copied_at_different_moments_use_the_backup_copy(tmp_pa
     writer.close()
     (restored / "copia_backup").mkdir()
     (restored / "copia_backup" / DB_NAME).write_bytes(ha_copy_path(path).read_bytes())
+    return restored / DB_NAME
 
-    message = recover(restored / DB_NAME)
+
+@pytest.mark.parametrize("wal", ["con scritture", "vuoto"])
+def test_database_and_wal_copied_at_different_moments_use_the_backup_copy(tmp_path, wal):
+    """Il Supervisor copia database e WAL in momenti diversi: gli indici possono non tornare con le tabelle, e
+    quick_check non lo vede. Con il WAL rimasto il controllo all'avvio è completo e si riparte dalla copia. Anche con
+    il WAL vuoto: copiato subito dopo lo svuotamento del backup_pre, mentre il database cambiava ancora."""
+    restored = _restored_with_index_damage(tmp_path, wal)
+
+    message = recover(restored)
 
     assert message.startswith("database danneggiato spostato in") and backup_copy.RESTORED in message
-    again = Database(restored / DB_NAME)
+    again = Database(restored)
     assert [a["action"] for a in again.list_audit()] == ["prima"]
     again.close()
+
+
+class _Killed(BaseException):
+    """Spegnimento improvviso."""
+
+
+@pytest.mark.parametrize("stop", ["spegnimento", "disco pieno"])
+def test_restore_from_the_copy_interrupted_at_startup_is_not_forgotten(tmp_path, monkeypatch, stop):
+    """Il controllo completo vede il danno agli indici solo con il WAL accanto, e chiudendo il database lo toglie. Se il
+    primo avvio non finiva la copia (spegnimento, disco pieno), all'avvio dopo il danno non si vedeva più: l'app
+    partiva con il database rovinato, e il backup dopo ne faceva la copia al posto di quella sana."""
+    restored = _restored_with_index_damage(tmp_path, "vuoto")
+    original = backup_copy.consistent_copy
+
+    def interrupted(source, target, check=False):
+        if stop == "spegnimento":
+            raise _Killed
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(backup_copy, "consistent_copy", interrupted)
+    if stop == "spegnimento":
+        with pytest.raises(_Killed):
+            recover(restored)
+        monkeypatch.setattr(backup_copy, "consistent_copy", original)
+        message = recover(restored)
+    else:
+        message = recover(restored)
+    assert backup_copy.RESTORED in message
+    assert integrity(restored) == "ok"
+    again = Database(restored)
+    assert [a["action"] for a in again.list_audit()] == ["prima"]
+    again.close()
+    assert len(list(restored.parent.glob("axis_access_manager_danneggiato_*.db"))) == 1
 
 
 def test_backup_copy_is_one_file_and_reading_it_leaves_nothing(tmp_path):
@@ -233,6 +273,20 @@ def test_backup_copy_is_one_file_and_reading_it_leaves_nothing(tmp_path):
     reader.execute("SELECT count(*) FROM sqlite_master").fetchone()
     reader.close()
     assert files(copy.parent) == [DB_NAME]
+
+
+def test_backup_copy_error_written_with_the_disk_full_is_not_a_good_copy(settings, controller, tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    with start(settings, controller, data) as client:
+        backup_pre(data / DB_NAME)
+        # Disco pieno al backup_pre: errore.txt si crea, ma il motivo non si scrive
+        (data / backup_copy.HA_COPY_DIR / backup_copy.HA_COPY_ERROR).write_bytes(b"")
+        status = client.get("/api/status").json()["database"]
+        items = client.get("/api/notifications").json()["items"]
+    # Prima la copia risultava «Preparata», in verde, e nessuna notifica
+    assert status["ha_copy_error"] == "copia non aggiornata (spazio su disco esaurito)"
+    assert "Copia per il Backup Non Aggiornata" in [i["title"] for i in items]
 
 
 def test_backup_pre_empties_the_wal_while_the_add_on_writes(tmp_path):
@@ -298,6 +352,10 @@ def test_started_empty_is_no_longer_a_fault_after_restoring_an_app_backup(settin
         backup = client.post("/api/backups", json={"name": "Prima del danno"}).json()
     _header(data / DB_NAME)
     with start(settings, controller, data) as client:
+        # La persona riletta dal controller, senza ditta, si toglie: il backup la rimette com'era
+        client.portal.call(main._sync, client.app.state)
+        for person in client.get("/api/persons").json():
+            client.delete(f"/api/persons/{person['id']}")
         preview = client.post(f"/api/backups/{backup['id']}/preview", json={"sections": ["persone"]}).json()
         keys = [i["key"] for i in preview["items"] if i["default"]]
         body = {"sections": ["persone"], "keys": keys}
@@ -366,7 +424,7 @@ def test_unreadable_database_then_disk_full_still_says_the_copy_was_restored(
 
     def connect_without_space(self, path, existed):
         calls.append(path)
-        if len(calls) == 2:
+        if len(calls) == 1:
             # Copia spostata al posto del database, poi SQLite non riesce a creare il WAL: disco pieno
             raise sqlite3.OperationalError("database or disk is full")
         connect(self, path, existed)
@@ -376,7 +434,7 @@ def test_unreadable_database_then_disk_full_still_says_the_copy_was_restored(
         persons = client.get("/api/persons").json()
         recovered = client.app.state.db_recovery
         sessions = client.app.state.db.list_sessions()
-    assert len(calls) == 3 and [p["name"] for p in persons] == ["Anna Rossi"]
+    assert len(calls) == 2 and [p["name"] for p in persons] == ["Anna Rossi"]
     # Al nuovo tentativo il database è sano: prima niente notifica, e le sessioni di prima restavano buone
     assert recovered["title"] == "Database Ripristinato dalla Copia"
     assert "spostata al posto del database" in recovered["text"]
@@ -479,6 +537,21 @@ def test_update_copy_makes_room_before_writing(tmp_path, monkeypatch):
     assert sorted(p.name.rsplit("_", 1)[-1] for p in copies.iterdir()) == ["v0.1.db", "v0.2.db", "v0.3.db"]
 
 
+def test_update_copy_removes_what_an_interrupted_copy_left(tmp_path):
+    path = tmp_path / DB_NAME
+    Database(path).close()
+    copies = tmp_path / "copie_database"
+    copies.mkdir()
+    # Copia interrotta a un avvio precedente (spegnimento, arresto oltre il tempo del Supervisor)
+    left = [copies / f"{DB_NAME[:-3]}_20261104_101010_v0.26.0.db.parziale", copies / f"{DB_NAME[:-3]}_x.db.parziale"]
+    for leftover in left:
+        leftover.write_bytes(b"x" * 4096)
+        Path(f"{leftover}-journal").write_bytes(b"x")
+    update_copy(path, "v0.26.0")
+    # Prima restavano per sempre, grandi fino al database, e non si vedevano nell'app
+    assert [p.name.rsplit("_", 1)[-1] for p in copies.iterdir()] == ["v0.26.0.db"]
+
+
 # Sessioni dell'accesso diretto dopo il ripristino dalla copia
 
 
@@ -554,6 +627,24 @@ async def test_prune_goes_in_blocks_and_the_app_keeps_running(tmp_path):
     assert [e["kind"] for e in db.list_events()] == ["concesso"]
     assert list(media.iterdir()) == []
     assert Path(f"{tmp_path / DB_NAME}-wal").stat().st_size == 0
+    db.close()
+
+
+async def test_prune_deletes_old_snapshots_left_without_their_event(tmp_path):
+    db = Database(tmp_path / DB_NAME)
+    media = tmp_path / "media"
+    media.mkdir()
+    now = datetime.now(tz=UTC)
+    kept = db.add_event(ts=(now - timedelta(days=10)).isoformat(timespec="seconds"), kind="negato")
+    # Foto di eventi persi con il ripristino di un backup di Home Assistant: le righe non ci sono più
+    old, recent, own = media / "4_vecchia.jpg", media / "5_recente.jpg", media / f"{kept}_sua.jpg"
+    for path, days in ((old, 35), (recent, 3), (own, 10)):
+        path.write_bytes(b"\xff\xd8foto")
+        moment = (now - timedelta(days=days)).timestamp()
+        os.utime(path, (moment, moment))
+    await main._prune(_prune_state(db, media))
+    # Prima restavano per sempre: la pulizia cancellava solo le foto delle righe scadute
+    assert sorted(p.name for p in media.iterdir()) == sorted([recent.name, own.name])
     db.close()
 
 
@@ -861,6 +952,29 @@ async def test_door_opened_from_home_assistant_with_the_disk_full(db, controller
     await asyncio.sleep(0)
     assert any(c[0] == "access_door" for c in controller.calls)
     assert published == ["apertura_remota"]
+
+
+def test_extended_opening_not_saved_keeps_its_time_after_a_restart(settings, controller, tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    data.mkdir()
+    with start(settings, controller, data) as client:
+        state = client.app.state
+        monkeypatch.setattr(state.db, "add_event", _full)
+        # Apri a Lungo da Home Assistant con il registro non scrivibile
+        assert client.portal.call(state.service.open_door, True, "Luca (Home Assistant)") is True
+    monkeypatch.undo()
+    # Riavvio dell'add-on entro il tempo esteso, con il disco ancora quasi pieno
+    monkeypatch.setattr(main, "low_space", lambda folder: True)
+    with start(settings, controller, data) as client:
+        state = client.app.state
+        assert state.db.list_events(kind="apertura_remota") == []
+        # Prima la rete di sicurezza la trattava come un'apertura normale: blocco dopo il tempo normale e un falso
+        # Riblocco Forzato
+        assert "porta" in state.lock_guard.extended_at
+    monkeypatch.undo()
+    # Con lo spazio una porta trovata Aperta a Tempo senza la riga resta un'apertura normale
+    with start(settings, controller, data) as client:
+        assert client.app.state.lock_guard.extended_at == {}
 
 
 def test_notifications_and_backup_errors_with_the_database_not_writable(settings, controller, tmp_path, monkeypatch):
