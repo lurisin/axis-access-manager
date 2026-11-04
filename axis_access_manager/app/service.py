@@ -986,10 +986,10 @@ class AccessService:
                 label = DOOR_MODES.get(mode, mode)
                 raise ServiceError(f"la porta non è bloccata ({label}): attendi che si richiuda")
             before = self.monitor.door_modes.get(door) if self.monitor else None
-            # Il tempo della rete di sicurezza parte da qui, con il tempo esteso se chiesto. Prima del comando: con la
-            # risposta persa il controller può avere aperto lo stesso, e un consenso senza apertura scade da solo
-            guard = self.lock_guard
-            grant = guard.granted(door, extended, self._door_open(door)) if guard is not None else None
+            guard, door_open = self.lock_guard, self._door_open(door)
+            # Consenso alla rete di sicurezza già prima del comando: con la risposta persa il controller può avere
+            # aperto lo stesso, con il tempo esteso se chiesto. Un consenso senza apertura scade da solo
+            grant = guard.granted(door, extended, door_open) if guard is not None else None
             try:
                 await self.controller.access_door(door, extended)
             except ControllerUnreachable:
@@ -999,6 +999,9 @@ class AccessService:
                 if guard is not None:
                     guard.withdraw(door, grant)
                 raise
+            if guard is not None:
+                # Il tempo della rete di sicurezza parte da qui, con il tempo esteso se chiesto
+                guard.granted(door, extended, door_open)
             if self.monitor and self.monitor.door_modes.get(door) == before:
                 # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
                 # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
