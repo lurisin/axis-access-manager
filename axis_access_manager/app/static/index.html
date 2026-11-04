@@ -3062,7 +3062,11 @@ async function viewNotifications(el) {
     </section>` : ""}`;
   paintIcons(el);
   renderNotifCards();
-  const mark = async (ids) => { if (await run(() => api("api/notifications/seen", {method: "POST", body: ids ? {ids} : {}}))) { await loadSummary(); render(); } };
+  // Con il peso che la scheda mostrava: un guasto peggiorato prima dell'aggiornamento della pagina resta da gestire
+  const mark = async (ids) => {
+    const weights = Object.fromEntries(notifData.items.filter((i) => ids.includes(i.id)).map((i) => [i.id, i.weight || 0]));
+    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids, weights}}))) { await loadSummary(); render(); }
+  };
   $("#n-all").onclick = () => mark(notifData.items.filter((i) => !i.seen && notifMatches(i)).map((i) => i.id));
   let timer;
   $("#n-q").addEventListener("input", (e) => {

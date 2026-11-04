@@ -1,4 +1,6 @@
+import asyncio
 import json
+import socket
 
 import httpx
 import pytest
@@ -53,6 +55,47 @@ async def test_unreachable_controller():
 
     with pytest.raises(VapixError, match="non risponde"):
         await client_with(handler).device_info()
+
+
+@pytest.fixture
+def no_proxy(monkeypatch):
+    """Collegamenti veri in locale, come nell'add-on: senza il proxy dell'ambiente di prova."""
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+
+
+async def test_network_errors_are_explained_from_the_real_cause(no_proxy, monkeypatch):
+    """httpx avvolge il nome non risolto e l'errore TLS in ConnectError: la spiegazione viene dalla causa vera."""
+
+    async def plain_http(reader, writer):
+        # Server HTTP in chiaro dove ci si aspetta HTTPS
+        await reader.read(1024)
+        writer.write(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(plain_http, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    real_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo(host, *args, **kwargs):
+        if host == "a1210.invalid":
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    try:
+        for host, reason in (
+            (f"127.0.0.1:{port}", "collegamento HTTPS non riuscito"),
+            ("a1210.invalid", "indirizzo non trovato"),
+        ):
+            client = A1210Client(host, "u", "p")
+            for call in (client.device_info, client.ws_session):
+                with pytest.raises(VapixError, match=f"non risponde \\({reason}\\)"):
+                    await call()
+            await client.aclose()
+    finally:
+        server.close()
 
 
 async def test_settings_are_written_with_the_newest_api_version():

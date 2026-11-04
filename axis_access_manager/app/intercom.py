@@ -25,6 +25,9 @@ _LOGGER = logging.getLogger(__name__)
 OPEN_DEBOUNCE_SECONDS = 5.0
 # Gli attributi (chi ha aperto) arrivano subito prima dello stato ON
 ATTRIBUTES_MAX_AGE_SECONDS = 5.0
+# Una chiamata suona al massimo un minuto: un nuovo "ringing" dopo questo tempo è una chiamata nuova, anche se la fine
+# della precedente non è arrivata
+RING_MAX_SECONDS = 90.0
 
 # Valori del sensore "Call state": evento di chiamata o lettura periodica di callStatus
 RINGING_STATES = {"ringing", "ring"}
@@ -109,6 +112,8 @@ class IntercomBridge:
         self._attributes: dict = {}
         self._attributes_at = 0.0
         self._last_open = float("-inf")
+        # Aperture con credenziali del videocitofono: tempo di attesa a parte, così non bloccano l'Apri dell'inquilino
+        self._last_local = float("-inf")
         self._tasks: set[asyncio.Task] = set()
         self.last_message_at: str | None = None
 
@@ -121,11 +126,14 @@ class IntercomBridge:
         return self.call.call_state if self.call else self._call_state
 
     def handle(self, topic: str, payload: bytes, retained: bool = False) -> None:
-        # Gli stati sono conservati dal broker: alla riconnessione non sono eventi nuovi
+        # Gli stati sono conservati dal broker: alla riconnessione non sono eventi nuovi. La fine chiamata arrivata
+        # mentre l'app era scollegata allinea però lo stato, senza eventi: altrimenti la chiamata dopo si perde
+        text = payload.decode(errors="replace").strip()
         if retained:
+            if topic == self.call_topic and text.lower() in IDLE_STATES:
+                self._call_state, self._ring_at, self._answered = text.lower(), None, False
             return
         self.last_message_at = now_iso()
-        text = payload.decode(errors="replace").strip()
         if topic == self.call_topic:
             self._on_call_state(text)
         elif topic == self.relay_attributes_topic:
@@ -145,7 +153,10 @@ class IntercomBridge:
     def _on_call_state(self, value: str) -> None:
         state = value.lower()
         previous, self._call_state = self._call_state, state
-        if state == previous:
+        if state in RINGING_STATES and self._ring_at is not None and self._since_ring() > RING_MAX_SECONDS:
+            # La fine della chiamata precedente non è mai arrivata: questa è una chiamata nuova
+            self._ring_at = None
+        elif state == previous:
             return
         if state in RINGING_STATES:
             if self._ring_at is None:
@@ -170,15 +181,20 @@ class IntercomBridge:
         attributes = self._attributes if now - self._attributes_at <= ATTRIBUTES_MAX_AGE_SECONDS else {}
         unlock_type = str(attributes.get("unlock_type") or "")
         how = unlock_source(attributes)
-        if now - self._last_open < OPEN_DEBOUNCE_SECONDS:
-            return
-        self._last_open = now
         if unlock_type in LOCAL_CREDENTIALS:
+            if now - self._last_local < OPEN_DEBOUNCE_SECONDS:
+                _LOGGER.debug("Apertura locale del citofono già registrata: secondo messaggio scartato (%s)", how)
+                return
+            self._last_local = now
             # Il visitatore entra da solo: se ha suonato, nessuno ha risposto
             self._event(
                 f"apertura con {LOCAL_CREDENTIALS[unlock_type]} del videocitofono non inoltrata all'A1210", attributes
             )
             return
+        if now - self._last_open < OPEN_DEBOUNCE_SECONDS:
+            _LOGGER.debug("Apertura dal citofono già inoltrata: secondo messaggio scartato (%s)", how)
+            return
+        self._last_open = now
         note = ""
         ring = self.call or self
         if ring._ring_at is not None:

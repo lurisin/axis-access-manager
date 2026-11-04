@@ -118,6 +118,25 @@ async def test_credentials_stored_on_intercom_are_not_forwarded(service, db, con
     assert details(db)[-1][1] == "apertura con tessera del videocitofono non inoltrata all'A1210"
 
 
+async def test_local_credential_does_not_block_the_tenant_open(service, db, controller, clock):
+    """Revisione: dopo una tessera provata sul videocitofono, l'Apri dell'inquilino si perdeva in silenzio."""
+    bridge = bridge_for(service, db, clock)
+    bridge.handle(RELAY_ATTRIBUTES, b'{"unlock_type": "CARD", "control_source": "04aa"}')
+    bridge.handle(RELAY, b"ON")
+    bridge.handle(RELAY, b"ON")  # secondo messaggio della stessa apertura
+    bridge.handle(RELAY, b"OFF")
+    clock.now += 3
+    bridge.handle(RELAY_ATTRIBUTES, b'{"unlock_type": "HOUSEHOLDER", "control_source": "app"}')
+    bridge.handle(RELAY, b"ON")
+    await settle()
+
+    assert controller.calls == [("access_door", "porta", False)]
+    assert [(d[1], d[2]) for d in details(db)] == [
+        ("apertura con tessera del videocitofono non inoltrata all'A1210", "Citofono scala"),
+        ("", "App Hik-Connect (Videocitofono)"),
+    ]
+
+
 async def test_forwarding_disabled_only_logs(service, db, controller, clock):
     bridge = bridge_for(service, db, clock, open_door=False)
     bridge.handle(RELAY, b"ON")
@@ -163,6 +182,38 @@ def test_call_outcomes(service, db, clock):
         "ha suonato",
         "chiamata chiusa",
     ]
+
+
+def test_retained_end_of_call_resets_the_call(service, db, clock):
+    """Revisione: la fine chiamata ripetuta dal broker alla riconnessione era scartata e la chiamata dopo si perdeva."""
+    bridge = bridge_for(service, db, clock)
+    bridge.handle(CALL, b"ringing")
+    clock.now += 30
+    # Il broker si riavvia durante la chiamata: alla riconnessione ripete la fine chiamata come conservata
+    bridge.handle(CALL, b"idle", retained=True)
+    bridge.handle(RELAY, b"OFF", retained=True)
+    assert bridge.call_state == "idle"
+    clock.now += 7200
+    bridge.handle(CALL, b"ringing")
+    clock.now += 5
+    bridge.handle(CALL, b"onCall")
+    bridge.handle(CALL, b"idle")
+
+    assert [d[1] for d in details(db)] == ["ha suonato", "ha suonato", "risposta dopo 5 s"]
+
+
+def test_ringing_long_after_a_lost_end_of_call_is_a_new_call(service, db, clock):
+    bridge = bridge_for(service, db, clock)
+    bridge.handle(CALL, b"ringing")
+    clock.now += 20
+    bridge.handle(CALL, b"ringing")  # stessa chiamata: niente di nuovo
+    clock.now += 3600
+    # La fine chiamata non è mai arrivata
+    bridge.handle(CALL, b"ringing")
+    clock.now += 4
+    bridge.handle(CALL, b"onCall")
+
+    assert [d[1] for d in details(db)] == ["ha suonato", "ha suonato", "risposta dopo 4 s"]
 
 
 def test_monitor_routes_extra_subscriptions():

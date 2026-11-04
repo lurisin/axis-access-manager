@@ -71,17 +71,23 @@ def cert_fingerprint(der: bytes | None) -> str:
     return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
 
 
-def _network_reason(err: Exception) -> str:
+def _network_reason(err: BaseException) -> str:
     """Perché il collegamento non è riuscito, in parole: il nome dell'eccezione resta nel log."""
     if isinstance(err, httpx.ConnectTimeout | TimeoutError):
         return "tempo scaduto"
     if isinstance(err, httpx.TimeoutException):
         return "nessuna risposta in tempo"
-    if "CERTIFICATE_VERIFY_FAILED" in str(err):
+    # httpx avvolge la causa vera (nome non risolto, TLS) in ConnectError: si guarda tutta la catena
+    chain: list[BaseException] = []
+    cause: BaseException | None = err
+    while cause is not None and cause not in chain:
+        chain.append(cause)
+        cause = cause.__cause__ or cause.__context__
+    if any("CERTIFICATE_VERIFY_FAILED" in str(e) for e in chain):
         return "certificato HTTPS non valido"
-    if isinstance(err, ssl.SSLError):
+    if any(isinstance(e, ssl.SSLError) for e in chain):
         return "collegamento HTTPS non riuscito"
-    if isinstance(err, socket.gaierror):
+    if any(isinstance(e, socket.gaierror) for e in chain):
         return "indirizzo non trovato"
     if isinstance(err, httpx.ConnectError | ConnectionRefusedError):
         return "collegamento rifiutato o indirizzo errato"
