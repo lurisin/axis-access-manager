@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import sqlite3
@@ -44,8 +45,6 @@ CREATE TABLE IF NOT EXISTS events (
     raw TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
--- Ultimo accesso di ogni persona e passaggi di una persona senza leggere tutto il registro (un anno: 1,5 milioni)
-CREATE INDEX IF NOT EXISTS events_person ON events(person_id, kind, ts);
 CREATE TABLE IF NOT EXISTS unknown_cards (
     number TEXT PRIMARY KEY COLLATE NOCASE,
     first_seen TEXT NOT NULL,
@@ -302,6 +301,9 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
     ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
+# Ultimo accesso di ogni persona e passaggi di una persona senza leggere tutto il registro (un anno: 1,5 milioni).
+# Fuori da SCHEMA: crearlo legge tutto il registro (vedi _open)
+PERSON_INDEX = "CREATE INDEX IF NOT EXISTS events_person ON events(person_id, kind, ts)"
 # Il WAL torna a questa dimensione dopo ogni checkpoint: una pulizia grande lo lasciava grande quasi come il database
 WAL_SIZE_LIMIT = 64 * 1024 * 1024
 # Pagine libere (dopo una pulizia grande del registro) oltre le quali, in un database senza auto_vacuum, all'avvio si
@@ -320,6 +322,15 @@ SETTING_LAST_PERSON = "persons_last_id"
 EVENT_COLUMNS = "id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door, recovered"
 # Origini fisse degli eventi: nel database il codice, per l'utente l'etichetta
 SOURCE_LABELS = {"lettore": "Lettore", "controller": "Controller", "porta": "Porta"}
+
+
+def _in_event_loop() -> bool:
+    """Chiamata dal thread del ciclo asyncio dell'app (non da asyncio.to_thread)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def now_iso() -> str:
@@ -356,28 +367,45 @@ class Database:
         except sqlite3.Error as err:
             if hasattr(self, "_conn"):
                 self._conn.close()
-            # SQLite non apre il database e recover() l'ha lasciato al suo posto: senza questo l'add-on non partiva più
-            if self.path is None or not corrupt_error(err):
-                raise
-            self.recovered = replace_unusable(self.path)
-            self._open(str(path), app_version)
+            # Cosa ha già fatto l'avvio (copia spostata al posto del database) anche se poi l'apertura non riesce per lo
+            # spazio: _open_database libera spazio e riprova, e recover() trova un database sano e non lo dice più
+            err.recovered = self.recovered
+            raise
+
+    def _connect(self, path: str, existed: bool) -> None:
+        """Connessione e prime impostazioni, con la lettura dello schema: un errore qui vuol dire che SQLite non apre
+        il database."""
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        if not existed:
+            # Database nuovo: le pagine liberate dalla pulizia del registro tornano al disco (vedi delete_events)
+            self._conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
+        # Con il journal WAL chi legge non ferma chi scrive: la copia per il backup di Home Assistant
+        # (un altro processo, anche per molti secondi) non blocca più gli eventi e le pagine
+        self._conn.execute("PRAGMA journal_mode = WAL")
+        self._conn.execute(f"PRAGMA journal_size_limit = {WAL_SIZE_LIMIT}")
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
 
     def _open(self, path: str, app_version: str) -> None:
         existed = bool(self.path and self.path.exists() and self.path.stat().st_size > 0)
         self.copied = ""
         # Perché la copia prima dell'aggiornamento non si è fatta ("" se è andata bene o non serviva)
         self.copy_error = ""
-        self._conn = sqlite3.connect(path, check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
         with self._lock:
-            if not existed:
-                # Database nuovo: le pagine liberate dalla pulizia del registro tornano al disco (vedi delete_events)
-                self._conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
-            # Con il journal WAL chi legge non ferma chi scrive: la copia per il backup di Home Assistant
-            # (un altro processo, anche per molti secondi) non blocca più gli eventi e le pagine
-            self._conn.execute("PRAGMA journal_mode = WAL")
-            self._conn.execute(f"PRAGMA journal_size_limit = {WAL_SIZE_LIMIT}")
-            self._conn.execute("PRAGMA foreign_keys = ON")
+            try:
+                self._connect(path, existed)
+            except sqlite3.Error as err:
+                if hasattr(self, "_conn"):
+                    self._conn.close()
+                # SQLite non apre il database e recover() l'ha lasciato al suo posto: senza questo l'add-on non partiva
+                # più. Solo qui: un database che si apre, con una pagina rovinata letta dopo (un indice, una
+                # migrazione), non si mette da parte, se no l'app ripartiva vuota con persone e tessere leggibili
+                if self.path is None or not corrupt_error(err):
+                    raise
+                self.recovered = replace_unusable(self.path)
+                existed = bool(self.path.exists() and self.path.stat().st_size > 0)
+                self._connect(path, existed)
             version = self._conn.execute("PRAGMA user_version").fetchone()[0]
             previous = self._app_version() if existed else ""
             if existed and (version < SCHEMA_VERSION or (app_version and previous and previous != app_version)):
@@ -390,6 +418,13 @@ class Database:
                     # Prima non partiva più, e ci riprovava a ogni avvio
                     self.copy_error = f"copia del database prima dell'aggiornamento non fatta ({error_reason(err)})"
             self._conn.executescript(SCHEMA)
+            try:
+                self._conn.execute(PERSON_INDEX)
+            except sqlite3.DatabaseError as err:
+                # Una pagina del registro rovinata (l'ha già detto recover()): l'app parte con i dati, senza l'indice,
+                # e lo si crea a un avvio dopo
+                if not corrupt_error(err):
+                    raise
             for step, _, statements in SCHEMA_STEPS:
                 if step <= version:
                     continue
@@ -490,7 +525,10 @@ class Database:
         una per thread, che con il WAL non aspetta le scritture e non le fa aspettare. Chiamata da un thread
         (asyncio.to_thread) non ferma l'app: con la connessione unica anche il thread teneva il lock di tutte le altre
         richieste."""
-        if self.path is None:
+        if self.path is None or _in_event_loop():
+            # Dal ciclo dell'app (riepilogo, notifiche, Home Assistant) solo letture brevi: sulla connessione
+            # principale, come le altre. Con il semaforo aspettavano la fine delle ricerche in corso, e con loro tutta
+            # l'app
             return self._query(sql, params)
         conn = getattr(self._readers, "conn", None)
         if conn is None:
@@ -1593,9 +1631,16 @@ class Database:
             self._commit()
 
     def checkpoint(self) -> None:
-        """Scritture del WAL riportate nel database e WAL svuotato (dopo una pulizia grande)."""
+        """Scritture del WAL riportate nel database e WAL svuotato (dopo una pulizia grande). Senza aspettare chi legge:
+        con una lettura lunga in corso (ricerca, CSV, copia per il backup) il ciclo dell'app restava fermo 5 s e il
+        checkpoint non riusciva lo stesso; il WAL lo riduce comunque journal_size_limit."""
         with self._lock:
-            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            self._conn.execute("PRAGMA busy_timeout = 0")
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            finally:
+                self._conn.execute(f"PRAGMA busy_timeout = {timeout}")
 
     # Audit
 

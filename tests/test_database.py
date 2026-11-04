@@ -176,9 +176,11 @@ def test_home_assistant_backup_and_restore_with_the_add_on_writing(settings, con
         assert backup_copy.RESTORED in recovered["text"]
 
 
-def test_database_and_wal_copied_at_different_moments_use_the_backup_copy(tmp_path):
+@pytest.mark.parametrize("wal", ["con scritture", "vuoto"])
+def test_database_and_wal_copied_at_different_moments_use_the_backup_copy(tmp_path, wal):
     """Il Supervisor copia database e WAL in momenti diversi: gli indici possono non tornare con le tabelle, e
-    quick_check non lo vede. Con il WAL rimasto il controllo all'avvio è completo e si riparte dalla copia."""
+    quick_check non lo vede. Con il WAL rimasto il controllo all'avvio è completo e si riparte dalla copia. Anche con
+    il WAL vuoto: copiato subito dopo lo svuotamento del backup_pre, mentre il database cambiava ancora."""
     path = tmp_path / DB_NAME
     db = Database(path, "0.26.0")
     db.add_audit("admin", "prima")
@@ -202,8 +204,8 @@ def test_database_and_wal_copied_at_different_moments_use_the_backup_copy(tmp_pa
     writer.commit()
     restored = tmp_path / "ripristino"
     restored.mkdir()
-    for suffix in ("", "-wal"):
-        (restored / f"{DB_NAME}{suffix}").write_bytes(Path(f"{path}{suffix}").read_bytes())
+    (restored / DB_NAME).write_bytes(path.read_bytes())
+    (restored / f"{DB_NAME}-wal").write_bytes(Path(f"{path}-wal").read_bytes() if wal == "con scritture" else b"")
     writer.close()
     (restored / "copia_backup").mkdir()
     (restored / "copia_backup" / DB_NAME).write_bytes(ha_copy_path(path).read_bytes())
@@ -315,6 +317,94 @@ def test_missing_database_with_damaged_copy_says_it_starts_empty(tmp_path):
     ha_copy_path(path).parent.mkdir()
     ha_copy_path(path).write_bytes(b"rovinata" * 100)
     assert recover(path).endswith(backup_copy.STARTED_EMPTY)
+
+
+def test_unreadable_database_then_disk_full_still_says_the_copy_was_restored(
+    settings, controller, tmp_path, monkeypatch
+):
+    data = tmp_path / "data"
+    data.mkdir()
+    _person_and_backup(settings, controller, data)
+    db = Database(data / DB_NAME)
+    db.add_session("sessione-vecchia", "reception", "2026-01-01T00:00:00+00:00", "10.0.0.9", "browser")
+    db.close()
+    backup_pre(data / DB_NAME)
+    _header(data / DB_NAME)
+
+    def full(source, target, check=False):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(backup_copy, "consistent_copy", full)
+    monkeypatch.setattr(main, "low_space", lambda folder: True)
+    connect = Database._connect
+    calls = []
+
+    def connect_without_space(self, path, existed):
+        calls.append(path)
+        if len(calls) == 2:
+            # Copia spostata al posto del database, poi SQLite non riesce a creare il WAL: disco pieno
+            raise sqlite3.OperationalError("database or disk is full")
+        connect(self, path, existed)
+
+    monkeypatch.setattr(Database, "_connect", connect_without_space)
+    with start(settings, controller, data) as client:
+        persons = client.get("/api/persons").json()
+        recovered = client.app.state.db_recovery
+        sessions = client.app.state.db.list_sessions()
+    assert len(calls) == 3 and [p["name"] for p in persons] == ["Anna Rossi"]
+    # Al nuovo tentativo il database è sano: prima niente notifica, e le sessioni di prima restavano buone
+    assert recovered["title"] == "Database Ripristinato dalla Copia"
+    assert "spostata al posto del database" in recovered["text"]
+    assert sessions == [] and "sessioni dell'Accesso Diretto sono state chiuse" in recovered["text"]
+
+
+def test_missing_database_and_copy_without_space_to_duplicate_it(tmp_path, monkeypatch):
+    path = tmp_path / DB_NAME
+    db = Database(path)
+    db.add_person("Anna Rossi", "utente_anna")
+    db.close()
+    backup_pre(path)
+    path.unlink()
+
+    def full(source, target, check=False):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(backup_copy, "consistent_copy", full)
+    db = Database(path)
+    # Prima ripartiva vuota, all'avvio dopo non si riprovava e il backup successivo sostituiva la copia sana
+    assert [p["name"] for p in db.list_persons()] == ["Anna Rossi"]
+    assert backup_copy.RESTORED in db.recovered and "spostata al posto del database" in db.recovered
+    assert not ha_copy_path(path).exists()
+    db.close()
+
+
+def test_damaged_page_of_the_log_does_not_set_the_database_aside(tmp_path):
+    """Database che si apre, con una pagina del registro rovinata e nessuna copia: al primo avvio della versione
+    nuova la creazione dell'indice delle persone legge tutto il registro. L'app parte con i dati, come prima."""
+    path = tmp_path / DB_NAME
+    db = Database(path)
+    db.add_person("Anna Rossi", "utente_anna")
+    db.close()
+    conn = sqlite3.connect(path)
+    conn.executemany(
+        "INSERT INTO events (ts, kind, detail) VALUES ('2026-10-01', 'concesso', ?)", [("x" * 50,)] * 20000
+    )
+    # Database di una versione precedente, senza l'indice
+    conn.execute("DROP INDEX events_person")
+    conn.commit()
+    leaf = [row[0] for row in conn.execute("SELECT pageno FROM dbstat WHERE name = 'events' AND pagetype = 'leaf'")][10]
+    size = conn.execute("PRAGMA page_size").fetchone()[0]
+    conn.close()
+    content = bytearray(path.read_bytes())
+    content[size * (leaf - 1) : size * leaf] = b"\xab" * size
+    path.write_bytes(bytes(content))
+
+    db = Database(path)
+    # Prima tutto il database finiva da parte e l'app ripartiva vuota, senza persone e tessere ancora leggibili
+    assert [p["name"] for p in db.list_persons()] == ["Anna Rossi"]
+    assert db.recovered == "database danneggiato e nessuna copia sana del backup da cui ripartire"
+    assert not list(tmp_path.glob("*_danneggiato_*"))
+    db.close()
 
 
 # Copia prima dell'aggiornamento
@@ -519,6 +609,26 @@ def test_full_disk_at_startup_deletes_expired_snapshots_and_starts(settings, con
     assert not old.exists() and new.exists()
 
 
+def test_checkpoint_after_the_prune_does_not_wait_for_readers(tmp_path):
+    db = Database(tmp_path / DB_NAME)
+    for i in range(200):
+        db.add_audit("admin", f"riga {i}", "x" * 500)
+    # Lettura lunga in corso su un'altra connessione (ricerca, CSV, copia per il backup)
+    reader = sqlite3.connect(tmp_path / DB_NAME)
+    reader.execute("BEGIN")
+    reader.execute("SELECT count(*) FROM audit").fetchone()
+    db.add_audit("admin", "dopo")
+    started = time.monotonic()
+    db.checkpoint()
+    waited = time.monotonic() - started
+    reader.rollback()
+    reader.close()
+    # Prima il ciclo dell'app restava fermo 5 s
+    assert waited < 1
+    assert db._query("PRAGMA busy_timeout")[0]["timeout"] == 5000
+    db.close()
+
+
 def test_space_freed_by_the_prune_goes_back_to_the_disk(tmp_path):
     path = tmp_path / DB_NAME
     db = Database(path)
@@ -679,6 +789,29 @@ def test_last_accesses_and_events_of_a_person_use_the_index(tmp_path):
         "GROUP BY person_id"
     )
     assert "events_person" in plan("SELECT id FROM events WHERE person_id = ? ORDER BY ts DESC, id DESC LIMIT 50", (1,))
+    db.close()
+
+
+def test_short_reads_from_the_app_loop_do_not_wait_for_searches(tmp_path):
+    db = Database(tmp_path / DB_NAME)
+    db.add_event(ts="2026-10-01T08:00:00+00:00", kind="concesso")
+    # Ricerche lunghe in corso nei thread: tutti i posti delle letture lunghe occupati
+    for _ in range(db_module.READ_SLOTS):
+        db._read_slots.acquire()
+
+    async def summary():
+        return db.list_events(limit=8)
+
+    result = []
+    thread = threading.Thread(target=lambda: result.append(asyncio.run(summary())))
+    thread.start()
+    thread.join(2)
+    answered = bool(result)
+    for _ in range(db_module.READ_SLOTS):
+        db._read_slots.release()
+    thread.join()
+    # Prima il riepilogo, le notifiche e Home Assistant aspettavano la fine delle ricerche, e con loro tutta l'app
+    assert answered and len(result[0]) == 1
     db.close()
 
 

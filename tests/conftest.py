@@ -1,9 +1,11 @@
 import copy
 import itertools
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 
+from app import ha
 from app.config import parse_options
 from app.db import Database
 from app.vapix import VapixError
@@ -459,6 +461,14 @@ def no_scheduled_backups(monkeypatch):
 def home_assistant_zone(monkeypatch):
     """Home Assistant con il fuso del controller finto, qualunque sia quello di chi esegue i test."""
     monkeypatch.setattr("app.health.ha_time_zone", lambda: "Europe/Rome")
+
+
+@pytest.fixture(autouse=True)
+def disk_with_space(monkeypatch):
+    """Disco con molto spazio libero, qualunque sia quello di chi esegue i test: con meno di 1 GB libero ogni app
+    mostrava il disco quasi pieno e non salvava le istantanee. I test sullo spazio scarso lo impostano da soli."""
+    space = SimpleNamespace(total=1024**4, used=0, free=1024**4)
+    monkeypatch.setattr(ha.shutil, "disk_usage", lambda path: space)
 
 
 @pytest.fixture

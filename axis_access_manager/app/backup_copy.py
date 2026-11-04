@@ -149,9 +149,9 @@ def damage(path: Path) -> str:
     dicono "rovinato" (file bloccato, permessi, disco) si sollevano: non vogliono dire danneggiato.
     Con il WAL rimasto accanto (add-on non chiuso: spegnimento improvviso, o cartella rimessa da un backup di Home
     Assistant fatto con l'add-on acceso) il controllo è completo: database e WAL copiati in momenti diversi danno
-    indici che non tornano con le tabelle, e quick_check non lo vede."""
-    wal = Path(f"{path}-wal")
-    check = "integrity_check" if wal.exists() and wal.stat().st_size > 0 else "quick_check"
+    indici che non tornano con le tabelle, e quick_check non lo vede. Anche con il WAL vuoto: copiato subito dopo lo
+    svuotamento del backup_pre, mentre il database cambiava ancora. La chiusura normale dell'add-on toglie il WAL."""
+    check = "integrity_check" if Path(f"{path}-wal").exists() else "quick_check"
     try:
         conn = sqlite3.connect(f"file:{path}?mode=rw", uri=True, timeout=30)
         try:
@@ -221,13 +221,26 @@ def recover(db_path: Path) -> str:
             return f"{problem} e nessuna copia sana del backup da cui ripartire: {STARTED_EMPTY}"
         # Il danneggiato resta: se SQLite lo apre l'app parte con quello, se no ci pensa replace_unusable()
         return f"{problem} e nessuna copia sana del backup da cui ripartire"
+    when = datetime.fromtimestamp(copy.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
     # Prima la copia accanto al database: se non riesce (disco pieno) il database resta dov'è e si riprova
     try:
         consistent_copy(copy, restoring)
     except (OSError, sqlite3.Error) as err:
         _LOGGER.error("Copia del backup non ripristinata: %s", err)
-        return f"{problem}, copia del backup non ripristinata ({error_reason(err)}): si riprova al prossimo avvio"
-    when = datetime.fromtimestamp(copy.stat().st_mtime).strftime("%d/%m/%Y %H:%M")
+        if _has_data(db_path):
+            return f"{problem}, copia del backup non ripristinata ({error_reason(err)}): si riprova al prossimo avvio"
+        # Database mancante: l'apertura ne creava uno vuoto, all'avvio dopo non si riprovava più e il backup
+        # successivo sostituiva la copia sana con quello. La copia si sposta al posto del database (non serve spazio),
+        # come in replace_unusable()
+        for suffix in ("-journal", "-wal", "-shm"):
+            Path(f"{db_path}{suffix}").unlink(missing_ok=True)
+        os.replace(copy, db_path)
+        _sync_dir(db_path.parent)
+        _sync_dir(copy.parent)
+        return (
+            f"{problem}, {RESTORED} del {when}, spostata al posto del database: si rifà al prossimo backup di Home "
+            "Assistant"
+        )
     if not _has_data(db_path):
         # Journal senza database: sulla copia la rovinerebbe
         for suffix in ("-journal", "-wal", "-shm"):

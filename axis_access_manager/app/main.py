@@ -590,19 +590,24 @@ async def _open_database(path: Path | str, snapshots: Path, retention_days: int)
     Prima l'add-on non partiva più, e la pulizia che avrebbe liberato lo spazio non arrivava mai."""
     try:
         return Database(path, __version__)
-    except sqlite3.OperationalError:
+    except sqlite3.OperationalError as err:
         if str(path) == ":memory:" or not (low_space(Path(path).parent) or low_space(snapshots)):
             raise
+        # Cosa aveva già fatto il primo tentativo (copia spostata al posto del database): al secondo recover() trova un
+        # database sano e non lo dice più, e così niente notifica né sessioni dell'Accesso Diretto chiuse
+        recovered = getattr(err, "recovered", "")
     removed = await asyncio.to_thread(delete_old_snapshots, snapshots, retention_days)
     _LOGGER.error("Database non aperto con il disco pieno: %s istantanee oltre la conservazione cancellate", removed)
     try:
-        return Database(path, __version__)
+        db = Database(path, __version__)
     except sqlite3.OperationalError:
         _LOGGER.error(
             "Spazio su disco esaurito: il database dell'add-on non si apre. Libera spazio (backup vecchi di Home "
             "Assistant, cartella Media) e riavvia l'add-on"
         )
         raise
+    db.recovered = db.recovered or recovered
+    return db
 
 
 def create_app(
