@@ -73,7 +73,7 @@ from .health import (
 from .installation import MAX_CONTROLLERS, InstallationService, check_host, same_controller
 from .intercom import IntercomBridge, IntercomSettings
 from .live_events import LiveEvents
-from .lock_guard import CHECK_EVERY, LockGuard
+from .lock_guard import CHECK_EVERY, MAX_EXTENDED, LockGuard
 from .notifications import (
     EXPIRING,
     SETTING_CATEGORIES_PENDING,
@@ -697,6 +697,9 @@ def create_app(
         # Rete di sicurezza della serratura: resta la stessa anche con una nuova configurazione
         app.state.lock_guard = LockGuard()
         await _start_runtime(app)
+        # Aperture estese dall'app appena prima di un riavvio dell'add-on: la rete di sicurezza non le accorcia
+        for door, ago in app.state.service.recent_extended_openings(MAX_EXTENDED).items():
+            app.state.lock_guard.extended_opened(door, ago)
         await app.state.direct.apply(app.state.direct_settings)
         maintenance = asyncio.create_task(_maintenance(app))
         health = asyncio.create_task(_health_loop(app))
@@ -2347,6 +2350,7 @@ async def _start_runtime(app: FastAPI) -> None:
             state.raw_controller,
             lambda: _responding(state),
             fingerprint=lambda: (state.installation.primary or {}).get("cert_fingerprint") or "",
+            clock_offset=lambda: _controller_clock_offset(state, synced_only=False),
         )
         if live
         else None
@@ -2662,7 +2666,8 @@ def _doors_status(state) -> list[dict]:
             "area": places.get(d["id"], {}).get("area", ""),
             "site_id": places.get(d["id"], {}).get("site_id", 0),
             "area_id": places.get(d["id"], {}).get("area_id", 0),
-            "mode": state.monitor.door_modes.get(d["door_token"]),
+            # Con il controller che non risponde, o non ancora letto, la serratura è sconosciuta: mai l'ultimo valore
+            "mode": state.monitor.door_modes.get(d["door_token"]) if state.monitor.reachable is True else None,
             "state": _door_state(state.monitor, d["door_token"]),
             "camera": d["snapshot_camera"],
             "snapshot_on_granted": d["snapshot_on_granted"],
@@ -2969,13 +2974,18 @@ async def _recover_if_needed(state) -> None:
         return
     state.recover_failures = failures
     # Senza eventi in diretta resta da fare: anche il primo giro dopo il loro ritorno, per gli eventi tra questo
-    # recupero e il ritorno
-    state.recover_pending, state.recover_outages, state.recover_periodic = not live, outages, not live
+    # recupero e il ritorno. Anche con gli eventi in diretta se il registro era troppo lungo per un giro: il punto
+    # fissato a ogni giro passerebbe oltre gli eventi non ancora letti
+    more = state.service.recover_more
+    state.recover_pending, state.recover_outages, state.recover_periodic = not live or more, outages, not live
     if state.service.recover_newest is not None:
         state.recover_cutoff = (state.settings.a1210_host, state.service.recover_newest)
     if not live:
         # Il registro dell'app è completo fino a qui
         state.recover_from = _recover_mark(state)
+    elif more and state.service.recover_newest is not None:
+        # Completo solo fino all'ultimo evento letto: quelli arrivati in diretta intanto sono più nuovi
+        state.recover_from = (state.service.recover_newest.isoformat(timespec="seconds"), datetime.now(tz=UTC))
     state.last_recovery = {"at": _now(), "since": since.isoformat(timespec="seconds"), "events": recovered}
     if recovered and announce:
         _LOGGER.info("Recuperati %s eventi dal registro del controller", recovered)

@@ -293,7 +293,7 @@ class A1210Client:
         return context
 
     async def fetch_events(self, start: str, limit: int = 1000, row_id: int | None = None) -> tuple[list[dict], bool]:
-        """Registro eventi interno del controller (fino a 30.000), dal più vecchio; True se ce ne sono altri."""
+        """Registro eventi interno del controller (fino a 250.000), dal più vecchio; True se ce ne sono altri."""
         request: dict = {"Limit": limit, "Start": start}
         if row_id is not None:
             request["RowID"] = row_id

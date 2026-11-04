@@ -22,7 +22,7 @@ from datetime import UTC, datetime, timedelta
 from websockets.asyncio.client import connect as ws_connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus, InvalidURI
 
-from .events import EventMonitor, event_from_ws
+from .events import Event, EventMonitor, event_from_ws
 from .vapix import VapixError, _network_reason, cert_fingerprint
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,10 +32,16 @@ TOPIC_FILTERS = ("tns1:AccessControl//.", "tns1:Door//.", "tns1:IdPoint//.", "tn
 # Secondi per aprire il collegamento e per la risposta ai filtri
 OPEN_TIMEOUT = 10
 # Appena configurato il controller manda lo stato di porte, lettori, ingressi e coperchio con l'ora dell'ultimo
-# cambio: come i messaggi conservati dal broker aggiornano lo stato, ma non fanno righe nel registro. Passaggi e
-# tessere lette non sono stati: quelli valgono sempre
+# cambio: aggiorna lo stato, ma non fa righe nel registro. Passaggi e tessere lette non sono stati: quelli valgono
+# sempre
 INITIAL_STATE_SECONDS = 3.0
 ALWAYS_LIVE = ("AccessControl/", "IdPoint/Request/")
+# Con lo scarto dell'orologio del controller misurato lo stato si riconosce dall'ora dell'evento, non da quando si
+# elabora: è stato quello cambiato prima dell'apertura del collegamento (di oltre STATE_MARGIN secondi, la precisione
+# dello scarto), anche se elaborato in ritardo (ciclo occupato da un recupero) entro INITIAL_STATE_MAX secondi; un
+# evento successo dopo l'apertura è in diretta anche nei primi secondi
+STATE_MARGIN = 2.0
+INITIAL_STATE_MAX = 30.0
 # Senza risposta al ping entro questi secondi il collegamento è perso (cavo staccato, controller spento)
 PING_INTERVAL = 20
 PING_TIMEOUT = 20
@@ -89,6 +95,7 @@ class LiveEvents:
         responding: Callable[[], bool | None],
         connect=ws_connect,
         fingerprint: Callable[[], str] | None = None,
+        clock_offset: Callable[[], float | None] | None = None,
     ) -> None:
         self.monitor = monitor
         self.client = client
@@ -99,6 +106,9 @@ class LiveEvents:
         # Impronta del certificato del controller memorizzato ("" se non ancora riconosciuto): un controller diverso
         # all'indirizzo non manda eventi nemmeno prima che il controllo periodico se ne accorga
         self.fingerprint = fingerprint
+        # Secondi di cui l'orologio del controller è avanti rispetto a Home Assistant (misurato, anche senza NTP);
+        # None se non si sa: allora lo stato iniziale è quello che arriva nei primi INITIAL_STATE_SECONDS
+        self.clock_offset = clock_offset
         # Il controllo periodico lo segnala quando il controller smette o torna a rispondere, o le scritture si
         # sospendono: si riprova subito, o si chiude il collegamento aperto
         self.wake = asyncio.Event()
@@ -173,8 +183,10 @@ class LiveEvents:
                     "method": "events:configure",
                     "params": {"eventFilterList": [{"topicFilter": f} for f in TOPIC_FILTERS]},
                 }
+                opened = datetime.now(tz=UTC)
                 await ws.send(json.dumps(configure))
                 initial_until = loop.time() + OPEN_TIMEOUT + INITIAL_STATE_SECONDS
+                state_until = loop.time() + OPEN_TIMEOUT + INITIAL_STATE_MAX
                 configured = False
                 while not configured:
                     raw = await asyncio.wait_for(ws.recv(), OPEN_TIMEOUT)
@@ -188,8 +200,9 @@ class LiveEvents:
                             )
                         configured = True
                         initial_until = loop.time() + INITIAL_STATE_SECONDS
+                        state_until = loop.time() + INITIAL_STATE_MAX
                     else:
-                        self._notify(message, initial=True)
+                        self._notify(message, initial=True, opened=opened)
                 # Sospeso o non più raggiungibile mentre si collegava: niente eventi da un controller non confermato
                 if self.responding() is not True:
                     raise WebSocketError("il controller non risponde più o è cambiato")
@@ -199,7 +212,8 @@ class LiveEvents:
                     async for raw in ws:
                         if self._closing:
                             break
-                        self._notify(_json(raw), initial=loop.time() < initial_until)
+                        now = loop.time()
+                        self._notify(_json(raw), now < initial_until, opened if now < state_until else None)
                 finally:
                     watcher.cancel()
                 raise WebSocketError(self._closing or "collegamento chiuso dal controller")
@@ -239,7 +253,9 @@ class LiveEvents:
         if der and cert_fingerprint(der) != expected:
             raise WebSocketError("il certificato del controller non è quello memorizzato")
 
-    def _notify(self, message: dict, initial: bool) -> None:
+    def _notify(self, message: dict, initial: bool, opened: datetime | None = None) -> None:
+        """initial: nei primi INITIAL_STATE_SECONDS dopo la risposta ai filtri. opened: ora (di Home Assistant)
+        dell'apertura del collegamento, nei primi INITIAL_STATE_MAX secondi; None dopo."""
         if message.get("method") != "events:notify" or self._closing:
             return
         params = message.get("params") if isinstance(message.get("params"), dict) else {}
@@ -248,8 +264,16 @@ class LiveEvents:
             return
         self.events += 1
         self.last_event_at = _now()
-        retained = initial and not event.topic.startswith(ALWAYS_LIVE)
+        retained = not event.topic.startswith(ALWAYS_LIVE) and self._initial_state(event, initial, opened)
         self.monitor.apply_event(event, retained)
+
+    def _initial_state(self, event: Event, initial: bool, opened: datetime | None) -> bool:
+        """Stato mandato appena collegato, non un evento di adesso: dall'ora dell'evento rispetto all'apertura del
+        collegamento, sull'orologio del controller; senza lo scarto misurato, da quando arriva."""
+        offset = self.clock_offset() if self.clock_offset and opened else None
+        if offset is None:
+            return initial
+        return (opened + timedelta(seconds=offset) - event.timestamp).total_seconds() > STATE_MARGIN
 
     def _connected(self) -> None:
         if self.down_since:

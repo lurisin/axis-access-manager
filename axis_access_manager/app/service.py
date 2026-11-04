@@ -16,7 +16,7 @@ from .config import Settings
 from .db import Database, now_iso
 from .events import Event, EventMonitor, door_of_topic, event_from_log
 from .rules import RuleError, check_validity, normalize_validity
-from .vapix import A1210Client, VapixError
+from .vapix import A1210Client, ControllerUnreachable, VapixError
 
 _LOGGER = logging.getLogger(__name__)
 # Oltre questo scarto l'ora del controller non è credibile neanche se dice di essere sincronizzato
@@ -61,6 +61,9 @@ DOOR_ALARMS = {
 
 # Eventi registrati dal controller: non si registrano due volte (MQTT e recupero dal registro interno)
 CONTROLLER_KINDS = ("lettura", "sconosciuta", "concesso", "negato", "uscita", "allarme", "manomissione")
+# Allarmi e manomissioni sono anche stato: il controller li rimanda con la loro ora quando il WebSocket si ricollega.
+# Uno già nel registro con la stessa impronta e lo stesso secondo è lo stesso, anche se arriva come in diretta
+STATE_KINDS = ("allarme", "manomissione")
 # Eventi del registro interno del controller che finiscono nel Registro dell'app
 RECOVER_TOPICS = (
     "IdPoint/Request/IdData",
@@ -222,6 +225,8 @@ class AccessService:
         self._recovered = 0
         # Ora (del controller) dell'evento più recente letto dall'ultimo recupero, None se non ne ha letti
         self.recover_newest: datetime | None = None
+        # L'ultimo recupero si è fermato a RECOVER_MAX righe con altre ancora da leggere: si continua al giro dopo
+        self.recover_more = False
         # Secondi di cui l'orologio del controller (sincronizzato via NTP) è avanti rispetto a Home Assistant;
         # None se non si sa o se il controller non è sincronizzato
         self.clock_offset: Callable[[], float | None] | None = None
@@ -256,7 +261,8 @@ class AccessService:
 
     async def last_grant(self, door: str) -> tuple[str, float | None] | None:
         """Ultimo consenso (tessera, pulsante) alla porta nel registro del controller: (impronta, secondi fa), None se
-        non c'è tra gli ultimi eventi. Per la rete di sicurezza della serratura senza eventi in diretta."""
+        non c'è tra gli ultimi eventi. Per la rete di sicurezza della serratura: senza eventi in diretta, e con gli
+        eventi in diretta prima di bloccare per il tempo scaduto."""
         entries = await self.controller.latest_events(GRANT_LOG_TAIL)
         # Scarto misurato dell'orologio del controller, anche senza NTP: senza misura i secondi non si sanno (None)
         offset = self.measured_clock_offset() if self.measured_clock_offset else None
@@ -287,7 +293,7 @@ class AccessService:
         in ritardo può essere già stato recuperato: in quei casi non si registra due volte.
         """
         ref = fields.get("ref") or ""
-        if ref and self.db.similar_event(ts=fields["ts"], ref=ref, only_recovered=not self._recovering):
+        if ref and self._known(fields["kind"], fields["ts"], ref):
             return None
         if self._recovering:
             fields["recovered"] = True
@@ -324,6 +330,13 @@ class AccessService:
             _LOGGER.error("Registro non scrivibile: %s", err)
             self.write_error = {"since": now_iso(), "error": error_reason(err)}
             self._changed()
+
+    def _known(self, kind: str, ts: str, ref: str) -> bool:
+        """Evento del controller già nel registro: arrivato in diretta e recuperato (o il contrario), oppure allarme o
+        manomissione rimandati come stato con la loro ora."""
+        if self.db.similar_event(ts=ts, ref=ref, only_recovered=not self._recovering):
+            return True
+        return kind in STATE_KINDS and self.db.similar_event(ts=ts, ref=ref, window=0)
 
     # Sincronizzazione
 
@@ -1006,10 +1019,22 @@ class AccessService:
                 label = DOOR_MODES.get(mode, mode)
                 raise ServiceError(f"la porta non è bloccata ({label}): attendi che si richiuda")
             before = self.monitor.door_modes.get(door) if self.monitor else None
-            await self.controller.access_door(door, extended)
-            if self.lock_guard is not None:
+            guard, door_open = self.lock_guard, self._door_open(door)
+            # Consenso alla rete di sicurezza già prima del comando: con la risposta persa il controller può avere
+            # aperto lo stesso, con il tempo esteso se chiesto. Un consenso senza apertura scade da solo
+            grant = guard.granted(door, extended, door_open) if guard is not None else None
+            try:
+                await self.controller.access_door(door, extended)
+            except ControllerUnreachable:
+                raise
+            except VapixError:
+                # Rifiutato dal controller: nessuna apertura
+                if guard is not None:
+                    guard.withdraw(door, grant)
+                raise
+            if guard is not None:
                 # Il tempo della rete di sicurezza parte da qui, con il tempo esteso se chiesto
-                self.lock_guard.granted(door, extended, self._door_open(door))
+                guard.granted(door, extended, door_open)
             if self.monitor and self.monitor.door_modes.get(door) == before:
                 # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
                 # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
@@ -1022,6 +1047,28 @@ class AccessService:
             # La porta è aperta: con il disco pieno l'apertura risultava non eseguita
             _LOGGER.warning("Apertura della porta non scritta in Attività: %s", err)
         return True
+
+    def recent_extended_openings(self, seconds: float) -> dict[str, float]:
+        """Porte aperte dall'app con il tempo esteso negli ultimi seconds secondi, se è la loro ultima apertura a
+        distanza: porta → secondi fa. Per la rete di sicurezza della serratura dopo un riavvio dell'add-on."""
+        now = datetime.fromisoformat(self.event_now())
+        since = (now - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+        found: dict[str, float] = {}
+        seen: set[str] = set()
+        for row in self.db.list_events(kind="apertura_remota", since=since):
+            door = row["door"] or ""
+            if door in seen:
+                continue
+            seen.add(door)
+            try:
+                age = (now - datetime.fromisoformat(row["ts"])).total_seconds()
+            except (TypeError, ValueError):
+                # Ora non leggibile (database ripristinato da una versione vecchia): l'avvio non si ferma per questo
+                continue
+            # Una riga nel futuro (orologio spostato) non si sa quando è: non conta
+            if door and age >= 0 and (row["detail"] == "tempo esteso" or row["detail"].startswith("tempo esteso, ")):
+                found[door] = age
+        return found
 
     # Eventi
 
@@ -1036,7 +1083,8 @@ class AccessService:
         return moment.isoformat(timespec="seconds")
 
     def record_event(self, event: Event, retained: bool = False) -> None:
-        """Salva nel log gli eventi utili. I messaggi conservati dal broker sono già stati registrati."""
+        """Salva nel log gli eventi utili. Lo stato mandato dal WebSocket appena collegato (retained) è già stato
+        registrato."""
         if self.lock_guard is not None and not retained and not self._recovering:
             if event.topic.startswith("AccessControl/AccessGranted"):
                 door = self._door_of(event)
@@ -1044,7 +1092,7 @@ class AccessService:
             elif event.topic.startswith(("Door/State/", "Device/IO/Port")):
                 self.lock_guard.poke()
         if event.topic.startswith("Door/State/DoorMode/"):
-            # Anche il valore conservato dal broker aggiorna lo stato in Home Assistant
+            # Anche lo stato mandato dal WebSocket appena collegato aggiorna Home Assistant
             self._changed()
             return
         if event.topic.startswith(STATE_TOPICS) and not self._recovering:
@@ -1166,7 +1214,7 @@ class AccessService:
         quella già nel registro. Vale anche per gli eventi recuperati dal registro del controller, che così non
         rifanno le righe accorpate. Lo stesso evento arrivato via MQTT e dal registro del controller non è una
         ripetizione: al banco il recupero all'avvio aveva segnato "più pressioni" su una pressione sola."""
-        if self.db.similar_event(ts=ts, ref=ref, only_recovered=not self._recovering):
+        if self._known(kind, ts, ref):
             return True
         row = self.db.recent_event(kind, source, door, detail, ts, REPEAT_WINDOWS[kind])
         if row is None:
@@ -1202,8 +1250,9 @@ class AccessService:
             await self.load_access_points()
         self._recovered = 0
         self.recover_newest = None
+        self.recover_more = False
         row_id, read = None, 0
-        while read < RECOVER_MAX:
+        while True:
             entries, more = await self.controller.fetch_events(start, RECOVER_PAGE, row_id)
             read += len(entries)
             before = self._recovered
@@ -1222,6 +1271,11 @@ class AccessService:
             if self._recovered > before:
                 self._changed()
             if not more or not entries:
+                break
+            if read >= RECOVER_MAX:
+                # L'A1210 tiene fino a 250.000 eventi: il resto al prossimo giro, dall'ultimo letto (recover_newest)
+                _LOGGER.warning("Recupero fermato a %s eventi letti dal registro del controller: si continua", read)
+                self.recover_more = True
                 break
             row_id = entries[-1].get("rowid")
         return self._recovered

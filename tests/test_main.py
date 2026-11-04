@@ -606,6 +606,121 @@ def test_controller_clock_ahead_then_corrected_does_not_stop_recovery(client, co
     assert [e["card"] for e in state.db.list_events() if e["kind"] == "sconosciuta"] == ["07"]
 
 
+@pytest.mark.parametrize("app_row", ["allarme", "negato"])
+def test_app_rows_do_not_move_the_recovery_point(client, controller, app_row):
+    from datetime import timedelta
+
+    from app import main
+    from app.lock_guard import FORCED
+
+    state = client.app.state
+    # Controller 5 minuti indietro e senza NTP: le righe dell'app hanno l'ora di Home Assistant
+    controller.clock_skew, controller.ntp_synced = -300, False
+    client.portal.call(state.health.check_all)
+    old = datetime.now(tz=UTC) - timedelta(hours=1)
+    state.db.add_event(ts=old.isoformat(timespec="seconds"), kind="concesso", door="porta")
+    state.recover_from = main._recover_mark(state)
+
+    def passage(rowid, card, after=0):
+        moment = datetime.now(tz=UTC) + timedelta(seconds=controller.clock_skew + after)
+        controller.log_events.append(_log_entry(rowid, _utc(moment), "IdPoint", "Request", "IdData", Card=card))
+
+    controller.log_events = []
+    passage(1, "01")
+    client.portal.call(main._recover_if_needed, state)
+    service = state.service
+    # Nel ciclo dell'app, come in produzione (le notifiche a Home Assistant partono come compiti)
+    if app_row == "allarme":
+        client.portal.call(service.log_lock_alarm, "porta", FORCED)
+    else:
+        client.portal.call(
+            lambda: service.log_event(
+                ts=service.event_now(), kind="negato", detail="apertura non eseguita: prova", source="Home Assistant"
+            )
+        )
+    client.portal.call(main._recover_if_needed, state)
+    # Passaggi subito dopo, con l'ora del controller: prima dell'ora della riga dell'app
+    passage(2, "02", 1)
+    passage(3, "03", 30)
+    client.portal.call(main._recover_if_needed, state)
+    assert sorted(e["card"] for e in state.db.list_events() if e["kind"] == "sconosciuta") == ["01", "02", "03"]
+    # Neanche con gli eventi in diretta: il punto fissato a ogni giro resta sull'ultimo evento del controller
+    state.monitor.ws_live, state.recover_pending = True, False
+    state.recover_outages = state.monitor.outages
+    client.portal.call(main._recover_if_needed, state)
+    assert state.recover_from[0] < service.event_now()
+
+
+def test_long_controller_log_is_recovered_over_more_rounds_with_live_events(client, controller, monkeypatch):
+    from datetime import timedelta
+
+    from app import main
+
+    # Registro del controller più lungo di quanto si legge in un giro (l'A1210 tiene fino a 250.000 eventi)
+    monkeypatch.setattr("app.service.RECOVER_MAX", 4)
+    monkeypatch.setattr("app.service.RECOVER_PAGE", 2)
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    # Eventi in diretta: punto di recupero fissato un'ora fa, poi un'interruzione con 10 passaggi
+    state.monitor.ws_live, state.recover_pending = True, False
+    outage = datetime.now(tz=UTC) - timedelta(hours=1)
+    state.recover_from = ((outage - timedelta(minutes=1)).isoformat(timespec="seconds"), outage)
+    controller.log_events = [
+        _log_entry(i, _utc(outage + timedelta(seconds=20 * i)), "IdPoint", "Request", "IdData", Card=f"{i:02d}")
+        for i in range(1, 11)
+    ]
+    state.monitor.outages += 1
+    # Al ritorno arrivano subito eventi in diretta, più nuovi di quelli persi
+    state.db.add_event(ts=datetime.now(tz=UTC).isoformat(timespec="seconds"), kind="concesso", door="porta")
+    for _ in range(6):
+        client.portal.call(main._recover_if_needed, state)
+    cards = sorted(e["card"] for e in state.db.list_events() if e["kind"] == "sconosciuta")
+    assert cards == [f"{i:02d}" for i in range(1, 11)]
+    assert state.recover_pending is False
+
+
+def test_extended_opening_survives_an_add_on_restart(settings, controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    path = tmp_path / "riavvio.db"
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=path)
+    with TestClient(app) as client:
+        assert client.portal.call(app.state.service.open_door, True, "Luca (Home Assistant)") is True
+    # L'add-on si riavvia subito dopo Apri a Lungo: la rete di sicurezza nuova sa che l'apertura è estesa
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=path)
+    with TestClient(app):
+        guard = app.state.lock_guard
+        assert "porta" in guard.extended_at and guard.clock() - guard.extended_at["porta"] < 10
+
+
+def test_door_lock_unknown_while_the_controller_does_not_respond(client):
+    import json
+
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    doors = [d["door_token"] for d in state.installation.doors()]
+    client.portal.call(state.state_keeper.tick, state.controller, doors, main._responding(state))
+
+    def modes():
+        return [d["mode"] for d in client.get("/api/summary").json()["doors"]]
+
+    assert modes() == ["Locked"]
+    # Il controller non risponde da un minuto: stato svuotato
+    health = state.health.states[state.installation.primary["id"]]
+    health.online, health.failures = False, 2
+    client.portal.call(state.state_keeper.tick, state.controller, doors, main._responding(state))
+    assert modes() == [None]
+    # Mosquitto riavviato: il broker ripete la modalità conservata. Non torna «Bloccata»
+    payload = json.dumps({"timestamp": 1758400000000, "message": {"data": {"State": "Locked"}}}).encode()
+    topic = "accessi/x/eventi/Door/State/DoorMode/$source/DoorToken/porta"
+    client.portal.call(lambda: state.monitor.handle(topic, payload, retained=True))
+    assert modes() == [None]
+    # Né per una modalità arrivata in diretta via MQTT con il controller che non risponde alle API
+    client.portal.call(state.monitor.handle, topic, payload)
+    assert state.monitor.door_modes == {"porta": "Locked"} and modes() == [None]
+
+
 def test_responding_changes_wake_the_websocket_from_any_check(client):
     from app import main
     from app.live_events import LiveEvents

@@ -1401,15 +1401,15 @@ class Database:
         )
         return rows[0]["person_name"] if rows else ""
 
-    def similar_event(self, *, ts: str, ref: str, only_recovered: bool = False) -> bool:
-        """Stesso evento del controller (stessa impronta) già registrato entro un secondo;
-        only_recovered: solo tra i recuperati."""
+    def similar_event(self, *, ts: str, ref: str, only_recovered: bool = False, window: int = 1) -> bool:
+        """Stesso evento del controller (stessa impronta) già registrato entro window secondi (0: nello stesso
+        secondo); only_recovered: solo tra i recuperati."""
         try:
             moment = datetime.fromisoformat(ts)
         except ValueError:
             return False
-        low = (moment - timedelta(seconds=1)).isoformat(timespec="seconds")
-        high = (moment + timedelta(seconds=1)).isoformat(timespec="seconds")
+        low = (moment - timedelta(seconds=window)).isoformat(timespec="seconds")
+        high = (moment + timedelta(seconds=window)).isoformat(timespec="seconds")
         return bool(
             self._query(
                 "SELECT 1 FROM events WHERE ts BETWEEN ? AND ? AND ref = ? AND recovered >= ? LIMIT 1",
@@ -1447,9 +1447,16 @@ class Database:
         self._execute("UPDATE events SET detail = ? WHERE id = ?", (detail, event_id))
 
     def last_controller_event(self, kinds: tuple[str, ...]) -> str:
-        """Ora dell'ultimo evento arrivato dal controller: da lì si recuperano quelli persi."""
+        """Ora dell'ultimo evento arrivato dal controller: da lì si recuperano quelli persi. Senza le righe dello
+        stesso tipo scritte dall'app (allarmi della rete di sicurezza, aperture da Home Assistant non eseguite): hanno
+        l'ora di Home Assistant e, con l'orologio del controller indietro, porterebbero il punto oltre i passaggi
+        ancora da recuperare."""
         marks = ", ".join("?" * len(kinds))
-        rows = self._query(f"SELECT MAX(ts) AS ts FROM events WHERE kind IN ({marks})", kinds)
+        rows = self._query(
+            f"SELECT MAX(ts) AS ts FROM events WHERE kind IN ({marks}) AND NOT (kind = 'allarme' AND source = 'App') "
+            "AND NOT (kind = 'negato' AND instr(detail, 'apertura non eseguita') = 1)",
+            kinds,
+        )
         return rows[0]["ts"] or "" if rows else ""
 
     @staticmethod
