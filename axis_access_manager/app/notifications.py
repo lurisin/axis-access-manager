@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
 from .backup_copy import RESTORED
@@ -629,26 +630,33 @@ class NotificationService:
             return {}
         return {OLD_GROUP_ID.sub(r"g\1", str(k)): v if isinstance(v, int) else None for k, v in saved.items()}
 
-    def _still_seen(self, seen: dict[str, int | None], active: dict[str, dict]) -> dict[str, int | None]:
+    def _still_seen(
+        self, seen: dict[str, int | None], active: dict[str, dict], unknown: Collection[str] = ()
+    ) -> dict[str, int | None]:
         """Dimentica le viste che non ci sono più, così se il problema torna si rivede.
 
-        Appena avviato no: i guasti tornano solo dopo i primi controlli, e la presa visione andrebbe persa.
+        Appena avviato no: i guasti tornano solo dopo i primi controlli, e la presa visione andrebbe persa. Nemmeno
+        quelle dei guasti che adesso non si possono valutare (unknown, vedi main._unknown_faults): con il controller che
+        non risponde spariscono, ma non sono risolti. Un id con l'ora di inizio (casing:1@...) conta senza l'ora.
         """
         if time.monotonic() >= self.settled_at:
-            seen = {k: v for k, v in seen.items() if k in active}
+            seen = {k: v for k, v in seen.items() if k in active or k.split("@")[0] in unknown}
         # Viste senza peso: vale quello di adesso
         return {k: active[k].get("weight", 0) if v is None and k in active else v for k, v in seen.items()}
 
     def _save_seen(self, seen: dict[str, int | None]) -> None:
         self.db.set_setting(SETTING_SEEN, json.dumps(dict(sorted(seen.items()))))
 
-    def mark_seen(self, ids: list[str], current: list[dict], shown: dict[str, int] | None = None) -> None:
+    def mark_seen(
+        self, ids: list[str], current: list[dict], shown: dict[str, int] | None = None, unknown: Collection[str] = ()
+    ) -> None:
         """Segna come viste con il peso di adesso: se poi il guasto peggiora, la notifica torna da gestire.
 
         shown: peso di ogni notifica come la mostrava la pagina. Se nel frattempo è peggiorata (per esempio altre
-        tessere sparite prima dell'aggiornamento della pagina) vale quello mostrato, e la notifica resta da gestire."""
+        tessere sparite prima dell'aggiornamento della pagina) vale quello mostrato, e la notifica resta da gestire.
+        unknown: guasti che adesso non si possono valutare (vedi _still_seen)."""
         active = {i["id"]: i for i in current}
-        seen = self._still_seen(self.seen(), active)
+        seen = self._still_seen(self.seen(), active, unknown)
         for item_id in ids:
             if item_id in active:
                 weight = active[item_id].get("weight", 0)
@@ -657,18 +665,19 @@ class NotificationService:
                 seen[item_id] = max(seen.get(item_id) or 0, weight)
         self._save_seen(seen)
 
-    def forget_resolved(self, current: list[dict]) -> dict[str, int | None]:
+    def forget_resolved(self, current: list[dict], unknown: Collection[str] = ()) -> dict[str, int | None]:
         """Dimentica le viste dei guasti risolti e restituisce le altre. Gira anche a ogni controllo periodico, non solo
-        con l'app aperta: un guasto risolto e tornato mentre nessuno guardava risultava ancora visto."""
+        con l'app aperta: un guasto risolto e tornato mentre nessuno guardava risultava ancora visto. Quelle dei guasti
+        che adesso non si possono valutare (unknown) restano."""
         saved = self.seen()
-        seen = self._still_seen(saved, {i["id"]: i for i in current})
+        seen = self._still_seen(saved, {i["id"]: i for i in current}, unknown)
         if seen != saved:
             self._save_seen(seen)
         return seen
 
-    def listing(self, current: list[dict], perms: set[str] | None = None) -> dict:
+    def listing(self, current: list[dict], perms: set[str] | None = None, unknown: Collection[str] = ()) -> dict:
         """Notifiche per un utente: nomi, tessere ed eventi solo a chi ha il permesso di vederli."""
-        seen = self.forget_resolved(current)
+        seen = self.forget_resolved(current, unknown)
         hidden = {k for k, perm in VISIBILITY.items() if perms is not None and perm not in perms}
         no_log = perms is not None and "registro" not in perms
         items = []

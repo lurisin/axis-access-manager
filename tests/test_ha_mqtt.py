@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import json
+import logging
 import time
 
 import pytest
@@ -301,8 +302,9 @@ async def test_device_and_topics_stay_stable(db, settings, monkeypatch):
     assert first._midnight is None
 
 
-async def test_entities_removed_when_the_app_stops_listening(db, settings, monkeypatch):
+async def test_entities_removed_when_the_app_stops_listening(db, settings, monkeypatch, caplog):
     """Controller tolto: senza controller l'app non si ricollega al broker, quindi le entità si tolgono subito."""
+    caplog.set_level(logging.INFO)
     doors = [
         {"id": 1, "door_token": "porta", "name": "Porta", "ha_buttons": True},
         {"id": 2, "door_token": "porta2", "name": "Cantina", "ha_buttons": True},
@@ -320,6 +322,8 @@ async def test_entities_removed_when_the_app_stops_listening(db, settings, monke
     assert {"apri_porta", "apri_porta_2", "stato_porta", "stato_porta_2"} <= removed
     assert all(payload == b"" and retain for topic, payload, retain in sent if topic.endswith("/config"))
     assert sent[-1] == ("axis_access_manager/disponibile", "offline", True)
+    # Anche il controller che resta con il prefisso MQTT svuotato: il log non dice che non c'è nessun controller
+    assert "nessun controller o prefisso vuoto" in caplog.text
     # Una nuova configurazione con le stesse entità non le tocca
     sent.clear()
     await bridge.stop(offline=False)

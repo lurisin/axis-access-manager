@@ -323,6 +323,116 @@ def test_seen_fault_forgotten_when_resolved_with_the_app_closed(client, controll
     assert again["id"] == fault["id"] and again["seen"] is False
 
 
+def test_seen_unmanaged_survives_an_outage_with_the_app_closed(client, controller):
+    """Revisione: un minuto senza risposta nascondeva i punti di accesso non gestiti, e il giro periodico ne
+    dimenticava la presa visione. Al ritorno lo stesso guasto, mai risolto, tornava da gestire."""
+    from app import main
+
+    state = client.app.state
+    state.notifications.settled_at = 0
+    state.notifications.set_levels({"mqtt": "off"}, "test")
+    client.portal.call(state.health.check_all)
+    [health] = state.health.states.values()
+
+    def programming():
+        return [i for i in client.get("/api/notifications").json()["items"] if i["type"] == "programming"]
+
+    health.unmanaged = ["Ingresso"]
+    [shown] = programming()
+    client.post("/api/notifications/seen", json={"ids": [shown["id"]], "weights": {shown["id"]: shown["weight"]}})
+    assert programming()[0]["seen"] is True
+    # Il controller non risponde per un minuto (due controlli periodici), app chiusa: solo il giro periodico
+    controller.offline = True
+    for _ in range(2):
+        client.portal.call(state.health.check_all)
+    assert health.unreachable
+    main._forget_resolved(state)
+    assert programming() == []
+    # Torna a rispondere, il punto di accesso è sempre lo stesso
+    controller.offline = False
+    client.portal.call(state.health.check_all)
+    health.unmanaged = ["Ingresso"]
+    [after] = programming()
+    assert after["id"] == shown["id"] and after["seen"] is True
+    # Risolto davvero (il controller risponde): la presa visione si dimentica, e se torna è da gestire
+    health.unmanaged = []
+    main._forget_resolved(state)
+    health.unmanaged = ["Ingresso"]
+    assert programming()[0]["seen"] is False
+
+
+def test_seen_clock_fault_survives_one_failed_periodic_check(client, controller):
+    """Revisione: un solo controllo senza risposta nascondeva l'orologio sbagliato per un giro, e lo stesso giro di
+    _health_loop ne dimenticava la presa visione."""
+    from app import main
+
+    state = client.app.state
+    state.notifications.settled_at = 0
+    state.notifications.set_levels({"mqtt": "off"}, "test")
+    client.portal.call(state.health.check_all)
+    [health] = state.health.states.values()
+
+    def clock():
+        return [i for i in client.get("/api/notifications").json()["items"] if i["type"] == "clock"]
+
+    health.clock_offset = 600.0
+    [shown] = clock()
+    client.post("/api/notifications/seen", json={"ids": [shown["id"]], "weights": {shown["id"]: shown["weight"]}})
+    assert clock()[0]["seen"] is True
+    # Un giro di _health_loop con il controller che non risponde una volta: check_all, poi _forget_resolved
+    controller.offline = True
+    client.portal.call(state.health.check_all)
+    assert not health.unreachable
+    main._forget_resolved(state)
+    controller.offline = False
+    client.portal.call(state.health.check_all)
+    health.clock_offset = 600.0
+    [after] = clock()
+    assert after["id"] == shown["id"] and after["seen"] is True
+    # Ora non letta (clock_offset None): non si sa, la presa visione resta
+    health.clock_offset = None
+    main._forget_resolved(state)
+    health.clock_offset = 600.0
+    assert clock()[0]["seen"] is True
+
+
+def test_seen_open_casing_survives_an_outage(client, controller):
+    """Revisione: con il controller che non risponde lo stato del coperchio torna sconosciuto. Lo stesso coperchio
+    aperto, con la stessa ora di apertura, al ritorno era di nuovo da gestire."""
+    from app import main
+
+    state = client.app.state
+    state.notifications.settled_at = 0
+    state.notifications.set_levels({"mqtt": "off"}, "test")
+    client.portal.call(state.health.check_all)
+    opened = "2026-10-01T08:00:00+00:00"
+
+    def casing():
+        return [i for i in client.get("/api/notifications").json()["items"] if i["type"] == "casing"]
+
+    state.monitor.casing_open, state.monitor.casing_since = True, opened
+    [shown] = casing()
+    client.post("/api/notifications/seen", json={"ids": [shown["id"]], "weights": {shown["id"]: shown["weight"]}})
+    assert casing()[0]["seen"] is True
+    controller.offline = True
+    for _ in range(2):
+        client.portal.call(state.health.check_all)
+    # Come controller_state.StateReader.tick con il controller che non risponde
+    state.monitor.forget_state()
+    main._forget_resolved(state)
+    controller.offline = False
+    client.portal.call(state.health.check_all)
+    # Riletto dal registro del controller: la stessa apertura
+    state.monitor.casing_open, state.monitor.casing_since = True, opened
+    [after] = casing()
+    assert after["id"] == shown["id"] and after["seen"] is True
+    # Richiuso e riaperto: è da gestire
+    state.monitor.casing_open = False
+    main._forget_resolved(state)
+    state.monitor.casing_open = True
+    assert casing()[0]["seen"] is False
+
+
 def test_seen_on_a_stale_page_keeps_a_worsening_to_handle(client):
     """Revisione: la presa visione da una pagina non ancora aggiornata segnava come visto anche il peggioramento
     arrivato nel frattempo, con lo stesso id."""

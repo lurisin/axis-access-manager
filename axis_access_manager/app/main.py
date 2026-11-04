@@ -827,7 +827,7 @@ def create_app(
         visible = {i["id"] for i in listing["items"]}
         ids = [i for i in body.ids if i in visible] if body.ids is not None else list(visible)
         state = request.app.state
-        state.notifications.mark_seen(ids, _current_notifications(state), body.weights)
+        state.notifications.mark_seen(ids, _current_notifications(state), body.weights, _unknown_faults(state))
         after = _notification_listing(request)
         # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche. Solo quelle ora viste: una
         # peggiorata dopo l'ultimo aggiornamento della pagina resta da gestire, e nessuno l'ha ancora vista così
@@ -2694,7 +2694,9 @@ def _current_notifications(state) -> list[dict]:
 def _notification_listing(request: Request) -> dict:
     user = current_user(request)
     state = request.app.state
-    return state.notifications.listing(_current_notifications(state), None if user.can("utenti") else user.perms)
+    return state.notifications.listing(
+        _current_notifications(state), None if user.can("utenti") else user.perms, _unknown_faults(state)
+    )
 
 
 def _intercom_status(intercom: IntercomBridge) -> dict:
@@ -2850,7 +2852,26 @@ async def _health_loop(app: FastAPI) -> None:
 def _forget_resolved(state) -> None:
     """Prese visione dei guasti risolti dimenticate a ogni giro, anche con l'app chiusa ovunque: se il guasto torna
     (controller che smette di nuovo di rispondere, telecamera) è di nuovo da gestire."""
-    state.notifications.forget_resolved(_current_notifications(state))
+    state.notifications.forget_resolved(_current_notifications(state), _unknown_faults(state))
+
+
+def _unknown_faults(state) -> set[str]:
+    """Guasti che adesso non si possono valutare. Si leggono dal controller: quando non risponde, anche a un solo
+    controllo, o quando la sua ora non è stata letta, spariscono dalle notifiche ma non sono risolti. Le loro prese
+    visione restano, e al ritorno lo stesso guasto non torna da gestire (vedi NotificationService._still_seen)."""
+    unknown: set[str] = set()
+    primary_id = (state.installation.primary or {}).get("id")
+    for controller_id, health in state.health.states.items():
+        if health.online is not True:
+            # Nascosti con il controller non raggiungibile
+            unknown |= {f"unmanaged:{controller_id}", f"rex:{controller_id}", f"inputs:{controller_id}"}
+        if health.online is not True or health.clock_offset is None:
+            # Orologio e fuso: solo con il controller che risponde e l'ora letta (health.clock_fault)
+            unknown |= {f"zone:{controller_id}", f"clock:{controller_id}", "clock:home_assistant"}
+        if controller_id == primary_id and (health.online is not True or state.monitor.casing_open is None):
+            # Coperchio: lo stato si rilegge per intero solo dopo il ritorno del controller
+            unknown.add(f"casing:{controller_id}")
+    return unknown
 
 
 async def _recover_if_needed(state) -> None:

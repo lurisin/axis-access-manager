@@ -584,7 +584,8 @@ class HaBridge:
             if not await self.monitor.publish(self._config_topic(component, object_id), b"", retain=True):
                 _LOGGER.warning("Entità non tolte da Home Assistant: broker MQTT non collegato")
                 return
-        _LOGGER.info("Entità tolte da Home Assistant: nessun controller nell'app")
+        # Anche con il controller che resta, se il suo prefisso MQTT è stato svuotato (vedi main._stops_listening)
+        _LOGGER.info("Entità tolte da Home Assistant: l'app non usa più il broker (nessun controller o prefisso vuoto)")
 
     async def _midnight_loop(self) -> None:
         """Accessi Oggi e Accessi Negati Oggi tornano a zero a mezzanotte, anche senza eventi né sincronizzazioni."""
