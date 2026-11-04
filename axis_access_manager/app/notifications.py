@@ -350,18 +350,19 @@ class NotificationService:
             for c in controllers:
                 if c.get("casing_open") and not c.get("unreachable") and c["id"] not in casing_shown:
                     # Stato, non evento: resta finché il coperchio non si chiude, anche dopo le 24 ore degli allarmi.
-                    # Con l'apertura nel registro delle ultime 24 ore la voce è quella dell'allarme, qui sotto
-                    since = c.get("casing_since") or ""
+                    # Con l'apertura nel registro delle ultime 24 ore la voce è quella dell'allarme, qui sotto. In
+                    # una variabile a parte: since resta l'inizio delle 24 ore per rifiuti e tessere sconosciute
+                    opened = c.get("casing_since") or ""
                     add(
                         "casing",
-                        _episode_id(f"casing:{c['id']}", since),
+                        _episode_id(f"casing:{c['id']}", opened),
                         "crit",
                         "Coperchio del Controller Aperto",
                         "",
-                        since or now.isoformat(timespec="seconds"),
+                        opened or now.isoformat(timespec="seconds"),
                         door=c["name"],
                         link=f"#impianti/c{c['id']}/stato",
-                        weight=_reminder_weight(since, now),
+                        weight=_reminder_weight(opened, now),
                     )
                 if c.get("identity_change"):
                     add(
@@ -641,22 +642,33 @@ class NotificationService:
     def _save_seen(self, seen: dict[str, int | None]) -> None:
         self.db.set_setting(SETTING_SEEN, json.dumps(dict(sorted(seen.items()))))
 
-    def mark_seen(self, ids: list[str], current: list[dict]) -> None:
-        """Segna come viste con il peso di adesso: se poi il guasto peggiora, la notifica torna da gestire."""
+    def mark_seen(self, ids: list[str], current: list[dict], shown: dict[str, int] | None = None) -> None:
+        """Segna come viste con il peso di adesso: se poi il guasto peggiora, la notifica torna da gestire.
+
+        shown: peso di ogni notifica come la mostrava la pagina. Se nel frattempo è peggiorata (per esempio altre
+        tessere sparite prima dell'aggiornamento della pagina) vale quello mostrato, e la notifica resta da gestire."""
         active = {i["id"]: i for i in current}
         seen = self._still_seen(self.seen(), active)
         for item_id in ids:
             if item_id in active:
-                seen[item_id] = max(seen.get(item_id) or 0, active[item_id].get("weight", 0))
+                weight = active[item_id].get("weight", 0)
+                if shown and item_id in shown:
+                    weight = min(weight, shown[item_id])
+                seen[item_id] = max(seen.get(item_id) or 0, weight)
         self._save_seen(seen)
+
+    def forget_resolved(self, current: list[dict]) -> dict[str, int | None]:
+        """Dimentica le viste dei guasti risolti e restituisce le altre. Gira anche a ogni controllo periodico, non solo
+        con l'app aperta: un guasto risolto e tornato mentre nessuno guardava risultava ancora visto."""
+        saved = self.seen()
+        seen = self._still_seen(saved, {i["id"]: i for i in current})
+        if seen != saved:
+            self._save_seen(seen)
+        return seen
 
     def listing(self, current: list[dict], perms: set[str] | None = None) -> dict:
         """Notifiche per un utente: nomi, tessere ed eventi solo a chi ha il permesso di vederli."""
-        saved = self.seen()
-        active = {i["id"]: i for i in current}
-        seen = self._still_seen(saved, active)
-        if seen != saved:
-            self._save_seen(seen)
+        seen = self.forget_resolved(current)
         hidden = {k for k, perm in VISIBILITY.items() if perms is not None and perm not in perms}
         no_log = perms is not None and "registro" not in perms
         items = []

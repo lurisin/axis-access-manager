@@ -294,6 +294,62 @@ def test_seen_notifications_go_in_the_audit_log(client):
     assert len(db.list_audit()) == count
 
 
+def test_seen_fault_forgotten_when_resolved_with_the_app_closed(client, controller):
+    """Revisione: la presa visione di un guasto risolto si dimenticava solo con l'app aperta. Risolto e tornato
+    mentre nessuno guardava, il guasto nuovo risultava già visto: niente Da Gestire, niente campanella."""
+    from app import main
+
+    state = client.app.state
+    state.notifications.settled_at = 0
+    state.notifications.set_levels({"mqtt": "off"}, "test")
+
+    def faults():
+        return [i for i in client.get("/api/notifications").json()["items"] if i["type"] == "controller"]
+
+    def checks(offline):
+        controller.offline = offline
+        for _ in range(2):
+            client.portal.call(state.health.check_all)
+
+    checks(True)
+    [fault] = faults()
+    client.post("/api/notifications/seen", json={"ids": [fault["id"]]})
+    assert faults()[0]["seen"] is True
+    # Risponde di nuovo con l'app chiusa ovunque: solo il controllo periodico
+    checks(False)
+    main._forget_resolved(state)
+    checks(True)
+    [again] = faults()
+    assert again["id"] == fault["id"] and again["seen"] is False
+
+
+def test_seen_on_a_stale_page_keeps_a_worsening_to_handle(client):
+    """Revisione: la presa visione da una pagina non ancora aggiornata segnava come visto anche il peggioramento
+    arrivato nel frattempo, con lo stesso id."""
+    state = client.app.state
+    state.notifications.set_levels({"mqtt": "off"}, "test")
+    client.portal.call(state.health.check_all)
+    [health] = state.health.states.values()
+
+    def programming():
+        return [i for i in client.get("/api/notifications").json()["items"] if i["type"] == "programming"]
+
+    health.unmanaged = ["Ingresso"]
+    [shown] = programming()
+    # Prima dell'aggiornamento della pagina altri punti di accesso non sono più gestiti (un reset): stesso id
+    health.unmanaged = ["Ingresso", "Uscita", "Cantina"]
+    audit = len(state.db.list_audit())
+    client.post("/api/notifications/seen", json={"ids": [shown["id"]], "weights": {shown["id"]: shown["weight"]}})
+    [now] = programming()
+    assert now["id"] == shown["id"] and now["seen"] is False
+    assert len(state.db.list_audit()) == audit
+    # Presa visione sulla pagina aggiornata
+    client.post("/api/notifications/seen", json={"ids": [now["id"]], "weights": {now["id"]: now["weight"]}})
+    assert programming()[0]["seen"] is True
+    [last] = state.db.list_audit(limit=1)
+    assert last["action"] == "notifica segnata come vista" and "Uscita, Cantina" in last["detail"]
+
+
 def test_controller_events_follow_the_controller_name(db):
     db.add_event(ts="2026-10-25T10:00:00Z", kind="manomissione", detail="coperchio", source="Vecchio Nome")
     db.add_event(ts="2026-10-25T10:01:00Z", kind="manomissione", detail="manomissione porta", source="porta", door="p")

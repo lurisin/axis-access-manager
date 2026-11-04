@@ -301,6 +301,31 @@ async def test_device_and_topics_stay_stable(db, settings, monkeypatch):
     assert first._midnight is None
 
 
+async def test_entities_removed_when_the_app_stops_listening(db, settings, monkeypatch):
+    """Controller tolto: senza controller l'app non si ricollega al broker, quindi le entità si tolgono subito."""
+    doors = [
+        {"id": 1, "door_token": "porta", "name": "Porta", "ha_buttons": True},
+        {"id": 2, "door_token": "porta2", "name": "Cantina", "ha_buttons": True},
+    ]
+    bridge = HaBridge(settings, EventMonitor(prefix="accessi/x", door_token="porta"), db, doors)
+    sent = []
+
+    async def publish(topic, payload, retain=False):
+        sent.append((topic, payload, retain))
+        return True
+
+    monkeypatch.setattr(bridge.monitor, "publish", publish)
+    await bridge.stop(remove=True)
+    removed = {topic.split("/")[3] for topic, payload, retain in sent if topic.endswith("/config")}
+    assert {"apri_porta", "apri_porta_2", "stato_porta", "stato_porta_2"} <= removed
+    assert all(payload == b"" and retain for topic, payload, retain in sent if topic.endswith("/config"))
+    assert sent[-1] == ("axis_access_manager/disponibile", "offline", True)
+    # Una nuova configurazione con le stesse entità non le tocca
+    sent.clear()
+    await bridge.stop(offline=False)
+    assert sent == []
+
+
 def test_seconds_to_midnight():
     noon = time.mktime((2026, 6, 10, 12, 0, 0, 0, 0, -1))
     assert seconds_to_midnight(noon) == 12 * 3600 + 1

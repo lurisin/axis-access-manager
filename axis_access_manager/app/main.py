@@ -308,6 +308,8 @@ class LinksIn(BaseModel):
 
 class SeenIn(BaseModel):
     ids: list[str] | None = None
+    # Peso di ogni notifica come la mostrava la pagina: un peggioramento arrivato dopo resta da gestire
+    weights: dict[str, int] | None = None
 
 
 # Riquadri del cruscotto; larghezza in quarti di riga (1-4), altezza in righe della griglia
@@ -825,9 +827,11 @@ def create_app(
         visible = {i["id"] for i in listing["items"]}
         ids = [i for i in body.ids if i in visible] if body.ids is not None else list(visible)
         state = request.app.state
-        state.notifications.mark_seen(ids, _current_notifications(state))
-        # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche
-        chosen = set(ids)
+        state.notifications.mark_seen(ids, _current_notifications(state), body.weights)
+        after = _notification_listing(request)
+        # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche. Solo quelle ora viste: una
+        # peggiorata dopo l'ultimo aggiornamento della pagina resta da gestire, e nessuno l'ha ancora vista così
+        chosen = {i["id"] for i in after["items"] if i["seen"]} & set(ids)
         marked = [i for i in listing["items"] if i["id"] in chosen and not i["seen"]]
         if marked:
             titles = ", ".join(f"{i['title']} ({i['text']})" if i["text"] else i["title"] for i in marked[:3])
@@ -837,7 +841,7 @@ def create_app(
             else:
                 detail = f"{len(marked)} notifiche: {titles}{more}"
                 state.db.add_audit(request_user(request), "notifiche segnate come viste", detail)
-        return {"open": _notification_listing(request)["open"]}
+        return {"open": after["open"]}
 
     @app.put("/api/notifications/settings", dependencies=[need("utenti")])
     async def notification_settings(body: dict[str, str], request: Request) -> dict:
@@ -1160,17 +1164,20 @@ def create_app(
             if any(item.get("gruppo") for item in read_import(body.csv)):
                 raise ServiceError(f"i gruppi del file non si possono controllare: {err}") from err
             groups = []
-        if body.apply:
+        if not body.apply:
+            return await import_persons(state.service, body.csv, groups, request_user(request), False)
+        # Righe comprese: una nuova configurazione con un altro indirizzo chiude il client di adesso solo dopo
+        # l'importazione (al massimo dopo RELOAD_GRACE), non tra una riga e l'altra
+        async with _reading(state):
             # Un'importazione cambia molte persone insieme: il backup si fa sempre, non una volta ogni tanto
-            async with _reading(state):
-                await state.backups.before_change(
-                    "prima_importazione",
-                    request_user(request),
-                    _backup_clients(state),
-                    _offline_controllers(state),
-                    window=False,
-                )
-        return await import_persons(state.service, body.csv, groups, request_user(request), body.apply)
+            await state.backups.before_change(
+                "prima_importazione",
+                request_user(request),
+                _backup_clients(state),
+                _offline_controllers(state),
+                window=False,
+            )
+            return await import_persons(state.service, body.csv, groups, request_user(request), True)
 
     @app.get("/api/audit", dependencies=[need("utenti")])
     async def audit(
@@ -1782,7 +1789,9 @@ def create_app(
             mqtt_password=body.mqtt_password,
             mqtt_known=_mqtt_known(state),
         )
-        result = await apply(items, body.keys, runtime, user.label)
+        # Come l'importazione: il client di adesso non si chiude tra una riga e l'altra (vedi _reading)
+        async with _reading(state):
+            result = await apply(items, body.keys, runtime, user.label)
         # Tempi delle porte forse ripristinati: la rete di sicurezza della serratura li rilegge
         state.lock_guard.invalidate_times()
         full = any(s in FULL_SECTIONS for s in body.sections)
@@ -2185,11 +2194,21 @@ async def _start_runtime(app: FastAPI) -> None:
     old_service = getattr(state, "service", None)
     cfg = state.installation.effective_settings(state.options)
     state.settings = cfg
-    state.raw_controller = state.injected_controller or A1210Client(
-        cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl
-    )
-    # Le scritture si sospendono se all'indirizzo risponde un controller diverso da quello memorizzato
-    state.controller = ControllerGuard(state.raw_controller)
+    key = (cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl)
+    previous = getattr(state, "controller_key", None)
+    if key != previous:
+        state.raw_controller = state.injected_controller or A1210Client(
+            cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl
+        )
+        # Le scritture si sospendono se all'indirizzo risponde un controller diverso da quello memorizzato
+        state.controller = ControllerGuard(state.raw_controller)
+        # Indirizzo o credenziali cambiati: nessuna scrittura finché un controllo non ha visto chi risponde (vedi
+        # _apply_pause), nemmeno nell'attimo prima del controllo
+        state.identity_pending = previous is not None and bool(cfg.a1210_host)
+    # Stessi indirizzo e credenziali (porta rinominata, broker arrivato…): stessi client e scritture sospese.
+    # Un'importazione o un ripristino in corso con il servizio di prima va avanti, invece di trovare il collegamento
+    # chiuso alla riga dopo
+    state.controller_key = key
     _apply_pause(state)
     state.doors = state.installation.doors()
     state.controller_camera = (state.installation.primary or {}).get("snapshot_camera") or ""
@@ -2282,16 +2301,17 @@ async def _stop_runtime(app: FastAPI) -> None:
     await _close_runtime(app, await _stop_listening(app), STOP_GRACE)
 
 
-async def _stop_listening(app: FastAPI, offline: bool = True) -> tuple:
+async def _stop_listening(app: FastAPI, offline: bool = True, remove: bool = False) -> tuple:
     """Ferma l'ascolto MQTT. Restituisce client, lock, sorgenti di comandi e letture in corso di questa
     configurazione, da chiudere con _close_runtime quando hanno finito. offline=False se la nuova configurazione
-    ripubblica subito le stesse entità di Home Assistant (vedi _stays_online)."""
+    ripubblica subito le stesse entità di Home Assistant (vedi _stays_online); remove=True se non si collega più al
+    broker (vedi _stops_listening): le entità si tolgono da Home Assistant."""
     state = app.state
     bridge = getattr(state, "bridge", None)
     if bridge:
         # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
         # ordinata il broker scarta il messaggio di addio)
-        await bridge.stop(offline)
+        await bridge.stop(offline, remove)
     for name in ("monitor_task", "live_task"):
         task = getattr(state, name, None)
         if task:
@@ -2350,16 +2370,24 @@ def _stays_online(app: FastAPI) -> bool:
     return f"{topic_base(cfg.ha_topic_prefix, cfg.mqtt_topic_prefix)}/disponibile" == bridge.availability_topic
 
 
+def _stops_listening(app: FastAPI) -> bool:
+    """La nuova configurazione non si collega al broker (controller tolto, senza prefisso MQTT): l'ascolto di adesso è
+    l'ultima occasione per togliere le entità di Home Assistant, che altrimenti resterebbero non disponibili."""
+    state = app.state
+    cfg = state.installation.effective_settings(state.options)
+    return getattr(state, "monitor_task", None) is not None and not (state.mqtt and cfg.mqtt_topic_prefix)
+
+
 async def reload_runtime(app: FastAPI) -> None:
     """Riparte con la nuova configurazione dopo una modifica a controller o porte."""
     async with app.state.reload_lock:
-        old = await _stop_listening(app, offline=not _stays_online(app))
+        old = await _stop_listening(app, offline=not _stays_online(app), remove=_stops_listening(app))
         await _start_runtime(app)
-    # Il client di prima si chiude dopo le operazioni che lo stanno ancora usando; le nuove usano già quello nuovo
-    await _close_runtime(app, old, RELOAD_GRACE)
-    # Indirizzo cambiato: prima di leggere o scrivere si controlla chi risponde
+    # Indirizzo cambiato: prima di leggere o scrivere si controlla chi risponde, subito e non dopo le operazioni
+    # ancora in corso con il client di prima (fino a RELOAD_GRACE). Fino ad allora le scritture restano sospese.
+    # Il controllo non conta tra i fallimenti di fila, che sono del controllo periodico
     try:
-        await app.state.health.check_all()
+        await app.state.health.check_all(count=False)
     except Exception:  # noqa: BLE001
         _LOGGER.exception("Controllo dei controller non riuscito")
     _apply_pause(app.state)
@@ -2368,6 +2396,9 @@ async def reload_runtime(app: FastAPI) -> None:
         # Indirizzo corretto: il WebSocket si prova subito, senza aspettare il prossimo giro; controller diverso: il
         # collegamento appena aperto si chiude
         app.state.live_events.wake.set()
+    if old[0] is not app.state.raw_controller:
+        # Il client di prima si chiude dopo le operazioni che lo stanno ancora usando; le nuove usano già quello nuovo
+        await _close_runtime(app, old, RELOAD_GRACE)
     with contextlib.suppress(VapixError, ServiceError):
         if app.state.settings.a1210_host:
             result = await app.state.service.sync_from_controller()
@@ -2768,13 +2799,26 @@ def _signal_responding(state) -> None:
 
 
 def _apply_pause(state) -> None:
-    """Scritture verso il controller in uso sospese se è cambiato e nessuno ha confermato."""
+    """Scritture verso il controller in uso sospese se è cambiato e nessuno ha confermato, o se con l'indirizzo o le
+    credenziali appena cambiati un controllo non ha ancora visto chi risponde."""
     before = state.controller.paused
-    state.controller.paused = paused_reason(state.installation.primary)
+    state.controller.paused = paused_reason(state.installation.primary) or _identity_pending(state)
     live = getattr(state, "live_events", None)
     if live and before != state.controller.paused:
         # Controller cambiato: il WebSocket aperto si chiude subito. Cambio confermato: si ricollega subito
         live.wake.set()
+
+
+def _identity_pending(state) -> str:
+    """Motivo della sospensione finché il controllo non ha visto chi risponde al nuovo indirizzo: lì potrebbe
+    rispondere un altro controller con le stesse credenziali. Vuoto quando il controllo c'è stato."""
+    primary = state.installation.primary
+    if not getattr(state, "identity_pending", False) or not primary or not primary.get("host"):
+        return ""
+    if state.health.identity_checked(primary):
+        state.identity_pending = False
+        return ""
+    return f"il controller {primary['name']} non è ancora stato riconosciuto dopo il cambio di indirizzo o credenziali"
 
 
 async def _health_loop(app: FastAPI) -> None:
@@ -2796,10 +2840,17 @@ async def _health_loop(app: FastAPI) -> None:
                 state.service.notify_change()
             _signal_responding(state)
             await _recover_if_needed(state)
+            _forget_resolved(state)
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo dei controller non riuscito")
         state.health_ready.set()
         await asyncio.sleep(HEALTH_INTERVAL)
+
+
+def _forget_resolved(state) -> None:
+    """Prese visione dei guasti risolti dimenticate a ogni giro, anche con l'app chiusa ovunque: se il guasto torna
+    (controller che smette di nuovo di rispondere, telecamera) è di nuovo da gestire."""
+    state.notifications.forget_resolved(_current_notifications(state))
 
 
 async def _recover_if_needed(state) -> None:
@@ -3229,15 +3280,16 @@ async def _maintenance(app: FastAPI) -> None:
 async def _sync(state) -> tuple[bool, int]:
     """Un giro di sincronizzazione delle tessere: se è riuscita e fra quanti secondi il prossimo."""
     primary = state.installation.primary
-    if state.settings.a1210_host and primary and primary["host"] and not state.controller.paused:
+    if state.settings.a1210_host and primary and primary["host"] and not paused_reason(primary):
         # Chi risponde all'indirizzo, subito prima di leggere: dopo un'interruzione il nuovo tentativo può arrivare
-        # prima del controllo di stato, e un controller sostituito non si legge finché non lo si conferma
-        health = await state.health.check(primary)
+        # prima del controllo di stato, e un controller sostituito non si legge finché non lo si conferma. Anche
+        # con il controllo del nuovo indirizzo ancora da fare. Un fallimento qui non conta tra quelli di fila
+        health = await state.health.check(primary, count=False)
         _apply_pause(state)
         _signal_responding(state)
         if state.controller.paused:
             state.service.notify_change()
-        if not health.online and not state.controller.paused:
+        if not health.online:
             state.last_sync = {"ok": False, "error": health.error, "result": None, "at": _now()}
             _LOGGER.warning("Sincronizzazione non riuscita: %s", health.error)
             return False, SYNC_RETRY
