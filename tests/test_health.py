@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -67,6 +68,40 @@ async def test_first_check_remembers_identity(monitor, db, controller_row):
     assert db.list_audit()[0]["action"] == "controller riconosciuto"
 
 
+async def test_overlapping_checks_count_one_failure_and_one_audit_row(monitor, db, controller, controller_row):
+    """Revisione: controlli sovrapposti sullo stesso controller (periodico, sincronizzazione, nuova configurazione)
+    contavano due fallimenti per un solo momento senza risposta, e scrivevano due volte nelle Attività."""
+    import asyncio
+
+    answered = controller.device_info
+    started = []
+
+    async def slow_answer():
+        started.append(True)
+        await asyncio.sleep(0.01)
+        return await answered()
+
+    controller.device_info = slow_answer
+    row = db.get_controller(controller_row)
+    # Primo collegamento: controllo periodico e della sincronizzazione insieme, un solo «controller riconosciuto»
+    await asyncio.gather(monitor.check_all(), monitor.check(row, count=False))
+    assert len(started) == 2
+    assert [a["action"] for a in db.list_audit()].count("controller riconosciuto") == 1
+
+    async def no_answer():
+        await asyncio.sleep(0.01)
+        raise VapixError("il controller non risponde (tempo scaduto)")
+
+    controller.device_info = no_answer
+    # Un momento senza risposta: il controllo periodico e quello della sincronizzazione, insieme
+    await asyncio.gather(monitor.check_all(), monitor.check(row, count=False))
+    state = monitor.states[controller_row]
+    assert state.online is False and state.failures == 1 and not state.unreachable
+    # Il controllo periodico dopo, ancora senza risposta: non raggiungibile
+    await monitor.check_all()
+    assert state.unreachable
+
+
 async def test_changed_controller_pauses_writes_until_accepted(monitor, db, controller, controller_row):
     await monitor.check_all()
     controller.serial = "Y"
@@ -114,6 +149,47 @@ async def test_firmware_update_is_not_a_change(monitor, db, controller, controll
     row = db.get_controller(controller_row)
     assert row["firmware"] == "12.0.1" and paused_reason(row) == ""
     assert db.list_audit()[0]["action"] == "firmware del controller aggiornato"
+
+
+def _full(*args):
+    err = sqlite3.OperationalError("database or disk is full")
+    err.sqlite_errorcode = sqlite3.SQLITE_FULL
+    raise err
+
+
+async def test_identity_that_cannot_be_saved_does_not_stop_the_check(
+    monitor, db, controller, controller_row, monkeypatch
+):
+    """Disco pieno con il firmware aggiornato o il controller sostituito: il controllo si fermava a ogni giro (niente
+    orologio, sincronizzazione «Errore imprevisto») e un controller sostituito non sospendeva le scritture."""
+    from types import SimpleNamespace
+
+    from app import main
+
+    await monitor.check_all()
+    state = monitor.states[controller_row]
+    controller.firmware = "12.0.1"
+    for name in ("add_audit", "set_controller_identity", "set_controller_identity_change"):
+        monkeypatch.setattr(db, name, _full)
+    state.answered = 0
+    state.clock_offset = None
+    await monitor.check_all()
+    assert state.online is True and state.answered == 1 and state.clock_offset is not None
+    # Controller sostituito: le scritture si sospendono anche senza poterlo salvare
+    controller.serial, controller.fingerprint = "Y", "CC:DD"
+    await monitor.check_all()
+    app_state = SimpleNamespace(
+        health=monitor,
+        installation=SimpleNamespace(primary=db.get_controller(controller_row)),
+        controller=SimpleNamespace(paused=""),
+    )
+    main._apply_pause(app_state)
+    assert "è cambiato" in app_state.controller.paused
+    # Spazio di nuovo libero: si salva
+    monkeypatch.undo()
+    await monitor.check_all()
+    assert "è cambiato" in paused_reason(db.get_controller(controller_row))
+    assert monitor.unsaved_changes == {}
 
 
 async def test_unreachable_after_two_failures(monitor, controller, controller_row):
@@ -542,6 +618,9 @@ async def test_controller_back_online_wakes_the_card_sync(monitor, controller, c
         return None
 
     monkeypatch.setattr(main, "_recover_if_needed", no_recovery)
+    # Prese visione dei guasti risolti: a ogni giro, anche con l'app chiusa
+    forgotten = []
+    monkeypatch.setattr(main, "_forget_resolved", forgotten.append)
     monkeypatch.setattr(main.asyncio, "sleep", one_round)
     app = SimpleNamespace(state=state)
 
@@ -557,6 +636,12 @@ async def test_controller_back_online_wakes_the_card_sync(monitor, controller, c
     assert await round_with(True) is False  # non risponde
     assert await round_with(False) is True  # torna: rilettura subito
     assert await round_with(False) is False
+    assert forgotten == [state] * 4
+    # Controllo della sincronizzazione fallito, che non conta tra quelli di fila: al ritorno la rilettura è subito,
+    # non dopo un minuto con l'errore della sincronizzazione
+    controller.offline = True
+    await monitor.check(state.installation.primary, count=False)
+    assert await round_with(False) is True
 
 
 async def test_rex_inputs_without_permission_are_a_fault(monitor, controller, controller_row, db):
@@ -663,6 +748,26 @@ def test_open_casing_is_a_fault_while_it_stays_open(db):
     assert _casing_fault(service, now, casing_open=False) == []
     assert _casing_fault(service, now, casing_open=None) == []
     assert [i["type"] for i in _casing_fault(service, now, unreachable=True)] == ["controller"]
+
+
+def test_open_casing_does_not_move_the_24_hours_of_denied_access(db):
+    """Revisione: l'ora di apertura del coperchio prendeva il posto dell'inizio delle 24 ore per rifiuti e tessere
+    sconosciute: tornavano quelle di giorni prima, o sparivano quelle delle ultime ore."""
+    service = NotificationService(db, settle=timedelta(0))
+    now = datetime(2026, 11, 3, 12, 0, tzinfo=UTC)
+    for hours, card in ((30, "0411"), (3, "0422")):
+        ts = (now - timedelta(hours=hours)).isoformat()
+        db.add_event(ts=ts, kind="negato", card=card, detail="tessera non registrata", door="porta")
+
+    def unknown(**kwargs):
+        return [i["text"] for i in _casing_fault(service, now, **kwargs) if i["type"] == "unknown_card"]
+
+    assert unknown(casing_open=False) == ["Tessera 0422"]
+    # Aperto da tre giorni: la tessera di 30 ore fa resta fuori
+    assert unknown(since=(now - timedelta(days=3)).isoformat()) == ["Tessera 0422"]
+    # Aperto da 10 minuti, anche con gli allarmi delle porte spenti: quella di 3 ore fa resta
+    service.set_levels({"door_alarm": "off"}, "admin")
+    assert unknown(since=(now - timedelta(minutes=10)).isoformat()) == ["Tessera 0422"]
 
 
 def test_casing_opened_again_is_a_new_fault(db):

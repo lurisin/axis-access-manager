@@ -4,6 +4,7 @@ delle richieste e server sulla porta propria."""
 import json
 import logging
 import socket
+import sqlite3
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -101,6 +102,15 @@ def test_off_until_enabled(clients):
     assert response.status_code == 403
     assert response.json()["detail"] == "accesso diretto spento"
     assert ingress.get("/api/direct-access", headers=ADMIN).json()["settings"]["enabled"] is False
+
+
+def test_activity_says_on_and_off(clients):
+    ingress, _, app = clients
+    enable(ingress)
+    assert ingress.put("/api/direct-access", json={"enabled": False}, headers=ADMIN).status_code == 200
+    # Come nell'interfaccia: Attivo e Disattivato
+    actions = [a["action"] for a in app.state.db.list_audit()]
+    assert actions[:2] == ["accesso diretto disattivato", "accesso diretto attivo"]
 
 
 def test_ingress_headers_never_count_on_direct_access(clients):
@@ -218,6 +228,36 @@ def test_administration_only_from_home_assistant(clients):
     assert site.get("/api/persons").status_code == 200
 
 
+def test_admin_only_on_direct_access_does_not_count_as_the_last_admin(clients):
+    """Revisione: un amministratore che entra solo dall'accesso diretto contava come amministratore. L'ultimo
+    amministratore di Home Assistant poteva togliersi i permessi, e nessuno poteva più gestire utenti e ripristini."""
+    ingress, site, app = clients
+    enable(ingress)
+    ready(ingress, site, "direttore", perms=("utenti",))
+    assert site.get("/api/users").status_code == 403
+    response = ingress.put("/api/users/admin", json={"name": "Admin", "perms": ["stato"]}, headers=ADMIN)
+    assert response.status_code == 400
+    assert response.json()["detail"].startswith("serve almeno un amministratore che entra da Home Assistant")
+    assert ingress.delete("/api/users/admin", headers=ADMIN).status_code == 400
+    # Un altro amministratore già entrato da Home Assistant conta
+    luca = {"X-Remote-User-Name": "luca", "X-Remote-User-Id": "id-luca"}
+    ingress.get("/api/me", headers=luca)
+    assert ingress.put("/api/users/luca", json={"perms": ["utenti"]}, headers=ADMIN).status_code == 200
+    assert ingress.put("/api/users/admin", json={"name": "Admin", "perms": ["stato"]}, headers=ADMIN).status_code == 200
+
+
+def test_home_assistant_reinstalled_with_an_admin_only_on_direct_access(db):
+    """Revisione: Home Assistant reinstallato (id nuovo per lo stesso nome utente) con un amministratore solo
+    dell'accesso diretto: i permessi finivano sotto il vecchio id e l'amministratore restava «Solo Stato»."""
+    directory = UserDirectory(db)
+    assert directory.resolve("luca", "Luca", "id-luca").can("utenti")
+    db.save_app_user("direttore", "Direttore", ["utenti"])
+    db.set_password("direttore", hash_password("password-del-direttore"), False, "luca")
+    db.touch_app_user("direttore", "")
+    again = directory.resolve("luca", "Luca", "id-luca-nuovo")
+    assert again.username == "luca" and again.can("utenti")
+
+
 def test_new_temporary_password_removal_and_deletion_close_sessions(clients):
     ingress, site, app = clients
     enable(ingress)
@@ -267,6 +307,63 @@ def test_session_stays_open_until_unused_for_ninety_days(clients):
     db._execute("UPDATE sessions SET last_seen = ?", (stale,))
     assert site.get("/api/persons").status_code == 401
     assert db.list_sessions() == []
+
+
+def test_full_disk_does_not_stop_direct_access_reads(clients, monkeypatch):
+    """Disco pieno: il rinnovo della sessione falliva e ogni richiesta del personale rispondeva 500."""
+    ingress, site, app = clients
+    enable(ingress)
+    ready(ingress, site)
+    db = app.state.db
+    old = (datetime.now(tz=UTC) - timedelta(days=2)).isoformat(timespec="seconds")
+    db._execute("UPDATE sessions SET last_seen = ?", (old,))
+
+    def full(*args):
+        err = sqlite3.OperationalError("database or disk is full")
+        err.sqlite_errorcode = sqlite3.SQLITE_FULL
+        raise err
+
+    monkeypatch.setattr(db, "touch_session", full)
+    response = site.get("/api/persons")
+    assert response.status_code == 200
+    # Sessione non rinnovata: il cookie resta quello di prima
+    assert COOKIE not in response.cookies
+    assert db.list_sessions()[0]["last_seen"] == old
+    # Al login un motivo chiaro invece di un errore senza messaggio
+    monkeypatch.setattr(db, "add_session", full)
+    response = login(site, "maria", NEW_PASSWORD)
+    assert response.status_code == 503
+    assert response.json()["detail"] == "spazio su disco esaurito: avvisa l'amministratore"
+
+
+def test_full_disk_does_not_stop_the_first_request_of_the_minute(clients, monkeypatch):
+    """Disco pieno: l'ultimo accesso dell'utente non si salvava e la prima richiesta di ogni minuto rispondeva 500, da
+    Home Assistant (l'app si apriva senza menu) e dall'Accesso Diretto (pagina «Internal Server Error»)."""
+    ingress, site, app = clients
+    enable(ingress)
+    ready(ingress, site)
+    ingress.post("/api/users", json={"username": "anonimo", "name": "", "perms": ["stato"]}, headers=ADMIN)
+    db = app.state.db
+    tries = []
+
+    def full(*args):
+        tries.append(args[0])
+        err = sqlite3.OperationalError("database or disk is full")
+        err.sqlite_errorcode = sqlite3.SQLITE_FULL
+        raise err
+
+    monkeypatch.setattr(db, "touch_app_user", full)
+    # Più di un minuto senza richieste
+    app.state.users._seen.clear()
+    assert ingress.get("/api/me", headers=ADMIN).status_code == 200
+    assert ingress.get("/api/summary", headers=ADMIN).status_code == 200
+    assert site.get("/").status_code == 200
+    assert site.get("/api/persons").status_code == 200
+    # Utente senza nome che entra da Home Assistant con il suo nome: prima falliva a ogni richiesta
+    anonymous = {"X-Remote-User-Name": "anonimo", "X-Remote-User-Display-Name": "Anonimo"}
+    assert [ingress.get("/api/me", headers=anonymous).status_code for _ in range(3)] == [200] * 3
+    # Una scrittura al minuto per utente, anche quando non riesce
+    assert sorted(tries) == ["admin", "anonimo", "maria"]
 
 
 def test_temporary_password_and_its_session_expire(clients):

@@ -9,14 +9,20 @@ Si salvano solo i tipi scelti nelle impostazioni e quelle già viste.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import sqlite3
 import time
+from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
-from .backup_copy import RESTORED
+from .backup_copy import RESTORED, STARTED_EMPTY
 from .db import Database
+from .ha import MIN_FREE_SPACE
 from .live_events import FAULT_AFTER
 from .service import CASING_OPEN, TILTED, ServiceError, plural
+
+_LOGGER = logging.getLogger(__name__)
 
 # Tipo → nome, descrizione, livello predefinito
 TYPES = {
@@ -51,7 +57,8 @@ TYPES = {
     ),
     "database": (
         "Database dell'Add-on",
-        "Database danneggiato o mancante all'avvio, o copia per il backup di Home Assistant non aggiornata.",
+        "Database danneggiato o mancante all'avvio, copie del database non fatte, registro non scrivibile, spazio su "
+        "disco quasi esaurito.",
         "urgent",
     ),
 }
@@ -101,6 +108,30 @@ SETTING_CATEGORIES_PENDING = "categories_refresh_pending"
 SETTLE = timedelta(minutes=5)
 # Id dei gruppi di eventi nelle versioni precedenti: g<primo evento>-<ultimo>
 OLD_GROUP_ID = re.compile(r"^g\d+-(\d+)$")
+# Database ripartito vuoto: cosa fare, e subito (il backup di Home Assistant di stanotte avrà il database vuoto)
+EMPTY_HINT = (
+    "Ripristina l'add-on da un backup di Home Assistant di prima del danno o, se non c'è, un backup dell'app da "
+    "Impianti → Backup: i backup di Home Assistant fatti da adesso contengono il database vuoto."
+)
+# Dopo il ripristino di un backup dell'app
+EMPTY_RESTORED_HINT = (
+    "Dati ripristinati da un backup dell'app: i backup di Home Assistant fatti da adesso li contengono."
+)
+
+
+def recovery_title(text: str) -> str:
+    """Titolo per cosa ha fatto all'avvio il controllo del database (backup_copy.recover e replace_unusable)."""
+    if STARTED_EMPTY in text:
+        return "Database Ripartito Vuoto"
+    return "Database Ripristinato dalla Copia" if RESTORED in text else "Database Non Ripristinato"
+
+
+def recovery_hint(text: str, handled: bool = False) -> str:
+    """Cosa fare dopo il controllo del database all'avvio ("" se non c'è niente da fare). handled: dati già
+    ripristinati da un backup dell'app."""
+    if STARTED_EMPTY not in text:
+        return ""
+    return EMPTY_RESTORED_HINT if handled else EMPTY_HINT
 
 
 def _parse(value: str) -> datetime | None:
@@ -172,13 +203,21 @@ class NotificationService:
         backup: dict | None = None,
         backup_verify: dict | None = None,
         db_recovery: str = "",
+        db_recovery_handled: bool = False,
         ha_copy_error: str = "",
+        db_copy_error: str = "",
+        low_space: tuple[int, int] | None = None,
+        write_error: dict | None = None,
         now: datetime | None = None,
     ) -> list[dict]:
         """Notifiche dei tipi attivi, dalla più grave e, a parità, dalla più recente.
 
         db_recovery: cosa ha fatto all'avvio il controllo del database (backup_copy.recover), "" se era sano.
+        db_recovery_handled: database ripartito vuoto e poi ripristinato da un backup dell'app.
         ha_copy_error: perché l'ultima copia per il backup di Home Assistant non è stata aggiornata.
+        db_copy_error: perché a questo avvio la copia prima dell'aggiornamento non si è fatta.
+        low_space: spazio libero e totale del disco, se è quasi esaurito.
+        write_error: registro non scrivibile ({"since", "error"}, vedi AccessService.write_error).
         ws: stato del WebSocket degli eventi (LiveEvents.status), None se l'app non lo usa.
         ha_integration: l'integrazione con Home Assistant, che passa dal broker MQTT, è attiva.
         intercoms: ci sono videocitofoni, i cui eventi arrivano dal broker MQTT."""
@@ -321,6 +360,9 @@ class NotificationService:
             primary = next((c for c in controllers if c.get("id") == primary_id), None) if primary_id else None
             checked = [primary] if primary else controllers
             reachable = bool(checked) and all(c.get("online") is True for c in checked)
+            # Sincronizzazione non riuscita, ma non per il suo controllo di chi risponde: un attimo senza risposta non
+            # rende il controller non raggiungibile (lo fa il controllo periodico dopo un minuto)
+            sync_failed = sync.get("ok") is False and not sync.get("check")
             events_since = _events_down_since(ws, mqtt_connected, controller_online, controller_offline_since, now)
             if reachable and events_since:
                 # Il controller risponde all'app ma i suoi eventi non arrivano: né WebSocket né MQTT
@@ -335,8 +377,8 @@ class NotificationService:
                     link="#impianti/stato",
                     weight=_reminder_weight(events_since, now),
                 )
-            elif not unreachable and (sync.get("ok") is False or (controller_online is False and not controllers)):
-                detail = sync.get("error") if sync.get("ok") is False else "il controller non è raggiungibile"
+            elif not unreachable and (sync_failed or (controller_online is False and not controllers)):
+                detail = sync.get("error") if sync_failed else "il controller non è raggiungibile"
                 add(
                     "controller",
                     "controller",
@@ -350,18 +392,19 @@ class NotificationService:
             for c in controllers:
                 if c.get("casing_open") and not c.get("unreachable") and c["id"] not in casing_shown:
                     # Stato, non evento: resta finché il coperchio non si chiude, anche dopo le 24 ore degli allarmi.
-                    # Con l'apertura nel registro delle ultime 24 ore la voce è quella dell'allarme, qui sotto
-                    since = c.get("casing_since") or ""
+                    # Con l'apertura nel registro delle ultime 24 ore la voce è quella dell'allarme, qui sotto. In
+                    # una variabile a parte: since resta l'inizio delle 24 ore per rifiuti e tessere sconosciute
+                    opened = c.get("casing_since") or ""
                     add(
                         "casing",
-                        _episode_id(f"casing:{c['id']}", since),
+                        _episode_id(f"casing:{c['id']}", opened),
                         "crit",
                         "Coperchio del Controller Aperto",
                         "",
-                        since or now.isoformat(timespec="seconds"),
+                        opened or now.isoformat(timespec="seconds"),
                         door=c["name"],
                         link=f"#impianti/c{c['id']}/stato",
-                        weight=_reminder_weight(since, now),
+                        weight=_reminder_weight(opened, now),
                     )
                 if c.get("identity_change"):
                     add(
@@ -506,12 +549,14 @@ class NotificationService:
                 # Un id per avvio: il database ripristinato di nuovo a un avvio successivo non risulta già visto
                 f"database:avvio:{self.started_at}",
                 "crit",
-                "Database Ripristinato dalla Copia" if restored else "Database Non Ripristinato",
-                _sentence(db_recovery),
+                recovery_title(db_recovery),
+                f"{_sentence(db_recovery)} {recovery_hint(db_recovery, db_recovery_handled)}".strip(),
                 self.started_at,
                 link="#impostazioni/generale",
-                # Ripristinato: è successo all'avvio e non c'è altro da fare, dopo la presa visione non resta
-                fault=not restored,
+                # Ripristinato (dalla copia all'avvio o, dopo, da un backup dell'app): è successo all'avvio e non c'è
+                # altro da fare, dopo la presa visione non resta. Prima un database ripartito vuoto restava tra i
+                # guasti, con l'invito a ripristinare, anche dopo il ripristino del backup dell'app
+                fault=not restored and not db_recovery_handled,
             )
         if ha_copy_error:
             add(
@@ -522,6 +567,43 @@ class NotificationService:
                 _sentence(ha_copy_error),
                 now.isoformat(timespec="seconds"),
                 link="#impostazioni/generale",
+            )
+        if db_copy_error:
+            add(
+                "database",
+                f"database:aggiornamento:{self.started_at}",
+                "warn",
+                "Copia Prima dell'Aggiornamento Non Fatta",
+                _sentence(f"{db_copy_error}: l'add-on è partito lo stesso"),
+                self.started_at,
+                link="#impostazioni/generale",
+                # È successo all'avvio e non si rifà: dopo la presa visione non resta
+                fault=False,
+            )
+        if write_error:
+            add(
+                "database",
+                f"database:registro:{write_error['since']}",
+                "crit",
+                "Registro Non Scrivibile",
+                _sentence(f"eventi non salvati nel registro: {write_error['error']}")
+                + " Arrivano lo stesso a Home Assistant. Quando il registro dell'app torna scrivibile quelli del "
+                "controller si recuperano dal suo registro, e quelli dell'app (Riblocco Forzato, aperture a distanza) "
+                "si salvano se intanto l'add-on non è ripartito.",
+                write_error["since"],
+                link="#impostazioni/generale",
+            )
+        if low_space:
+            add(
+                "database",
+                "database:spazio",
+                "warn",
+                "Spazio su Disco Quasi Esaurito",
+                f"Liberi {_size(low_space[0])} su {_size(low_space[1])}: le istantanee non si salvano finché non si "
+                "libera spazio (backup vecchi di Home Assistant, cartella Media, Conservazione Registro più breve).",
+                now.isoformat(timespec="seconds"),
+                link="#impostazioni/generale",
+                weight=_space_weight(*low_space),
             )
         for group in alarm_groups:
             last = group[-1]
@@ -628,35 +710,58 @@ class NotificationService:
             return {}
         return {OLD_GROUP_ID.sub(r"g\1", str(k)): v if isinstance(v, int) else None for k, v in saved.items()}
 
-    def _still_seen(self, seen: dict[str, int | None], active: dict[str, dict]) -> dict[str, int | None]:
+    def _still_seen(
+        self, seen: dict[str, int | None], active: dict[str, dict], unknown: Collection[str] = ()
+    ) -> dict[str, int | None]:
         """Dimentica le viste che non ci sono più, così se il problema torna si rivede.
 
-        Appena avviato no: i guasti tornano solo dopo i primi controlli, e la presa visione andrebbe persa.
+        Appena avviato no: i guasti tornano solo dopo i primi controlli, e la presa visione andrebbe persa. Nemmeno
+        quelle dei guasti che adesso non si possono valutare (unknown, vedi main._unknown_faults): con il controller che
+        non risponde spariscono, ma non sono risolti. Un id con l'ora di inizio (casing:1@...) conta senza l'ora.
         """
         if time.monotonic() >= self.settled_at:
-            seen = {k: v for k, v in seen.items() if k in active}
+            seen = {k: v for k, v in seen.items() if k in active or k.split("@")[0] in unknown}
         # Viste senza peso: vale quello di adesso
         return {k: active[k].get("weight", 0) if v is None and k in active else v for k, v in seen.items()}
 
     def _save_seen(self, seen: dict[str, int | None]) -> None:
         self.db.set_setting(SETTING_SEEN, json.dumps(dict(sorted(seen.items()))))
 
-    def mark_seen(self, ids: list[str], current: list[dict]) -> None:
-        """Segna come viste con il peso di adesso: se poi il guasto peggiora, la notifica torna da gestire."""
+    def mark_seen(
+        self, ids: list[str], current: list[dict], shown: dict[str, int] | None = None, unknown: Collection[str] = ()
+    ) -> None:
+        """Segna come viste con il peso di adesso: se poi il guasto peggiora, la notifica torna da gestire.
+
+        shown: peso di ogni notifica come la mostrava la pagina. Se nel frattempo è peggiorata (per esempio altre
+        tessere sparite prima dell'aggiornamento della pagina) vale quello mostrato, e la notifica resta da gestire.
+        unknown: guasti che adesso non si possono valutare (vedi _still_seen)."""
         active = {i["id"]: i for i in current}
-        seen = self._still_seen(self.seen(), active)
+        seen = self._still_seen(self.seen(), active, unknown)
         for item_id in ids:
             if item_id in active:
-                seen[item_id] = max(seen.get(item_id) or 0, active[item_id].get("weight", 0))
+                weight = active[item_id].get("weight", 0)
+                if shown and item_id in shown:
+                    weight = min(weight, shown[item_id])
+                seen[item_id] = max(seen.get(item_id) or 0, weight)
         self._save_seen(seen)
 
-    def listing(self, current: list[dict], perms: set[str] | None = None) -> dict:
-        """Notifiche per un utente: nomi, tessere ed eventi solo a chi ha il permesso di vederli."""
+    def forget_resolved(self, current: list[dict], unknown: Collection[str] = ()) -> dict[str, int | None]:
+        """Dimentica le viste dei guasti risolti e restituisce le altre. Gira anche a ogni controllo periodico, non solo
+        con l'app aperta: un guasto risolto e tornato mentre nessuno guardava risultava ancora visto. Quelle dei guasti
+        che adesso non si possono valutare (unknown) restano."""
         saved = self.seen()
-        active = {i["id"]: i for i in current}
-        seen = self._still_seen(saved, active)
+        seen = self._still_seen(saved, {i["id"]: i for i in current}, unknown)
         if seen != saved:
-            self._save_seen(seen)
+            try:
+                self._save_seen(seen)
+            except sqlite3.Error as err:
+                # Disco pieno: le notifiche si mostrano lo stesso (prima la barra in alto rispondeva con un errore)
+                _LOGGER.warning("Notifiche viste non salvate: %s", err)
+        return seen
+
+    def listing(self, current: list[dict], perms: set[str] | None = None, unknown: Collection[str] = ()) -> dict:
+        """Notifiche per un utente: nomi, tessere ed eventi solo a chi ha il permesso di vederli."""
+        seen = self.forget_resolved(current, unknown)
         hidden = {k for k, perm in VISIBILITY.items() if perms is not None and perm not in perms}
         no_log = perms is not None and "registro" not in perms
         items = []
@@ -735,6 +840,13 @@ def _episode_id(item_id: str, since: str) -> str:
     return f"{item_id}@{since}" if since else item_id
 
 
+def _space_weight(free: int, total: int) -> int:
+    """Peso dello spazio su disco: sotto un quinto e sotto un ventesimo della soglia la notifica vista torna da
+    gestire. Prima, vista a 900 MB, restava vista fino al disco pieno."""
+    limit = min(MIN_FREE_SPACE, total // 20)
+    return 2 if free < limit // 20 else 1 if free < limit // 5 else 0
+
+
 def _offset_weight(seconds: float | None) -> int:
     """Peso dello scarto dell'orologio: oltre 10 minuti e oltre un'ora la notifica vista torna da gestire."""
     value = abs(seconds or 0)
@@ -750,6 +862,10 @@ def _json_dict(value: str | None) -> dict | None:
     except ValueError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _size(size: int) -> str:
+    return f"{size / 1024**3:.1f} GB".replace(".", ",") if size >= 1024**3 else f"{size // 1024**2} MB"
 
 
 def _names(names: list[str]) -> str:

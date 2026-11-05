@@ -8,6 +8,7 @@ import functools
 import json
 import logging
 import os
+import sqlite3
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -22,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
-from .backup_copy import ha_copy_error, ha_copy_path, update_copies
+from .backup_copy import RESTORED, STARTED_EMPTY, error_reason, ha_copy_error, ha_copy_path, update_copies
 from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .controller_state import POLL_LIVE, POLL_WITHOUT_EVENTS, StateKeeper
 from .db import DB_PATH, Database, local_day_start
@@ -58,7 +59,7 @@ from .direct import (
 from .direct import load_settings as load_direct_settings
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS, renamed_tokens
-from .ha import HomeAssistant
+from .ha import LOW_SPACE, HomeAssistant, default_snapshot_dir, delete_old_snapshots, disk_space, low_space
 from .ha_mqtt import DOOR_PHYSICAL, HaBridge, parse_command, topic_base
 from .health import (
     HEALTH_INTERVAL,
@@ -72,8 +73,14 @@ from .health import (
 from .installation import MAX_CONTROLLERS, InstallationService, check_host, same_controller
 from .intercom import IntercomBridge, IntercomSettings
 from .live_events import LiveEvents
-from .lock_guard import CHECK_EVERY, LockGuard
-from .notifications import EXPIRING, SETTING_CATEGORIES_PENDING, NotificationService
+from .lock_guard import CHECK_EVERY, MAX_EXTENDED, LockGuard
+from .notifications import (
+    EXPIRING,
+    SETTING_CATEGORIES_PENDING,
+    NotificationService,
+    recovery_hint,
+    recovery_title,
+)
 from .programming import (
     CONTACTS,
     CONTROLLER_INPUTS,
@@ -132,6 +139,15 @@ SYNC_INTERVAL = 15 * 60
 MQTT_RETRY = 60
 SYNC_RETRY = 60
 PRUNE_INTERVAL = 24 * 3600
+# Prima pulizia del registro qualche minuto dopo l'avvio, non insieme a tutto il resto
+PRUNE_DELAY = 5 * 60
+# Pausa tra un blocco e l'altro della pulizia: intanto l'app risponde, apre le porte e le blocca
+PRUNE_PAUSE = 0.05
+# Database ripristinato dalla copia: sessioni chiuse, e password e utenti dell'accesso diretto sono quelli della copia
+DIRECT_RESTORED = (
+    "tutte le sessioni dell'Accesso Diretto sono state chiuse: utenti e password sono tornati com'erano nella copia, "
+    "se dopo hai cambiato una password o tolto un utente rifallo"
+)
 # Ogni quanto si guarda se è ora di un backup pianificato o della verifica
 BACKUP_TICK = 60
 
@@ -308,6 +324,8 @@ class LinksIn(BaseModel):
 
 class SeenIn(BaseModel):
     ids: list[str] | None = None
+    # Peso di ogni notifica come la mostrava la pagina: un peggioramento arrivato dopo resta da gestire
+    weights: dict[str, int] | None = None
 
 
 # Riquadri del cruscotto; larghezza in quarti di riga (1-4), altezza in righe della griglia
@@ -568,6 +586,32 @@ async def _wait_for_broker(app: FastAPI) -> None:
             _LOGGER.exception("Avvio dell'ascolto MQTT non riuscito")
 
 
+async def _open_database(path: Path | str, snapshots: Path, retention_days: int) -> Database:
+    """Database dell'add-on. Con il disco pieno (di solito di istantanee) SQLite non lo apre, e senza database non si
+    sa quali istantanee sono scadute: si cancellano quelle oltre la conservazione, dalla data del file, e si riprova.
+    Prima l'add-on non partiva più, e la pulizia che avrebbe liberato lo spazio non arrivava mai."""
+    try:
+        return Database(path, __version__)
+    except sqlite3.OperationalError as err:
+        if str(path) == ":memory:" or not (low_space(Path(path).parent) or low_space(snapshots)):
+            raise
+        # Cosa aveva già fatto il primo tentativo (copia spostata al posto del database): al secondo recover() trova un
+        # database sano e non lo dice più, e così niente notifica né sessioni dell'Accesso Diretto chiuse
+        recovered = getattr(err, "recovered", "")
+    removed = await asyncio.to_thread(delete_old_snapshots, snapshots, retention_days)
+    _LOGGER.error("Database non aperto con il disco pieno: %s istantanee oltre la conservazione cancellate", removed)
+    try:
+        db = Database(path, __version__)
+    except sqlite3.OperationalError:
+        _LOGGER.error(
+            "Spazio su disco esaurito: il database dell'add-on non si apre. Libera spazio (backup vecchi di Home "
+            "Assistant, cartella Media) e riavvia l'add-on"
+        )
+        raise
+    db.recovered = db.recovered or recovered
+    return db
+
+
 def create_app(
     settings: Settings | None = None,
     allow_any_client: bool | None = None,
@@ -590,15 +634,34 @@ def create_app(
         options = settings or load_settings()
         app.state.options = options
         app.state.injected_controller = controller
-        app.state.db = Database(db_path or os.environ.get("AAM_DB_PATH") or DB_PATH, __version__)
+        app.state.db = await _open_database(
+            db_path or os.environ.get("AAM_DB_PATH") or DB_PATH,
+            home_assistant.snapshot_dir if home_assistant else default_snapshot_dir(),
+            options.event_retention_days,
+        )
         # Database rovinato o mancante all'avvio: nel log, in Attività e in una notifica finché l'add-on non riparte
         app.state.db_recovery = None
-        if app.state.db.recovered:
-            _LOGGER.error("All'avvio: %s", app.state.db.recovered)
-            app.state.db.add_audit("sistema", "database controllato all'avvio", app.state.db.recovered)
-            app.state.db_recovery = {"at": _now(), "text": app.state.db.recovered}
+        if recovered := app.state.db.recovered:
+            if RESTORED in recovered and (app.state.db.delete_sessions() or app.state.db.list_passwords()):
+                # Le sessioni e le password dell'accesso diretto sono quelle della copia: una sessione chiusa o una
+                # password cambiata dopo la copia tornavano buone
+                recovered = f"{recovered}; {DIRECT_RESTORED}"
+            _LOGGER.error("All'avvio: %s", recovered)
+            app.state.db.add_audit("sistema", "database controllato all'avvio", recovered)
+            app.state.db_recovery = {
+                "at": _now(),
+                "text": recovered,
+                "title": recovery_title(recovered),
+                "hint": recovery_hint(recovered),
+            }
         if app.state.db.copied:
             _LOGGER.info("Copia del database prima dell'aggiornamento: %s", app.state.db.copied)
+        # Copia prima dell'aggiornamento non riuscita (disco pieno, troppo lenta): l'add-on parte lo stesso
+        app.state.db_copy_error = None
+        if app.state.db.copy_error:
+            _LOGGER.error("All'avvio: %s", app.state.db.copy_error)
+            app.state.db.add_audit("sistema", "copia del database prima dell'aggiornamento", app.state.db.copy_error)
+            app.state.db_copy_error = {"at": _now(), "text": app.state.db.copy_error}
         app.state.users = UserDirectory(app.state.db, options.readonly_users)
         app.state.users.add_status_permission()
         # Accesso diretto (fuori da Home Assistant): impostazioni, tentativi sbagliati, calcolo delle password, server
@@ -636,6 +699,9 @@ def create_app(
         # Rete di sicurezza della serratura: resta la stessa anche con una nuova configurazione
         app.state.lock_guard = LockGuard()
         await _start_runtime(app)
+        # Aperture estese dall'app appena prima di un riavvio dell'add-on: la rete di sicurezza non le accorcia
+        for door, ago in _extended_openings(app.state).items():
+            app.state.lock_guard.extended_opened(door, ago)
         await app.state.direct.apply(app.state.direct_settings)
         maintenance = asyncio.create_task(_maintenance(app))
         health = asyncio.create_task(_health_loop(app))
@@ -700,6 +766,18 @@ def create_app(
         # unreachable: nessuna risposta, l'interfaccia propone di riprovare
         detail = text if "controller" in text else f"errore del controller: {text}"
         return JSONResponse({"detail": detail, "unreachable": isinstance(err, ControllerUnreachable)}, 502)
+
+    @app.exception_handler(sqlite3.Error)
+    async def database_error(request: Request, err: sqlite3.Error) -> JSONResponse:
+        # Disco pieno: un motivo invece di «Richiesta non riuscita (errore 500)», per esempio alla Presa Visione di
+        # «Registro Non Scrivibile». Gli altri errori del database restano imprevisti, con i dettagli nel log
+        if getattr(err, "sqlite_errorcode", 0) != sqlite3.SQLITE_FULL:
+            raise err
+        _LOGGER.warning("Richiesta %s %s non riuscita: %s", request.method, request.url.path, err)
+        detail = f"{error_reason(err)}: libera spazio"
+        if request.method != "GET":
+            detail = f"{error_reason(err)}: la modifica non è stata salvata, libera spazio e riprova"
+        return JSONResponse({"detail": detail}, status_code=503)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, err: RequestValidationError) -> JSONResponse:
@@ -773,8 +851,11 @@ def create_app(
                 "ha_copy": _file_time(ha_copy_path(state.db.path)) if state.db.path else "",
                 # Perché l'ultima copia per il backup di Home Assistant non è stata aggiornata ("" se è andata bene)
                 "ha_copy_error": ha_copy_error(state.db.path) if state.db.path else "",
-                # Database ripristinato dalla copia (o non ripristinabile) all'avvio: {"at", "text"} o None
+                # Database ripristinato dalla copia (o non ripristinabile) all'avvio: {"at", "text", "title", "hint"}
+                # o None
                 "recovered": getattr(state, "db_recovery", None),
+                # Copia prima dell'aggiornamento non riuscita a questo avvio: {"at", "text"} o None
+                "copy_error": getattr(state, "db_copy_error", None),
             },
             # Ultima voce, a risposta pronta: il browser la confronta con la sua ora
             "now": _now(),
@@ -825,19 +906,25 @@ def create_app(
         visible = {i["id"] for i in listing["items"]}
         ids = [i for i in body.ids if i in visible] if body.ids is not None else list(visible)
         state = request.app.state
-        state.notifications.mark_seen(ids, _current_notifications(state))
-        # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche
-        chosen = set(ids)
+        state.notifications.mark_seen(ids, _current_notifications(state), body.weights, _unknown_faults(state))
+        after = _notification_listing(request)
+        # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche. Solo quelle ora viste: una
+        # peggiorata dopo l'ultimo aggiornamento della pagina resta da gestire, e nessuno l'ha ancora vista così
+        chosen = {i["id"] for i in after["items"] if i["seen"]} & set(ids)
         marked = [i for i in listing["items"] if i["id"] in chosen and not i["seen"]]
         if marked:
             titles = ", ".join(f"{i['title']} ({i['text']})" if i["text"] else i["title"] for i in marked[:3])
             more = f" e altre {len(marked) - 3}" if len(marked) > 3 else ""
             if len(marked) == 1:
-                state.db.add_audit(request_user(request), "notifica segnata come vista", titles)
+                action, detail = "notifica segnata come vista", titles
             else:
-                detail = f"{len(marked)} notifiche: {titles}{more}"
-                state.db.add_audit(request_user(request), "notifiche segnate come viste", detail)
-        return {"open": _notification_listing(request)["open"]}
+                action, detail = "notifiche segnate come viste", f"{len(marked)} notifiche: {titles}{more}"
+            try:
+                state.db.add_audit(request_user(request), action, detail)
+            except sqlite3.Error as err:
+                # La presa visione è salvata: con il disco pieno non risulta un errore
+                _LOGGER.warning("Attività non salvata (%s): %s", action, err)
+        return {"open": after["open"]}
 
     @app.put("/api/notifications/settings", dependencies=[need("utenti")])
     async def notification_settings(body: dict[str, str], request: Request) -> dict:
@@ -972,7 +1059,9 @@ def create_app(
     @app.get("/api/persons", dependencies=[need("persone")])
     async def persons(request: Request) -> list[dict]:
         db = request.app.state.db
-        last = db.last_accesses()
+        # Con un anno di registro dura decine di millisecondi o più, e la pagina lo chiede ogni 15 secondi: in un
+        # thread, per non fermare l'app (vedi Database._read)
+        last = await asyncio.to_thread(db.last_accesses)
         result = db.list_persons()
         for person in result:
             person["last_access"] = last.get(person["id"], "")
@@ -999,8 +1088,9 @@ def create_app(
         if person is None:
             raise ServiceError("persona non trovata")
         can_log = current_user(request).can("registro")
-        person["events"] = db.list_events(person_id=person_id, limit=50) if can_log else []
-        person["last_access"] = db.last_accesses().get(person_id, "")
+        person["events"] = await asyncio.to_thread(db.list_events, person_id=person_id, limit=50) if can_log else []
+        # Solo quella persona: prima si calcolavano gli ultimi accessi di tutti
+        person["last_access"] = db.last_access(person_id)
         return person
 
     @app.patch("/api/persons/{person_id}", dependencies=[need("persone_modifica")])
@@ -1057,7 +1147,9 @@ def create_app(
         person_id: int | None = None,
         door: str = "",
     ) -> list[dict]:
-        return request.app.state.db.list_events(
+        # Una ricerca legge tutto il registro (un anno: un secondo e più): in un thread, per non fermare l'app
+        return await asyncio.to_thread(
+            request.app.state.db.list_events,
             kind=kind,
             search=q,
             before_id=before_id,
@@ -1080,8 +1172,14 @@ def create_app(
         door: str = "",
     ) -> dict:
         """Quanti eventi corrispondono ai filtri: serve per gli accessi nascosti dalle viste del registro."""
-        count = request.app.state.db.count_matching_events(
-            kind=kind, search=q, since=_utc(since), until=_utc(until), person_id=person_id, door=door
+        count = await asyncio.to_thread(
+            request.app.state.db.count_matching_events,
+            kind=kind,
+            search=q,
+            since=_utc(since),
+            until=_utc(until),
+            person_id=person_id,
+            door=door,
         )
         return {"count": count}
 
@@ -1129,10 +1227,11 @@ def create_app(
             # e senza tenerlo tutto in memoria. Ogni pagina riparte dall'ultimo evento scritto (ora e numero)
             yield header.encode("utf-8")
             before_id, before_ts = None, ""
-            while rows := state.db.list_events(**filters, before_id=before_id, before_ts=before_ts, limit=EXPORT_PAGE):
+            while rows := await asyncio.to_thread(
+                state.db.list_events, **filters, before_id=before_id, before_ts=before_ts, limit=EXPORT_PAGE
+            ):
                 yield events_csv(rows, names)[len(header) :].encode("utf-8")
                 before_id, before_ts = rows[-1]["id"], rows[-1]["ts"]
-                await asyncio.sleep(0)
 
         filename = f"registro_accessi_{datetime.now():%Y%m%d_%H%M}.csv"
         return StreamingResponse(
@@ -1146,7 +1245,8 @@ def create_app(
         state = request.app.state
         names = await _group_names(state)
         categories = {c["id"]: c["name"] for c in state.db.list_categories()}
-        text = persons_csv(state.db.list_persons(), names, state.db.last_accesses(), categories)
+        last = await asyncio.to_thread(state.db.last_accesses)
+        text = persons_csv(state.db.list_persons(), names, last, categories)
         return _csv_response(text, "persone")
 
     @app.post("/api/import/persons", dependencies=[need("persone_modifica", "import_export")])
@@ -1160,17 +1260,20 @@ def create_app(
             if any(item.get("gruppo") for item in read_import(body.csv)):
                 raise ServiceError(f"i gruppi del file non si possono controllare: {err}") from err
             groups = []
-        if body.apply:
+        if not body.apply:
+            return await import_persons(state.service, body.csv, groups, request_user(request), False)
+        # Righe comprese: una nuova configurazione con un altro indirizzo chiude il client di adesso solo dopo
+        # l'importazione (al massimo dopo RELOAD_GRACE), non tra una riga e l'altra
+        async with _reading(state):
             # Un'importazione cambia molte persone insieme: il backup si fa sempre, non una volta ogni tanto
-            async with _reading(state):
-                await state.backups.before_change(
-                    "prima_importazione",
-                    request_user(request),
-                    _backup_clients(state),
-                    _offline_controllers(state),
-                    window=False,
-                )
-        return await import_persons(state.service, body.csv, groups, request_user(request), body.apply)
+            await state.backups.before_change(
+                "prima_importazione",
+                request_user(request),
+                _backup_clients(state),
+                _offline_controllers(state),
+                window=False,
+            )
+            return await import_persons(state.service, body.csv, groups, request_user(request), True)
 
     @app.get("/api/audit", dependencies=[need("utenti")])
     async def audit(
@@ -1299,7 +1402,8 @@ def create_app(
         state = request.app.state
         user = current_user(request)
         counts = state.db.door_event_counts(local_day_start())
-        last = state.db.last_door_events(("concesso", "negato", "sconosciuta", "apertura_remota", "uscita", "citofono"))
+        # Ultimo passaggio: solo chi è passato, come negli accessi di oggi (non i rifiuti né le chiamate)
+        last = state.db.last_door_events(ACCESS_COUNT_KINDS)
         result = []
         for door in _doors_status(state):
             today = counts.get(door["token"], {})
@@ -1443,7 +1547,13 @@ def create_app(
 
     @app.put("/api/areas/{area_id}", dependencies=[need("impianti")])
     async def update_area(area_id: int, body: AreaIn, request: Request) -> dict:
-        return request.app.state.installation.save_area(area_id, 0, body.model_dump(), request_user(request))
+        before = request.app.state.db.get_area(area_id)
+        result = request.app.state.installation.save_area(area_id, 0, body.model_dump(), request_user(request))
+        # Area passata a un'altra struttura (site_id): le tipologie con la riga sulla struttura cambiano porte. Solo
+        # rinominata: niente da riscrivere e niente letture dal controller
+        if before and body.site_id and body.site_id != before["site_id"]:
+            await _refresh_categories(request.app)
+        return result
 
     @app.delete("/api/areas/{area_id}", dependencies=[need("impianti")])
     async def delete_area(area_id: int, request: Request) -> dict:
@@ -1782,9 +1892,15 @@ def create_app(
             mqtt_password=body.mqtt_password,
             mqtt_known=_mqtt_known(state),
         )
-        result = await apply(items, body.keys, runtime, user.label)
+        # Come l'importazione: il client di adesso non si chiude tra una riga e l'altra (vedi _reading)
+        async with _reading(state):
+            result = await apply(items, body.keys, runtime, user.label)
         # Tempi delle porte forse ripristinati: la rete di sicurezza della serratura li rilegge
         state.lock_guard.invalidate_times()
+        recovery = getattr(state, "db_recovery", None)
+        if result["applied"] and recovery and STARTED_EMPTY in recovery["text"]:
+            # Database ripartito vuoto all'avvio: con il backup dell'app ripristinato non è più un guasto
+            state.db_recovery = {**recovery, "handled": True, "hint": recovery_hint(recovery["text"], True)}
         full = any(s in FULL_SECTIONS for s in body.sections)
         state.db.add_audit(
             user.label,
@@ -1864,8 +1980,13 @@ def create_app(
         state.login_limiter.success(ip, key, started)
         agent = request.headers.get("user-agent") or ""
         token, digest = new_token()
-        state.db.add_session(digest, row["username"], password["set_at"], ip, agent)
-        state.db.add_audit(label, "accesso diretto", f"{ip or 'indirizzo non visibile'} · {short_agent(agent)}")
+        try:
+            state.db.add_session(digest, row["username"], password["set_at"], ip, agent)
+            state.db.add_audit(label, "accesso diretto", f"{ip or 'indirizzo non visibile'} · {short_agent(agent)}")
+        except sqlite3.Error as err:
+            # Disco pieno: la sessione non si salva. Un motivo chiaro invece di un errore senza messaggio
+            _LOGGER.error("Accesso diretto di %s non registrato: %s", label, err)
+            return JSONResponse({"detail": f"{error_reason(err)}: avvisa l'amministratore"}, 503)
         response = JSONResponse({"ok": True, "must_change": bool(password["must_change"])})
         _set_session_cookie(response, request, token)
         return response
@@ -1979,7 +2100,7 @@ def create_app(
         state.direct_settings = settings
         await state.direct.apply(settings)
         state.db.add_audit(
-            user.label, "accesso diretto " + ("attivo" if settings["enabled"] else "spento"), state.direct.error
+            user.label, "accesso diretto " + ("attivo" if settings["enabled"] else "disattivato"), state.direct.error
         )
         return _direct_access_view(state)
 
@@ -2024,7 +2145,8 @@ def _direct_session(request: Request) -> tuple[str, AppUser] | None:
     now = datetime.now(tz=UTC)
     user = state.users.direct_user(session["username"]) if session_valid(session, password, now) else None
     if user is None:
-        state.db.delete_session(digest)
+        with contextlib.suppress(sqlite3.Error):
+            state.db.delete_session(digest)
         return None
     if ADMIN in user.perms:
         user = AppUser(user.username, user.name, {p for p in PERMISSIONS if p != ADMIN})
@@ -2032,7 +2154,13 @@ def _direct_session(request: Request) -> tuple[str, AppUser] | None:
     last = datetime.fromisoformat(session["last_seen"])
     request.state.session_touched = now - last > TOUCH_EVERY
     if request.state.session_touched:
-        state.db.touch_session(digest, client_ip(request))
+        try:
+            state.db.touch_session(digest, client_ip(request))
+        except sqlite3.Error as err:
+            # Disco pieno: la richiesta si serve lo stesso (prima ogni richiesta rispondeva 500, anche le letture);
+            # il cookie si rinnova alla prossima scrittura riuscita
+            _LOGGER.warning("Sessione dell'accesso diretto non rinnovata: %s", err)
+            request.state.session_touched = False
     return digest, user
 
 
@@ -2185,11 +2313,21 @@ async def _start_runtime(app: FastAPI) -> None:
     old_service = getattr(state, "service", None)
     cfg = state.installation.effective_settings(state.options)
     state.settings = cfg
-    state.raw_controller = state.injected_controller or A1210Client(
-        cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl
-    )
-    # Le scritture si sospendono se all'indirizzo risponde un controller diverso da quello memorizzato
-    state.controller = ControllerGuard(state.raw_controller)
+    key = (cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl)
+    previous = getattr(state, "controller_key", None)
+    if key != previous:
+        state.raw_controller = state.injected_controller or A1210Client(
+            cfg.a1210_host, cfg.a1210_username, cfg.a1210_password, cfg.a1210_verify_ssl
+        )
+        # Le scritture si sospendono se all'indirizzo risponde un controller diverso da quello memorizzato
+        state.controller = ControllerGuard(state.raw_controller)
+        # Indirizzo o credenziali cambiati: nessuna scrittura finché un controllo non ha visto chi risponde (vedi
+        # _apply_pause), nemmeno nell'attimo prima del controllo
+        state.identity_pending = previous is not None and bool(cfg.a1210_host)
+    # Stessi indirizzo e credenziali (porta rinominata, broker arrivato…): stessi client e scritture sospese.
+    # Un'importazione o un ripristino in corso con il servizio di prima va avanti, invece di trovare il collegamento
+    # chiuso alla riga dopo
+    state.controller_key = key
     _apply_pause(state)
     state.doors = state.installation.doors()
     state.controller_camera = (state.installation.primary or {}).get("snapshot_camera") or ""
@@ -2202,6 +2340,8 @@ async def _start_runtime(app: FastAPI) -> None:
     # Eventi persi da recuperare dal registro del controller: all'avvio e dopo ogni interruzione
     state.recover_pending = True
     state.recover_outages = 0
+    # Eventi non salvati (registro non scrivibile) già rimessi dal recupero: il servizio è nuovo, conta da zero
+    state.recover_failures = 0
     # Il primo recupero con la nuova configurazione va nelle Attività, anche dopo giri senza eventi in diretta
     state.recover_periodic = False
     fresh = getattr(state, "recover_from", None) is None
@@ -2218,6 +2358,8 @@ async def _start_runtime(app: FastAPI) -> None:
     if old_service is not None:
         # Le operazioni ancora in corso con la configurazione di prima e le nuove non si accavallano
         state.service.lock = old_service.lock
+        # Righe dell'app non ancora salvate (registro non scrivibile): restano da salvare
+        state.service._unsaved_rows = old_service._unsaved_rows
         # Porta di ogni punto di accesso e lettore: dal controller, non dalla configurazione dell'app
         state.service.access_point_doors = old_service.access_point_doors
         state.service.idpoint_doors = old_service.idpoint_doors
@@ -2256,6 +2398,7 @@ async def _start_runtime(app: FastAPI) -> None:
             state.raw_controller,
             lambda: _responding(state),
             fingerprint=lambda: (state.installation.primary or {}).get("cert_fingerprint") or "",
+            clock_offset=lambda: _controller_clock_offset(state, synced_only=False),
         )
         if live
         else None
@@ -2282,16 +2425,17 @@ async def _stop_runtime(app: FastAPI) -> None:
     await _close_runtime(app, await _stop_listening(app), STOP_GRACE)
 
 
-async def _stop_listening(app: FastAPI, offline: bool = True) -> tuple:
+async def _stop_listening(app: FastAPI, offline: bool = True, remove: bool = False) -> tuple:
     """Ferma l'ascolto MQTT. Restituisce client, lock, sorgenti di comandi e letture in corso di questa
     configurazione, da chiudere con _close_runtime quando hanno finito. offline=False se la nuova configurazione
-    ripubblica subito le stesse entità di Home Assistant (vedi _stays_online)."""
+    ripubblica subito le stesse entità di Home Assistant (vedi _stays_online); remove=True se non si collega più al
+    broker (vedi _stops_listening): le entità si tolgono da Home Assistant."""
     state = app.state
     bridge = getattr(state, "bridge", None)
     if bridge:
         # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
         # ordinata il broker scarta il messaggio di addio)
-        await bridge.stop(offline)
+        await bridge.stop(offline, remove)
     for name in ("monitor_task", "live_task"):
         task = getattr(state, name, None)
         if task:
@@ -2350,16 +2494,24 @@ def _stays_online(app: FastAPI) -> bool:
     return f"{topic_base(cfg.ha_topic_prefix, cfg.mqtt_topic_prefix)}/disponibile" == bridge.availability_topic
 
 
+def _stops_listening(app: FastAPI) -> bool:
+    """La nuova configurazione non si collega al broker (controller tolto, senza prefisso MQTT): l'ascolto di adesso è
+    l'ultima occasione per togliere le entità di Home Assistant, che altrimenti resterebbero non disponibili."""
+    state = app.state
+    cfg = state.installation.effective_settings(state.options)
+    return getattr(state, "monitor_task", None) is not None and not (state.mqtt and cfg.mqtt_topic_prefix)
+
+
 async def reload_runtime(app: FastAPI) -> None:
     """Riparte con la nuova configurazione dopo una modifica a controller o porte."""
     async with app.state.reload_lock:
-        old = await _stop_listening(app, offline=not _stays_online(app))
+        old = await _stop_listening(app, offline=not _stays_online(app), remove=_stops_listening(app))
         await _start_runtime(app)
-    # Il client di prima si chiude dopo le operazioni che lo stanno ancora usando; le nuove usano già quello nuovo
-    await _close_runtime(app, old, RELOAD_GRACE)
-    # Indirizzo cambiato: prima di leggere o scrivere si controlla chi risponde
+    # Indirizzo cambiato: prima di leggere o scrivere si controlla chi risponde, subito e non dopo le operazioni
+    # ancora in corso con il client di prima (fino a RELOAD_GRACE). Fino ad allora le scritture restano sospese.
+    # Il controllo non conta tra i fallimenti di fila, che sono del controllo periodico
     try:
-        await app.state.health.check_all()
+        await app.state.health.check_all(count=False)
     except Exception:  # noqa: BLE001
         _LOGGER.exception("Controllo dei controller non riuscito")
     _apply_pause(app.state)
@@ -2368,6 +2520,9 @@ async def reload_runtime(app: FastAPI) -> None:
         # Indirizzo corretto: il WebSocket si prova subito, senza aspettare il prossimo giro; controller diverso: il
         # collegamento appena aperto si chiude
         app.state.live_events.wake.set()
+    if old[0] is not app.state.raw_controller:
+        # Il client di prima si chiude dopo le operazioni che lo stanno ancora usando; le nuove usano già quello nuovo
+        await _close_runtime(app, old, RELOAD_GRACE)
     with contextlib.suppress(VapixError, ServiceError):
         if app.state.settings.a1210_host:
             result = await app.state.service.sync_from_controller()
@@ -2443,7 +2598,8 @@ def _wire(app: FastAPI) -> None:
             # Coperchio del controller: la telecamera del controller, mai quella di una porta
             camera = state.controller_camera
         kinds = SNAPSHOT_KINDS | (GRANTED_KINDS if door.get("snapshot_on_granted") else set())
-        if camera and row.get("kind") in kinds:
+        # Evento non salvato (registro non scrivibile): niente riga a cui legare l'istantanea
+        if camera and row.get("kind") in kinds and row.get("id") is not None:
             await _save_snapshot(state, camera, row)
 
     async def on_change() -> None:
@@ -2539,6 +2695,10 @@ async def _save_snapshot(state, camera: str, row: dict) -> None:
         filename, error = "", "errore imprevisto, dettagli nel log dell'add-on"
     if filename or error:
         state.db.set_event_snapshot(row["id"], filename, error)
+    if error.startswith(LOW_SPACE):
+        # Disco quasi pieno: la telecamera non è stata chiesta, e lo dice già il guasto del disco. Prima ogni
+        # telecamera diventava «Telecamera Non Disponibile», e lo restava dopo fino al suo prossimo evento
+        return
     state.snapshot_errors.pop(camera, None)
     if error:
         state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}
@@ -2570,7 +2730,8 @@ def _doors_status(state) -> list[dict]:
             "area": places.get(d["id"], {}).get("area", ""),
             "site_id": places.get(d["id"], {}).get("site_id", 0),
             "area_id": places.get(d["id"], {}).get("area_id", 0),
-            "mode": state.monitor.door_modes.get(d["door_token"]),
+            # Con il controller che non risponde, o non ancora letto, la serratura è sconosciuta: mai l'ultimo valore
+            "mode": state.monitor.door_modes.get(d["door_token"]) if state.monitor.reachable is True else None,
             "state": _door_state(state.monitor, d["door_token"]),
             "camera": d["snapshot_camera"],
             "snapshot_on_granted": d["snapshot_on_granted"],
@@ -2656,14 +2817,29 @@ def _current_notifications(state) -> list[dict]:
         backup_verify=state.backups.last_verify(),
         # Database ripristinato all'avvio e copia per il backup di Home Assistant non aggiornata ("" se tutto bene)
         db_recovery=(getattr(state, "db_recovery", None) or {}).get("text", ""),
+        db_recovery_handled=bool((getattr(state, "db_recovery", None) or {}).get("handled")),
         ha_copy_error=ha_copy_error(state.db.path) if state.db.path else "",
+        db_copy_error=(getattr(state, "db_copy_error", None) or {}).get("text", ""),
+        low_space=_low_space(state),
+        write_error=state.service.write_error,
     )
+
+
+def _low_space(state) -> tuple[int, int] | None:
+    """Spazio libero e totale del disco del database o delle istantanee, se è quasi esaurito."""
+    folders = [state.ha.snapshot_dir] + ([state.db.path.parent] if state.db.path else [])
+    for folder in folders:
+        if low_space(folder):
+            return disk_space(folder)
+    return None
 
 
 def _notification_listing(request: Request) -> dict:
     user = current_user(request)
     state = request.app.state
-    return state.notifications.listing(_current_notifications(state), None if user.can("utenti") else user.perms)
+    return state.notifications.listing(
+        _current_notifications(state), None if user.can("utenti") else user.perms, _unknown_faults(state)
+    )
 
 
 def _intercom_status(intercom: IntercomBridge) -> dict:
@@ -2768,13 +2944,27 @@ def _signal_responding(state) -> None:
 
 
 def _apply_pause(state) -> None:
-    """Scritture verso il controller in uso sospese se è cambiato e nessuno ha confermato."""
+    """Scritture verso il controller in uso sospese se è cambiato e nessuno ha confermato, o se con l'indirizzo o le
+    credenziali appena cambiati un controllo non ha ancora visto chi risponde."""
     before = state.controller.paused
-    state.controller.paused = paused_reason(state.installation.primary)
+    primary = state.health.with_unsaved_change(state.installation.primary)
+    state.controller.paused = paused_reason(primary) or _identity_pending(state)
     live = getattr(state, "live_events", None)
     if live and before != state.controller.paused:
         # Controller cambiato: il WebSocket aperto si chiude subito. Cambio confermato: si ricollega subito
         live.wake.set()
+
+
+def _identity_pending(state) -> str:
+    """Motivo della sospensione finché il controllo non ha visto chi risponde al nuovo indirizzo: lì potrebbe
+    rispondere un altro controller con le stesse credenziali. Vuoto quando il controllo c'è stato."""
+    primary = state.installation.primary
+    if not getattr(state, "identity_pending", False) or not primary or not primary.get("host"):
+        return ""
+    if state.health.identity_checked(primary):
+        state.identity_pending = False
+        return ""
+    return f"il controller {primary['name']} non è ancora stato riconosciuto dopo il cambio di indirizzo o credenziali"
 
 
 async def _health_loop(app: FastAPI) -> None:
@@ -2785,7 +2975,8 @@ async def _health_loop(app: FastAPI) -> None:
             before = state.controller.paused
             primary = state.installation.primary
             was = state.health.states.get(primary["id"]) if primary else None
-            was_down = bool(was and was.failures)
+            # Anche dopo un controllo fallito che non conta (sincronizzazione): si risincronizza appena risponde
+            was_down = bool(was and (was.failures or was.online is False))
             await state.health.check_all()
             now = state.health.states.get(primary["id"]) if primary else None
             if was_down and now is not None and now.online:
@@ -2795,11 +2986,68 @@ async def _health_loop(app: FastAPI) -> None:
             if before != state.controller.paused:
                 state.service.notify_change()
             _signal_responding(state)
-            await _recover_if_needed(state)
         except Exception:  # noqa: BLE001 - il controllo riparte al giro successivo
             _LOGGER.exception("Controllo dei controller non riuscito")
+        # Un passo che non riesce non ferma gli altri
+        try:
+            await _recover_if_needed(state)
+        except Exception:  # noqa: BLE001 - si riprova al giro successivo
+            _LOGGER.exception("Recupero degli eventi persi non riuscito")
+        try:
+            _check_writable(state)
+        except Exception:  # noqa: BLE001 - si riprova al giro successivo
+            _LOGGER.exception("Scrittura di prova nel registro non riuscita")
+        try:
+            _forget_resolved(state)
+        except Exception:  # noqa: BLE001 - si riprova al giro successivo
+            _LOGGER.exception("Prese visione dei guasti risolti non aggiornate")
         state.health_ready.set()
         await asyncio.sleep(HEALTH_INTERVAL)
+
+
+def _extended_openings(state) -> dict[str, float]:
+    """Aperture estese dall'app prima del riavvio (vedi AccessService.recent_extended_openings): porta → secondi fa.
+    Con il disco quasi pieno la riga può non essersi salvata (registro non scrivibile): per le altre porte un'Aperta
+    a Tempo trovata senza consenso vale come estesa da adesso. La rete di sicurezza agisce più tardi solo per
+    l'apertura in corso al riavvio, e non taglia un'apertura estesa vera con un falso Riblocco Forzato."""
+    found = state.service.recent_extended_openings(MAX_EXTENDED)
+    if state.db.path and low_space(state.db.path.parent):
+        for door in state.doors:
+            found.setdefault(door["door_token"], 0.0)
+    return found
+
+
+def _check_writable(state) -> None:
+    """Registro segnato non scrivibile, con gli eventi del controller di quel periodo già recuperati: con lo spazio di
+    nuovo libero il guasto si toglie, e le righe dell'app rimaste fuori tornano nel registro (vedi
+    AccessService.check_writable)."""
+    if state.service.write_failures == getattr(state, "recover_failures", 0):
+        state.service.check_writable()
+
+
+def _forget_resolved(state) -> None:
+    """Prese visione dei guasti risolti dimenticate a ogni giro, anche con l'app chiusa ovunque: se il guasto torna
+    (controller che smette di nuovo di rispondere, telecamera) è di nuovo da gestire."""
+    state.notifications.forget_resolved(_current_notifications(state), _unknown_faults(state))
+
+
+def _unknown_faults(state) -> set[str]:
+    """Guasti che adesso non si possono valutare. Si leggono dal controller: quando non risponde, anche a un solo
+    controllo, o quando la sua ora non è stata letta, spariscono dalle notifiche ma non sono risolti. Le loro prese
+    visione restano, e al ritorno lo stesso guasto non torna da gestire (vedi NotificationService._still_seen)."""
+    unknown: set[str] = set()
+    primary_id = (state.installation.primary or {}).get("id")
+    for controller_id, health in state.health.states.items():
+        if health.online is not True:
+            # Nascosti con il controller non raggiungibile
+            unknown |= {f"unmanaged:{controller_id}", f"rex:{controller_id}", f"inputs:{controller_id}"}
+        if health.online is not True or health.clock_offset is None:
+            # Orologio e fuso: solo con il controller che risponde e l'ora letta (health.clock_fault)
+            unknown |= {f"zone:{controller_id}", f"clock:{controller_id}", "clock:home_assistant"}
+        if controller_id == primary_id and (health.online is not True or state.monitor.casing_open is None):
+            # Coperchio: lo stato si rilegge per intero solo dopo il ritorno del controller
+            unknown.add(f"casing:{controller_id}")
+    return unknown
 
 
 async def _recover_if_needed(state) -> None:
@@ -2808,7 +3056,15 @@ async def _recover_if_needed(state) -> None:
     HEALTH_INTERVAL secondi), così passaggi e allarmi arrivano nel registro anche senza WebSocket né MQTT."""
     monitor = state.monitor
     live = events_live(state)
-    pending = state.recover_pending or monitor.outages != state.recover_outages or not live
+    # Eventi arrivati in diretta e non salvati (disco pieno): il punto di recupero resta fermo finché un recupero
+    # non li rimette. Prima il registro ripartiva dagli eventi nuovi e il buco restava per sempre
+    failures = state.service.write_failures
+    pending = (
+        state.recover_pending
+        or monitor.outages != state.recover_outages
+        or not live
+        or failures != getattr(state, "recover_failures", 0)
+    )
     if not pending:
         # Nessuna interruzione da recuperare: il registro è completo fin qui. Il punto da cui recuperare si fissa
         # adesso e non al recupero, quando gli eventi arrivati in diretta dopo l'interruzione lo avrebbero già
@@ -2849,14 +3105,26 @@ async def _recover_if_needed(state) -> None:
     except VapixError as err:
         _LOGGER.warning("Eventi persi non recuperati dal controller: %s", err)
         return
+    except sqlite3.Error as err:
+        # Registro ancora non scrivibile (anche solo al commit della pagina): si riprova al giro dopo, dallo stesso
+        # punto
+        _LOGGER.warning("Eventi persi non recuperati: registro non scrivibile (%s)", err)
+        state.service.note_write_error(err)
+        return
+    state.recover_failures = failures
     # Senza eventi in diretta resta da fare: anche il primo giro dopo il loro ritorno, per gli eventi tra questo
-    # recupero e il ritorno
-    state.recover_pending, state.recover_outages, state.recover_periodic = not live, outages, not live
+    # recupero e il ritorno. Anche con gli eventi in diretta se il registro era troppo lungo per un giro: il punto
+    # fissato a ogni giro passerebbe oltre gli eventi non ancora letti
+    more = state.service.recover_more
+    state.recover_pending, state.recover_outages, state.recover_periodic = not live or more, outages, not live
     if state.service.recover_newest is not None:
         state.recover_cutoff = (state.settings.a1210_host, state.service.recover_newest)
     if not live:
         # Il registro dell'app è completo fino a qui
         state.recover_from = _recover_mark(state)
+    elif more and state.service.recover_newest is not None:
+        # Completo solo fino all'ultimo evento letto: quelli arrivati in diretta intanto sono più nuovi
+        state.recover_from = (state.service.recover_newest.isoformat(timespec="seconds"), datetime.now(tz=UTC))
     state.last_recovery = {"at": _now(), "since": since.isoformat(timespec="seconds"), "events": recovered}
     if recovered and announce:
         _LOGGER.info("Recuperati %s eventi dal registro del controller", recovered)
@@ -2945,13 +3213,18 @@ def _events_waiting(state) -> bool:
 
 def _responding(state) -> bool | None:
     """Il controller principale risponde all'app: True, False (non risponde da almeno un minuto, o all'indirizzo
-    risponde un controller diverso), None se non si sa ancora (primo controllo non fatto, un solo controllo fallito)."""
+    risponde un controller diverso), None se non si sa ancora (primo controllo non fatto, un solo controllo fallito,
+    chi risponde con l'indirizzo o le credenziali appena cambiati non ancora visto)."""
     primary = state.installation.primary
     health = state.health.states.get(primary["id"]) if primary and primary.get("host") else None
     if health is None:
         return None
-    if health.unreachable or state.controller.paused:
+    if health.unreachable or paused_reason(state.health.with_unsaved_change(primary)):
         return False
+    if state.controller.paused:
+        # Solo il controllo dopo il cambio di indirizzo o credenziali: prima lo stato si svuotava, Home Assistant
+        # vedeva il controller offline e la rete di sicurezza si fermava fino a 30 s, anche con lo stesso apparecchio
+        return None
     return True if health.online else None
 
 
@@ -2995,8 +3268,9 @@ async def _lock_guard_loop(app: FastAPI) -> None:
         wait = CHECK_EVERY
         try:
             monitor = state.monitor
-            # Con il controller che non risponde lo stato delle porte è sconosciuto: niente da fare
-            if monitor.reachable is not False and _responding(state) is not False:
+            # Con il controller che non risponde lo stato delle porte è sconosciuto: niente da fare. Nemmeno con le
+            # scritture sospese: nessun blocco verso un apparecchio non ancora riconosciuto
+            if monitor.reachable is not False and _responding(state) is not False and not state.controller.paused:
                 service = state.service
                 wait = await guard.tick(
                     monitor,
@@ -3026,7 +3300,7 @@ def _controllers_health(state) -> list[dict]:
         result.append(
             {
                 **health.as_dict(),
-                "identity_change": paused_reason(row),
+                "identity_change": paused_reason(state.health.with_unsaved_change(row)),
                 "clock_problem": clock_problem(health),
                 "clock_fault": clock_fault(health),
                 "clock_synced": controller_synced(health),
@@ -3182,7 +3456,8 @@ async def _group_names(state) -> dict[str, str]:
 async def _maintenance(app: FastAPI) -> None:
     """Importa periodicamente le tessere dal controller e cancella ogni giorno gli eventi vecchi."""
     state = app.state
-    last_prune = 0.0
+    # La prima pulizia dopo PRUNE_DELAY: dopo un riavvio fatto per liberare spazio non si aspetta un giorno
+    last_prune = asyncio.get_running_loop().time() - PRUNE_INTERVAL + PRUNE_DELAY
     # Riparazioni di una volta per avvio già riuscite
     repaired: set[str] = set()
     loop = asyncio.get_running_loop()
@@ -3208,9 +3483,12 @@ async def _maintenance(app: FastAPI) -> None:
                     await _refresh_categories(app)
             except Exception:  # noqa: BLE001
                 _LOGGER.exception("Profili delle tipologie non aggiornati")
-        if loop.time() - last_prune >= PRUNE_INTERVAL or last_prune == 0.0:
+        if loop.time() - last_prune >= PRUNE_INTERVAL:
             try:
-                state.ha.delete_snapshots(state.db.prune_events(state.settings.event_retention_days))
+                await _prune(state)
+            except sqlite3.Error as err:
+                # Disco pieno: le istantanee del blocco sono già cancellate, lo spazio liberato serve al prossimo giro
+                _LOGGER.error("Pulizia del registro non finita: %s", err)
             except Exception:  # noqa: BLE001 - si riprova il giorno dopo
                 _LOGGER.exception("Pulizia del registro non riuscita")
             # Sessioni dell'accesso diretto non usate da troppo tempo
@@ -3226,19 +3504,44 @@ async def _maintenance(app: FastAPI) -> None:
         state.sync_wake.clear()
 
 
+async def _prune(state) -> None:
+    """Eventi e istantanee oltre la conservazione, a blocchi: prima le istantanee del blocco (con il disco pieno di
+    istantanee liberano lo spazio che serve a cancellare le righe), poi le righe, con un commit per blocco. Tra un
+    blocco e l'altro l'app risponde: in un colpo solo un registro grande la fermava per decine di secondi."""
+    removed = 0
+    while rows := state.db.expired_events(state.settings.event_retention_days):
+        await asyncio.to_thread(state.ha.delete_snapshots, [row["snapshot"] for row in rows if row["snapshot"]])
+        state.db.delete_events([row["id"] for row in rows])
+        removed += len(rows)
+        await asyncio.sleep(PRUNE_PAUSE)
+    if removed:
+        # Il WAL torna piccolo subito, non alla chiusura dell'add-on
+        state.db.checkpoint()
+        _LOGGER.info("Pulizia del registro: %s eventi oltre la conservazione cancellati", removed)
+    # Istantanee oltre la conservazione senza la loro riga, dalla data del file: quelle degli eventi persi con un
+    # ripristino da Home Assistant (la cartella Media non è nel backup dell'add-on) o con il database ripartito dalla
+    # copia o vuoto. Prima restavano per sempre
+    orphans = await asyncio.to_thread(delete_old_snapshots, state.ha.snapshot_dir, state.settings.event_retention_days)
+    if orphans:
+        _LOGGER.info("Pulizia del registro: %s istantanee senza evento cancellate", orphans)
+
+
 async def _sync(state) -> tuple[bool, int]:
     """Un giro di sincronizzazione delle tessere: se è riuscita e fra quanti secondi il prossimo."""
     primary = state.installation.primary
-    if state.settings.a1210_host and primary and primary["host"] and not state.controller.paused:
+    if state.settings.a1210_host and primary and primary["host"] and not paused_reason(primary):
         # Chi risponde all'indirizzo, subito prima di leggere: dopo un'interruzione il nuovo tentativo può arrivare
-        # prima del controllo di stato, e un controller sostituito non si legge finché non lo si conferma
-        health = await state.health.check(primary)
+        # prima del controllo di stato, e un controller sostituito non si legge finché non lo si conferma. Anche
+        # con il controllo del nuovo indirizzo ancora da fare. Un fallimento qui non conta tra quelli di fila
+        health = await state.health.check(primary, count=False)
         _apply_pause(state)
         _signal_responding(state)
         if state.controller.paused:
             state.service.notify_change()
-        if not health.online and not state.controller.paused:
-            state.last_sync = {"ok": False, "error": health.error, "result": None, "at": _now()}
+        if not health.online:
+            # check: il motivo viene da quel controllo, che come un attimo senza risposta non fa la notifica (vedi
+            # NotificationService.collect); se il controller non risponde davvero lo dice il controllo periodico
+            state.last_sync = {"ok": False, "error": health.error, "result": None, "at": _now(), "check": True}
             _LOGGER.warning("Sincronizzazione non riuscita: %s", health.error)
             return False, SYNC_RETRY
     if state.controller.paused:

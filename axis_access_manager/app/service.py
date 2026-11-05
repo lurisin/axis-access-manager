@@ -5,16 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import sqlite3
 import unicodedata
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 
+from .backup_copy import error_reason
 from .config import Settings
 from .db import Database, now_iso
 from .events import Event, EventMonitor, door_of_topic, event_from_log
 from .rules import RuleError, check_validity, normalize_validity
-from .vapix import A1210Client, VapixError
+from .vapix import A1210Client, ControllerUnreachable, VapixError
 
 _LOGGER = logging.getLogger(__name__)
 # Oltre questo scarto l'ora del controller non è credibile neanche se dice di essere sincronizzato
@@ -59,6 +61,9 @@ DOOR_ALARMS = {
 
 # Eventi registrati dal controller: non si registrano due volte (MQTT e recupero dal registro interno)
 CONTROLLER_KINDS = ("lettura", "sconosciuta", "concesso", "negato", "uscita", "allarme", "manomissione")
+# Allarmi e manomissioni sono anche stato: il controller li rimanda con la loro ora quando il WebSocket si ricollega.
+# Uno già nel registro con la stessa impronta e lo stesso secondo è lo stesso, anche se arriva come in diretta
+STATE_KINDS = ("allarme", "manomissione")
 # Eventi del registro interno del controller che finiscono nel Registro dell'app
 RECOVER_TOPICS = (
     "IdPoint/Request/IdData",
@@ -70,6 +75,8 @@ RECOVER_TOPICS = (
 )
 RECOVER_PAGE = 1000
 RECOVER_MAX = 30000
+# Scrittura di prova con il registro segnato non scrivibile (vedi AccessService.check_writable)
+SETTING_WRITE_PROBE = "write_probe"
 
 
 # Eventi che cambiano solo lo stato mostrato in Home Assistant (oltre a quanto va nel registro)
@@ -200,6 +207,19 @@ class AccessService:
         self._tasks: set[asyncio.Task] = set()
         # Ultimi esiti del controller: lo stesso diniego arriva su più topic e va registrato una volta
         self._recent_decisions: deque[tuple] = deque(maxlen=20)
+        # Esiti arrivati in diretta e non salvati (registro non scrivibile): valgono per gli altri topic dello stesso
+        # passaggio, non per il recupero, che li deve rimettere nel registro
+        self._unsaved_decisions: deque[tuple] = deque(maxlen=20)
+        # Registro non scrivibile (disco pieno): {"since", "error"} dal primo evento non salvato, None se si scrive
+        self.write_error: dict | None = None
+        # Eventi non salvati finora: il recupero dal registro del controller li rimette (vedi main._recover_if_needed)
+        self.write_failures = 0
+        # Righe dell'app non salvate (Riblocco Forzato, aperture a distanza, citofono): il registro del controller non
+        # le ha e il recupero non le rimette. Si salvano appena il registro torna scrivibile, senza mandarle di nuovo a
+        # Home Assistant
+        self._unsaved_rows: deque[dict] = deque(maxlen=100)
+        # Dentro record_event: le righe sono eventi del controller
+        self._controller_event = False
         # Punto di accesso → porta e lettore → porta, per sapere a quale porta si riferisce un evento
         self.access_point_doors: dict[str, str] = {}
         self.idpoint_doors: dict[str, str] = {}
@@ -213,6 +233,8 @@ class AccessService:
         self._recovered = 0
         # Ora (del controller) dell'evento più recente letto dall'ultimo recupero, None se non ne ha letti
         self.recover_newest: datetime | None = None
+        # L'ultimo recupero si è fermato a RECOVER_MAX righe con altre ancora da leggere: si continua al giro dopo
+        self.recover_more = False
         # Secondi di cui l'orologio del controller (sincronizzato via NTP) è avanti rispetto a Home Assistant;
         # None se non si sa o se il controller non è sincronizzato
         self.clock_offset: Callable[[], float | None] | None = None
@@ -247,7 +269,8 @@ class AccessService:
 
     async def last_grant(self, door: str) -> tuple[str, float | None] | None:
         """Ultimo consenso (tessera, pulsante) alla porta nel registro del controller: (impronta, secondi fa), None se
-        non c'è tra gli ultimi eventi. Per la rete di sicurezza della serratura senza eventi in diretta."""
+        non c'è tra gli ultimi eventi. Per la rete di sicurezza della serratura: senza eventi in diretta, e con gli
+        eventi in diretta prima di bloccare per il tempo scaduto."""
         entries = await self.controller.latest_events(GRANT_LOG_TAIL)
         # Scarto misurato dell'orologio del controller, anche senza NTP: senza misura i secondi non si sanno (None)
         offset = self.measured_clock_offset() if self.measured_clock_offset else None
@@ -278,12 +301,30 @@ class AccessService:
         in ritardo può essere già stato recuperato: in quei casi non si registra due volte.
         """
         ref = fields.get("ref") or ""
-        if ref and self.db.similar_event(ts=fields["ts"], ref=ref, only_recovered=not self._recovering):
+        if ref and self._known(fields["kind"], fields["ts"], ref):
             return None
         if self._recovering:
             fields["recovered"] = True
             self._recovered += 1
-        event_id = self.db.add_event(**fields)
+        try:
+            event_id = self.db.add_event(**fields)
+        except sqlite3.Error as err:
+            self.note_write_error(err)
+            if self._recovering:
+                # Il recupero si ferma qui e riparte al giro dopo, dallo stesso punto
+                raise
+            # In diretta l'evento arriva lo stesso a Home Assistant (allarmi, accessi, apertura riuscita); nel
+            # registro lo rimette il recupero, se è del controller, se no lo salva la prima scrittura che riesce.
+            # Prima si perdeva in silenzio
+            _LOGGER.warning("Evento non salvato nel registro: %s %s", fields.get("kind"), fields.get("door") or "")
+            event_id = None
+            if not self._controller_event:
+                self._unsaved_rows.append(dict(fields))
+        else:
+            # Nel recupero la riga è salvata solo al commit della pagina (vedi recover_events)
+            if not self._recovering:
+                self.writable_again()
+                self.check_writable()
         row = {**fields, "id": event_id}
         row.pop("raw", None)
         if self.after_event:
@@ -292,6 +333,45 @@ class AccessService:
             # Nel recupero Home Assistant si aggiorna una volta per pagina, non per ognuna delle migliaia di righe
             self._changed()
         return row
+
+    def writable_again(self) -> None:
+        """Una scrittura nel registro è riuscita: il guasto «Registro Non Scrivibile» si toglie."""
+        if self.write_error is not None:
+            _LOGGER.info("Registro di nuovo scrivibile")
+            self.write_error = None
+            self._changed()
+
+    def check_writable(self) -> None:
+        """Righe dell'app rimaste fuori dal registro: si salvano con la loro ora, senza mandarle di nuovo a Home
+        Assistant. Con il registro segnato non scrivibile e niente da salvare si prova una scrittura piccola: prima il
+        guasto restava finché non si salvava un evento nuovo, anche con lo spazio di nuovo libero."""
+        if self.write_error is None and not self._unsaved_rows:
+            return
+        try:
+            if not self._unsaved_rows:
+                self.db.set_setting(SETTING_WRITE_PROBE, now_iso())
+            while self._unsaved_rows:
+                self.db.add_event(**self._unsaved_rows[0])
+                self._unsaved_rows.popleft()
+        except sqlite3.Error as err:
+            _LOGGER.debug("Registro ancora non scrivibile: %s", err)
+            return
+        self.writable_again()
+
+    def note_write_error(self, err: sqlite3.Error) -> None:
+        """Registro non scrivibile (disco pieno): guasto finché una scrittura non riesce, e recupero da rifare."""
+        self.write_failures += 1
+        if self.write_error is None:
+            _LOGGER.error("Registro non scrivibile: %s", err)
+            self.write_error = {"since": now_iso(), "error": error_reason(err)}
+            self._changed()
+
+    def _known(self, kind: str, ts: str, ref: str) -> bool:
+        """Evento del controller già nel registro: arrivato in diretta e recuperato (o il contrario), oppure allarme o
+        manomissione rimandati come stato con la loro ora."""
+        if self.db.similar_event(ts=ts, ref=ref, only_recovered=not self._recovering):
+            return True
+        return kind in STATE_KINDS and self.db.similar_event(ts=ts, ref=ref, window=0)
 
     # Sincronizzazione
 
@@ -569,17 +649,42 @@ class AccessService:
                 except VapixError:
                     _LOGGER.warning("Utente %s rimasto sul controller dopo un errore", user_token)
                 raise
-            person_id = self.db.add_person(name, user_token)
-            if company or notes:
-                self.db.update_person_details(person_id, company, notes)
-            if category:
-                self.db.set_person_category(person_id, category["id"])
-            self.db.add_card(person_id, number, credential_token, enabled, access)
+            try:
+                # Tutto o niente: una persona senza la sua tessera non resta nell'app
+                with self.db.batch():
+                    person_id = self.db.add_person(name, user_token)
+                    if company or notes:
+                        self.db.update_person_details(person_id, company, notes)
+                    if category:
+                        self.db.set_person_category(person_id, category["id"])
+                    self.db.add_card(person_id, number, credential_token, enabled, access)
+            except sqlite3.Error as err:
+                # Disco pieno: la tessera appena scritta non resta attiva sul controller senza essere nell'app. Prima
+                # restava, e riprovando se ne aggiungeva un'altra con lo stesso numero
+                await self._remove_new(credential_token, user_token)
+                raise ServiceError(f"{error_reason(err)}: la persona non è stata registrata") from err
             detail = f"{name}, tessera {number}" + ("" if enabled else " sospesa")
             detail += f", tipologia {category['name']}" if category else ""
-            self.db.add_audit(user, "persona creata", detail)
+            self._audit(user, "persona creata", detail)
             self._changed()
             return self.db.get_person(person_id)
+
+    async def _remove_new(self, credential_token: str, user_token: str = "") -> None:
+        """Tessera (e utente) appena scritti sul controller e non registrati nell'app: si tolgono. Se non si può, la
+        sincronizzazione la porta nell'app come persona."""
+        try:
+            await self.controller.remove_credential(credential_token)
+            if user_token:
+                await self.controller.remove_user(user_token)
+        except VapixError as err:
+            _LOGGER.warning("Tessera %s rimasta sul controller dopo un errore del database: %s", credential_token, err)
+
+    def _audit(self, user: str, action: str, detail: str) -> None:
+        """Riga di Attività di una modifica già fatta: con il disco pieno la modifica resta, e non risulta un errore."""
+        try:
+            self.db.add_audit(user, action, detail)
+        except sqlite3.Error as err:
+            _LOGGER.warning("Attività non salvata (%s: %s): %s", action, detail, err)
 
     async def add_card(self, person_id: int, card: str, user: str, enabled: bool = True) -> dict:
         """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»)."""
@@ -595,10 +700,15 @@ class AccessService:
             credential_token = await self.controller.set_credential(
                 self._credential(user_token, person["name"], number, access, enabled)
             )
-            self.db.add_card(person_id, number, credential_token, enabled, access)
+            try:
+                self.db.add_card(person_id, number, credential_token, enabled, access)
+            except sqlite3.Error as err:
+                # Come per una persona nuova: la tessera non resta attiva sul controller senza essere nell'app
+                await self._remove_new(credential_token)
+                raise ServiceError(f"{error_reason(err)}: la tessera non è stata aggiunta") from err
             self._changed()
             detail = f"{person['name']}, tessera {number}" + ("" if enabled else " sospesa")
-            self.db.add_audit(user, "tessera aggiunta", detail)
+            self._audit(user, "tessera aggiunta", detail)
             return self.db.get_person(person_id)
 
     async def update_person(
@@ -717,10 +827,24 @@ class AccessService:
                 await self.controller.enable_credential(card["axis_credential_token"])
             else:
                 await self.controller.disable_credential(card["axis_credential_token"])
-            self.db.set_card_enabled(card_id, enabled)
+            try:
+                self.db.set_card_enabled(card_id, enabled)
+            except sqlite3.Error as err:
+                # Disco pieno. Una tessera riattivata torna sospesa sul controller, come la mostra l'app; una sospesa
+                # resta sospesa, e l'app la rilegge alla sincronizzazione. Prima l'errore era senza motivo
+                reason = error_reason(err)
+                if not enabled:
+                    raise ServiceError(
+                        f"{reason}: la tessera è sospesa sul controller, l'app lo mostrerà quando lo spazio torna"
+                    ) from err
+                try:
+                    await self.controller.disable_credential(card["axis_credential_token"])
+                except VapixError:
+                    _LOGGER.warning("Tessera %s non riportata sospesa sul controller", card["number"])
+                raise ServiceError(f"{reason}: la tessera non è stata riattivata") from err
             self._changed()
             person = self.db.get_person(card["person_id"])
-            self.db.add_audit(
+            self._audit(
                 user,
                 "tessera riattivata" if enabled else "tessera sospesa",
                 f"{person['name']}, tessera {card['number']}",
@@ -974,18 +1098,56 @@ class AccessService:
                 label = DOOR_MODES.get(mode, mode)
                 raise ServiceError(f"la porta non è bloccata ({label}): attendi che si richiuda")
             before = self.monitor.door_modes.get(door) if self.monitor else None
-            await self.controller.access_door(door, extended)
-            if self.lock_guard is not None:
+            guard, door_open = self.lock_guard, self._door_open(door)
+            # Consenso alla rete di sicurezza già prima del comando: con la risposta persa il controller può avere
+            # aperto lo stesso, con il tempo esteso se chiesto. Un consenso senza apertura scade da solo
+            grant = guard.granted(door, extended, door_open) if guard is not None else None
+            try:
+                await self.controller.access_door(door, extended)
+            except ControllerUnreachable:
+                raise
+            except VapixError:
+                # Rifiutato dal controller: nessuna apertura
+                if guard is not None:
+                    guard.withdraw(door, grant)
+                raise
+            if guard is not None:
                 # Il tempo della rete di sicurezza parte da qui, con il tempo esteso se chiesto
-                self.lock_guard.granted(door, extended, self._door_open(door))
+                guard.granted(door, extended, door_open)
             if self.monitor and self.monitor.door_modes.get(door) == before:
                 # Evita un secondo comando finché la porta non si richiude (via MQTT, o dal controller al prossimo
                 # comando o controllo); non copre un cambio arrivato via MQTT durante il comando
                 self.monitor.set_door_mode(door, "Accessed")
         detail = ", ".join(x for x in ("tempo esteso" if extended else "", note) if x)
         self.log_event(ts=self.event_now(), kind="apertura_remota", detail=detail, source=user, door=door)
-        self.db.add_audit(user, "porta aperta", detail)
+        try:
+            self.db.add_audit(user, "porta aperta", detail)
+        except sqlite3.Error as err:
+            # La porta è aperta: con il disco pieno l'apertura risultava non eseguita
+            _LOGGER.warning("Apertura della porta non scritta in Attività: %s", err)
         return True
+
+    def recent_extended_openings(self, seconds: float) -> dict[str, float]:
+        """Porte aperte dall'app con il tempo esteso negli ultimi seconds secondi, se è la loro ultima apertura a
+        distanza: porta → secondi fa. Per la rete di sicurezza della serratura dopo un riavvio dell'add-on."""
+        now = datetime.fromisoformat(self.event_now())
+        since = (now - timedelta(seconds=seconds)).isoformat(timespec="seconds")
+        found: dict[str, float] = {}
+        seen: set[str] = set()
+        for row in self.db.list_events(kind="apertura_remota", since=since):
+            door = row["door"] or ""
+            if door in seen:
+                continue
+            seen.add(door)
+            try:
+                age = (now - datetime.fromisoformat(row["ts"])).total_seconds()
+            except (TypeError, ValueError):
+                # Ora non leggibile (database ripristinato da una versione vecchia): l'avvio non si ferma per questo
+                continue
+            # Una riga nel futuro (orologio spostato) non si sa quando è: non conta
+            if door and age >= 0 and (row["detail"] == "tempo esteso" or row["detail"].startswith("tempo esteso, ")):
+                found[door] = age
+        return found
 
     # Eventi
 
@@ -1000,7 +1162,15 @@ class AccessService:
         return moment.isoformat(timespec="seconds")
 
     def record_event(self, event: Event, retained: bool = False) -> None:
-        """Salva nel log gli eventi utili. I messaggi conservati dal broker sono già stati registrati."""
+        """Salva nel log gli eventi utili. Lo stato mandato dal WebSocket appena collegato (retained) è già stato
+        registrato."""
+        self._controller_event = True
+        try:
+            self._record_event(event, retained)
+        finally:
+            self._controller_event = False
+
+    def _record_event(self, event: Event, retained: bool) -> None:
         if self.lock_guard is not None and not retained and not self._recovering:
             if event.topic.startswith("AccessControl/AccessGranted"):
                 door = self._door_of(event)
@@ -1008,7 +1178,7 @@ class AccessService:
             elif event.topic.startswith(("Door/State/", "Device/IO/Port")):
                 self.lock_guard.poke()
         if event.topic.startswith("Door/State/DoorMode/"):
-            # Anche il valore conservato dal broker aggiorna lo stato in Home Assistant
+            # Anche lo stato mandato dal WebSocket appena collegato aggiorna Home Assistant
             self._changed()
             return
         if event.topic.startswith(STATE_TOPICS) and not self._recovering:
@@ -1056,7 +1226,7 @@ class AccessService:
             pushed = self._input_source(str(data.get("AccessPointToken") or "")) if card is None else None
             # Stesso esito, stesso punto di accesso, stesso secondo: è lo stesso passaggio
             key = (granted, data.get("AccessPointToken") or door, ts)
-            if key in self._recent_decisions:
+            if key in self._recent_decisions or (key in self._unsaved_decisions and not self._recovering):
                 return
             self._recent_decisions.append(key)
             kind = "concesso" if granted else "negato"
@@ -1068,9 +1238,12 @@ class AccessService:
                 detail = pushed[1] if granted else f"{pushed[1]} · {DENIED_REASONS.get(reason, reason) or 'negato'}"
                 ref = event_ref(kind, door)
                 if not self._repeated(logged, pushed[0], door, ts, detail, ref):
-                    self.log_event(ts=ts, kind=logged, source=pushed[0], detail=detail, raw=data, door=door, ref=ref)
+                    row = self.log_event(
+                        ts=ts, kind=logged, source=pushed[0], detail=detail, raw=data, door=door, ref=ref
+                    )
+                    self._unsaved_decision(key, row)
                 return
-            self.log_event(
+            row = self.log_event(
                 ts=ts,
                 kind=kind,
                 card=card["number"] if card else number,
@@ -1082,6 +1255,7 @@ class AccessService:
                 door=door,
                 ref=event_ref(kind, door),
             )
+            self._unsaved_decision(key, row)
         elif topic.startswith("Door/State/DoorAlarm/") and data.get("State") not in (None, "Normal"):
             state = str(data["State"])
             detail = DOOR_ALARMS.get(state, state)
@@ -1115,12 +1289,18 @@ class AccessService:
             if not self._repeated("manomissione", source, "", ts, detail, ref):
                 self.log_event(ts=ts, kind="manomissione", detail=detail, source=source, ref=ref)
 
+    def _unsaved_decision(self, key: tuple, row: dict | None) -> None:
+        """Esito arrivato in diretta e non salvato: il recupero non lo deve saltare come già registrato."""
+        if row is not None and row["id"] is None and key in self._recent_decisions:
+            self._recent_decisions.remove(key)
+            self._unsaved_decisions.append(key)
+
     def _repeated(self, kind: str, source: str, door: str, ts: str, detail: str, ref: str) -> bool:
         """Stesso evento poco prima (rimbalzi, coperchio aperto e chiuso di continuo): non fa una riga nuova, segna
         quella già nel registro. Vale anche per gli eventi recuperati dal registro del controller, che così non
         rifanno le righe accorpate. Lo stesso evento arrivato via MQTT e dal registro del controller non è una
         ripetizione: al banco il recupero all'avvio aveva segnato "più pressioni" su una pressione sola."""
-        if self.db.similar_event(ts=ts, ref=ref, only_recovered=not self._recovering):
+        if self._known(kind, ts, ref):
             return True
         row = self.db.recent_event(kind, source, door, detail, ts, REPEAT_WINDOWS[kind])
         if row is None:
@@ -1156,11 +1336,15 @@ class AccessService:
             await self.load_access_points()
         self._recovered = 0
         self.recover_newest = None
+        self.recover_more = False
         row_id, read = None, 0
-        while read < RECOVER_MAX:
+        while True:
             entries, more = await self.controller.fetch_events(start, RECOVER_PAGE, row_id)
             read += len(entries)
             before = self._recovered
+            # Esiti già visti prima della pagina: se la pagina non si salva i suoi passaggi non sono «già registrati».
+            # Prima, con il disco ancora pieno, il recupero dopo li saltava e si perdevano per sempre
+            decisions = list(self._recent_decisions)
             self._recovering = True
             try:
                 # Una pagina, un commit
@@ -1171,11 +1355,20 @@ class AccessService:
                             self.recover_newest = event.timestamp
                         if event and event.topic.startswith(RECOVER_TOPICS):
                             self.record_event(event)
+            except sqlite3.Error:
+                self._recent_decisions = deque(decisions, maxlen=self._recent_decisions.maxlen)
+                raise
             finally:
                 self._recovering = False
             if self._recovered > before:
+                self.writable_again()
                 self._changed()
             if not more or not entries:
+                break
+            if read >= RECOVER_MAX:
+                # L'A1210 tiene fino a 250.000 eventi: il resto al prossimo giro, dall'ultimo letto (recover_newest)
+                _LOGGER.warning("Recupero fermato a %s eventi letti dal registro del controller: si continua", read)
+                self.recover_more = True
                 break
             row_id = entries[-1].get("rowid")
         return self._recovered

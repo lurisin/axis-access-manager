@@ -555,12 +555,14 @@ class HaBridge:
         if self.enabled and self._midnight is None:
             self._midnight = asyncio.get_running_loop().create_task(self._midnight_loop())
 
-    async def stop(self, offline: bool = True) -> None:
+    async def stop(self, offline: bool = True, remove: bool = False) -> None:
         """Da chiamare prima di chiudere la connessione al broker (spegnimento o nuova configurazione).
 
         Con una chiusura ordinata il broker scarta il messaggio di addio: "offline" si pubblica qui, altrimenti in
         Home Assistant le entità resterebbero disponibili con l'ultimo stato. offline=False quando la nuova
         configurazione si ricollega subito con le stesse entità: non diventano non disponibili per un attimo.
+        remove=True quando la nuova configurazione non si collega al broker (controller tolto): le entità tolte si
+        svuotano solo alla connessione (vedi on_connect), e senza resterebbero non disponibili per sempre.
         """
         if self._midnight is not None:
             self._midnight.cancel()
@@ -569,10 +571,21 @@ class HaBridge:
             self._midnight = None
         if not self.enabled or not offline:
             return
+        if remove:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._remove_entities(), OFFLINE_TIMEOUT * 5)
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(
                 self.monitor.publish(self.availability_topic, "offline", retain=True), OFFLINE_TIMEOUT
             )
+
+    async def _remove_entities(self) -> None:
+        for component, object_id in self._all_object_ids():
+            if not await self.monitor.publish(self._config_topic(component, object_id), b"", retain=True):
+                _LOGGER.warning("Entità non tolte da Home Assistant: broker MQTT non collegato")
+                return
+        # Anche con il controller che resta, se il suo prefisso MQTT è stato svuotato (vedi main._stops_listening)
+        _LOGGER.info("Entità tolte da Home Assistant: l'app non usa più il broker (nessun controller o prefisso vuoto)")
 
     async def _midnight_loop(self) -> None:
         """Accessi Oggi e Accessi Negati Oggi tornano a zero a mezzanotte, anche senza eventi né sincronizzazioni."""

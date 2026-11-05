@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import shutil
 import sqlite3
 import threading
 from collections.abc import Iterator
@@ -10,7 +13,9 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
-from .backup_copy import recover, update_copy
+from .backup_copy import corrupt_error, error_reason, recover, replace_unusable, update_copy
+
+_LOGGER = logging.getLogger(__name__)
 
 DB_PATH = Path("/data/axis_access_manager.db")
 
@@ -299,6 +304,21 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
     ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
+# Ultimo accesso di ogni persona e passaggi di una persona senza leggere tutto il registro (un anno: 1,5 milioni).
+# Fuori da SCHEMA: crearlo legge tutto il registro (vedi _open)
+PERSON_INDEX = "CREATE INDEX IF NOT EXISTS events_person ON events(person_id, kind, ts)"
+# Spazio per crearlo: byte per evento (nel WAL e poi nel database, misurati circa 45) e margine per l'avvio
+PERSON_INDEX_ROW = 2 * 64
+PERSON_INDEX_MARGIN = 32 * 1024 * 1024
+# Il WAL torna a questa dimensione dopo ogni checkpoint: una pulizia grande lo lasciava grande quasi come il database
+WAL_SIZE_LIMIT = 64 * 1024 * 1024
+# Pagine libere (dopo una pulizia grande del registro) oltre le quali, in un database senza auto_vacuum, all'avvio si
+# fa un VACUUM: almeno un quarto del file e almeno 64 MB con le pagine da 4 KB
+COMPACT_FREE_PAGES = 16384
+# Pulizia del registro a blocchi, un commit per blocco
+PRUNE_BLOCK = 2000
+# Letture lunghe del registro (vedi Database._read) che girano insieme
+READ_SLOTS = 2
 SETTING_APP_VERSION = "app_version"
 # Numero più alto mai dato a una persona: i numeri delle persone eliminate non si riusano
 SETTING_LAST_PERSON = "persons_last_id"
@@ -308,6 +328,15 @@ SETTING_LAST_PERSON = "persons_last_id"
 EVENT_COLUMNS = "id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door, recovered"
 # Origini fisse degli eventi: nel database il codice, per l'utente l'etichetta
 SOURCE_LABELS = {"lettore": "Lettore", "controller": "Controller", "porta": "Porta"}
+
+
+def _in_event_loop() -> bool:
+    """Chiamata dal thread del ciclo asyncio dell'app (non da asyncio.to_thread)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
 
 
 def now_iso() -> str:
@@ -330,25 +359,80 @@ class Database:
         """app_version: versione dell'add-on; se cambia rispetto all'ultimo avvio si fa una copia del database."""
         self.path = Path(path) if str(path) != ":memory:" else None
         self.recovered = recover(self.path) if self.path else ""
-        existed = bool(self.path and self.path.exists() and self.path.stat().st_size > 0)
-        self._conn = sqlite3.connect(str(path), check_same_thread=False)
-        self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         # Scritture dentro batch(): il commit si fa una volta alla fine
         self._batch = 0
+        # Letture lunghe del registro su connessioni a parte, una per thread (vedi _read), aperte alla prima
+        self._readers = threading.local()
+        self._reader_conns: list[sqlite3.Connection] = []
+        self._read_lock = threading.Lock()
+        # Al massimo due letture lunghe insieme: le altre aspettano, e al ciclo dell'app resta il processore
+        self._read_slots = threading.BoundedSemaphore(READ_SLOTS)
+        try:
+            self._open(str(path), app_version)
+        except sqlite3.Error as err:
+            if hasattr(self, "_conn"):
+                self._conn.close()
+            # Cosa ha già fatto l'avvio (copia spostata al posto del database) anche se poi l'apertura non riesce per lo
+            # spazio: _open_database libera spazio e riprova, e recover() trova un database sano e non lo dice più
+            err.recovered = self.recovered
+            raise
+
+    def _connect(self, path: str, existed: bool) -> None:
+        """Connessione e prime impostazioni, con la lettura dello schema: un errore qui vuol dire che SQLite non apre
+        il database."""
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.row_factory = sqlite3.Row
+        if not existed:
+            # Database nuovo: le pagine liberate dalla pulizia del registro tornano al disco (vedi delete_events)
+            self._conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
+        # Con il journal WAL chi legge non ferma chi scrive: la copia per il backup di Home Assistant
+        # (un altro processo, anche per molti secondi) non blocca più gli eventi e le pagine
+        self._conn.execute("PRAGMA journal_mode = WAL")
+        self._conn.execute(f"PRAGMA journal_size_limit = {WAL_SIZE_LIMIT}")
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+
+    def _open(self, path: str, app_version: str) -> None:
+        existed = bool(self.path and self.path.exists() and self.path.stat().st_size > 0)
         self.copied = ""
+        # Perché la copia prima dell'aggiornamento non si è fatta ("" se è andata bene o non serviva)
+        self.copy_error = ""
         with self._lock:
-            # Con il journal WAL chi legge non ferma chi scrive: la copia per il backup di Home Assistant
-            # (un altro processo, anche per molti secondi) non blocca più gli eventi e le pagine
-            self._conn.execute("PRAGMA journal_mode = WAL")
-            self._conn.execute("PRAGMA foreign_keys = ON")
+            try:
+                self._connect(path, existed)
+            except sqlite3.Error as err:
+                if hasattr(self, "_conn"):
+                    self._conn.close()
+                # SQLite non apre il database e recover() l'ha lasciato al suo posto: senza questo l'add-on non partiva
+                # più. Solo qui: un database che si apre, con una pagina rovinata letta dopo (un indice, una
+                # migrazione), non si mette da parte, se no l'app ripartiva vuota con persone e tessere leggibili
+                if self.path is None or not corrupt_error(err):
+                    raise
+                self.recovered = replace_unusable(self.path)
+                existed = bool(self.path.exists() and self.path.stat().st_size > 0)
+                self._connect(path, existed)
             version = self._conn.execute("PRAGMA user_version").fetchone()[0]
             previous = self._app_version() if existed else ""
             if existed and (version < SCHEMA_VERSION or (app_version and previous and previous != app_version)):
                 # Prima di toccare lo schema o dopo un aggiornamento dell'add-on: copia del database com'era
                 reason = f"v{previous}" if previous else f"schema{version}"
-                self.copied = update_copy(self.path, reason).name
+                try:
+                    self.copied = update_copy(self.path, reason).name
+                except (OSError, sqlite3.Error) as err:
+                    # Disco pieno o copia troppo lenta: l'add-on parte lo stesso (le migrazioni stanno in transazioni).
+                    # Prima non partiva più, e ci riprovava a ogni avvio
+                    self.copy_error = f"copia del database prima dell'aggiornamento non fatta ({error_reason(err)})"
             self._conn.executescript(SCHEMA)
+            try:
+                if self._room_for_person_index():
+                    self._conn.execute(PERSON_INDEX)
+            except sqlite3.DatabaseError as err:
+                # Una pagina del registro rovinata (l'ha già detto recover()), o il disco pieno: l'app parte con i dati,
+                # senza l'indice, e lo si crea a un avvio dopo. Prima con il disco quasi pieno l'add-on non partiva più
+                if not corrupt_error(err) and (getattr(err, "sqlite_errorcode", 0) & 0xFF) != sqlite3.SQLITE_FULL:
+                    raise
+                _LOGGER.warning("Indice degli accessi non creato (%s): si riprova al prossimo avvio", err)
             for step, _, statements in SCHEMA_STEPS:
                 if step <= version:
                     continue
@@ -373,6 +457,48 @@ class Database:
                     (SETTING_APP_VERSION, app_version),
                 )
             self._conn.commit()
+            self._compact()
+
+    def _room_for_person_index(self) -> bool:
+        """Spazio su disco per creare l'indice degli accessi, se manca (primo avvio dopo l'aggiornamento alla 0.26.1).
+        Con un registro grande e il disco quasi pieno l'indice riempiva il disco e l'add-on non partiva più."""
+        if self.path is None:
+            return True
+        if self._conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'events_person'").fetchone():
+            return True
+        rows = self._conn.execute("SELECT count(*) FROM events").fetchone()[0]
+        needed = rows * PERSON_INDEX_ROW + PERSON_INDEX_MARGIN
+        try:
+            if shutil.disk_usage(self.path.parent).free >= needed:
+                return True
+        except OSError:
+            return True
+        _LOGGER.warning(
+            "Indice degli accessi non creato: servono %s MB liberi, si riprova al prossimo avvio", needed >> 20
+        )
+        return False
+
+    def _compact(self) -> None:
+        """Molte pagine libere (una pulizia grande del registro) in un database senza auto_vacuum: il file non si
+        riduceva mai, e così le sue copie. Un VACUUM all'avvio, se c'è spazio, lo riduce e passa all'auto_vacuum
+        incrementale: dopo, le pulizie rendono lo spazio da sole."""
+        if self.path is None or self._conn.execute("PRAGMA auto_vacuum").fetchone()[0]:
+            return
+        free = self._conn.execute("PRAGMA freelist_count").fetchone()[0]
+        pages = self._conn.execute("PRAGMA page_count").fetchone()[0]
+        if free < COMPACT_FREE_PAGES or free * 4 < pages:
+            return
+        used = (pages - free) * self._conn.execute("PRAGMA page_size").fetchone()[0]
+        try:
+            # Le pagine in uso si scrivono due volte: nel file temporaneo e nel WAL
+            if shutil.disk_usage(self.path.parent).free < 3 * used:
+                return
+            self._conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
+            self._conn.execute("VACUUM")
+            self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+        except (OSError, sqlite3.Error):
+            # Non riuscito (spazio finito nel frattempo): il database resta com'era, si riprova al prossimo avvio
+            return
 
     def _app_version(self) -> str:
         try:
@@ -410,11 +536,40 @@ class Database:
             return self._conn.execute("PRAGMA user_version").fetchone()[0]
 
     def close(self) -> None:
-        self._conn.close()
+        with self._read_lock:
+            for conn in self._reader_conns:
+                conn.close()
+            self._reader_conns.clear()
+        self._readers = threading.local()
+        # Dopo una scrittura in corso in un altro thread (per esempio la verifica dei backup all'arresto): chiusa sotto
+        # i piedi, SQLite faceva cadere tutto il processo
+        with self._lock:
+            self._conn.close()
 
     def _query(self, sql: str, params: tuple = ()) -> list[dict]:
         with self._lock:
             return [dict(row) for row in self._conn.execute(sql, params).fetchall()]
+
+    def _read(self, sql: str, params: tuple = ()) -> list[dict]:
+        """Lettura che con un anno di registro dura secondi (ricerche, ultimi accessi): su una connessione a parte,
+        una per thread, che con il WAL non aspetta le scritture e non le fa aspettare. Chiamata da un thread
+        (asyncio.to_thread) non ferma l'app: con la connessione unica anche il thread teneva il lock di tutte le altre
+        richieste."""
+        if self.path is None or _in_event_loop():
+            # Dal ciclo dell'app (riepilogo, notifiche, Home Assistant) solo letture brevi: sulla connessione
+            # principale, come le altre. Con il semaforo aspettavano la fine delle ricerche in corso, e con loro tutta
+            # l'app
+            return self._query(sql, params)
+        conn = getattr(self._readers, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self.path), check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA query_only = ON")
+            self._readers.conn = conn
+            with self._read_lock:
+                self._reader_conns.append(conn)
+        with self._read_slots:
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     def _execute(self, sql: str, params: tuple = ()) -> int:
         with self._lock:
@@ -433,11 +588,22 @@ class Database:
         self._batch += 1
         try:
             yield
-        finally:
+        except BaseException:
             self._batch -= 1
             if not self._batch:
+                # Tutto o niente: una scrittura non riuscita (disco pieno) non lascia mezze modifiche
                 with self._lock:
+                    self._conn.rollback()
+            raise
+        self._batch -= 1
+        if not self._batch:
+            with self._lock:
+                try:
                     self._conn.commit()
+                except sqlite3.Error:
+                    # Con il disco pieno SQLite può lasciare aperta la transazione: le scritture dopo la salverebbero
+                    self._conn.rollback()
+                    raise
 
     def _insert_new(self, table: str, sql: str, params: tuple, new_id: int | None = None) -> int:
         """Riga nuova con un numero mai dato prima nella tabella (o new_id); sql ha l'id come primo parametro."""
@@ -1276,15 +1442,15 @@ class Database:
         )
         return rows[0]["person_name"] if rows else ""
 
-    def similar_event(self, *, ts: str, ref: str, only_recovered: bool = False) -> bool:
-        """Stesso evento del controller (stessa impronta) già registrato entro un secondo;
-        only_recovered: solo tra i recuperati."""
+    def similar_event(self, *, ts: str, ref: str, only_recovered: bool = False, window: int = 1) -> bool:
+        """Stesso evento del controller (stessa impronta) già registrato entro window secondi (0: nello stesso
+        secondo); only_recovered: solo tra i recuperati."""
         try:
             moment = datetime.fromisoformat(ts)
         except ValueError:
             return False
-        low = (moment - timedelta(seconds=1)).isoformat(timespec="seconds")
-        high = (moment + timedelta(seconds=1)).isoformat(timespec="seconds")
+        low = (moment - timedelta(seconds=window)).isoformat(timespec="seconds")
+        high = (moment + timedelta(seconds=window)).isoformat(timespec="seconds")
         return bool(
             self._query(
                 "SELECT 1 FROM events WHERE ts BETWEEN ? AND ? AND ref = ? AND recovered >= ? LIMIT 1",
@@ -1322,9 +1488,16 @@ class Database:
         self._execute("UPDATE events SET detail = ? WHERE id = ?", (detail, event_id))
 
     def last_controller_event(self, kinds: tuple[str, ...]) -> str:
-        """Ora dell'ultimo evento arrivato dal controller: da lì si recuperano quelli persi."""
+        """Ora dell'ultimo evento arrivato dal controller: da lì si recuperano quelli persi. Senza le righe dello
+        stesso tipo scritte dall'app (allarmi della rete di sicurezza, aperture da Home Assistant non eseguite): hanno
+        l'ora di Home Assistant e, con l'orologio del controller indietro, porterebbero il punto oltre i passaggi
+        ancora da recuperare."""
         marks = ", ".join("?" * len(kinds))
-        rows = self._query(f"SELECT MAX(ts) AS ts FROM events WHERE kind IN ({marks})", kinds)
+        rows = self._query(
+            f"SELECT MAX(ts) AS ts FROM events WHERE kind IN ({marks}) AND NOT (kind = 'allarme' AND source = 'App') "
+            "AND NOT (kind = 'negato' AND instr(detail, 'apertura non eseguita') = 1)",
+            kinds,
+        )
         return rows[0]["ts"] or "" if rows else ""
 
     @staticmethod
@@ -1397,7 +1570,8 @@ class Database:
                 params.append(before_id)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
-        return self._query(
+        # Una ricerca in un anno di registro legge tutte le righe: sulla connessione delle letture lunghe
+        return self._read(
             f"SELECT {EVENT_COLUMNS} FROM events {where} ORDER BY ts DESC, id DESC LIMIT ?",
             tuple(params),
         )
@@ -1405,7 +1579,7 @@ class Database:
     def count_matching_events(self, **filters) -> int:
         clauses, params = self._event_filter(**filters)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        return self._query(f"SELECT COUNT(*) AS n FROM events {where}", tuple(params))[0]["n"]
+        return self._read(f"SELECT COUNT(*) AS n FROM events {where}", tuple(params))[0]["n"]
 
     def door_event_counts(self, since: str) -> dict[str, dict[str, int]]:
         """Eventi per porta e per tipo dal momento indicato."""
@@ -1457,11 +1631,16 @@ class Database:
     def last_accesses(self) -> dict[int, str]:
         """Ultimo accesso concesso di ogni persona. Non le letture: la tessera sospesa, scaduta o fuori fascia
         viene letta anche quando il controller poi rifiuta il passaggio."""
-        rows = self._query(
+        rows = self._read(
             "SELECT person_id, MAX(ts) AS ts FROM events WHERE person_id IS NOT NULL "
             "AND kind = 'concesso' GROUP BY person_id"
         )
         return {row["person_id"]: row["ts"] for row in rows}
+
+    def last_access(self, person_id: int) -> str:
+        """Ultimo accesso concesso di una persona (vedi last_accesses), dall'indice: senza leggere tutto il registro."""
+        rows = self._query("SELECT MAX(ts) AS ts FROM events WHERE person_id = ? AND kind = 'concesso'", (person_id,))
+        return rows[0]["ts"] or ""
 
     def translate_details(self, kind: str, mapping: dict[str, str]) -> int:
         """Traduce i dettagli salvati con il codice del controller (eventi delle versioni precedenti)."""
@@ -1484,15 +1663,32 @@ class Database:
             self._conn.commit()
         return changed
 
-    def prune_events(self, days: int) -> list[str]:
-        """Cancella gli eventi vecchi; restituisce i file delle istantanee da eliminare."""
-        limit = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat(timespec="seconds")
-        snapshots = [
-            row["snapshot"]
-            for row in self._query("SELECT snapshot FROM events WHERE ts < ? AND snapshot != ''", (limit,))
-        ]
-        self._execute("DELETE FROM events WHERE ts < ?", (limit,))
-        return snapshots
+    def expired_events(self, days: int, limit: int = PRUNE_BLOCK) -> list[dict]:
+        """I limit eventi più vecchi oltre i giorni di conservazione, con la loro istantanea: la pulizia va a blocchi
+        (vedi main._prune). Un DELETE solo, con un anno di registro, fermava l'app per decine di secondi e portava il
+        WAL quasi alla dimensione del database; con il disco pieno falliva, e le istantanee non si cancellavano più."""
+        before = (datetime.now(tz=UTC) - timedelta(days=days)).isoformat(timespec="seconds")
+        return self._query("SELECT id, snapshot FROM events WHERE ts < ? ORDER BY ts LIMIT ?", (before, limit))
+
+    def delete_events(self, ids: list[int]) -> None:
+        """Un blocco di eventi cancellato con un commit; le pagine liberate tornano al disco (auto_vacuum incrementale,
+        per i database che ce l'hanno)."""
+        with self._lock:
+            self._conn.execute(f"DELETE FROM events WHERE id IN ({','.join('?' * len(ids))})", ids)
+            self._conn.execute("PRAGMA incremental_vacuum").fetchall()
+            self._commit()
+
+    def checkpoint(self) -> None:
+        """Scritture del WAL riportate nel database e WAL svuotato (dopo una pulizia grande). Senza aspettare chi legge:
+        con una lettura lunga in corso (ricerca, CSV, copia per il backup) il ciclo dell'app restava fermo 5 s e il
+        checkpoint non riusciva lo stesso; il WAL lo riduce comunque journal_size_limit."""
+        with self._lock:
+            timeout = self._conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            self._conn.execute("PRAGMA busy_timeout = 0")
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+            finally:
+                self._conn.execute(f"PRAGMA busy_timeout = {timeout}")
 
     # Audit
 

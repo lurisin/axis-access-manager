@@ -2,6 +2,7 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+import aiomqtt
 import pytest
 from fastapi.testclient import TestClient
 
@@ -572,6 +573,304 @@ def test_controller_added_later_does_not_import_old_history(client):
     assert state.recover_from[1] == days_ago
 
 
+def test_new_address_gets_no_writes_before_the_identity_check(client, controller):
+    """Revisione: con l'indirizzo del controller cambiato, le scritture andavano al nuovo apparecchio prima del
+    controllo di chi risponde (fino a 30 s): una persona creata dalla reception finiva su un altro controller."""
+    import asyncio
+    import threading
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    gate = asyncio.Event()
+    hold = {"on": True}
+    answer = controller.device_info
+
+    async def device_info():
+        if hold["on"]:
+            await gate.wait()
+        return await answer()
+
+    controller.device_info = device_info
+    ctrl = state.installation.primary
+    body = {"name": ctrl["name"], "mqtt_topic_prefix": ctrl["mqtt_topic_prefix"], "host": "a1210-b.local"}
+    body |= {"username": "root", "password": "y"}
+    saved = {}
+    change = threading.Thread(
+        target=lambda: saved.update(r=client.put(f"/api/controllers/{ctrl['id']}", json=body)), daemon=True
+    )
+    change.start()
+    # Mentre il controllo del nuovo indirizzo aspetta la risposta: la reception crea una persona
+    for _ in range(200):
+        if state.installation.primary["host"] == "a1210-b.local" and state.settings.a1210_host == "a1210-b.local":
+            break
+        threading.Event().wait(0.01)
+    try:
+        response = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": "profilo_sempre"})
+        written = [c for c in controller.calls if c[0].startswith(("set_", "create_"))]
+    finally:
+        # Risponde lo stesso controller
+        hold["on"] = False
+        client.portal.call(gate.set)
+        change.join(10)
+    assert response.status_code == 502 and "scritture sospese" in response.json()["detail"]
+    assert "non è ancora stato riconosciuto" in response.json()["detail"]
+    assert written == []
+    # Controllo fatto: le scritture ripartono
+    assert saved["r"].status_code == 200
+    assert state.controller.paused == ""
+    response = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": "profilo_sempre"})
+    assert response.status_code == 200
+
+
+def test_new_password_for_the_same_controller_keeps_its_state(client, controller):
+    """Revisione: durante il controllo dopo un cambio di password lo stato del controller si svuotava, Home Assistant lo
+    vedeva offline e la rete di sicurezza si fermava fino al giro dopo (10-30 s), anche con lo stesso apparecchio."""
+    import asyncio
+    import threading
+
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    client.portal.call(state.state_keeper.tick, state.controller, ["porta"], True)
+    modes = dict(state.monitor.door_modes)
+    assert state.monitor.reachable is True and modes
+    gate = asyncio.Event()
+    answer = controller.device_info
+
+    async def device_info():
+        await gate.wait()
+        return await answer()
+
+    controller.device_info = device_info
+    ctrl = state.installation.primary
+    body = {"name": ctrl["name"], "mqtt_topic_prefix": ctrl["mqtt_topic_prefix"], "host": ctrl["host"]}
+    body |= {"username": "root", "password": "nuova"}
+    saved = {}
+    change = threading.Thread(
+        target=lambda: saved.update(r=client.put(f"/api/controllers/{ctrl['id']}", json=body)), daemon=True
+    )
+    change.start()
+    for _ in range(200):
+        if state.controller.paused:
+            break
+        threading.Event().wait(0.01)
+    try:
+        # Il giro dello stato mentre il controllo aspetta la risposta
+        paused = state.controller.paused
+        responding = main._responding(state)
+        client.portal.call(state.state_keeper.tick, state.controller, ["porta"], responding)
+    finally:
+        controller.device_info = answer
+        client.portal.call(gate.set)
+        change.join(10)
+    assert "non è ancora stato riconosciuto" in paused and responding is None
+    assert state.monitor.reachable is True and state.monitor.door_modes == modes
+    assert saved["r"].status_code == 200 and main._responding(state) is True
+
+
+def test_new_address_that_does_not_answer_keeps_writes_paused(client, controller):
+    """Il controllo del nuovo indirizzo non riesce: le scritture restano sospese finché un controllo non vede chi
+    risponde, anche se intanto il controller torna a rispondere. La sincronizzazione fa il suo controllo."""
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    controller.offline = True
+    ctrl = state.installation.primary
+    body = {"name": ctrl["name"], "mqtt_topic_prefix": ctrl["mqtt_topic_prefix"], "host": "a1210-b.local"}
+    body |= {"username": "root", "password": "y"}
+    assert client.put(f"/api/controllers/{ctrl['id']}", json=body).status_code == 200
+    assert "non è ancora stato riconosciuto" in state.controller.paused
+    controller.offline = False
+    response = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": "profilo_sempre"})
+    assert response.status_code == 502 and "scritture sospese" in response.json()["detail"]
+    # Il controllo della sincronizzazione riconosce il controller: le scritture ripartono e le tessere si leggono
+    ok, _ = client.portal.call(main._sync, state)
+    assert ok is True and state.controller.paused == ""
+    response = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": "profilo_sempre"})
+    assert response.status_code == 200
+
+
+def test_only_the_periodic_check_counts_failures(client, controller):
+    """Revisione: i controlli di una nuova configurazione e della sincronizzazione contavano tra i fallimenti di fila,
+    e un solo momento senza risposta rendeva subito il controller non raggiungibile."""
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    controller.offline = True
+    client.portal.call(main.reload_runtime, client.app)
+    client.portal.call(main._sync, state)
+    [health] = state.health.states.values()
+    assert health.online is False and health.failures == 0
+    client.portal.call(state.health.check_all)
+    assert health.failures == 1 and not health.unreachable
+    client.portal.call(state.health.check_all)
+    assert health.unreachable
+
+
+def test_a_moment_without_answer_at_the_sync_is_not_a_notification(client, controller):
+    """Revisione: un attimo senza risposta proprio al controllo della sincronizzazione faceva comparire subito
+    «Controller Non Raggiungibile», per un minuto, anche con il controller che rispondeva di nuovo."""
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    controller.offline = True
+    ok, _ = client.portal.call(main._sync, state)
+    controller.offline = False
+    assert ok is False and state.last_sync["error"]
+    items = client.get("/api/notifications").json()["items"]
+    assert [i["title"] for i in items if i["type"] == "controller"] == []
+    # Una sincronizzazione che non riesce per altro resta una notifica
+    state.last_sync = {"ok": False, "error": "il controller ha rifiutato la richiesta", "result": None, "at": ""}
+    items = client.get("/api/notifications").json()["items"]
+    assert [i["title"] for i in items if i["type"] == "controller"] == ["Controller Non Raggiungibile"]
+
+
+def test_new_configuration_with_the_same_address_keeps_the_controller_client(
+    settings, controller, tmp_path, monkeypatch
+):
+    """Revisione: ogni nuova configurazione (porta rinominata, broker arrivato) chiudeva il client del controller anche
+    con lo stesso indirizzo: un'importazione o un ripristino in corso falliva alle righe dopo («collegamento chiuso»),
+    anche se il controller rispondeva."""
+    import asyncio
+
+    from app import main
+    from app.vapix import ControllerUnreachable
+
+    class Client:
+        def __init__(self, host, username, password, verify_ssl=False):
+            self.host, self.closed = host, False
+
+        async def aclose(self):
+            self.closed = True
+
+        def __getattr__(self, name):
+            attr = getattr(controller, name)
+            if not asyncio.iscoroutinefunction(attr):
+                return attr
+
+            async def call(*args, **kwargs):
+                if self.closed:
+                    raise ControllerUnreachable("il controller non risponde (collegamento chiuso)")
+                return await attr(*args, **kwargs)
+
+            return call
+
+    monkeypatch.setattr(main, "A1210Client", Client)
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    app = create_app(settings, allow_any_client=True, db_path=tmp_path / "k.db")
+    with TestClient(app) as client:
+        state = app.state
+        client.portal.call(state.health.check_all)
+        first, service = state.raw_controller, state.service
+        door = state.db.list_doors()[0]
+        assert client.put(f"/api/doors/{door['id']}", json={**door, "name": "Ingresso Bis"}).status_code == 200
+        assert state.service is not service and state.raw_controller is first and not first.closed
+        # Un'importazione iniziata prima va avanti con il servizio di prima
+        client.portal.call(service.create_person, "Anna", "04aa", "test", "profilo_sempre")
+        assert "04aa" in {c["number"] for c in state.db.all_cards()}
+        # Indirizzo cambiato: un client nuovo, e quello di prima si chiude
+        ctrl = state.installation.primary
+        body = {"name": ctrl["name"], "mqtt_topic_prefix": ctrl["mqtt_topic_prefix"], "username": "root"}
+        client.put(f"/api/controllers/{ctrl['id']}", json=body | {"host": "a1210-b.local", "password": "y"})
+        assert state.raw_controller is not first and first.closed and state.raw_controller.host == "a1210-b.local"
+
+
+class FakeBroker:
+    """Broker MQTT in memoria al posto di aiomqtt.Client: messaggi conservati e iscrizioni."""
+
+    def __init__(self):
+        self.retained: dict[str, bytes] = {}
+        self.clients: list = []
+
+    def client(self, **_options):
+        broker = self
+
+        class Client:
+            def __init__(self):
+                self.filters: list[str] = []
+                self.queue = None
+
+            async def __aenter__(self):
+                import asyncio
+
+                self.queue = asyncio.Queue()
+                broker.clients.append(self)
+                return self
+
+            async def __aexit__(self, *exc):
+                broker.clients.remove(self)
+
+            async def subscribe(self, topic_filter, qos=0):
+                self.filters.append(topic_filter)
+                for topic, payload in list(broker.retained.items()):
+                    if aiomqtt.Topic(topic).matches(topic_filter):
+                        self.queue.put_nowait(aiomqtt.Message(topic, payload, 1, True, 1, None))
+
+            async def publish(self, topic, payload=None, qos=0, retain=False):
+                payload = payload.encode() if isinstance(payload, str) else payload or b""
+                if retain and payload:
+                    broker.retained[topic] = payload
+                elif retain:
+                    broker.retained.pop(topic, None)
+                for other in broker.clients:
+                    if any(aiomqtt.Topic(topic).matches(f) for f in other.filters):
+                        other.queue.put_nowait(aiomqtt.Message(topic, payload, 1, False, 1, None))
+
+            @property
+            async def messages(self):
+                while True:
+                    yield await self.queue.get()
+
+        return Client()
+
+    def configs(self) -> list[str]:
+        return sorted(t for t in self.retained if t.startswith("homeassistant/") and t.endswith("/config"))
+
+
+def test_removed_controller_takes_its_entities_out_of_home_assistant(controller, tmp_path, monkeypatch):
+    """Revisione: senza controller l'app non si collega al broker, e le entità del controller tolto restavano in Home
+    Assistant, non disponibili, per sempre (anche dopo un riavvio)."""
+    import time
+
+    from app import events, main
+    from app.config import MqttSettings
+
+    broker = FakeBroker()
+
+    async def resolve(options, *args, **kwargs):
+        return MqttSettings(host="core-mosquitto", port=1883, username="addons", password="x")
+
+    monkeypatch.setattr(events.aiomqtt, "Client", broker.client)
+    monkeypatch.setattr(main, "resolve_mqtt", resolve)
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+
+    def wait(condition):
+        for _ in range(300):
+            if condition():
+                return True
+            time.sleep(0.01)
+        return False
+
+    # Opzioni come in config.yaml: controller e porte si aggiungono nell'app
+    options = parse_options({"ha_integration": True})
+    app = create_app(options, allow_any_client=True, controller=controller, db_path=tmp_path / "m.db")
+    with TestClient(app) as client:
+        body = {"name": "Quadro", "host": "a1210.local", "username": "root", "password": "x"}
+        ctrl = client.post("/api/controllers", json=body | {"mqtt_topic_prefix": "accessi/x"}).json()
+        client.post(f"/api/controllers/{ctrl['id']}/doors", json={"door_token": "porta", "name": "Porta"})
+        assert wait(lambda: "homeassistant/button/axis_access_manager/apri_porta/config" in broker.configs())
+        for category in app.state.db.list_categories():
+            app.state.db.set_category_rules(category["id"], [])
+        assert client.delete(f"/api/controllers/{ctrl['id']}").json() == {"ok": True}
+        assert app.state.monitor_task is None
+        assert broker.configs() == []
+        assert broker.retained["axis_access_manager/disponibile"] == b"offline"
+
+
 def test_websocket_connecting_is_not_yet_a_problem(client):
     from datetime import timedelta
 
@@ -606,6 +905,121 @@ def test_controller_clock_ahead_then_corrected_does_not_stop_recovery(client, co
     assert [e["card"] for e in state.db.list_events() if e["kind"] == "sconosciuta"] == ["07"]
 
 
+@pytest.mark.parametrize("app_row", ["allarme", "negato"])
+def test_app_rows_do_not_move_the_recovery_point(client, controller, app_row):
+    from datetime import timedelta
+
+    from app import main
+    from app.lock_guard import FORCED
+
+    state = client.app.state
+    # Controller 5 minuti indietro e senza NTP: le righe dell'app hanno l'ora di Home Assistant
+    controller.clock_skew, controller.ntp_synced = -300, False
+    client.portal.call(state.health.check_all)
+    old = datetime.now(tz=UTC) - timedelta(hours=1)
+    state.db.add_event(ts=old.isoformat(timespec="seconds"), kind="concesso", door="porta")
+    state.recover_from = main._recover_mark(state)
+
+    def passage(rowid, card, after=0):
+        moment = datetime.now(tz=UTC) + timedelta(seconds=controller.clock_skew + after)
+        controller.log_events.append(_log_entry(rowid, _utc(moment), "IdPoint", "Request", "IdData", Card=card))
+
+    controller.log_events = []
+    passage(1, "01")
+    client.portal.call(main._recover_if_needed, state)
+    service = state.service
+    # Nel ciclo dell'app, come in produzione (le notifiche a Home Assistant partono come compiti)
+    if app_row == "allarme":
+        client.portal.call(service.log_lock_alarm, "porta", FORCED)
+    else:
+        client.portal.call(
+            lambda: service.log_event(
+                ts=service.event_now(), kind="negato", detail="apertura non eseguita: prova", source="Home Assistant"
+            )
+        )
+    client.portal.call(main._recover_if_needed, state)
+    # Passaggi subito dopo, con l'ora del controller: prima dell'ora della riga dell'app
+    passage(2, "02", 1)
+    passage(3, "03", 30)
+    client.portal.call(main._recover_if_needed, state)
+    assert sorted(e["card"] for e in state.db.list_events() if e["kind"] == "sconosciuta") == ["01", "02", "03"]
+    # Neanche con gli eventi in diretta: il punto fissato a ogni giro resta sull'ultimo evento del controller
+    state.monitor.ws_live, state.recover_pending = True, False
+    state.recover_outages = state.monitor.outages
+    client.portal.call(main._recover_if_needed, state)
+    assert state.recover_from[0] < service.event_now()
+
+
+def test_long_controller_log_is_recovered_over_more_rounds_with_live_events(client, controller, monkeypatch):
+    from datetime import timedelta
+
+    from app import main
+
+    # Registro del controller più lungo di quanto si legge in un giro (l'A1210 tiene fino a 250.000 eventi)
+    monkeypatch.setattr("app.service.RECOVER_MAX", 4)
+    monkeypatch.setattr("app.service.RECOVER_PAGE", 2)
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    # Eventi in diretta: punto di recupero fissato un'ora fa, poi un'interruzione con 10 passaggi
+    state.monitor.ws_live, state.recover_pending = True, False
+    outage = datetime.now(tz=UTC) - timedelta(hours=1)
+    state.recover_from = ((outage - timedelta(minutes=1)).isoformat(timespec="seconds"), outage)
+    controller.log_events = [
+        _log_entry(i, _utc(outage + timedelta(seconds=20 * i)), "IdPoint", "Request", "IdData", Card=f"{i:02d}")
+        for i in range(1, 11)
+    ]
+    state.monitor.outages += 1
+    # Al ritorno arrivano subito eventi in diretta, più nuovi di quelli persi
+    state.db.add_event(ts=datetime.now(tz=UTC).isoformat(timespec="seconds"), kind="concesso", door="porta")
+    for _ in range(6):
+        client.portal.call(main._recover_if_needed, state)
+    cards = sorted(e["card"] for e in state.db.list_events() if e["kind"] == "sconosciuta")
+    assert cards == [f"{i:02d}" for i in range(1, 11)]
+    assert state.recover_pending is False
+
+
+def test_extended_opening_survives_an_add_on_restart(settings, controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    path = tmp_path / "riavvio.db"
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=path)
+    with TestClient(app) as client:
+        assert client.portal.call(app.state.service.open_door, True, "Luca (Home Assistant)") is True
+    # L'add-on si riavvia subito dopo Apri a Lungo: la rete di sicurezza nuova sa che l'apertura è estesa
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=path)
+    with TestClient(app):
+        guard = app.state.lock_guard
+        assert "porta" in guard.extended_at and guard.clock() - guard.extended_at["porta"] < 10
+
+
+def test_door_lock_unknown_while_the_controller_does_not_respond(client):
+    import json
+
+    from app import main
+
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    doors = [d["door_token"] for d in state.installation.doors()]
+    client.portal.call(state.state_keeper.tick, state.controller, doors, main._responding(state))
+
+    def modes():
+        return [d["mode"] for d in client.get("/api/summary").json()["doors"]]
+
+    assert modes() == ["Locked"]
+    # Il controller non risponde da un minuto: stato svuotato
+    health = state.health.states[state.installation.primary["id"]]
+    health.online, health.failures = False, 2
+    client.portal.call(state.state_keeper.tick, state.controller, doors, main._responding(state))
+    assert modes() == [None]
+    # Mosquitto riavviato: il broker ripete la modalità conservata. Non torna «Bloccata»
+    payload = json.dumps({"timestamp": 1758400000000, "message": {"data": {"State": "Locked"}}}).encode()
+    topic = "accessi/x/eventi/Door/State/DoorMode/$source/DoorToken/porta"
+    client.portal.call(lambda: state.monitor.handle(topic, payload, retained=True))
+    assert modes() == [None]
+    # Né per una modalità arrivata in diretta via MQTT con il controller che non risponde alle API
+    client.portal.call(state.monitor.handle, topic, payload)
+    assert state.monitor.door_modes == {"porta": "Locked"} and modes() == [None]
+
+
 def test_responding_changes_wake_the_websocket_from_any_check(client):
     from app import main
     from app.live_events import LiveEvents
@@ -624,10 +1038,13 @@ def test_responding_changes_wake_the_websocket_from_any_check(client):
     main._signal_responding(state)
     assert not live.wake.is_set()
     # Controller cambiato: niente "In Collegamento" nel cruscotto, il WebSocket non si prova
+    primary_id = state.installation.primary["id"]
+    state.db.set_controller_identity_change(primary_id, '{"serial": "Y"}')
     state.controller.paused = "il controller è cambiato"
     assert main._events_waiting(state) is False
     main._signal_responding(state)
     assert live.wake.is_set() and state.responding_seen is False
+    state.db.set_controller_identity_change(primary_id, "")
     state.controller.paused = ""
     state.live_events = None
 

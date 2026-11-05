@@ -1,6 +1,7 @@
 """Rete di sicurezza della serratura: porta bloccata quando resta Aperta a Tempo oltre il tempo o si apre."""
 
 import asyncio
+import sqlite3
 
 from app.events import EventMonitor
 from app.lock_guard import (
@@ -17,6 +18,7 @@ from app.lock_guard import (
     SLOW_RETRY,
     LockGuard,
 )
+from app.service import AccessService
 from app.vapix import VapixError
 
 
@@ -165,6 +167,104 @@ def test_extended_opening_uses_extended_time():
     s.run(19 + MARGIN)
     assert s.lock_calls() == []
     s.run(1.1)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_extended_opening_seen_again_without_grant_keeps_its_time():
+    """Apri a Lungo subito dopo una tessera, poi in ritardo «Bloccata» e «Aperta a Tempo»: l'apertura ricreata senza
+    consenso resta quella estesa, con il suo inizio, fino alla sua fine e non oltre."""
+    s = Setup()
+    s.guard.granted("porta")
+    s.run()
+    s.clock.now += 5.2
+    s.guard.granted("porta", extended=True)
+    s.run()
+    extended_at = s.clock.now
+    s.monitor.door_modes["porta"] = "Locked"
+    s.run(0.1)
+    assert "porta" not in s.guard.accesses
+    s.monitor.door_modes["porta"] = "Accessed"
+    s.run(0.05)
+    access = s.guard.accesses["porta"]
+    assert access.extended and access.started == extended_at
+    s.run(5 + MARGIN + 1)
+    assert s.lock_calls() == [] and s.alarms == []
+    s.clock.now = extended_at + 20 + MARGIN + 0.1
+    s.run()
+    assert s.lock_calls() == [("lock_door", "porta")] and s.alarms == [("porta", FORCED)]
+
+
+def test_extended_opening_ends_with_a_normal_one():
+    """Una tessera dopo l'apertura estesa la chiude: un'Aperta a Tempo rivista senza consenso ha il tempo normale."""
+    s = Setup()
+    s.guard.granted("porta", extended=True)
+    s.run()
+    s.run(2)
+    s.guard.granted("porta")
+    s.run()
+    s.monitor.door_modes["porta"] = "Locked"
+    s.run(0.1)
+    s.monitor.door_modes["porta"] = "Accessed"
+    s.run(0.1)
+    assert s.guard.accesses["porta"].extended is False
+    s.run(5 + MARGIN + 0.1)
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_extended_opening_from_before_a_restart_keeps_its_time():
+    """Add-on riavviato durante un'apertura estesa: dal registro dell'app la rete di sicurezza sa che è estesa."""
+    s = Setup()
+    s.guard.extended_opened("porta", 4.0)
+    s.run()
+    access = s.guard.accesses["porta"]
+    assert access.extended and access.started == s.clock.now - 4
+    s.run(20 - 4 + MARGIN - 0.1)
+    assert s.lock_calls() == []
+    s.run(0.2)
+    assert s.lock_calls() == [("lock_door", "porta")]
+    # Finita da un pezzo: un'apertura vista adesso ha il tempo normale
+    s = Setup()
+    s.guard.extended_opened("porta", 25.0)
+    s.run()
+    assert s.guard.accesses["porta"].extended is False and s.guard.accesses["porta"].started == s.clock.now
+    # Senza eventi in diretta: una tessera nel registro di prima dell'apertura estesa non la accorcia
+    s = Setup()
+    s.guard.extended_opened("porta", 4.0)
+    s.log_grant = ("r1", s.clock.now - 6)
+    s.run(live=False)
+    assert s.guard.accesses["porta"].extended is True
+
+
+def test_extended_opening_seen_only_after_the_grant_window_keeps_its_time():
+    """Apri a Lungo con la risposta del controller persa: l'Aperta a Tempo arriva solo con la lettura dopo (senza
+    eventi in diretta, o con l'evento perso). È l'apertura estesa, dal comando, fino alla sua fine e non oltre."""
+    for live in (True, False):
+        s = Setup(mode="Locked")
+        s.guard.granted("porta", extended=True)
+        start = s.clock.now
+        s.run(live=live)
+        s.accessed()
+        s.run(8, live=live)
+        access = s.guard.accesses["porta"]
+        assert access.extended and access.started == start
+        s.run(20 - 8 + MARGIN - 0.1, live=live)
+        assert s.lock_calls() == [] and s.alarms == []
+        s.run(0.2, live=live)
+        assert s.lock_calls() == [("lock_door", "porta")] and s.alarms == [("porta", FORCED)]
+
+
+def test_withdrawn_extended_grant_leaves_the_normal_time():
+    """Apri a Lungo rifiutato dal controller: un'Aperta a Tempo vista dopo, senza consenso, ha il tempo normale."""
+    s = Setup(mode="Locked")
+    grant = s.guard.granted("porta", extended=True)
+    s.guard.withdraw("porta", grant)
+    assert s.guard.grants == {} and s.guard.extended_at == {}
+    s.run()
+    s.accessed()
+    s.run(8)
+    access = s.guard.accesses["porta"]
+    assert access.extended is False and access.started == s.clock.now
+    s.run(5 + MARGIN + 0.1)
     assert s.lock_calls() == [("lock_door", "porta")]
 
 
@@ -552,12 +652,56 @@ def test_the_same_log_grant_restarts_the_time_once():
     assert s.lock_calls() == [("lock_door", "porta")]
 
 
-def test_with_live_events_the_log_is_not_read():
+def test_with_live_events_the_log_is_read_only_before_locking():
     s = Setup()
     s.guard.granted("porta")
     s.run()
+    s.run(5 + MARGIN - 0.1)
+    assert s.log_reads == 0
+    s.run(0.2)
+    assert s.log_reads == 1 and s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_live_events_back_during_an_opening_restarted_by_a_card_in_the_log():
+    """Senza eventi in diretta una seconda tessera passa e c'è solo nel registro; poi torna il WebSocket. Alla
+    scadenza della prima apertura il registro dice che il tempo è ripartito: niente blocco in anticipo."""
+    s = Setup()
+    s.log_grant = ("r1", s.clock.now)
+    s.run(live=False)
+    s.run(3, live=False)
+    s.log_grant = ("r2", s.clock.now)
+    second = s.clock.now
+    s.run(0.5)
+    s.clock.now = second - 3 + 5 + MARGIN + 0.1
+    s.run()
+    assert s.lock_calls() == [] and s.alarms == []
+    assert s.guard.accesses["porta"].started == second
+    s.clock.now = second + 5 + MARGIN + 0.1
+    s.run()
+    assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_opening_from_before_the_controller_stopped_answering():
+    """Apertura in memoria quando il controller smette di rispondere; al ritorno la porta è Aperta a Tempo per una
+    tessera passata appena prima: non si blocca subito. Senza tessere nuove (porta rimasta così) sì."""
+    for card, locked in ((True, False), (False, True)):
+        s = Setup()
+        s.guard.granted("porta")
+        s.log_grant = ("r1", s.clock.now)
+        s.run()
+        # Nessun giro mentre il controller non risponde
+        s.clock.now += 100
+        if card:
+            s.log_grant = ("r2", s.clock.now)
+        s.run(0.5)
+        assert bool(s.lock_calls()) is locked
+    # Orologio del controller non misurato: con gli eventi in diretta il registro non fa ripartire il tempo
+    s = Setup()
+    s.guard.granted("porta")
+    s.run()
+    s.log_grant = ("r2", "?")
     s.run(5 + MARGIN + 0.1)
-    assert s.log_reads == 0 and s.lock_calls() == [("lock_door", "porta")]
+    assert s.lock_calls() == [("lock_door", "porta")]
 
 
 def test_alarm_kept_when_a_new_grant_replaces_an_unconfirmed_forced_lock():
@@ -599,3 +743,84 @@ def test_without_a_measured_controller_clock_a_new_log_grant_counts_from_now():
     assert s.lock_calls() == [] and s.guard.accesses["porta"].started == s.clock.now
     s.run(5 + MARGIN, live=False)
     assert s.lock_calls() == [("lock_door", "porta")]
+
+
+def test_alarm_that_could_not_be_saved_is_tried_again():
+    """Allarme della rete di sicurezza che non parte (per esempio una lettura del registro non riuscita): era già
+    segnato come fatto, e non arrivava più, nemmeno dopo. Con il disco pieno vedi il test che segue."""
+    s = Setup()
+    s.controller.ignore_lock = True
+    failures = [sqlite3.OperationalError("database or disk is full")]
+
+    def log_alarm(door, detail):
+        if failures:
+            raise failures.pop()
+        s.alarms.append((door, detail))
+
+    async def tick():
+        return await s.guard.tick(
+            s.monitor,
+            s.controller,
+            door_lock=lambda d: s.locks.setdefault(d, asyncio.Lock()),
+            contact_open=lambda d: s.contact.get(d),
+            log_alarm=log_alarm,
+            changed=s.changed,
+        )
+
+    asyncio.run(tick())
+    s.clock.now += 5 + MARGIN + 0.1
+    asyncio.run(tick())
+    for _ in range(MAX_ATTEMPTS - 2):
+        s.clock.now += RETRY_AFTER
+        asyncio.run(tick())
+    s.clock.now += RETRY_AFTER
+    try:
+        asyncio.run(tick())
+    except sqlite3.OperationalError:
+        pass
+    assert s.alarms == []
+    s.clock.now += 1
+    asyncio.run(tick())
+    assert s.alarms == [("porta", FAILED)]
+
+
+async def test_forced_lock_with_the_disk_full_ends_in_the_log_when_space_returns(db, settings, controller, monkeypatch):
+    """Disco pieno: il Riblocco Forzato arrivava a Home Assistant, ma con log_lock_alarm l'errore non risaliva e
+    l'allarme non entrava più nel registro né nelle notifiche dell'app."""
+    service = AccessService(db, controller, settings, EventMonitor(prefix="accessi/x", door_token="porta"))
+    published = []
+
+    async def after_event(row):
+        published.append((row["kind"], row["detail"], row["id"]))
+
+    def full(**fields):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    service.after_event = after_event
+    s = Setup()
+
+    async def tick():
+        await s.guard.tick(
+            s.monitor,
+            s.controller,
+            door_lock=lambda d: s.locks.setdefault(d, asyncio.Lock()),
+            contact_open=lambda d: s.contact.get(d),
+            log_alarm=service.log_lock_alarm,
+            changed=s.changed,
+        )
+
+    saved = db.add_event
+    monkeypatch.setattr(db, "add_event", full)
+    await tick()
+    s.clock.now += 5 + MARGIN + 0.1
+    await tick()
+    await asyncio.sleep(0)
+    assert s.lock_calls() == [("lock_door", "porta")]
+    assert published == [("allarme", FORCED, None)]
+    monkeypatch.setattr(db, "add_event", saved)
+    service.check_writable()
+    await asyncio.sleep(0)
+    [row] = db.list_events(kind="allarme")
+    assert (row["door"], row["detail"], row["source"]) == ("porta", FORCED, "App")
+    # Una volta sola in Home Assistant
+    assert len(published) == 1 and service.write_error is None

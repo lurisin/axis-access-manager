@@ -10,7 +10,9 @@ Qui l'app guarda le porte Aperte a Tempo e le blocca (tdc:LockDoor, mai uno sblo
   (materiale che entra, porta che si sta chiudendo) non si blocca per questo: chi ha passato la tessera deve poterla
   spingere, e la serratura si riblocca a fine tempo;
 - se la porta resta Aperta a Tempo oltre il suo tempo più MARGIN secondi: è un guasto (contatto, configurazione,
-  controller), e finisce nel registro come allarme "riblocco forzato".
+  controller), e finisce nel registro come allarme "riblocco forzato". Prima si guarda nel registro del controller se
+  una tessera o un pulsante ha fatto ripartire il tempo (anche con gli eventi in diretta: un consenso può essere
+  arrivato mentre non c'erano).
 Senza eventi in diretta (solo letture ogni 10 s) lo stato in memoria può essere vecchio: per le porte Aperte a Tempo
 si rilegge il controller a ogni giro, e il contatto non si usa.
 Prima di bloccare si rilegge la porta dal controller: un'apertura già finita, o una nuova, non si tocca.
@@ -106,19 +108,43 @@ class LockGuard:
         self.times_at: float | None = None
         # Cresce a ogni invalidate_times: una lettura partita prima non vale
         self._times_gen = 0
-        # Ultimo consenso del registro del controller già usato, per porta (senza eventi in diretta)
+        # Ultimo consenso del registro del controller già usato, per porta
         self.log_grants: dict[str, str] = {}
+        # Inizio (ora di clock) dell'ultima apertura estesa dall'app, per porta, dal suo consenso: un'Aperta a Tempo
+        # vista senza consenso prima della sua fine (vista solo dopo GRANT_WINDOW, eventi in ritardo, risposta al
+        # comando persa, riavvio dell'add-on) è ancora quella, con il suo inizio e il suo tempo. Un'apertura con il
+        # tempo normale la toglie
+        self.extended_at: dict[str, float] = {}
 
     def poke(self) -> None:
         """Un evento che può cambiare lo stato di una porta: controllo subito."""
         self.wake.set()
 
-    def granted(self, door: str, extended: bool = False, door_open: bool | None = None) -> None:
+    def granted(self, door: str, extended: bool = False, door_open: bool | None = None) -> _Grant | None:
         """Consenso alla porta (tessera, pulsante, apertura dall'app): il controller fa ripartire il tempo.
         door_open: il contatto porta in quel momento, prima che la porta si muova."""
-        if door:
-            self.grants[door] = _Grant(self.clock(), extended, door_open)
-            self.poke()
+        if not door:
+            return None
+        grant = self.grants[door] = _Grant(self.clock(), extended, door_open)
+        if extended:
+            # Senza eventi in diretta, o con l'evento perso, l'Aperta a Tempo può arrivare dopo GRANT_WINDOW
+            self.extended_at[door] = grant.at
+        self.poke()
+        return grant
+
+    def withdraw(self, door: str, grant: _Grant | None) -> None:
+        """Apertura dall'app rifiutata dal controller: il consenso dato prima del comando non vale (una tessera
+        arrivata intanto sì)."""
+        if grant is not None and self.grants.get(door) is grant:
+            del self.grants[door]
+        if grant is not None and self.extended_at.get(door) == grant.at:
+            # Nemmeno il tempo esteso
+            del self.extended_at[door]
+
+    def extended_opened(self, door: str, seconds_ago: float) -> None:
+        """Apertura estesa dall'app iniziata seconds_ago secondi fa: dal registro, dopo un riavvio dell'add-on."""
+        if door and seconds_ago >= 0:
+            self.extended_at[door] = self.clock() - seconds_ago
 
     def invalidate_times(self) -> None:
         """Tempi delle porte cambiati dall'app: si rileggono alla prossima apertura."""
@@ -169,6 +195,12 @@ class LockGuard:
                 self._drop(door, log_alarm)
             started = grant.at if grant else now
             access = _Access(started=started, extended=bool(grant and grant.extended))
+            if grant is None:
+                self._within_extended(door, access, now)
+            elif grant.extended:
+                self.extended_at[door] = grant.at
+            else:
+                self.extended_at.pop(door, None)
             if grant is not None and grant.door_open is False:
                 access.closed_seen = True
             self.accesses[door] = access
@@ -184,6 +216,13 @@ class LockGuard:
         else:
             access.open_since = None
         return access
+
+    def _within_extended(self, door: str, access: _Access, now: float) -> None:
+        """Apertura vista senza consenso prima della fine dell'ultima apertura estesa: è quella, e si blocca al più
+        tardi alla sua fine, mai dopo."""
+        at = self.extended_at.get(door)
+        if at is not None and now < at + self._limit(door, _Access(started=at, extended=True)):
+            access.started, access.extended = at, True
 
     def _deadline(self, door: str, access: _Access) -> float | None:
         """Quando bloccare questa apertura, se niente cambia; None se non c'è più niente da fare."""
@@ -208,9 +247,9 @@ class LockGuard:
         fallita) finisce comunque nel registro."""
         access = self.accesses.pop(door, None)
         if access is not None and access.overtime and access.attempts and not access.logged:
-            access.logged = True
             _LOGGER.warning("Porta %s rimasta aperta a tempo oltre il suo tempo: bloccata", door)
             log_alarm(door, FORCED)
+            access.logged = True
 
     async def tick(
         self,
@@ -230,7 +269,9 @@ class LockGuard:
         log_alarm(porta, dettaglio): allarme nel registro. changed(): stato della porta aggiornato.
         live: eventi in diretta (WebSocket o MQTT); senza, lo stato in memoria può essere vecchio di 10 s e i consensi
         di tessere e pulsanti non arrivano: last_grant(porta) dà l'ultimo dal registro del controller, come
-        (impronta, secondi fa; None se l'orologio del controller non è misurato)."""
+        (impronta, secondi fa; None se l'orologio del controller non è misurato). Con gli eventi in diretta il
+        registro si guarda solo prima di bloccare per il tempo scaduto: un consenso arrivato quando gli eventi in
+        diretta non c'erano (WebSocket tornato a metà apertura, controller che non rispondeva) non si è visto."""
         from_log = last_grant if not live else None
         modes = dict(monitor.door_modes)
         for door in [d for d in self.accesses if modes.get(d) != ACCESSED]:
@@ -253,7 +294,11 @@ class LockGuard:
                 await self._grant_from_log(door, from_log, log_alarm)
             access = self._track(door, read_contact(door), live, self.clock(), log_alarm)
             reason = self._reason(door, access, self.clock())
-            if reason == "tempo" and from_log is not None and await self._grant_from_log(door, from_log, log_alarm):
+            if (
+                reason == "tempo"
+                and last_grant is not None
+                and await self._grant_from_log(door, last_grant, log_alarm, live)
+            ):
                 # Una tessera o un pulsante ha fatto ripartire il tempo: si rifà il conto
                 access = self.accesses[door]
                 reason = self._reason(door, access, self.clock())
@@ -298,10 +343,12 @@ class LockGuard:
         door: str,
         last_grant: Callable[[str], Awaitable[tuple[str, float | None] | None]],
         log_alarm: Callable[[str, str], None],
+        live: bool = False,
     ) -> bool:
-        """Senza eventi in diretta: un consenso nel registro del controller più nuovo dell'apertura che l'app conosce
-        la fa ripartire (o partire, se appena vista). Ogni consenso del registro si usa una volta sola: con l'orologio
-        del controller avanti un consenso vecchio non fa ripartire il tempo a ogni giro.
+        """Un consenso nel registro del controller più nuovo dell'apertura che l'app conosce la fa ripartire (o
+        partire, se appena vista). Ogni consenso del registro si usa una volta sola: con l'orologio del controller
+        avanti un consenso vecchio non fa ripartire il tempo a ogni giro. Con gli eventi in diretta solo con l'orologio
+        del controller misurato: il consenso che ha aperto la porta, già visto in diretta, non la fa ripartire.
         True se l'apertura è cambiata."""
         try:
             found = await last_grant(door)
@@ -311,7 +358,7 @@ class LockGuard:
         if found is None:
             return False
         ident, age = found
-        if ident == self.log_grants.get(door) or (age is not None and age < -LOG_SKEW):
+        if ident == self.log_grants.get(door) or (age is not None and age < -LOG_SKEW) or (live and age is None):
             return False
         self.log_grants[door] = ident
         access = self.accesses.get(door)
@@ -329,6 +376,10 @@ class LockGuard:
             if at <= access.started + LOG_SAME:
                 return False
             self._drop(door, log_alarm)
+        elif door in self.extended_at and at <= self.extended_at[door] + LOG_SAME:
+            # Consenso di prima dell'apertura estesa dall'app (o il suo comando): l'apertura è quella (vedi _track)
+            return False
+        self.extended_at.pop(door, None)
         self.accesses[door] = _Access(started=at)
         return True
 
@@ -363,18 +414,19 @@ class LockGuard:
                 monitor.set_door_mode(door, mode)
                 changed()
             if access.overtime and not access.logged:
-                access.logged = True
                 _LOGGER.warning("Porta %s rimasta aperta a tempo oltre il suo tempo: bloccata", door)
                 log_alarm(door, FORCED)
+                # Segnato dopo l'allarme: se non è partito lo rifà la fine dell'apertura (_drop), invece di perderlo
+                access.logged = True
             elif not access.overtime:
                 _LOGGER.info("Porta %s aperta durante l'apertura a tempo: serratura bloccata", door)
             return
         if access.attempts >= MAX_ATTEMPTS:
             # Un allarme solo; poi si riprova più piano, finché la porta resta Aperta a Tempo
             if not access.logged:
-                access.logged = True
                 _LOGGER.error("Porta %s ancora aperta a tempo dopo %s blocchi", door, access.attempts)
                 log_alarm(door, FAILED)
+                access.logged = True
             access.next_try = self.clock() + SLOW_RETRY
             return
         access.next_try = self.clock() + RETRY_AFTER

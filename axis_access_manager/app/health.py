@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -171,9 +172,15 @@ class HealthMonitor:
         self.on_change = on_change
         self.states: dict[int, ControllerHealth] = {}
         self._clients: dict[int, tuple[tuple, object]] = {}
+        # Un controllo alla volta per controller (vedi check)
+        self._locks: dict[int, asyncio.Lock] = {}
+        # Indirizzo e credenziali con cui un controllo ha visto chi risponde, per controller (vedi identity_checked)
+        self._identified: dict[int, tuple] = {}
+        # Controller cambiato e non ancora salvato (disco pieno), per controller: le scritture si sospendono lo stesso
+        self.unsaved_changes: dict[int, str] = {}
 
     def _client(self, row: dict):
-        key = (row["host"], row["username"], row["password"], row["verify_ssl"])
+        key = _client_key(row)
         current = self._clients.get(row["id"])
         if current and current[0] == key:
             return current[1]
@@ -195,7 +202,7 @@ class HealthMonitor:
             await _close(client)
         self._clients.clear()
 
-    async def check_all(self) -> None:
+    async def check_all(self, count: bool = True) -> None:
         controllers = [c for c in self.db.list_controllers() if c["host"]]
         ids = {c["id"] for c in controllers}
         for gone in set(self.states) - ids:
@@ -203,12 +210,26 @@ class HealthMonitor:
         for gone in set(self._clients) - ids:
             await _close(self._clients.pop(gone)[1])
         before = {i: (s.online, s.unreachable) for i, s in self.states.items()}
-        await asyncio.gather(*(self.check(c) for c in controllers))
+        await asyncio.gather(*(self.check(c, count) for c in controllers))
         after = {i: (s.online, s.unreachable) for i, s in self.states.items()}
         if before != after and self.on_change:
             self.on_change()
 
-    async def check(self, row: dict) -> ControllerHealth:
+    async def check(self, row: dict, count: bool = True) -> ControllerHealth:
+        """Un controllo alla volta per controller: quelli della sincronizzazione e di una nuova configurazione aspettano
+        quello periodico in corso. count=False: un controllo fallito non conta tra quelli di fila (OFFLINE_AFTER),
+        che sono del controllo periodico. Sovrapposti o uno dopo l'altro, un solo momento senza risposta contava due
+        volte: il controller risultava subito non raggiungibile, con la notifica e le entità non disponibili."""
+        async with self._locks.setdefault(row["id"], asyncio.Lock()):
+            return await self._check(row, count)
+
+    def identity_checked(self, row: dict) -> bool:
+        """Un controllo con l'indirizzo e le credenziali di adesso ha visto chi risponde (vedi check_identity)."""
+        return self._identified.get(row["id"]) == _client_key(row)
+
+    async def _check(self, row: dict, count: bool) -> ControllerHealth:
+        # Riga di adesso: un controllo che ne ha aspettato un altro non riconosce una seconda volta lo stesso controller
+        row = self.db.get_controller(row["id"]) or row
         state = self.states.setdefault(row["id"], ControllerHealth(row["id"], row["name"]))
         state.name = row["name"]
         state.checked_at = now_iso()
@@ -218,7 +239,7 @@ class HealthMonitor:
             info = await client.device_info()
         except VapixError as err:
             state.online = False
-            state.failures += 1
+            state.failures += 1 if count else 0
             state.error = str(err)
             state.latency_ms = None
             state.answered = 0
@@ -227,7 +248,7 @@ class HealthMonitor:
             # Il dettaglio (in inglese) solo nel log
             _LOGGER.exception("Controllo del controller %s non riuscito", row["name"])
             state.online, state.error = False, "risposta del controller non riconosciuta"
-            state.failures += 1
+            state.failures += 1 if count else 0
             state.latency_ms = None
             state.answered = 0
             return state
@@ -243,11 +264,20 @@ class HealthMonitor:
                 state.cert_fingerprint = await fingerprint()
             except VapixError as err:
                 _LOGGER.debug("Certificato di %s non letto: %s", row["name"], err)
+        # Chi risponde, prima delle altre letture: con un indirizzo nuovo le scritture aspettano questo (vedi
+        # main._apply_pause)
+        try:
+            self.check_identity(row, state)
+        except sqlite3.Error as err:
+            # Disco pieno: il controllo va avanti, e si salva a un giro dopo. Prima si fermava qui a ogni giro
+            # (orologio, punti di accesso) e la sincronizzazione risultava «Controller Non Raggiungibile · Errore
+            # imprevisto»
+            _LOGGER.warning("Identità del controller %s non salvata: %s", row["name"], err)
+        self._identified[row["id"]] = _client_key(row)
         if state.answered % CLOCK_EVERY == 0:
             await self._clock(client, state)
             await self._managed(client, state)
         state.answered += 1
-        self.check_identity(row, state)
         return state
 
     async def _clock(self, client, state: ControllerHealth) -> None:
@@ -352,10 +382,15 @@ class HealthMonitor:
         if changed:
             same = all(pending.get(k) == observed[k] for k in ("serial", "cert_fingerprint"))
             if not same:
-                self.db.set_controller_identity_change(row["id"], json.dumps({**observed, "at": now_iso()}))
+                change = json.dumps({**observed, "at": now_iso()})
+                # Prima in memoria: se non si salva le scritture si sospendono lo stesso (vedi with_unsaved_change)
+                self.unsaved_changes[row["id"]] = change
+                self.db.set_controller_identity_change(row["id"], change)
+                self.unsaved_changes.pop(row["id"], None)
                 self.db.add_audit("sistema", "controller cambiato", f"{row['name']}: {changed}, scritture sospese")
                 _LOGGER.warning("Controller %s cambiato (%s): scritture sospese", row["name"], changed)
             return
+        self.unsaved_changes.pop(row["id"], None)
         if pending:
             # Risponde di nuovo il controller memorizzato: niente da confermare
             self.db.set_controller_identity_change(row["id"], "")
@@ -371,9 +406,14 @@ class HealthMonitor:
         if updates:
             self.db.set_controller_identity(row["id"], {**stored, **updates})
 
+    def with_unsaved_change(self, row: dict | None) -> dict | None:
+        """La riga del controller con il cambio visto e non ancora salvato, per paused_reason."""
+        change = self.unsaved_changes.get(row["id"]) if row else None
+        return {**row, "identity_change": change} if change and not row.get("identity_change") else row
+
     def accept_identity(self, controller_id: int, user: str) -> dict:
         """L'amministratore conferma il controller trovato all'indirizzo: diventa quello memorizzato."""
-        row = self.db.get_controller(controller_id)
+        row = self.with_unsaved_change(self.db.get_controller(controller_id))
         if row is None:
             raise LookupError("controller non trovato")
         pending = row.get("identity_change") or ""
@@ -383,6 +423,7 @@ class HealthMonitor:
         old = {k: row.get(k) or "" for k in IDENTITY_FIELDS}
         self.db.set_controller_identity(controller_id, {k: observed.get(k, "") for k in IDENTITY_FIELDS})
         self.db.set_controller_identity_change(controller_id, "")
+        self.unsaved_changes.pop(controller_id, None)
         self.db.add_audit(user, "cambio del controller confermato", f"{row['name']}: {identity_text(old, observed)}")
         return self.db.get_controller(controller_id)
 
@@ -419,6 +460,11 @@ def clock_fault(state: ControllerHealth) -> str:
 def clock_problem(state: ControllerHealth) -> bool:
     """Orologio del controller sbagliato: le fasce orarie scattano all'ora sbagliata."""
     return clock_fault(state) == "controller"
+
+
+def _client_key(row: dict) -> tuple:
+    """Indirizzo e credenziali di un controller: con questi cambia il client, e chi risponde va controllato di nuovo."""
+    return row["host"], row["username"], row["password"], row["verify_ssl"]
 
 
 async def _close(client) -> None:

@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
 
 from .db import Database
+
+_LOGGER = logging.getLogger(__name__)
 
 # Permesso → descrizione mostrata nella pagina Utenti
 PERMISSIONS = {
@@ -15,7 +19,7 @@ PERMISSIONS = {
     "persone": "Vedere persone, tessere e tipologie",
     "persone_modifica": "Registrare, modificare, sospendere ed eliminare persone e tessere",
     "registro": "Vedere il registro accessi e le foto",
-    "regole": "Vedere fasce orarie e festività",
+    "regole": "Vedere tipologie, fasce orarie e festività",
     "regole_modifica": "Modificare tipologie, fasce orarie e festività",
     "import_export": "Esportare e importare file CSV",
     "impianti": "Configurare controller, porte, videocitofoni e telecamere e programmare il controller",
@@ -106,6 +110,8 @@ class UserDirectory:
         self.readonly_users = readonly_users
         self._lock = threading.Lock()
         self._seen: dict[str, float] = {}
+        # Ultimo accesso non salvato (disco pieno): si riprova dopo un minuto, anche per il nome che manca
+        self._unsaved: set[str] = set()
 
     def resolve(self, username: str, display_name: str, user_id: str = "") -> AppUser:
         """Utente registrato; chi entra per la prima volta viene aggiunto.
@@ -221,11 +227,20 @@ class UserDirectory:
     def _touch(self, username: str, display_name: str, row: dict) -> None:
         # Al massimo una scrittura al minuto per utente
         now = time.monotonic()
-        if now - self._seen.get(username, -120) < 60 and (row["name"] or not display_name):
+        if now - self._seen.get(username, -120) < 60 and (row["name"] or not display_name or username in self._unsaved):
             return
         self._seen[username] = now
-        # Il nome scelto nella pagina Utenti resta: quello di Home Assistant serve solo se manca
-        self.db.touch_app_user(username, "" if row["name"] else display_name)
+        try:
+            # Il nome scelto nella pagina Utenti resta: quello di Home Assistant serve solo se manca
+            self.db.touch_app_user(username, "" if row["name"] else display_name)
+        except sqlite3.Error as err:
+            # Disco pieno: la richiesta si serve lo stesso. Prima la prima richiesta di ogni minuto rispondeva 500,
+            # anche l'apertura dell'app da Home Assistant
+            if username not in self._unsaved:
+                _LOGGER.warning("Ultimo accesso di %s non salvato: %s", username, err)
+            self._unsaved.add(username)
+            return
+        self._unsaved.discard(username)
 
     def direct_user(self, username: str) -> AppUser | None:
         """Utente di una sessione dell'accesso diretto, con i permessi di adesso; None se non c'è più."""
@@ -258,7 +273,10 @@ class UserDirectory:
             if not create and not existing:
                 raise UserError("utente non trovato")
             if existing and ADMIN in existing["perms"] and ADMIN not in perms and not self._reachable_admins(username):
-                raise UserError("serve almeno un amministratore: dai prima i permessi completi a un altro utente")
+                raise UserError(
+                    "serve almeno un amministratore che entra da Home Assistant: dai prima i permessi completi a un "
+                    "altro utente già entrato da Home Assistant"
+                )
             if create:
                 # Registrato prima del suo primo accesso: lo prende chi entra con questo nome utente
                 self._unbind(username)
@@ -277,19 +295,23 @@ class UserDirectory:
             if username == by.username:
                 raise UserError("non puoi eliminare il tuo utente")
             if ADMIN in existing["perms"] and not self._reachable_admins(username):
-                raise UserError("è l'unico amministratore")
+                raise UserError("è l'unico amministratore che entra da Home Assistant")
             self.db.delete_app_user(username)
             self._unbind(username)
         self.db.add_audit(by.label, "utente eliminato", existing["name"] or username)
 
     def _reachable_admins(self, excluding: str) -> int:
-        """Amministratori diversi da excluding che qualcuno può ancora usare: non conta chi è stato messo da parte
-        sotto l'id di una persona di Home Assistant (id:…) e da allora non è più entrato."""
+        """Amministratori diversi da excluding che qualcuno può ancora usare per gestire l'app: solo chi entra da Home
+        Assistant, cioè è legato a una persona di Home Assistant. Dall'accesso diretto la gestione degli utenti non si
+        fa: un amministratore che entra solo da lì lascerebbe l'app senza nessuno che la gestisca. Non conta nemmeno
+        chi è stato messo da parte sotto l'id di una persona di Home Assistant (id:…) e da allora non è più entrato."""
+        bound = set(self._ids().values())
         return sum(
             1
             for u in self.db.list_app_users()
             if ADMIN in u["perms"]
             and u["username"] != excluding
+            and u["username"] in bound
             and not (u["username"].startswith(ID_PREFIX) and not u["last_seen"])
         )
 

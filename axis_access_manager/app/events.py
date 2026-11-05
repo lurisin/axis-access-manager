@@ -267,7 +267,7 @@ class EventMonitor:
     recent: OrderedDict = field(default_factory=OrderedDict)
     # Chiamata quando il controller va online o offline
     on_status: Callable[[], None] | None = None
-    # Chiamata per ogni evento; retained=True per i messaggi conservati dal broker
+    # Chiamata per ogni evento; retained=True per lo stato che il WebSocket manda appena collegato (vedi live_events)
     on_event: Callable[[Event, bool], None] | None = None
     # Integrazione con Home Assistant: chiamata a ogni connessione, comandi ricevuti e messaggio di addio
     on_connect: Callable[[aiomqtt.Client], Awaitable[None]] | None = None
@@ -345,14 +345,14 @@ class EventMonitor:
             if self.on_status:
                 self.on_status()
             return
-        if retained and self.ws_live:
+        if retained:
             # Il broker ripete gli ultimi eventi conservati a ogni collegamento, anche di molto tempo fa (controller
-            # poi scollegato dal broker): con il WebSocket collegato lo stato attuale lo danno lui e le letture del
-            # controller, e un coperchio aperto ad agosto non torna aperto
+            # poi scollegato dal broker, o che non risponde): lo stato attuale lo danno le letture del controller e
+            # il WebSocket, e un coperchio aperto ad agosto non torna aperto
             return
         event = parse_event(self.prefix, topic, payload)
         if event is not None:
-            self.apply_event(event, retained)
+            self.apply_event(event)
 
     def apply_event(self, event: Event, retained: bool = False) -> bool:
         """Evento del controller arrivato in diretta, dal WebSocket o da MQTT. Lo stesso evento arrivato da tutti e
@@ -361,8 +361,8 @@ class EventMonitor:
         if key in self.recent:
             self.recent.move_to_end(key)
             if self.recent[key] and not retained:
-                # Arrivato prima come stato (appena collegato il WebSocket, o conservato dal broker) e ora in diretta:
-                # è successo adesso, e vale per il registro, Home Assistant e la foto. Lo stato è già aggiornato
+                # Arrivato prima come stato (appena collegato il WebSocket) e ora in diretta: è successo adesso, e vale
+                # per il registro, Home Assistant e la foto. Lo stato è già aggiornato
                 self.recent[key] = False
                 self._dispatch(event, False)
             return False
