@@ -1,6 +1,7 @@
 import asyncio
 import dataclasses
 import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -8,7 +9,7 @@ import pytest
 from app.db import Database
 from app.events import Event, EventMonitor
 from app.service import AccessService, ServiceError, normalize_card, user_token_for
-from app.vapix import VapixError
+from app.vapix import ControllerGuard, ControllerUnreachable, VapixError
 
 
 @pytest.fixture
@@ -129,9 +130,12 @@ async def test_forget_missing_and_delete_missing_card(service, controller, db):
     await service.delete_card(anna["cards"][0]["id"], "admin")
     assert not [c for c in controller.calls if c[0] == "remove_credential"]
 
-    assert service.forget_missing("admin") == {"cards": 1, "persons": 1}
-    assert db.get_person(mario["id"]) is None
-    assert db.list_persons() == []
+    # Togli dall'App toglie solo le tessere: le persone restano in anagrafica
+    controller.calls.clear()
+    assert service.forget_missing("admin") == {"cards": 1}
+    assert db.get_person(mario["id"])["cards"] == []
+    assert [p["name"] for p in db.list_persons()] == ["Anna Bianchi", "Mario Rossi"]
+    assert controller.calls == []
 
 
 async def test_create_person_writes_user_and_card(service, controller, db):
@@ -185,16 +189,234 @@ async def test_suspend_and_enable_card(service, controller):
     assert controller.credentials[card["axis_credential_token"]]["Enabled"] is True
 
 
-async def test_deleting_last_card_removes_person(service, controller, db):
-    person = await service.create_person("Mario Rossi", "04aa", "admin")
+async def test_deleting_last_card_keeps_person(service, controller, db):
+    person = await service.create_person("Mario Rossi", "04aa", "admin", company="Ditta", notes="chiavi")
     person = await service.add_card(person["id"], "04bb", "admin")
+    old_user = person["axis_user_token"]
 
     remaining = await service.delete_card(person["cards"][0]["id"], "admin")
     assert [c["number"] for c in remaining["cards"]] == ["04bb"]
+    assert old_user in controller.users
 
-    assert await service.delete_card(remaining["cards"][0]["id"], "admin") is None
+    # L'ultima: la persona resta con ditta e note, l'utente Axis sparisce dal controller e il token si azzera
+    remaining = await service.delete_card(remaining["cards"][0]["id"], "admin")
+    assert remaining["id"] == person["id"] and remaining["cards"] == []
+    assert remaining["company"] == "Ditta" and remaining["notes"] == "chiavi"
+    assert remaining["axis_user_token"] is None
+    assert controller.users == {} and controller.credentials == {}
+    assert [p["name"] for p in db.list_persons()] == ["Mario Rossi"]
+
+    # Una tessera dopo crea un utente nuovo e funziona
+    controller.calls.clear()
+    person = await service.add_card(person["id"], "04cc", "admin")
+    new_user = person["axis_user_token"]
+    assert [c[0] for c in controller.calls] == ["set_user", "set_credential"]
+    assert new_user.startswith("utente_mario_rossi_") and controller.users[new_user]["Name"] == "Mario Rossi"
+    [credential] = controller.credentials.values()
+    assert credential["UserToken"] == new_user and credential["IdData"] == [{"Name": "Card", "Value": "04cc"}]
+    assert person["cards"][0]["axis_credential_token"] == credential["token"]
+    # E la sincronizzazione la lascia alla stessa persona
+    await service.sync_from_controller()
+    assert [(p["id"], [c["number"] for c in p["cards"]]) for p in db.list_persons()] == [(person["id"], ["04cc"])]
+
+
+async def test_last_card_with_user_not_removed_keeps_the_token(service, controller, db):
+    """Utente Axis non tolto (controller che non risponde più): resta legato alla persona, che lo riusa."""
+    person = await service.create_person("Mario Rossi", "04aa", "admin")
+    token = person["axis_user_token"]
+
+    async def refused(token):
+        raise VapixError("il controller non risponde (tempo scaduto)")
+
+    controller.remove_user = refused
+    remaining = await service.delete_card(person["cards"][0]["id"], "admin")
+    assert remaining["cards"] == [] and remaining["axis_user_token"] == token
+    del controller.remove_user
+
+    person = await service.add_card(person["id"], "04bb", "admin")
+    assert person["axis_user_token"] == token and list(controller.users) == [token]
+    assert controller.credentials[person["cards"][0]["axis_credential_token"]]["UserToken"] == token
+    # Elimina Persona toglie anche l'utente
+    await service.delete_person(person["id"], "admin")
+    assert controller.users == {} and controller.credentials == {}
+
+
+class SwitchedOffController:
+    """Controller spento davvero: ogni chiamata, letture comprese, resta senza risposta."""
+
+    paused = ""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def __getattr__(self, name):
+        async def unreachable(*args, **kwargs):
+            self.calls.append(name)
+            raise ControllerUnreachable("il controller non risponde (tempo scaduto)")
+
+        return unreachable
+
+
+def _full(*args, **kwargs):
+    err = sqlite3.OperationalError("database or disk is full")
+    err.sqlite_errorcode = sqlite3.SQLITE_FULL
+    raise err
+
+
+async def test_create_person_without_card_with_the_controller_off(db, settings):
+    off = SwitchedOffController()
+    service = AccessService(db, off, settings)
+    category = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "p2", "valid_days": 1, "description": ""}
+    )
+
+    person = await service.create_person(
+        "Anna Bianchi", "", "admin", company="Pulizie", notes="chiavi", category_id=category
+    )
+
+    assert off.calls == []
+    assert person["cards"] == [] and person["axis_user_token"] is None
+    assert (person["company"], person["notes"], person["category_id"]) == ("Pulizie", "chiavi", category)
+    assert db.list_audit()[0]["detail"] == "Anna Bianchi, senza tessera, tipologia Ospite"
+    # Anche le altre modifiche di una persona senza tessere restano nell'app
+    person = await service.rename_person(person["id"], "Anna Rossi", "admin")
+    person = await service.set_person_access(person["id"], "", "", "", "admin", category_id=category)
+    assert person["name"] == "Anna Rossi" and off.calls == []
+    # Con la tessera serve il controller, come prima
+    with pytest.raises(ControllerUnreachable):
+        await service.create_person("Mario", "04aa", "admin")
+    assert [p["name"] for p in db.list_persons()] == ["Anna Rossi"]
+    await service.delete_person(person["id"], "admin")
     assert db.list_persons() == []
-    assert controller.users == {}
+
+
+async def test_create_person_without_card_with_writes_paused(db, controller, settings):
+    guard = ControllerGuard(controller)
+    guard.paused = "all'indirizzo risponde un altro controller"
+    service = AccessService(db, guard, settings)
+
+    person = await service.create_person("Anna", "  ", "admin")
+
+    assert person["cards"] == [] and controller.calls == []
+    with pytest.raises(VapixError, match="scritture sospese"):
+        await service.create_person("Mario", "04aa", "admin")
+
+
+async def test_create_person_without_card_refuses_validity(service, db):
+    with pytest.raises(ServiceError, match="valgono per le tessere"):
+        await service.create_person("Anna", "", "admin", valid_to="2026-12-31T00:00:00Z")
+    with pytest.raises(ServiceError, match="valgono per le tessere"):
+        await service.create_person("Anna", "", "admin", group="p2")
+    assert db.list_persons() == []
+
+
+async def test_create_person_without_card_with_the_disk_full(service, controller, db, monkeypatch):
+    monkeypatch.setattr(db, "set_person_category", _full)
+    category = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "p2", "valid_days": 0, "description": ""}
+    )
+    with pytest.raises(ServiceError, match="spazio su disco esaurito: la persona non è stata registrata"):
+        await service.create_person("Anna", "", "admin", category_id=category)
+    # Tutto o niente: nessuna persona a metà
+    assert db.list_persons() == [] and controller.calls == []
+
+
+async def test_first_card_takes_the_category_access(service, controller, db):
+    category = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "p2", "valid_days": 2, "description": ""}
+    )
+    person = await service.create_person("Anna", "", "admin", category_id=category)
+
+    person = await service.add_card(person["id"], "04aa", "admin")
+
+    [card] = person["cards"]
+    assert card["access_profile"] == "p2"
+    start, end = datetime.fromisoformat(card["valid_from"]), datetime.fromisoformat(card["valid_to"])
+    assert end - start == timedelta(days=2) and abs(datetime.now(tz=UTC) - start) < timedelta(minutes=1)
+    credential = controller.credentials[card["axis_credential_token"]]
+    assert credential["CredentialAccessProfile"][0]["AccessProfile"] == "p2"
+    assert controller.users[credential["UserToken"]]["Name"] == "Anna"
+    assert person["axis_user_token"] == credential["UserToken"]
+
+
+async def test_first_card_with_the_answer_lost_stays_with_the_person(service, controller, db):
+    """Tessera scritta e risposta persa: il token dell'utente è già salvato, e la sincronizzazione porta la tessera
+    alla persona invece di crearne una nuova."""
+    person = await service.create_person("Anna", "", "admin")
+    write = controller.set_credential
+
+    async def lost(credential):
+        await write(credential)
+        raise ControllerUnreachable("il controller non risponde (tempo scaduto)")
+
+    controller.set_credential = lost
+    with pytest.raises(ControllerUnreachable):
+        await service.add_card(person["id"], "04aa", "admin")
+    del controller.set_credential
+
+    await service.sync_from_controller()
+    [anna] = db.list_persons()
+    assert anna["id"] == person["id"] and [c["number"] for c in anna["cards"]] == ["04aa"]
+
+
+async def test_first_card_with_the_disk_full_leaves_nothing_on_the_controller(service, controller, db, monkeypatch):
+    person = await service.create_person("Anna", "", "admin")
+    monkeypatch.setattr(db, "add_card", _full)
+
+    with pytest.raises(ServiceError, match="la tessera non è stata aggiunta"):
+        await service.add_card(person["id"], "04aa", "admin")
+
+    # Né la tessera né l'utente, che senza tessere non resta sul controller
+    assert controller.credentials == {} and controller.users == {}
+    monkeypatch.undo()
+    person = await service.add_card(person["id"], "04aa", "admin")
+    assert controller.users[person["axis_user_token"]]["Name"] == "Anna"
+
+
+async def test_access_of_a_person_without_cards(service, controller, db):
+    person = await service.create_person("Anna", "", "admin")
+    with pytest.raises(ServiceError, match="aggiungi prima una tessera"):
+        await service.set_person_access(person["id"], "p2", "", "2027-01-01T00:00:00Z", "admin")
+    category = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "p2", "valid_days": 0, "description": ""}
+    )
+    person = await service.set_person_access(person["id"], "", "", "", "admin", category_id=category)
+    assert person["category_id"] == category and controller.calls == []
+
+
+async def test_sync_keeps_persons_without_cards(service, controller, db):
+    anna = await service.create_person("Anna", "", "admin", company="Pulizie")
+    token = controller.add_existing("utente_mario", "Mario Rossi", "04aa")
+    await service.sync_from_controller()
+    # La tessera di Mario passata a un altro utente sul controller: Mario resta, senza tessere
+    controller.add_existing("utente_luca", "Luca", "04bb")
+    controller.credentials[token]["UserToken"] = "utente_luca"
+
+    await service.sync_from_controller()
+
+    persons = {p["name"]: p for p in db.list_persons()}
+    assert set(persons) == {"Anna", "Luca", "Mario Rossi"}
+    assert persons["Anna"]["id"] == anna["id"] and persons["Anna"]["company"] == "Pulizie"
+    assert persons["Mario Rossi"]["cards"] == []
+    assert sorted(c["number"] for c in persons["Luca"]["cards"]) == ["04aa", "04bb"]
+
+
+async def test_rename_person_without_cards_does_not_create_the_user(service, controller, db):
+    """Persona rimasta senza tessere con l'utente già tolto dal controller: il nome cambia solo nell'app."""
+    person = await service.create_person("Anna", "04aa", "admin")
+    controller.credentials.clear()
+    await service.sync_from_controller()
+    service.forget_missing("admin")
+    controller.users.clear()
+    controller.calls.clear()
+
+    person = await service.rename_person(person["id"], "Anna Rossi", "admin")
+
+    assert person["name"] == "Anna Rossi" and controller.users == {}
+    assert not [c for c in controller.calls if c[0] == "set_user"]
+    # La prima tessera dopo riscrive l'utente con il nome nuovo
+    person = await service.add_card(person["id"], "04bb", "admin")
+    assert controller.users[person["axis_user_token"]]["Name"] == "Anna Rossi"
 
 
 async def test_delete_person_removes_everything(service, controller, db):

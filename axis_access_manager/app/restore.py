@@ -438,7 +438,7 @@ def _plan_persons(
         if now is None:
             item["text"] = "Ricrea la persona"
             item["changes"] = [
-                {"label": "Tessere", "old": "—", "new": ", ".join(c["number"] for c in cards) or "—"},
+                {"label": "Tessere", "old": "—", "new": ", ".join(c["number"] for c in cards) or "nessuna"},
                 *([{"label": "Tipologia", "old": "—", "new": category_name}] if category_name else []),
                 *[
                     {
@@ -450,8 +450,7 @@ def _plan_persons(
                     if c.get("_category_access")
                 ],
             ]
-            if not cards:
-                item["blocked"] = "tutte le sue tessere ora sono di altre persone"
+            # Anche senza tessere (nessuna nel backup, o tutte passate ad altri): resta in anagrafica
             items.append(item)
             continue
         matched_persons.add(ident)
@@ -482,8 +481,6 @@ def _plan_persons(
         if changes:
             item["text"] = "Riporta com'era"
             item["changes"] = changes
-            if not cards and not mine:
-                item["blocked"] = "tutte le sue tessere ora sono di altre persone"
             items.append(item)
         # Tessere aggiunte dopo il backup: restano, e si eliminano solo spuntando la loro riga. Non quelle che nel
         # backup erano di un'altra persona: la riga dell'altra dice già che restano di questa
@@ -499,8 +496,6 @@ def _plan_persons(
                 _target=card["number"],
                 _owner=now["id"],
             )
-            if len(mine) == 1 and not cards:
-                row["blocked"] = f"è l'unica tessera di {now['name']}"
             items.append(row)
     for person in current.get("persons", []):
         if (person["id"], person["created_at"]) in matched_persons:
@@ -725,7 +720,8 @@ async def _apply_person(item: dict, runtime: Runtime, user: str) -> None:
     if category is None and item["_category"]:
         # Tipologia ricreata da questo stesso ripristino
         category = next((c for c in db.list_categories() if c["name"].lower() == item["_category"].lower()), None)
-    profiles = {p.get("token") for p in await runtime.access.controller.list_access_profiles()}
+    # Letti solo se servono: una persona senza tessere si ripristina anche con il controller spento
+    profiles: set | None = None
     cards = []
     for card in item["_cards"]:
         access = {k: card[k] for k in CARD_FIELDS}
@@ -736,11 +732,15 @@ async def _apply_person(item: dict, runtime: Runtime, user: str) -> None:
                     raise ServiceError(f"la tipologia {item['_category']} non è stata ricreata: ripristinala insieme")
                 raise ServiceError(f"il profilo di accesso della tessera {card['number']} non c'è più sul controller")
             access["access_profile"] = category["group_token"]
-        elif access["access_profile"] not in profiles:
-            # Sparito dopo l'anteprima: mai un accesso diverso senza dirlo
-            raise ServiceError(
-                f"il profilo di accesso della tessera {card['number']} non c'è più sul controller: rifai l'anteprima"
-            )
+        else:
+            if profiles is None:
+                profiles = {p.get("token") for p in await runtime.access.controller.list_access_profiles()}
+            if access["access_profile"] not in profiles:
+                # Sparito dopo l'anteprima: mai un accesso diverso senza dirlo
+                raise ServiceError(
+                    f"il profilo di accesso della tessera {card['number']} non c'è più sul controller: rifai "
+                    "l'anteprima"
+                )
         cards.append({"number": card["number"], "enabled": card["enabled"], **access})
     person = item["_person"]
     current = db.get_person(person["id"])
@@ -756,15 +756,12 @@ async def _apply_person(item: dict, runtime: Runtime, user: str) -> None:
 
 
 async def _remove_card(item: dict, runtime: Runtime, user: str) -> None:
-    """Tessera aggiunta dopo il backup, da eliminare: mai l'ultima della persona, che sparirebbe con lei."""
+    """Tessera aggiunta dopo il backup, da eliminare. Anche l'ultima: la persona resta, senza tessere."""
     card = runtime.db.card_by_number(item["_target"])
     if card is None:
         return
     if card["person_id"] != item["_owner"]:
         raise ServiceError(f"la tessera {card['number']} ora è di {card['person_name']}: resta sua")
-    person = runtime.db.get_person(card["person_id"])
-    if len(person["cards"]) < 2:
-        raise ServiceError(f"è l'unica tessera di {person['name']}: la persona resterebbe senza tessere")
     await runtime.access.delete_card(card["id"], user)
 
 

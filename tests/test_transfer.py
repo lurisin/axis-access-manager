@@ -156,6 +156,57 @@ async def test_import_suspended_and_new_card_of_existing_person(service, control
     assert [c["valid_to"] for c in db.list_persons()[0]["cards"]] == [normalize_validity("2026-11-15T12:00")] * 2
 
 
+async def test_persons_without_card_are_exported_and_reimported(service, controller, db):
+    category = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "p2", "valid_days": 0, "description": ""}
+    )
+    anna = await service.create_person("Anna", "", "admin", company="Pulizie", category_id=category)
+    text = persons_csv(db.list_persons(), {"profilo_sempre": "Sempre"}, db.last_accesses(), {category: "Ospite"})
+    # Una riga anche per chi non ha tessere, con tessera, gruppo, validità e stato vuoti
+    assert "Anna;;;;;Pulizie;;Ospite;;" in text
+
+    rows = (await import_persons(service, text, GROUPS, "admin", apply=False))["righe"]
+    assert [(r["esito"], r["dettaglio"]) for r in rows] == [("saltata", "già registrata, senza tessera")]
+    await service.delete_person(anna["id"], "admin")
+    controller.calls.clear()
+    rows = (await import_persons(service, text, GROUPS, "admin", apply=True))["righe"]
+    assert [(r["esito"], r["dettaglio"]) for r in rows] == [("ok", "nuova persona senza tessera")]
+    [person] = db.list_persons()
+    assert (person["name"], person["company"], person["category_id"], person["cards"]) == (
+        "Anna",
+        "Pulizie",
+        category,
+        [],
+    )
+    assert controller.calls == []
+
+
+async def test_import_row_without_card(service, db):
+    await service.create_person("Luca", "04cc", "admin", valid_to="2026-12-31T23:59:59")
+    text = "\n".join(
+        [
+            "nome;tessera;gruppo;valida_al;ditta;stato",
+            "Mario;;;;Brillante;",
+            "Luca;;;;Teatro;",
+            "Paolo;;Sempre;;;",
+            "Sara;;;31/12/2026;;",
+            "Gino;;;;;attiva",
+        ]
+    )
+    rows = (await import_persons(service, text, GROUPS, "admin", apply=True))["righe"]
+    assert [r["esito"] for r in rows] == ["ok", "aggiornata", "errore", "errore", "errore"]
+    assert all("senza tessera" in r["dettaglio"] for r in rows[2:])
+    persons = {p["name"]: p for p in db.list_persons()}
+    assert set(persons) == {"Luca", "Mario"}
+    assert persons["Mario"]["cards"] == [] and persons["Mario"]["company"] == "Brillante"
+    # Ditta di chi ha già tessere: la validità delle sue tessere non cambia
+    assert persons["Luca"]["company"] == "Teatro"
+    assert persons["Luca"]["cards"][0]["valid_to"] == normalize_validity("2026-12-31T23:59:59")
+    # Senza intestazione basta il nome
+    rows = (await import_persons(service, "Nina", GROUPS, "admin", apply=False))["righe"]
+    assert rows[0]["esito"] == "da importare" and rows[0]["dettaglio"] == "nuova persona senza tessera"
+
+
 def test_events_csv_is_excel_friendly():
     text = events_csv([{"ts": "2026-10-25T08:00:00+00:00", "kind": "concesso", "person_name": "Anna", "card": "04aa"}])
     assert text.startswith("﻿Data e Ora;Evento;Persona")

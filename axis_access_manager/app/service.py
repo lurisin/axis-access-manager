@@ -442,15 +442,13 @@ class AccessService:
                     seen_cards.add(token)
                 # Tessere sparite dal controller: mai cancellate da sole. Si segnano e decide l'utente
                 # (riscriverle o toglierle dall'app): un controller resettato o sostituito non svuota l'anagrafica.
+                # Neanche le persone rimaste senza tessere (passate a un altro utente) se ne vanno: solo a mano
                 cards = self.db.all_cards()
                 missing = [c for c in cards if c["axis_credential_token"] not in seen_cards]
                 new_missing = [c["id"] for c in missing if not c["missing_since"]]
                 if new_missing:
                     self.db.mark_cards_missing(new_missing, now_iso())
                     _LOGGER.warning("%s tessere non sono più sul controller: segnate, non cancellate", len(new_missing))
-                for person in self.db.all_persons():
-                    if not self.db.cards_of(person["id"]):
-                        self.db.delete_person(person["id"])
             try:
                 await self.load_access_points()
             except VapixError as err:
@@ -527,27 +525,22 @@ class AccessService:
         return {"restored": restored, "failed": failed}
 
     def forget_missing(self, user: str, card_ids: list[int] | None = None) -> dict:
-        """Toglie dall'app le tessere non presenti sul controller; le persone rimaste senza tessere spariscono."""
+        """Toglie dall'app le tessere non presenti sul controller. Le persone restano, anche senza tessere: si
+        eliminano solo a mano."""
         if self.lock.locked():
             # Per esempio "Riscrivi" in corso: toglierle a metà le lascerebbe scritte sul controller senza persona
             raise ServiceError("è in corso un'altra operazione sul controller: riprova tra qualche secondo")
         cards = [c for c in self.db.missing_cards() if card_ids is None or c["id"] in card_ids]
-        persons = set()
-        for card in cards:
-            self.db.delete_card(card["id"])
-            persons.add(card["person_id"])
-        removed_persons = 0
-        for person_id in persons:
-            if not self.db.cards_of(person_id):
-                self.db.delete_person(person_id)
-                removed_persons += 1
+        with self.db.batch():
+            for card in cards:
+                self.db.delete_card(card["id"])
         if cards:
             numbers = ", ".join(c["number"] for c in cards[:20]) + ("…" if len(cards) > 20 else "")
-            self.db.add_audit(
+            self._audit(
                 user, "tessere non presenti tolte dall'app", f"{plural(len(cards), 'tessera', 'tessere')}: {numbers}"
             )
             self._changed()
-        return {"cards": len(cards), "persons": removed_persons}
+        return {"cards": len(cards)}
 
     # Anagrafica
 
@@ -604,6 +597,19 @@ class AccessService:
             access,
         )
 
+    def _category_access(
+        self, category: dict | None, group: str = "", valid_from: str = "", valid_to: str = ""
+    ) -> dict:
+        """Gruppo e validità di una tessera nuova: la tipologia decide gruppo e durata, se non sono stati scelti a
+        mano."""
+        if category:
+            group = group or category["group_token"]
+            if category["valid_days"] and not valid_to:
+                start = datetime.now(tz=UTC).replace(microsecond=0)
+                valid_from = valid_from or start.isoformat()
+                valid_to = (start + timedelta(days=category["valid_days"])).isoformat()
+        return self._access(group, valid_from, valid_to)
+
     def _check_card_free(self, number: str) -> None:
         existing = self.db.card_by_number(number)
         if existing:
@@ -622,20 +628,19 @@ class AccessService:
         category_id: int = 0,
         enabled: bool = True,
     ) -> dict:
-        """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»)."""
-        name, number = normalize_name(name), normalize_card(card)
+        """card vuota: persona senza tessera, solo nell'app. enabled False: la tessera si scrive già sospesa
+        (importazione con stato «sospesa»)."""
+        name = normalize_name(name)
+        number = normalize_card(card) if (card or "").strip() else ""
         company = normalize_text(company, 100, "ditta o reparto")
         notes = normalize_text(notes, 1000, "testo delle note")
         # Senza una scelta vale la tipologia predefinita
         category = self._category(category_id or int(self.db.get_setting("default_category") or 0))
-        if category:
-            # La tipologia decide gruppo e durata, se non sono stati scelti a mano
-            group = group or category["group_token"]
-            if category["valid_days"] and not valid_to:
-                start = datetime.now(tz=UTC).replace(microsecond=0)
-                valid_from = valid_from or start.isoformat()
-                valid_to = (start + timedelta(days=category["valid_days"])).isoformat()
-        access = self._access(group, valid_from, valid_to)
+        if not number:
+            if group or valid_from or valid_to:
+                raise ServiceError("gruppo e validità valgono per le tessere: senza tessera non si possono salvare")
+            return self._create_without_card(name, user, company, notes, category)
+        access = self._category_access(category, group, valid_from, valid_to)
         async with self.lock:
             self._check_card_free(number)
             user_token = await self._new_user_token(name)
@@ -673,6 +678,23 @@ class AccessService:
             self._changed()
             return self.db.get_person(person_id)
 
+    def _create_without_card(self, name: str, user: str, company: str, notes: str, category: dict | None) -> dict:
+        """Persona senza tessera: solo nel database, nessuna chiamata al controller (anche spento o con le scritture
+        sospese). Il suo utente del controller nasce con la prima tessera, e la durata della tipologia vale da lì."""
+        try:
+            with self.db.batch():
+                person_id = self.db.add_person(name, None)
+                if company or notes:
+                    self.db.update_person_details(person_id, company, notes)
+                if category:
+                    self.db.set_person_category(person_id, category["id"])
+        except sqlite3.Error as err:
+            raise ServiceError(f"{error_reason(err)}: la persona non è stata registrata") from err
+        detail = f"{name}, senza tessera" + (f", tipologia {category['name']}" if category else "")
+        self._audit(user, "persona creata", detail)
+        self._changed()
+        return self.db.get_person(person_id)
+
     async def _remove_new(self, credential_token: str, user_token: str = "") -> None:
         """Tessera (e utente) appena scritti sul controller e non registrati nell'app: si tolgono. Se non si può, la
         sincronizzazione la porta nell'app come persona."""
@@ -696,19 +718,24 @@ class AccessService:
         async with self.lock:
             person = self._person(person_id)
             self._check_card_free(number)
-            # La nuova tessera eredita gruppo e validità di quelle che la persona ha già
-            first = person["cards"][0] if person["cards"] else {}
-            access = self._access(first.get("access_profile"), first.get("valid_from"), first.get("valid_to"))
-            # Chi è stato letto da una tessera senza utente ne riceve uno: "credenziale:..." non è un utente
-            user_token = await self._ensure_user(person)
+            if person["cards"]:
+                # La nuova tessera eredita gruppo e validità di quelle che la persona ha già
+                first = person["cards"][0]
+                access = self._access(first.get("access_profile"), first.get("valid_from"), first.get("valid_to"))
+            else:
+                # La prima: gruppo e durata della tipologia della persona, da adesso
+                category = self.db.get_category(person["category_id"]) if person["category_id"] else None
+                access = self._category_access(category)
+            user_token, first_card = await self._user_for_card(person)
             credential_token = await self.controller.set_credential(
                 self._credential(user_token, person["name"], number, access, enabled)
             )
             try:
                 self.db.add_card(person_id, number, credential_token, enabled, access)
             except sqlite3.Error as err:
-                # Come per una persona nuova: la tessera non resta attiva sul controller senza essere nell'app
-                await self._remove_new(credential_token)
+                # Come per una persona nuova: la tessera non resta attiva sul controller senza essere nell'app, e
+                # senza tessere neanche l'utente
+                await self._remove_new(credential_token, user_token if first_card else "")
                 raise ServiceError(f"{error_reason(err)}: la tessera non è stata aggiunta") from err
             self._changed()
             detail = f"{person['name']}, tessera {number}" + ("" if enabled else " sospesa")
@@ -742,9 +769,11 @@ class AccessService:
             token = person["axis_user_token"] or ""
             if token and not token.startswith("credenziale:"):
                 users = await self.controller.get_users([token])
-                axis_user = users[0] if users else {"token": token, "Description": "", "Attribute": []}
-                axis_user["Name"] = name
-                await self.controller.set_user(axis_user)
+                # Senza tessere l'utente può non esserci più (tolto con l'ultima): non si ricrea per il nome
+                if users or person["cards"]:
+                    axis_user = users[0] if users else {"token": token, "Description": "", "Attribute": []}
+                    axis_user["Name"] = name
+                    await self.controller.set_user(axis_user)
             for card in person["cards"]:
                 for credential in await self.controller.get_credentials([card["axis_credential_token"]]):
                     credential["Description"] = name
@@ -769,6 +798,9 @@ class AccessService:
         access = self._access(group, valid_from, valid_to)
         async with self.lock:
             person = self._person(person_id)
+            if not person["cards"] and (access["valid_from"] or access["valid_to"]):
+                # La validità sta sulle tessere: la prima prende la durata della tipologia
+                raise ServiceError("senza tessere la validità non si può salvare: aggiungi prima una tessera")
             # Prima si leggono tutte le tessere presenti: se ne manca una non si cambia niente. Quelle già segnate
             # come non presenti prendono il nuovo accesso solo nell'app, e "Riscrivi" le riscrive con quello
             present = [card for card in person["cards"] if not card["missing_since"]]
@@ -855,23 +887,26 @@ class AccessService:
             )
             return person
 
-    async def delete_card(self, card_id: int, user: str) -> dict | None:
-        """Elimina la tessera; se era l'ultima elimina anche la persona. Restituisce la persona rimasta."""
+    async def delete_card(self, card_id: int, user: str) -> dict:
+        """Elimina la tessera e restituisce la persona, che resta in anagrafica anche senza tessere. Con l'ultima si
+        toglie dal controller anche il suo utente, e la tessera aggiunta dopo ne crea uno nuovo."""
         async with self.lock:
             card = self._card(card_id)
             person = self.db.get_person(card["person_id"])
             if not card["missing_since"]:
                 await self.controller.remove_credential(card["axis_credential_token"])
             self.db.delete_card(card_id)
-            self.db.add_audit(user, "tessera eliminata", f"{person['name']}, tessera {card['number']}")
-            if len(person["cards"]) > 1:
-                self._changed()
-                return self.db.get_person(person["id"])
-            await self._remove_axis_user(person)
-            self.db.delete_person(person["id"])
-            # Dopo: Home Assistant conta le persone rimaste
+            self._audit(user, "tessera eliminata", f"{person['name']}, tessera {card['number']}")
+            # Un utente non tolto (controller che non risponde più) resta legato alla persona: lo riusa la prossima
+            # tessera, e lo toglie «Elimina Persona»
+            if len(person["cards"]) == 1 and await self._remove_axis_user(person):
+                try:
+                    self.db.set_person_user_token(person["id"], None)
+                except sqlite3.Error as err:
+                    # Disco pieno: il token resta, e la prossima tessera riscrive lo stesso utente
+                    _LOGGER.warning("Utente di %s tolto dal controller, token non azzerato: %s", person["name"], err)
             self._changed()
-            return None
+            return self.db.get_person(person["id"])
 
     async def delete_person(self, person_id: int, user: str) -> None:
         async with self.lock:
@@ -907,13 +942,16 @@ class AccessService:
         wanted = {c["number"].upper(): c for c in cards}
         async with self.lock:
             person = self._person(person_id)
-            user_token = await self._ensure_user(person)
+            # L'utente del controller solo con una tessera da rimettere: senza tessere la persona resta nell'app
+            user_token = ""
             have = {c["number"].upper(): c for c in person["cards"]}
             for number, card in wanted.items():
                 access = {k: card[k] for k in ("access_profile", "valid_from", "valid_to")}
                 mine = have.get(number)
                 if mine is None:
                     self._check_card_free(card["number"])
+                    if not user_token:
+                        user_token, _ = await self._user_for_card(person)
                     token = await self.controller.set_credential(
                         self._credential(user_token, person["name"], card["number"], access)
                     )
@@ -959,6 +997,28 @@ class AccessService:
             token = f"{base}_{n}"
         return token
 
+    async def _user_for_card(self, person: dict) -> tuple[str, bool]:
+        """Utente del controller per una tessera nuova della persona; True se è la sua prima tessera.
+
+        Chi non ha tessere non ha l'utente sul controller, o può non averlo più (registrato senza tessera, tolto con
+        l'ultima, controller resettato): si scrive con il nome di adesso. Il token si salva prima: se la risposta si
+        perde, la sincronizzazione porta la tessera a questa persona e non a una nuova."""
+        if person["cards"]:
+            return await self._ensure_user(person), False
+        token = person["axis_user_token"] or ""
+        if not token or token.startswith("credenziale:"):
+            token = await self._new_user_token(person["name"])
+            self.db.set_person_user_token(person["id"], token)
+        await self.controller.set_user(
+            {
+                "token": token,
+                "Name": person["name"],
+                "Description": "Registrato da Axis Access Manager",
+                "Attribute": [],
+            }
+        )
+        return token, True
+
     async def _ensure_user(self, person: dict, description: str = "Registrato da Axis Access Manager") -> str:
         """Utente del controller della persona; chi è stato letto da una tessera senza utente ne riceve uno."""
         token = person["axis_user_token"] or ""
@@ -990,6 +1050,16 @@ class AccessService:
 
     async def _recreate_person(self, saved: dict, cards: list[dict], category_id: int, user: str) -> dict:
         name = normalize_name(saved["name"])
+        if not cards:
+            # Senza tessere (nel backup, o passate ad altri): solo nell'app, come una persona nuova senza tessera
+            try:
+                with self.db.batch():
+                    person_id = self._add_saved_person(saved, name, None, category_id)
+            except sqlite3.Error as err:
+                raise ServiceError(f"{error_reason(err)}: la persona non è stata ricreata") from err
+            self._audit(user, "persona ricreata da backup", f"{name}, senza tessere")
+            self._changed()
+            return self.db.get_person(person_id)
         async with self.lock:
             for card in cards:
                 self._check_card_free(card["number"])
@@ -1016,14 +1086,7 @@ class AccessService:
                         _LOGGER.warning("Tessera %s rimasta sul controller dopo un errore", token)
                 await self._remove_axis_user({"axis_user_token": user_token})
                 raise
-            free = self.db.get_person(saved["id"]) is None
-            person_id = self.db.add_person(
-                name, user_token, person_id=saved["id"] if free else None, created_at=saved["created_at"]
-            )
-            if saved.get("company") or saved.get("notes"):
-                self.db.update_person_details(person_id, saved.get("company") or "", saved.get("notes") or "")
-            if category_id:
-                self.db.set_person_category(person_id, category_id)
+            person_id = self._add_saved_person(saved, name, user_token, category_id)
             for card, token, access in written:
                 self.db.add_card(person_id, card["number"], token, card["enabled"], access)
             numbers = ", ".join(card["number"] for card, _, _ in written)
@@ -1031,14 +1094,29 @@ class AccessService:
             self._changed()
             return self.db.get_person(person_id)
 
-    async def _remove_axis_user(self, person: dict) -> None:
+    def _add_saved_person(self, saved: dict, name: str, user_token: str | None, category_id: int) -> int:
+        """Persona del backup di nuovo nell'app, con lo stesso numero se è libero e la stessa data di creazione."""
+        free = self.db.get_person(saved["id"]) is None
+        person_id = self.db.add_person(
+            name, user_token, person_id=saved["id"] if free else None, created_at=saved["created_at"]
+        )
+        if saved.get("company") or saved.get("notes"):
+            self.db.update_person_details(person_id, saved.get("company") or "", saved.get("notes") or "")
+        if category_id:
+            self.db.set_person_category(person_id, category_id)
+        return person_id
+
+    async def _remove_axis_user(self, person: dict) -> bool:
+        """False se l'utente del controller doveva essere tolto e non si è potuto."""
         token = person["axis_user_token"] or ""
         if not token or token.startswith("credenziale:"):
-            return
+            return True
         try:
             await self.controller.remove_user(token)
         except VapixError as err:
             _LOGGER.warning("Utente %s non rimosso dal controller: %s", token, err)
+            return False
+        return True
 
     def _person(self, person_id: int) -> dict:
         person = self.db.get_person(person_id)

@@ -11,6 +11,7 @@ from app.programming import ProgrammingService
 from app.restore import Runtime, apply, plan
 from app.rules_service import RulesService
 from app.service import AccessService
+from app.vapix import ControllerUnreachable
 
 DOOR = {
     "snapshot_camera": "",
@@ -60,6 +61,22 @@ class Plant:
         chosen = [i["key"] for i in items if i["default"]] if keys is None else keys
         runtime = Runtime(self.db, self.access, self.rules, self.programming, self.controller_id)
         return items, await apply(items, chosen, runtime, "admin")
+
+
+class SwitchedOffController:
+    """Controller spento davvero: ogni chiamata, letture comprese, resta senza risposta."""
+
+    paused = ""
+
+    def __init__(self):
+        self.calls: list[str] = []
+
+    def __getattr__(self, name):
+        async def unreachable(*args, **kwargs):
+            self.calls.append(name)
+            raise ControllerUnreachable("il controller non risponde (tempo scaduto)")
+
+        return unreachable
 
 
 @pytest.fixture
@@ -251,10 +268,55 @@ async def test_card_now_owned_by_someone_else_stays(plant, db):
 
     items, result = await plant.restore(backup["id"], ["persone"])
 
+    # Anna torna in anagrafica senza tessere: la sua è di Bruno, e resta sua
     anna_item = next(i for i in items if i["label"] == "Anna")
-    assert anna_item["blocked"] == "tutte le sue tessere ora sono di altre persone"
-    assert "ora è di Bruno" in anna_item["warnings"][0]
-    assert result["applied"] == [] and db.card_by_number("04aa")["person_name"] == "Bruno"
+    assert not anna_item["blocked"] and "ora è di Bruno" in anna_item["warnings"][0]
+    assert {"label": "Tessere", "old": "—", "new": "nessuna"} in anna_item["changes"]
+    assert result["applied"] == [{"label": "Anna", "text": "Ricrea la persona"}]
+    assert db.get_person(anna["id"])["cards"] == [] and db.card_by_number("04aa")["person_name"] == "Bruno"
+
+
+async def test_restore_person_without_cards_with_the_controller_off(plant, db):
+    anna = await plant.access.create_person("Anna", "", "admin", company="Pulizie Srl", notes="chiavi")
+    backup = await plant.backup()
+    await plant.access.delete_person(anna["id"], "admin")
+    _, saved = plant.backups.load(backup["id"])
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, ["persone"], plant.controller_id)
+    assert [(i["action"], i["label"], i["blocked"]) for i in items] == [("ricrea", "Anna", "")]
+
+    # Controller spento davvero: la persona senza tessere torna lo stesso, con numero e data di creazione
+    off = SwitchedOffController()
+    plant.access.controller = off
+    runtime = Runtime(db, plant.access, plant.rules, plant.programming, plant.controller_id)
+    result = await apply(items, [i["key"] for i in items], runtime, "admin")
+
+    assert result["applied"] == [{"label": "Anna", "text": "Ricrea la persona"}] and not result["failed"]
+    assert off.calls == []
+    restored = db.get_person(anna["id"])
+    assert restored["created_at"] == anna["created_at"] and restored["cards"] == []
+    assert (restored["company"], restored["notes"]) == ("Pulizie Srl", "chiavi")
+    # Riportata com'era anche se c'è già: nome cambiato dopo il backup
+    await plant.access.update_person(anna["id"], "admin", name="Anna Rossi")
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, ["persone"], plant.controller_id)
+    result = await apply(items, [i["key"] for i in items], runtime, "admin")
+    assert result["applied"][0]["text"] == "Riporta com'era" and off.calls == []
+    assert db.get_person(anna["id"])["name"] == "Anna"
+
+
+async def test_restore_removes_the_only_card_added_after_the_backup(plant, controller, db):
+    anna = await plant.access.create_person("Anna", "", "admin")
+    backup = await plant.backup()
+    await plant.access.add_card(anna["id"], "04aa", "admin")
+
+    items, result = await plant.restore(backup["id"], ["persone"], keys=["tessera-nuova:04aa"])
+
+    [row] = items
+    assert row["action"] == "togli" and not row["blocked"]
+    assert result["applied"] and not result["failed"]
+    person = db.get_person(anna["id"])
+    assert person["cards"] == [] and controller.credentials == {} and controller.users == {}
 
 
 async def test_restore_deleted_category_and_its_persons(plant, controller, db):
