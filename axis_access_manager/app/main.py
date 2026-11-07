@@ -154,7 +154,8 @@ BACKUP_TICK = 60
 
 class PersonIn(BaseModel):
     name: str
-    card: str
+    # Vuota: persona senza tessera, solo nell'app
+    card: str = ""
     group: str = ""
     valid_from: str = ""
     valid_to: str = ""
@@ -1581,7 +1582,8 @@ def create_app(
 
     @app.post("/api/controllers/test", dependencies=[need("impianti")])
     async def test_controller(body: ControllerTestIn, request: Request) -> dict:
-        """Prova indirizzo e credenziali senza salvarli; elenca le porte trovate."""
+        """Prova indirizzo e credenziali senza salvarli; elenca le porte trovate. Numero di serie e impronta del
+        certificato dicono quale apparecchio risponde a quell'indirizzo."""
         host = check_host(body.host)
         password = body.password
         existing = request.app.state.db.get_controller(body.controller_id) if body.controller_id else None
@@ -1591,9 +1593,17 @@ def create_app(
                 raise ServiceError("indirizzo o utente cambiati: scrivi di nuovo la password del controller")
             password = existing["password"]
         client = request.app.state.injected_controller or A1210Client(host, body.username, password, body.verify_ssl)
+        fingerprint = ""
         try:
             info = await client.device_info()
             doors = await client.door_info_list()
+            # Come il controllo periodico (health): un certificato non letto non fa fallire la prova
+            read_fingerprint = getattr(client, "certificate_fingerprint", None)
+            if read_fingerprint:
+                try:
+                    fingerprint = await read_fingerprint()
+                except VapixError as err:
+                    _LOGGER.debug("Certificato di %s non letto: %s", host, err)
         finally:
             if request.app.state.injected_controller is None:
                 await client.aclose()
@@ -1601,6 +1611,7 @@ def create_app(
             "model": info.get("ProdNbr") or info.get("ProdShortName", ""),
             "firmware": info.get("Version", ""),
             "serial": info.get("SerialNumber", ""),
+            "cert_fingerprint": fingerprint,
             "doors": [{"token": d.get("token", ""), "name": d.get("Name") or d.get("token", "")} for d in doors],
         }
 

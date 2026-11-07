@@ -116,10 +116,26 @@ def persons_csv(
     last_access: dict[int, str],
     categories: dict[int, str] | None = None,
 ) -> str:
-    """Stesse colonne dell'importazione, più l'ultimo accesso: il file si può reimportare."""
+    """Stesse colonne dell'importazione, più l'ultimo accesso: il file si può reimportare. Una riga per tessera; chi
+    non ne ha una riga con tessera, gruppo, validità e stato vuoti."""
     categories = categories or {}
     rows = [IMPORT_COLUMNS + ["ultimo_accesso"]]
     for person in persons:
+        if not person["cards"]:
+            rows.append(
+                [
+                    _text(person["name"]),
+                    "",
+                    "",
+                    "",
+                    "",
+                    _text(person.get("company") or ""),
+                    _text(person.get("notes") or ""),
+                    _text(categories.get(person.get("category_id") or 0, "")),
+                    "",
+                    _local(last_access.get(person["id"], "")),
+                ]
+            )
         for card in person["cards"]:
             rows.append(
                 [
@@ -303,12 +319,60 @@ def _card_number(value: str) -> str:
     return normalize_card(value)
 
 
+async def _without_card(
+    service: AccessService,
+    item: dict,
+    name: str,
+    category: dict | None,
+    names: dict,
+    planned: dict,
+    user: str,
+    apply: bool,
+) -> dict:
+    """Riga senza tessera (come la esporta persons_csv per chi non ne ha): una persona nuova solo nell'app, oppure
+    ditta, note e tipologia di quella già registrata con lo stesso nome. Esito e dettaglio della riga."""
+    matches = [p for p in service.db.all_persons() if p["name"].lower() == name.lower()]
+    if len(matches) > 1:
+        raise ServiceError("più persone con questo nome: modificala dall'elenco")
+    person = service.db.get_person(matches[0]["id"]) if matches else None
+    # Gruppo e validità attuali restano quelli della prima tessera, se ne ha
+    card = person["cards"][0] if person and person["cards"] else {}
+    key = person["id"] if person else name.lower()
+    wanted = _wanted(item, card, "", category)
+    repeated = key in planned
+    if repeated and wanted != planned[key]:
+        raise ServiceError("valori diversi da un'altra riga della stessa persona")
+    planned[key] = wanted
+    if person is None:
+        if repeated:
+            return {"esito": "saltata", "dettaglio": "persona già in un'altra riga del file"}
+        if apply:
+            saved = await service.create_person(
+                name,
+                "",
+                user,
+                company=item.get("ditta", ""),
+                notes=item.get("note", ""),
+                category_id=category["id"] if category else 0,
+            )
+            planned[saved["id"]] = wanted
+        return {"esito": "ok" if apply else "da importare", "dettaglio": "nuova persona senza tessera"}
+    changes = {} if repeated else _changes(item, person, card, "", category, names)
+    changes = {k: v for k, v in changes.items() if k in ("ditta", "note", "tipologia")}
+    if not changes:
+        return {"esito": "saltata", "dettaglio": "già registrata" + ("" if person["cards"] else ", senza tessera")}
+    if apply:
+        await _update(service, person, card, changes, user)
+    detail = "; ".join(label for _, label in changes.values())
+    return {"esito": "aggiornata" if apply else "da aggiornare", "dettaglio": detail}
+
+
 async def import_persons(service: AccessService, text: str, groups: list[dict], user: str, apply: bool) -> dict:
     """Controlla (apply=False) o esegue l'importazione.
 
     Le tessere nuove si aggiungono; per le persone già registrate si aggiornano gruppo, validità, ditta, note e
     tipologia se nel file sono diversi, altrimenti la riga è saltata. Lo stato "sospesa" sospende la tessera,
-    "attiva" non riattiva una tessera sospesa.
+    "attiva" non riattiva una tessera sospesa. Una riga senza tessera registra una persona solo nell'app.
     """
     names = {g["token"]: g["name"] for g in groups}
     # Persone già viste in una riga precedente (una persona ha una riga per tessera) → valori chiesti.
@@ -333,7 +397,7 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
             if any(UNREADABLE in value for value in item.values() if isinstance(value, str)):
                 raise ServiceError("caratteri non leggibili: salva il file come CSV UTF-8 e riprova")
             name = normalize_name(item.get("nome", ""))
-            number = _card_number(item.get("tessera", ""))
+            number = _card_number(item["tessera"]) if item.get("tessera") else ""
             group_text = item.get("gruppo", "")
             group = ""
             if group_text:
@@ -349,6 +413,12 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
                 raise ServiceError(f"stato sconosciuto: {item['stato']} (usa attiva o sospesa)")
             valid_from = parse_date(item.get("valida_dal", ""))
             valid_to = parse_date(item.get("valida_al", ""), end_of_day=True)
+            if not number:
+                if group or valid_from or valid_to or state:
+                    raise ServiceError("senza tessera gruppo, validità e stato non si possono salvare: lasciali vuoti")
+                outcome.update(await _without_card(service, item, name, category, names, planned, user, apply))
+                results.append(outcome)
+                continue
             if number.lower() in seen_cards:
                 raise ServiceError("tessera ripetuta nel file")
             seen_cards.add(number.lower())
