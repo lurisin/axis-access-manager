@@ -1,6 +1,14 @@
 import json
+import sqlite3
+from datetime import UTC, datetime
+from pathlib import Path
 
-from app.events import EventMonitor, parse_event
+from fastapi.testclient import TestClient
+
+from app.config import parse_options
+from app.events import Event, EventMonitor, parse_event
+from app.ha import HomeAssistant
+from app.main import create_app
 
 PREFIX = "accessi/via_consulta_controller"
 
@@ -123,3 +131,73 @@ def test_monitor_tracks_door_conditions_and_controller():
     assert monitor.casing_open is True
     assert monitor.system_ready.startswith("2024-10-24")
     assert monitor.io_ports == {"2": True, "0": False}
+
+
+# Controller degli eventi salvati (dalla 0.27.0)
+
+
+def _app(options, controller, tmp_path: Path):
+    ha = HomeAssistant(token="", snapshot_dir=tmp_path / "media")
+    return create_app(
+        options, allow_any_client=True, controller=controller, db_path=tmp_path / "e.db", home_assistant=ha
+    )
+
+
+def _controllers(db) -> dict[int, int | None]:
+    return {row["id"]: row["controller_id"] for row in db._query("SELECT id, controller_id FROM events")}
+
+
+def test_saved_events_carry_the_controller_that_sent_them(settings, controller, tmp_path, monkeypatch):
+    app = _app(settings, controller, tmp_path)
+    with TestClient(app) as client:
+        state = app.state
+        primary = state.installation.primary["id"]
+        # Come gli eventi di prima della 0.27.0: senza controller, cioè il principale
+        old = state.db.add_event(ts="2026-10-20T08:00:00+00:00", kind="concesso", door="porta")
+        # Un evento in diretta (WebSocket o MQTT), una riga dell'app e gli eventi del registro interno del controller
+        at = datetime(2026, 11, 7, 10, 0, tzinfo=UTC)
+        read = Event("IdPoint", "IdPoint/Request/IdData/$source/IdPoint/lettore-1", at, {"Card": "c0110a99"})
+        client.portal.call(state.service.record_event, read)
+        client.portal.call(state.service.log_lock_alarm, "porta", "riblocco forzato")
+        controller.log_events = json.loads((Path(__file__).parent / "data" / "eventlogger_a1210.json").read_text())
+        client.portal.call(state.service.recover_events, datetime(2026, 10, 25, 17, 0, tzinfo=UTC))
+
+        # Riga dell'app non salvata (disco pieno) e salvata appena il registro torna scrivibile: stesso controller
+        def full(**fields):
+            raise sqlite3.OperationalError("database or disk is full")
+
+        monkeypatch.setattr(state.db, "add_event", full)
+        client.portal.call(state.service.log_lock_alarm, "porta", "riblocco forzato dopo")
+        monkeypatch.undo()
+        client.portal.call(state.service.check_writable)
+        rows = state.db._query("SELECT kind, detail, recovered FROM events")
+        controllers = _controllers(state.db)
+    assert controllers.pop(old) is None
+    assert {"sconosciuta", "allarme", "negato"} <= {row["kind"] for row in rows}
+    assert any(row["recovered"] for row in rows)
+    assert "riblocco forzato dopo" in {row["detail"] for row in rows}
+    assert set(controllers.values()) == {primary}
+
+
+def test_events_follow_the_controller_when_it_is_replaced(controller, tmp_path, monkeypatch):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    app = _app(parse_options({}), controller, tmp_path)
+    data = {"name": "A1210", "host": "10.0.0.5", "username": "root", "password": "x", "mqtt_topic_prefix": "acc"}
+    with TestClient(app) as client:
+        state = app.state
+
+        def call() -> int:
+            # Il servizio va ripreso a ogni chiamata: una nuova configurazione ne crea uno nuovo
+            return client.portal.call(state.service.record_intercom, "sensor.citofono", "Citofono")["id"]
+
+        # Nessun controller: NULL, come il principale
+        alone = call()
+        first = client.post("/api/controllers", json=data).json()["id"]
+        with_first = call()
+        assert client.delete(f"/api/controllers/{first}").json() == {"ok": True}
+        # Controller sostituito: il numero non si riusa, e gli eventi nuovi sono del nuovo
+        second = client.post("/api/controllers", json=data).json()["id"]
+        with_second = call()
+        controllers = _controllers(state.db)
+    assert second != first
+    assert (controllers[alone], controllers[with_first], controllers[with_second]) == (None, first, second)
