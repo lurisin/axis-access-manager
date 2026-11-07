@@ -52,6 +52,7 @@ axis_access_manager/         l'add-on
     main.py                  API e pagina servite tramite Ingress
     static/index.html        interfaccia (HTML e JavaScript senza dipendenze)
 tests/                       test (pytest)
+tools/banco/                 prove sull'A1210 di banco, fuori dall'add-on (vedi LEGGIMI.md)
 ```
 
 ## Installazione in Home Assistant
@@ -75,3 +76,5 @@ pip install -r requirements-dev.txt
 pytest
 ruff check . && ruff format --check .
 ```
+
+Prove sul controller di banco vero: `python3 tools/banco/prove_a1210.py --help`, istruzioni in `tools/banco/LEGGIMI.md`.

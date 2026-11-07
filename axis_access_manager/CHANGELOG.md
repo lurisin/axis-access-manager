@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.27.0
+
+Primo passo verso l'app unica fonte di verità: nessuna persona sparisce più dall'anagrafica, e arrivano gli strumenti per provare il nuovo funzionamento sul controller di banco. Sul controller dell'impianto non cambia niente, a parte l'utente di chi resta senza tessere, che si toglie come prima.
+
+**Persone senza tessera**
+
+- **Restano in anagrafica.** Eliminando l'ultima tessera la persona resta, con ditta, note e tipologia: dal controller si toglie solo il suo utente, e la tessera aggiunta dopo ne crea uno nuovo. Né la sincronizzazione né «Togli dall'App» cancellano più le persone rimaste senza tessere: una persona si elimina solo con **Elimina Persona**.
+- **Nuova Persona anche senza tessera.** Il numero di tessera è facoltativo: senza tessera la persona si salva solo nell'app, anche con il controller spento o con le scritture sospese, e non apre nessuna porta. La prima tessera aggiunta dopo prende l'accesso e la durata della tipologia. Nell'elenco delle persone c'è il filtro «Senza Tessera».
+- **Ripristino da backup.** Una persona senza tessere (nel backup, o con le tessere ora di altre persone) si ricrea in anagrafica, anche con il controller spento. La tessera aggiunta dopo il backup si può togliere anche se è l'ultima della persona.
+- **CSV.** L'esportazione delle persone ha una riga anche per chi non ha tessere. All'importazione una riga senza tessera registra la persona solo nell'app, oppure aggiorna ditta, note e tipologia di quella già registrata.
+
+**Controller**
+
+- **Prova Collegamento** mostra anche il numero di serie e l'impronta del certificato del controller che risponde all'indirizzo.
+- **Rimozioni sul controller.** Togliere dal controller un oggetto che non c'è più (tessera, utente, profilo, fascia oraria, porta), per esempio perché è stato tolto a mano dal sito Axis, non dà più l'errore «oggetto non trovato»: l'operazione risulta fatta. Gli altri rifiuti, compreso un riferimento mancante, e il controller che non risponde restano errori.
+- **Lettori senza risposta.** Se il controller non risponde mentre l'app salva un lettore, la scrittura non si ripete subito con l'altro nome del metodo, che poteva farla due volte.
+
+**Database**
+
+- **Registro pronto per più controller.** Ogni evento salvato ricorda il controller che l'ha mandato; gli eventi delle versioni precedenti restano del controller principale. All'aggiornamento il registro non si riscrive: il primo avvio non dura di più e non serve spazio su disco in più, anche con un anno di registro e di foto.
+- **Identità dell'installazione.** Al primo avvio l'app crea un codice che identifica questa installazione. Il ripristino di un backup di Home Assistant lo riporta uguale; un database ripartito vuoto ne riceve uno nuovo. Servirà a riconoscere sul controller un database tornato indietro.
+
+**Prove al banco**
+
+- **Kit di prove per l'A1210.** Nel repository, fuori dall'add-on, `tools/banco/prove_a1210.py` esegue sul controller di banco resettato le prove che decidono i dettagli del nuovo funzionamento: token scelti dall'app, stessa scrittura ripetuta con il cavo staccato, campi omessi, tessera sospesa, numeri doppi, riferimenti, rimozioni, festività, formati restituiti, elenchi vuoti, oggetti di serie dopo il reset, utente sentinella, tempi con 500 tessere. Scrive un rapporto e un file JSON con tutte le richieste e le risposte. Crea solo oggetti `aam_prova_` e li toglie tutti, non parte su un controller con un altro numero di serie o con utenti e tessere veri, e non manda mai comandi alle porte.
+- **Test con il controller spento davvero.** Il controller finto dei test ora si spegne del tutto, letture comprese, può perdere la risposta dopo una scrittura, fermarsi dopo un certo numero di scritture, rifiutare un comando con un codice Axis e controllare i riferimenti fra gli oggetti.
+
 ## 0.26.1
 
 Correzioni dalla verifica generale del 4 novembre: i problemi che restano utili anche quando l'app sarà l'unica fonte di verità. Il ripristino da un backup di Home Assistant è provato dall'inizio alla fine, anche con l'app che scrive durante il backup.
