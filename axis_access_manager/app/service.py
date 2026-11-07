@@ -197,6 +197,9 @@ class AccessService:
     ) -> None:
         self.db = db
         self.controller = controller
+        # Controller di cui questo servizio riceve gli eventi (oggi il principale, lo imposta main): va in ogni evento
+        # salvato. None (nessun controller) resta NULL nel registro, che vuol dire il principale
+        self.controller_id: int | None = None
         self.settings = settings
         self.monitor = monitor
         self.lock = asyncio.Lock()
@@ -303,6 +306,7 @@ class AccessService:
         ref = fields.get("ref") or ""
         if ref and self._known(fields["kind"], fields["ts"], ref):
             return None
+        fields.setdefault("controller_id", self.controller_id)
         if self._recovering:
             fields["recovered"] = True
             self._recovered += 1

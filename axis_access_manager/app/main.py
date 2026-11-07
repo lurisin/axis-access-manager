@@ -2355,6 +2355,7 @@ async def _start_runtime(app: FastAPI) -> None:
     state.state_keeper = StateKeeper(state.monitor, getattr(state, "state_wake", None))
     state.state_keeper.request_full()
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
+    state.service.controller_id = (state.installation.primary or {}).get("id")
     if old_service is not None:
         # Le operazioni ancora in corso con la configurazione di prima e le nuove non si accavallano
         state.service.lock = old_service.lock

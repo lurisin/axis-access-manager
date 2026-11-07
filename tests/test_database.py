@@ -10,6 +10,7 @@ import sys
 import tarfile
 import threading
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePath
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ from app import backup_copy, main
 from app import db as db_module
 from app import ha as ha_module
 from app.backup_copy import consistent_copy, ha_copy_path, recover, update_copy
-from app.db import SCHEMA_VERSION, Database
+from app.db import SCHEMA_VERSION, Database, events_of_controller
 from app.events import Event, EventMonitor
 from app.ha import HomeAssistant
 from app.main import create_app
@@ -116,6 +117,7 @@ def test_home_assistant_backup_and_restore_with_the_add_on_writing(settings, con
             assert client.post("/api/persons", json={"name": f"Persona {i}", "card": f"04a{i}"}).status_code == 200
         assert client.post("/api/backups", json={"name": "Prima dei lavori"}).status_code == 200
         db = client.app.state.db
+        install = db.install_id
         # Un'istantanea di un evento: sta nella cartella Media, fuori dal backup dell'add-on
         event_id = db.add_event(ts=datetime.now(tz=UTC).isoformat(timespec="seconds"), kind="negato", door="porta")
         media.mkdir(exist_ok=True)
@@ -153,6 +155,8 @@ def test_home_assistant_backup_and_restore_with_the_add_on_writing(settings, con
     with start(settings, controller, restored, media) as client:
         state = client.app.state
         assert state.db.schema_version == SCHEMA_VERSION
+        # Lo stesso database: la stessa installazione, anche con lo schema aggiornato all'avvio
+        assert state.db.install_id == install
         assert len(client.get("/api/persons").json()) == 5
         assert [b["name"] for b in client.get("/api/backups").json()["backups"]] == ["Prima dei lavori"]
         # Dati del backup: almeno gli eventi scritti fino alla copia per il backup
@@ -1202,4 +1206,108 @@ def test_long_reads_do_not_hold_up_the_app(tmp_path):
     still_reading = thread.is_alive()
     thread.join()
     assert still_reading and waited < 0.2
+    db.close()
+
+
+# Migrazione 9 (0.27.0): controller degli eventi e identità dell'installazione
+
+V0261_SCHEMA = 8
+
+
+def database_0_26_1(path: Path, events: int = 0) -> None:
+    """Database come lo lascia la 0.26.1: schema 8, senza events.controller_id né install_id, con events passaggi da
+    circa 1 KB nel registro."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(db_module, "SCHEMA_STEPS", [s for s in db_module.SCHEMA_STEPS if s[0] <= V0261_SCHEMA])
+        patch.setattr(db_module, "SCHEMA_VERSION", V0261_SCHEMA)
+        old = Database(path, "0.26.1")
+    person = old.add_person("Anna Rossi", "utente_anna_rossi_261101120000")
+    with old._lock:
+        old._conn.executemany(
+            "INSERT INTO events (ts, kind, person_id, door, raw) VALUES (?, 'concesso', ?, 'porta', ?)",
+            [(f"2026-10-01T08:{n // 60 % 60:02d}:{n % 60:02d}+00:00", person, "x" * 1000) for n in range(events)],
+        )
+        old._conn.commit()
+    old.close()
+    conn = sqlite3.connect(path)
+    try:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == V0261_SCHEMA
+        assert "controller_id" not in {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+        assert not conn.execute("SELECT 1 FROM app_settings WHERE key = 'install_id'").fetchall()
+    finally:
+        conn.close()
+
+
+def test_database_of_0_26_1_gets_the_controller_of_events_without_rewriting_the_log(tmp_path, monkeypatch):
+    path = tmp_path / DB_NAME
+    database_0_26_1(path, events=5000)
+    size = path.stat().st_size
+    db = Database(path, "0.27.0")
+    # Solo lo schema cambia: un UPDATE di tutto il registro scriveva nel WAL quanto il registro, e con un anno di
+    # passaggi e il disco quasi pieno non finiva
+    assert size > 5_000_000 and Path(f"{path}-wal").stat().st_size < 100_000
+    assert db.schema_version == SCHEMA_VERSION
+    counts = db._query("SELECT COUNT(*) AS n, COUNT(controller_id) AS with_controller FROM events")[0]
+    assert counts == {"n": 5000, "with_controller": 0}
+    install = db.install_id
+    assert uuid.UUID(install).version == 4
+    new = db.add_event(ts="2026-11-07T10:00:00+00:00", kind="concesso", door="porta", controller_id=1)
+    assert db.get_event(new)["controller_id"] == 1
+    db.close()
+    # La copia prima della migrazione è il database com'era
+    copy = sqlite3.connect(tmp_path / "copie_database" / db.copied)
+    try:
+        assert db.copied.endswith("_v0.26.1.db")
+        assert copy.execute("PRAGMA user_version").fetchone()[0] == V0261_SCHEMA
+        assert "controller_id" not in {row[1] for row in copy.execute("PRAGMA table_info(events)")}
+    finally:
+        copy.close()
+    # Già migrato: niente migrazione, niente copia, stessa identità
+    calls = []
+    monkeypatch.setattr(Database, "_events_controller", lambda self: calls.append("controller"))
+    monkeypatch.setattr(Database, "_new_install_id", lambda self: calls.append("install_id"))
+    db = Database(path, "0.27.0")
+    assert (db.copied, calls, db.install_id, db.schema_version) == ("", [], install, SCHEMA_VERSION)
+    db.close()
+    assert len(list((tmp_path / "copie_database").iterdir())) == 1
+
+
+def test_install_id_stays_with_the_database_and_is_new_for_an_empty_one(tmp_path):
+    path = tmp_path / DB_NAME
+    db = Database(path, "0.27.0")
+    install = db.install_id
+    db.close()
+    assert uuid.UUID(install).version == 4
+    db = Database(path, "0.27.0")
+    assert db.install_id == install
+    db.close()
+    # Database rovinato e copia del backup di Home Assistant: è sempre la stessa installazione
+    backup_pre(path)
+    _header(path)
+    db = Database(path, "0.27.0")
+    assert backup_copy.RESTORED in db.recovered and db.install_id == install
+    db.close()
+    # Senza una copia sana il database riparte vuoto: per il controller è un'altra installazione
+    _header(path)
+    ha_copy_path(path).unlink()
+    db = Database(path, "0.27.0")
+    assert backup_copy.STARTED_EMPTY in db.recovered
+    assert db.install_id != install and uuid.UUID(db.install_id).version == 4
+    db.close()
+
+
+def test_events_without_controller_are_of_the_primary(tmp_path):
+    db = Database(tmp_path / DB_NAME)
+    before = db.add_event(ts="2026-11-01T08:00:00+00:00", kind="concesso")
+    primary = db.add_event(ts="2026-11-02T08:00:00+00:00", kind="concesso", controller_id=1)
+    other = db.add_event(ts="2026-11-03T08:00:00+00:00", kind="concesso", controller_id=2)
+
+    def of(controller_id: int, is_primary: bool) -> set[int]:
+        clause, params = events_of_controller(controller_id, is_primary)
+        return {row["id"] for row in db._query(f"SELECT id FROM events WHERE {clause}", params)}
+
+    assert of(1, True) == {before, primary}
+    assert of(2, False) == {other}
+    # Le letture di oggi non filtrano per controller
+    assert {e["id"] for e in db.list_events()} == {before, primary, other}
     db.close()
