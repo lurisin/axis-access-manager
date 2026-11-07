@@ -357,6 +357,9 @@ async def test_the_whole_kit_on_a_factory_controller(tmp_path, check_references)
     notes = {code: "\n".join(test["osservazioni"]) for code, test in saved["prove"].items()}
     assert "tessera: con il cavo staccato il controller non risponde" in notes["T2"]
     assert "NotFound" in notes["T7"]
+    # T11 vede il controller com'è dopo il reset, prima che l'operatore configuri il lettore per T4 e T8
+    for name in ("utenti", "porte", "lettori", "punti di accesso", "configurazioni delle porte"):
+        assert f"{name}: chiave presente con []" in notes["T11"]
     assert "IdData arrivato" in notes["T8"] and "Reason=CredentialNotEnabled" in notes["T8"]
     assert "scritte 500 tessere" in notes["T18"]
     assert "pagine da 300: 2" in notes["T18"]

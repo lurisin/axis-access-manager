@@ -21,8 +21,9 @@ Assistant. **Non usarlo sul controller dell'impianto.**
 python3 tools/banco/prove_a1210.py --host 192.168.0.90 --serie B8A44FE6A074 --tessera c0110b18
 ```
 
-La password la chiede il kit (oppure `AAM_BANCO_PASSWORD`). Senza `--prova` fa tutte le prove, nell'ordine
-T1…T11, T16, T18 e per ultima T12; con `--prova T7 --prova T11` solo quelle. `--non-interattivo` salta le parti
+La password la chiede il kit (oppure `AAM_BANCO_PASSWORD`). Senza `--prova` fa tutte le prove: prima T11, che
+vuole il controller appena resettato, poi quelle che non usano il lettore, poi T4 e T8, che chiedono di configurarne
+uno, e per ultima T12, con il reset. Con `--prova T7 --prova T11` solo quelle. `--non-interattivo` salta le parti
 che chiedono all'operatore (T2, T8, T12 e le domande di T4, T16, T18). `--quante 100` cambia le tessere di T18
 (di serie 500).
 

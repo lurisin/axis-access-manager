@@ -36,7 +36,8 @@ from app.rules import DAYS, holidays_ical, schedule_ical  # noqa: E402
 PREFISSO = "aam_prova_"
 # Utenti e tessere che un A1210 ha dopo il reset di fabbrica: nessuno finché T12 non dice il contrario
 DI_FABBRICA: set[str] = set()
-ORDINE = ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11", "T16", "T18", "T12"]
+# T11 vuole il controller appena resettato; T4 e T8 chiedono un lettore configurato; T12 è il reset
+ORDINE = ["T11", "T1", "T2", "T3", "T5", "T6", "T7", "T9", "T10", "T16", "T18", "T4", "T8", "T12"]
 TITOLI = {
     "T1": "Token scelti dall'app alla creazione",
     "T2": "Stessa scrittura due volte, con il cavo staccato in mezzo",
@@ -789,6 +790,7 @@ class Kit:
             )
             if risposta.lower() == "salta":
                 return None
+            self.sezione["lettore_configurato"] = True
         return None
 
     def numero_tessera(self) -> str:
@@ -895,7 +897,11 @@ class Kit:
         cambiati = [k for k in prima if json.dumps(prima[k], default=str) != json.dumps(dopo.get(k), default=str)]
         self.sezione["estranei_cambiati"] = {k: {"prima": prima[k], "dopo": dopo.get(k)} for k in cambiati}
         if cambiati:
-            self.nota(f"ATTENZIONE: cambiati oggetti che non sono del kit: {', '.join(cambiati)}")
+            perche = " (il lettore configurato dall'operatore: controllare che sia solo quello)"
+            self.nota(
+                f"ATTENZIONE: cambiati oggetti che non sono del kit: {', '.join(cambiati)}"
+                + (perche if self.sezione.get("lettore_configurato") else "")
+            )
 
     async def chiusura(self) -> None:
         self.sezione = self.dati["fine"]
@@ -1592,6 +1598,8 @@ def argomenti(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     scelte = argomenti(argv)
+    # Console di Windows: un nome con un carattere che non sa scrivere non deve fermare il kit a metà
+    sys.stdout.reconfigure(errors="replace")
     password = os.environ.get("AAM_BANCO_PASSWORD") or getpass.getpass(f"Password di {scelte.utente} sul controller: ")
     client, registro = cliente(scelte.host, scelte.utente, password, scelte.verifica_certificato)
     operatore = SenzaOperatore() if scelte.non_interattivo else Operatore()
