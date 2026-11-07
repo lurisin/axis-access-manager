@@ -249,7 +249,8 @@ class BenchOperator(kit.Operatore):
         return ""
 
     def swipe(self) -> None:
-        """Il controller registra la tessera e la nega, come all'A1210 del banco (0.18)."""
+        """Il controller registra la tessera e la nega. IdData e Denied come nel registro del banco (0.18); il motivo
+        è inventato: quello vero lo dice T8."""
         c = self.controller
         row = max((e["rowid"] for e in c.log_events), default=0)
         credential = next((t for t, v in c.credentials.items() if v["IdData"][0]["Value"] == CARD), "")
@@ -309,7 +310,16 @@ def factory_bench(check_references=True) -> FakeController:
 
 def leftovers(controller: FakeController) -> list[str]:
     found = []
-    for name in ("users", "credentials", "schedules", "profiles", "doors", "idpoints", "door_configs"):
+    for name in (
+        "users",
+        "credentials",
+        "schedules",
+        "profiles",
+        "doors",
+        "idpoints",
+        "door_configs",
+        "idpoint_configs",
+    ):
         for token, item in getattr(controller, name).items():
             if any(str(item.get(k) or "").startswith(PREFIX) for k in ("token", "Name", "Description", "UserToken")):
                 found.append(f"{name} {token}")
