@@ -58,6 +58,11 @@ def _fault_code(data) -> str:
     return " ".join(str(p) for p in parts if p not in (None, ""))
 
 
+def _is_not_found(fault: str) -> bool:
+    """Il codice è proprio NotFound (ter:NotFound): non ReferenceNotFound, che dice un riferimento mancante."""
+    return any(part.rsplit(":", 1)[-1] == "NotFound" for part in fault.split())
+
+
 def _refused(what: str, fault: str) -> VapixError:
     reason = next((text for code, text in FAULT_TEXTS.items() if code in fault), "")
     return VapixError(f"il controller ha rifiutato {what}" + (f" ({reason})" if reason else ""), fault)
@@ -463,7 +468,7 @@ class A1210Client:
         try:
             await self._post(path, {method: {"Token": [token]}})
         except VapixError as err:
-            if "NotFound" not in err.fault:
+            if not _is_not_found(err.fault):
                 raise
 
     async def list_idpoints(self) -> list[dict]:

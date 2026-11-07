@@ -263,6 +263,13 @@ async def test_removal_refused_or_without_an_answer_is_still_an_error(name):
     with pytest.raises(VapixError, match=r"rifiutato la richiesta \(oggetto ancora in uso\)"):
         await getattr(client_with(in_use), name)("oggetto-x")
 
+    def missing_reference(request):
+        return httpx.Response(400, json={"Fault": "env:Sender", "FaultCode": "ter:ReferenceNotFound"})
+
+    # Un riferimento mancante non è «già tolto»: il nome contiene NotFound, ma il codice è un altro
+    with pytest.raises(VapixError):
+        await getattr(client_with(missing_reference), name)("oggetto-x")
+
     def lost(request):
         raise httpx.ReadTimeout("risposta persa")
 
