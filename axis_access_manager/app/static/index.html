@@ -2033,7 +2033,7 @@ async function viewPersons(el, sub) {
       <select id="p-state">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
         <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
-        <option value="mancanti">Non Presenti sul Controller</option>
+        <option value="mancanti">Non Presenti sul Controller</option><option value="senza">Senza Tessera</option>
       </select>
       <button type="button" class="primary w-persone" id="p-new">${icon("plus")}Nuova Persona</button>
     </div>
@@ -2094,6 +2094,7 @@ function renderPersonList() {
     if (st === "sospese" && !p.cards.some((c) => !c.enabled)) return false;
     if (["in_scadenza", "scaduta", "futura"].includes(st) && validityState(a.from, a.to) !== st) return false;
     if (st === "mancanti" && !p.cards.some((c) => c.missing_since)) return false;
+    if (st === "senza" && p.cards.length) return false;
     return true;
   });
   renderMissingBanner();
@@ -2122,7 +2123,7 @@ function renderPersonList() {
       <span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span>
       <span class="name">${esc(p.name)}</span>${flag}
     </div>`;
-  }).join("") : `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : "Nessuna persona registrata: passa una tessera sul lettore e registrala dalla pagina Da Registrare."}</div>`);
+  }).join("") : `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : can("persone_modifica") ? "Nessuna persona registrata: aggiungila con Nuova Persona, anche senza tessera, oppure passa una tessera sul lettore e registrala dalla pagina Da Registrare." : "Nessuna persona registrata."}</div>`);
 }
 
 // Tessere sparite dal controller (reset, sostituzione, cancellate a mano): l'app non le cancella da sola
@@ -2169,7 +2170,7 @@ async function forgetMissing() {
   const n = cards.length;
   const total = store.persons.reduce((k, p) => k + p.cards.length, 0);
   const reset = n * 2 > total ? " Manca più della metà delle tessere: se il controller è stato resettato o sostituito, serve invece il Ripristino Completo, che le rimette." : "";
-  if (!await confirmBox("Togli dall'App", `Togliere dall'app ${n === 1 ? "la tessera non presente" : `le ${n} tessere non presenti`} sul controller? Le persone rimaste senza tessere spariscono con ditta, note e tipologia. Il registro dei passaggi resta.${reset}`, "Togli", true)) return false;
+  if (!await confirmBox("Togli dall'App", `Togliere dall'app ${n === 1 ? "la tessera non presente" : `le ${n} tessere non presenti`} sul controller? Le persone restano in anagrafica, anche senza tessere. Il registro dei passaggi resta.${reset}`, "Togli", true)) return false;
   const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids: cards.map((c) => c.id)}}));
   if (!r) return false;
   toast(`${plural(r.cards, "tessera tolta", "tessere tolte")} dall'app`);
@@ -2213,17 +2214,23 @@ async function newPerson(card = "") {
     title: "Nuova Persona",
     body: `${field("Nome e Cognome", `<input name="name" autocomplete="off" maxlength="100" required>`)}
       ${field("Ditta o Reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
-      ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="es. 04A1B2C3D4E5F6">`, card ? "" : "Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
+      ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
       ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Persone → Tipologie.")}
-      ${validityFields()}
+      <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}`,
     actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
-      const body = {name: val(dlg, "name"), card: val(dlg, "card"), company: val(dlg, "company"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0), ...readValidity(dlg)};
-      if (!body.name || !body.card) { toast("Servono nome e numero tessera", true); return false; }
-      const person = await run(() => api("api/persons", {method: "POST", body}), "Persona registrata: la tessera è attiva sul controller");
+      const body = {name: val(dlg, "name"), card: val(dlg, "card"), company: val(dlg, "company"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0)};
+      // La validità è della tessera: senza, la durata della tipologia parte dalla prima tessera
+      if (body.card) Object.assign(body, readValidity(dlg));
+      if (!body.name) { toast("Serve il nome", true); return false; }
+      const person = await run(() => api("api/persons", {method: "POST", body}), body.card ? "Persona registrata: la tessera è attiva sul controller" : "Persona registrata senza tessera");
       return person || false;
     }}],
-    onOpen: (dlg) => { bindValidity(dlg); bindCategory(dlg); },
+    onOpen: (dlg) => {
+      bindValidity(dlg);
+      bindCategory(dlg);
+      $("[name=card]", dlg).addEventListener("input", (e) => { $("#f-card-validity", dlg).hidden = !e.target.value.trim(); });
+    },
   });
   if (created) {
     loadSummary();
@@ -2265,7 +2272,7 @@ async function openPerson(id) {
         <dl class="props">
           <dt>Tipologia</dt><dd>${categoryPill(category) || (p.category_id ? '<span class="muted" title="Le tipologie non sono state lette: riprova tra poco">Non letta</span>' : '<span class="muted">Nessuna</span>')}</dd>
           ${category && !custom ? `<dt>Dove e Quando</dt><dd>${ruleLines(category)}</dd>` : ""}
-          <dt>Validità</dt><dd>${esc(validityText(a.from, a.to))} ${VALIDITY_PILL[vs] || ""}</dd>
+          <dt>Validità</dt><dd>${p.cards.length ? `${esc(validityText(a.from, a.to))} ${VALIDITY_PILL[vs] || ""}` : '<span class="muted">Nessuna tessera</span>'}</dd>
         </dl>
         ${custom ? `<div class="alert" style="margin:12px 0 0">${icon("alert")}<div class="grow"><b>Accesso Personalizzato</b>${(() => { const owner = store.categories.find((c) => c.group_token === a.group && c.id !== category.id); return `Le tessere aprono come ${owner ? `la tipologia <b class="inline">${esc(owner.name)}</b>` : ((store.groups || []).some((g) => g.token === a.group) ? `il profilo <b class="inline">${esc(groupName(a.group))}</b>` : store.groupsLoaded ? "un profilo che non è più sul controller" : "un profilo che ora non si riesce a leggere dal controller")}, non come ${esc(category.name)}.`; })()}</div>
           <button type="button" class="small w-persone" data-align>Allinea alla Tipologia</button></div>` : ""}</div>
@@ -2274,7 +2281,7 @@ async function openPerson(id) {
           <div class="ev-icon ${cardActive(c) ? "k-accent" : "k-muted"}">${icon("card")}</div>
           <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
-          <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("")}</div></div>
+          <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
         <dl class="props"><dt>Nome</dt><dd>${esc(p.name)}</dd><dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
           <dt>Note</dt><dd style="white-space:pre-wrap">${esc(p.notes || "—")}</dd></dl>
@@ -2282,7 +2289,7 @@ async function openPerson(id) {
           <dl class="props" style="margin-top:8px"><dt>Codice sul Controller</dt><dd><code>${esc(p.axis_user_token)}</code></dd></dl></details>` : ""}</div>
       ${can("registro") ? `<div class="card flush"><h2>Ultimi Passaggi<span class="spacer"></span><a class="small-text" href="#registro" data-person-log>Apri nel Registro</a></h2>
         <div class="list" style="margin-top:6px">${p.events.length ? p.events.map((e) => eventItem(e)).join("") : '<div class="empty">Nessun passaggio registrato.</div>'}</div></div>` : ""}
-      <div class="w-persone" style="text-align:center;margin:8px 0 20px"><button type="button" class="danger" data-del-person>${icon("trash")}Elimina Persona e Tessere</button></div>
+      <div class="w-persone" style="text-align:center;margin:8px 0 20px"><button type="button" class="danger" data-del-person>${icon("trash")}${p.cards.length ? "Elimina Persona e Tessere" : "Elimina Persona"}</button></div>
     </div></div>`;
   const close = () => { sheet.close(); };
   sheet.onclose = () => { if (location.hash.startsWith("#persone/")) history.replaceState(null, "", "#persone"); };
@@ -2297,12 +2304,14 @@ async function openPerson(id) {
     if (p.category_id && !category) { toast("Le tipologie non sono state lette: riprova tra qualche secondo", true); return; }
     const ok = await modal({
       title: "Accesso di " + p.name,
-      body: `${field("Tipologia", categorySelect(p.category_id || 0), "Dove e quando apre la tessera.")}${validityFields(a.from, a.to)}<p class="hint">Vale per tutte le tessere della persona.${custom ? " Salvando, l'accesso torna quello della tipologia." : ""}</p>`,
+      body: p.cards.length ? `${field("Tipologia", categorySelect(p.category_id || 0), "Dove e quando apre la tessera.")}${validityFields(a.from, a.to)}<p class="hint">Vale per tutte le tessere della persona.${custom ? " Salvando, l'accesso torna quello della tipologia." : ""}</p>`
+        // Senza tessere la validità non c'è: la prima tessera prende la durata della tipologia
+        : `${field("Tipologia", categorySelect(p.category_id || 0), "Dove e quando aprirà la tessera, e la sua durata da quando la aggiungi.")}`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
         const chosen = Number(val(dlg, "category"));
         // Senza tipologia, se non se ne sceglie una, le tessere tengono il profilo di adesso e non prendono il predefinito
-        const body = {...(category || chosen ? {category_id: chosen} : {group: a.group}), ...readValidity(dlg)};
-        return (await run(() => api(`api/persons/${id}/access`, {method: "PUT", body}), "Accesso aggiornato sul controller")) || false;
+        const body = {...(category || chosen ? {category_id: chosen} : {group: a.group}), ...(p.cards.length ? readValidity(dlg) : {})};
+        return (await run(() => api(`api/persons/${id}/access`, {method: "PUT", body}), p.cards.length ? "Accesso aggiornato sul controller" : "Tipologia aggiornata")) || false;
       }}],
       onOpen: (dlg) => {
         bindValidity(dlg);
@@ -2333,7 +2342,7 @@ async function openPerson(id) {
   $("[data-add-card]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Aggiungi Tessera a " + p.name,
-      body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, "La nuova tessera avrà lo stesso accesso e la stessa validità. Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.")}`,
+      body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, `${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.`)}`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
         (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card")}}), "Tessera aggiunta")) || false}],
     });
@@ -2349,13 +2358,12 @@ async function openPerson(id) {
   $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
     const last = p.cards.length === 1;
-    if (!await confirmBox("Elimina Tessera", `Eliminare la tessera <code>${esc(card.number)}</code> ${card.missing_since ? "dall'app? Sul controller non c'è già più." : "dal controller?"}` + (last ? " È l'unica tessera: verrà eliminata anche la persona." : ""), "Elimina", true)) return;
-    const r = await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), "Tessera eliminata");
-    if (!r) return;
-    if (last) { close(); await loadPersons(); renderPersonList(); } else reload();
+    if (!await confirmBox("Elimina Tessera", `Eliminare la tessera <code>${esc(card.number)}</code> ${card.missing_since ? "dall'app? Sul controller non c'è già più." : "dal controller?"}` + (last ? ` È l'unica tessera: <b>${esc(p.name)}</b> resta in anagrafica senza tessere, e si elimina solo con Elimina Persona.` : ""), "Elimina", true)) return;
+    if (await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), last ? "Tessera eliminata: la persona resta in anagrafica" : "Tessera eliminata")) reload();
   });
   $("[data-del-person]", sheet).onclick = async () => {
-    if (!await confirmBox("Elimina Persona", `Eliminare <b>${esc(p.name)}</b> e ${plural(p.cards.length, "tessera", "tessere")} dal controller? Non apriranno più la porta. Il registro dei passaggi resta.`, "Elimina", true)) return;
+    const what = p.cards.length ? `<b>${esc(p.name)}</b> e ${plural(p.cards.length, "tessera", "tessere")} dal controller? Non apriranno più la porta.` : `<b>${esc(p.name)}</b> dall'anagrafica? Non ha tessere.`;
+    if (!await confirmBox("Elimina Persona", `Eliminare ${what} Il registro dei passaggi resta.`, "Elimina", true)) return;
     if (await run(() => api(`api/persons/${id}`, {method: "DELETE"}), "Persona eliminata")) { close(); await loadPersons(); renderPersonList(); }
   };
   bindSnapshots(sheet);
@@ -2395,7 +2403,7 @@ async function viewUnknown(el) {
       const options = store.persons.map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
       const ok = await modal({
         title: "Assegna Tessera " + number,
-        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona.") : '<p class="muted">Nessuna persona registrata.</p>',
+        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.") : '<p class="muted">Nessuna persona registrata.</p>',
         actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
           (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number}}), "Tessera assegnata")) || false}] : [])],
       });
@@ -3407,7 +3415,10 @@ function bindControllerFields(root, ctrl) {
     const f = read();
     try {
       const r = await api("api/controllers/test", {method: "POST", body: {host: f.host, username: f.username, password: f.password, verify_ssl: f.verify_ssl, controller_id: ctrl?.id || null}});
-      out.innerHTML = `<span class="pill ok">${esc(r.model)} · Firmware ${esc(r.firmware)}</span> ${plural(r.doors.length, "porta", "porte")}: ${r.doors.map((d) => esc(d.name)).join(", ")}`;
+      // Serie e certificato dicono quale apparecchio risponde: da confrontare con l'etichetta e con il browser
+      out.innerHTML = `<span class="pill ok">${esc(r.model)} · Firmware ${esc(r.firmware)}</span> ${plural(r.doors.length, "porta", "porte")}: ${r.doors.map((d) => esc(d.name)).join(", ")}
+        <span style="display:block;margin-top:6px">Numero di Serie <code>${esc(r.serial || "—")}</code></span>
+        <span style="display:block;margin-top:2px">Certificato ${r.cert_fingerprint ? `<code style="overflow-wrap:anywhere">${esc(r.cert_fingerprint)}</code>` : '<span class="muted">non letto</span>'}</span>`;
     } catch (err) { out.innerHTML = `<span class="pill err">${esc(cap(err.message))}</span>`; }
   };
   return read;
@@ -4709,7 +4720,7 @@ async function viewSettings(el, sub) {
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo nome e tessera obbligatori, date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>
         <div class="card"><h2>${icon("history")}Database dell'Add-on</h2>${dbRecovered ? `<div class="alert err">${icon("alert")}<div class="grow"><b>${esc(dbRecovered.title || (dbRecovered.text.includes("ripristinata la copia") ? "Database Ripristinato dalla Copia" : "Database Non Ripristinato"))}</b>${esc(capFirst(dbRecovered.text))} · ${esc(relTime(dbRecovered.at))}${dbRecovered.hint ? `<br>${esc(dbRecovered.hint)}` : ""}</div></div>` : ""}${props([
           ["Versione dello Schema", esc(s.database.schema)],
           // Il motivo dice già che la copia non è aggiornata ("copia non aggiornata (…)", "… resta la copia precedente")
