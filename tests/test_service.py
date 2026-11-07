@@ -8,7 +8,8 @@ import pytest
 
 from app.db import Database
 from app.events import Event, EventMonitor
-from app.service import AccessService, ServiceError, normalize_card, user_token_for
+from app.rules import normalize_validity
+from app.service import AccessService, PersonChanged, ServiceError, normalize_card, user_token_for
 from app.vapix import ControllerGuard, ControllerUnreachable, VapixError
 
 
@@ -371,6 +372,42 @@ async def test_first_card_with_the_disk_full_leaves_nothing_on_the_controller(se
     monkeypatch.undo()
     person = await service.add_card(person["id"], "04aa", "admin")
     assert controller.users[person["axis_user_token"]]["Name"] == "Anna"
+
+
+async def test_first_card_with_chosen_access_and_category(service, controller, db, monkeypatch):
+    """Importazione: la prima tessera nasce con gruppo, validità e tipologia della riga, e la persona cambia
+    tipologia insieme a lei. Con il disco pieno né l'una né l'altra; con una tessera arrivata nel frattempo niente."""
+    ospite, corsi = (
+        db.save_category(
+            None, {"name": name, "color": "blue", "group_token": "p2", "valid_days": days, "description": ""}
+        )
+        for name, days in (("Ospite", 1), ("Corsi", 30))
+    )
+    person = await service.create_person("Anna", "", "admin", category_id=ospite)
+    monkeypatch.setattr(db, "set_person_category", _full)
+    with pytest.raises(ServiceError, match="la tessera non è stata aggiunta"):
+        await service.add_card(person["id"], "04aa", "admin", category_id=corsi)
+    assert controller.credentials == {} and controller.users == {}
+    assert db.get_person(person["id"])["cards"] == [] and db.get_person(person["id"])["category_id"] == ospite
+    monkeypatch.undo()
+
+    person = await service.add_card(person["id"], "04aa", "admin", valid_to="2027-01-31T18:00:00", category_id=corsi)
+    [card] = person["cards"]
+    assert person["category_id"] == corsi
+    assert (card["access_profile"], card["valid_from"], card["valid_to"]) == (
+        "p2",
+        "",
+        normalize_validity("2027-01-31T18:00:00"),
+    )
+    assert [a["action"] for a in db.list_audit()[:2]] == ["tipologia cambiata", "tessera aggiunta"]
+
+    calls = len(controller.calls)
+    with pytest.raises(PersonChanged, match="Anna ha già 1 tessera: la nuova ne prenderebbe l'accesso"):
+        await service.add_card(person["id"], "04bb", "admin", group="profilo_sempre")
+    assert len(controller.calls) == calls and len(db.get_person(person["id"])["cards"]) == 1
+    # Senza valori scelti la seconda eredita l'accesso della prima, come sempre
+    person = await service.add_card(person["id"], "04bb", "admin")
+    assert {c["valid_to"] for c in person["cards"]} == {card["valid_to"]}
 
 
 async def test_access_of_a_person_without_cards(service, controller, db):
