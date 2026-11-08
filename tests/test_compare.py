@@ -2,6 +2,7 @@
 da sole, differenze vere, doppioni, oggetti di fabbrica e nessuna scrittura."""
 
 import json
+import re
 
 import httpx
 import pytest
@@ -21,9 +22,9 @@ from app.compare import (
     read_strict,
     schedule_meaning,
 )
-from app.desired import build, load_conf, signature
+from app.desired import build, load_conf, schedule_payload, signature
 from app.presa_in_carico import confronto
-from app.rules import holidays_ical, schedule_ical
+from app.rules import holidays_ical, italian_holidays, schedule_ical
 from app.vapix import A1210Client
 
 
@@ -318,7 +319,7 @@ async def test_only_the_kinds_of_the_desired_state_are_compared(plant, controlle
     await app_made(plant)
     reading = await read_strict(controller)
 
-    assert compare(build(load_conf(db), plant.controller_id, []), reading) == {"rows": [], "unread": []}
+    assert compare(build(load_conf(db), plant.controller_id, []), reading) == {"rows": [], "unread": [], "pending": []}
     result = compare(build(load_conf(db), plant.controller_id, ["tessera"]), reading)
     assert {r["kind"] for r in result["rows"]} == {"tessera"}
     assert {r["action"] for r in result["rows"]} == {"uguale"}
@@ -332,3 +333,239 @@ def test_schedules_are_compared_by_meaning():
     holidays = [{"day": "2026-12-25", "yearly": True}, {"day": "2026-04-06", "yearly": False}]
     assert exceptions_meaning(holidays_ical(holidays)) == "06/04/2026; 25/12/2026 ogni anno"
     assert exceptions_meaning(holidays_ical(holidays[::-1])) == exceptions_meaning(holidays_ical(holidays))
+    # Solo spazi e righe vuote: come nessun calendario
+    assert schedule_meaning(" \r\n") == exceptions_meaning("\r\n\r\n") == ""
+
+
+# Fasce per significato: uguale solo ciò che vale allo stesso modo
+
+CHRISTMAS_EVE = holidays_ical([{"day": "2026-12-24", "yearly": True}])
+WEEKDAYS = schedule_ical(OFFICE)
+
+
+def schedule_of(definition, exceptions=CHRISTMAS_EVE):
+    return {
+        "token": "s1",
+        "Name": "Ufficio",
+        "Description": "",
+        "ScheduleDefinition": definition,
+        "ExceptionScheduleDefinition": exceptions,
+        "Attribute": [],
+    }
+
+
+# Cambi fatti dal sito Axis che cambiano quando vale la fascia: (orari, festività, campo, significato letto)
+CHANGED_SCHEDULES = {
+    # Natale allungato fino all'Epifania: dal 25/12 al 06/01 si entrerebbe
+    "festivita_allungata": (
+        WEEKDAYS,
+        CHRISTMAS_EVE.replace("DTEND;VALUE=DATE:20261225", "DTEND;VALUE=DATE:20270107"),
+        "Festività",
+        "dal 24/12/2026 al 06/01/2027 ogni anno",
+    ),
+    # Una volta sola invece che ogni anno
+    "festivita_count": (
+        WEEKDAYS,
+        CHRISTMAS_EVE.replace("BYMONTH=12", "BYMONTH=12;COUNT=1"),
+        "Festività",
+        "24/12/2026 ogni anno per 1 volta",
+    ),
+    "festivita_until": (
+        WEEKDAYS,
+        CHRISTMAS_EVE.replace("BYMONTH=12", "BYMONTH=12;UNTIL=20281231"),
+        "Festività",
+        "24/12/2026 ogni anno fino al 31/12/2028",
+    ),
+    "festivita_exdate": (
+        WEEKDAYS,
+        CHRISTMAS_EVE.replace("END:VEVENT", "EXDATE;VALUE=DATE:20271224\r\nEND:VEVENT"),
+        "Festività",
+        "24/12/2026 ogni anno tranne il 24/12/2027",
+    ),
+    # In vigore solo dal 2027
+    "orari_dal_2027": (
+        WEEKDAYS.replace("19700101T080000", "20270101T080000").replace("19700101T180000", "20270101T180000"),
+        CHRISTMAS_EVE,
+        "Orari",
+        "lun-ven 08:00–18:00 dal 01/01/2027",
+    ),
+    "orari_exdate": (
+        WEEKDAYS.replace("RRULE:FREQ=WEEKLY", "EXDATE:20261109T080000\r\nRRULE:FREQ=WEEKLY"),
+        CHRISTMAS_EVE,
+        "Orari",
+        "lun-ven 08:00–18:00 tranne il 09/11/2026 08:00",
+    ),
+    "orari_count": (
+        WEEKDAYS.replace("BYDAY=", "COUNT=10;BYDAY="),
+        CHRISTMAS_EVE,
+        "Orari",
+        "lun-ven 08:00–18:00 per 10 volte",
+    ),
+    "orari_until": (
+        WEEKDAYS.replace("BYDAY=", "UNTIL=20271231T180000;BYDAY="),
+        CHRISTMAS_EVE,
+        "Orari",
+        "lun-ven 08:00–18:00 fino al 31/12/2027 18:00",
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("definition", "exceptions", "label", "meaning"), CHANGED_SCHEDULES.values(), ids=CHANGED_SCHEDULES
+)
+def test_schedule_changes_in_when_it_applies_are_differences(definition, exceptions, label, meaning):
+    """Durata delle eccezioni, data di partenza, EXDATE, COUNT e UNTIL fanno parte del significato: una fascia che
+    vale in modo diverso non risulta mai uguale a quella dell'app."""
+    app, read = schedule_of(WEEKDAYS), schedule_of(definition, exceptions)
+    assert read != app
+
+    [row] = compare(voluto({"fascia": {"s1": app}}), letto(schedules=[read]))["rows"]
+
+    assert row["action"] == "riporta"
+    [change] = row["changes"]
+    assert change["label"] == label and change["old"] == meaning
+    assert change["new"] == ("lun-ven 08:00–18:00" if label == "Orari" else "24/12/2026 ogni anno")
+
+
+# Orari con qualcosa che il confronto non sa interpretare
+UNREADABLE_SCHEDULES = {
+    "rdate": WEEKDAYS.replace("END:VEVENT", "RDATE:20261107T080000\r\nEND:VEVENT"),
+    "uid": WEEKDAYS.replace("END:VEVENT", "UID:fatta-a-mano\r\nEND:VEVENT"),
+    "valarm": WEEKDAYS.replace("END:VEVENT", "BEGIN:VALARM\r\nEND:VALARM\r\nEND:VEVENT"),
+    "vtimezone": WEEKDAYS.replace("VERSION:2.0", "VERSION:2.0\r\nBEGIN:VTIMEZONE\r\nTZID:Europe/Rome\r\nEND:VTIMEZONE"),
+    "proprieta_del_calendario": WEEKDAYS.replace("VERSION:2.0", "VERSION:2.0\r\nX-WR-TIMEZONE:Europe/Rome"),
+    "tzid": WEEKDAYS.replace("DTSTART:", "DTSTART;TZID=Europe/Rome:"),
+    # In UTC invece che nell'ora del controller
+    "utc": WEEKDAYS.replace("19700101T080000", "19700101T080000Z"),
+    # Parti della ricorrenza che l'app non scrive o che non si leggono
+    "byday_numerato": WEEKDAYS.replace("BYDAY=MO,", "BYDAY=1MO,"),
+    "interval": WEEKDAYS.replace("FREQ=WEEKLY", "FREQ=WEEKLY;INTERVAL=2"),
+    "monthly": WEEKDAYS.replace("FREQ=WEEKLY", "FREQ=MONTHLY"),
+    "due_rrule": WEEKDAYS.replace("RRULE:", "RRULE:FREQ=DAILY\r\nRRULE:"),
+    "count_e_until": WEEKDAYS.replace("BYDAY=", "COUNT=3;UNTIL=20271231T180000;BYDAY="),
+    # Secondi: 08:00:30 non è 08:00
+    "secondi": WEEKDAYS.replace("19700101T080000", "19700101T080030"),
+    # Riga piegata con LF e uno spazio: si riunisce, e BYDAY=M O non è BYDAY=MO
+    "riga_piegata": WEEKDAYS.replace("BYDAY=MO", "BYDAY=M\n  O"),
+}
+
+
+@pytest.mark.parametrize("definition", UNREADABLE_SCHEDULES.values(), ids=UNREADABLE_SCHEDULES)
+def test_schedules_the_comparison_cannot_read_are_compared_as_text(definition):
+    """Qualsiasi cosa che il confronto non sa interpretare fa confrontare il testo: diverso dalla fascia dell'app,
+    uguale solo a un testo uguale (anche con altri fine riga)."""
+    app, read = schedule_of(WEEKDAYS), schedule_of(definition)
+
+    [row] = compare(voluto({"fascia": {"s1": app}}), letto(schedules=[read]))["rows"]
+
+    assert (row["action"], [c["label"] for c in row["changes"]]) == ("riporta", ["Orari"])
+    assert schedule_meaning(definition).startswith("BEGIN:VCALENDAR")
+    same = schedule_of(definition.replace("\r\n", "\n"))
+    [row] = compare(voluto({"fascia": {"s1": read}}), letto(schedules=[same]))["rows"]
+    assert row["action"] == "uguale"
+
+
+# Festività con qualcosa che il confronto non sa interpretare
+UNREADABLE_HOLIDAYS = {
+    "senza_value_date": CHRISTMAS_EVE.replace(";VALUE=DATE:20261224", ":20261224"),
+    "dtend_con_ora": CHRISTMAS_EVE.replace("DTEND;VALUE=DATE:20261225", "DTEND:20261225T000000"),
+    "dtend_non_dopo": CHRISTMAS_EVE.replace("DTEND;VALUE=DATE:20261225", "DTEND;VALUE=DATE:20261224"),
+    "bymonth_diverso": CHRISTMAS_EVE.replace("BYMONTH=12", "BYMONTH=1"),
+    "bymonthday": CHRISTMAS_EVE.replace("BYMONTH=12", "BYMONTH=12;BYMONTHDAY=24"),
+    "interval": CHRISTMAS_EVE.replace("BYMONTH=12", "BYMONTH=12;INTERVAL=2"),
+    "rdate": CHRISTMAS_EVE.replace("END:VEVENT", "RDATE;VALUE=DATE:20270101\r\nEND:VEVENT"),
+    "exdate_con_ora": CHRISTMAS_EVE.replace("END:VEVENT", "EXDATE:20271224T000000\r\nEND:VEVENT"),
+    # Non è un calendario: non si confonde con il significato «24/12/2026 ogni anno»
+    "non_calendario": "24/12/2026 ogni anno",
+}
+
+
+@pytest.mark.parametrize("exceptions", UNREADABLE_HOLIDAYS.values(), ids=UNREADABLE_HOLIDAYS)
+def test_holidays_the_comparison_cannot_read_are_compared_as_text(exceptions):
+    app, read = schedule_of(WEEKDAYS), schedule_of(WEEKDAYS, exceptions)
+
+    [row] = compare(voluto({"fascia": {"s1": app}}), letto(schedules=[read]))["rows"]
+
+    assert (row["action"], [c["label"] for c in row["changes"]]) == ("riporta", ["Festività"])
+    assert exceptions_meaning(exceptions).startswith(("BEGIN:VCALENDAR", "testo: "))
+
+
+SPLIT = [{"days": ["MO"], "start": "08:00", "end": "12:00"}, {"days": ["MO"], "start": "13:00", "end": "18:00"}]
+APP_RULES = [
+    OFFICE,
+    SPLIT,
+    [{"days": ["SA", "SU"], "start": "00:00", "end": "24:00"}],
+    [{"days": ["MO", "TU", "WE", "TH", "FR", "SA", "SU"], "start": "00:00", "end": "24:00"}],
+    [{"days": ["MO", "FR"], "start": "08:30", "end": "24:00"}, {"days": ["SA"], "start": "09:00", "end": "12:30"}],
+]
+APP_HOLIDAYS = [
+    [],
+    italian_holidays([2026, 2027]),
+    [{"day": "2028-02-29", "yearly": True}, {"day": "2026-11-09", "yearly": False}, *italian_holidays([2026])],
+]
+
+
+def reversed_events(text):
+    """Lo stesso calendario con gli eventi in ordine inverso."""
+    if not text:
+        return text
+    events = re.findall(r"BEGIN:VEVENT.*?END:VEVENT\r\n", text, re.S)
+    first, last = text.index("BEGIN:VEVENT"), text.rindex("END:VEVENT\r\n") + len("END:VEVENT\r\n")
+    return text[:first] + "".join(events[::-1]) + text[last:]
+
+
+@pytest.mark.parametrize("rules", APP_RULES)
+@pytest.mark.parametrize("holidays", APP_HOLIDAYS)
+async def test_schedules_written_by_the_app_stay_equal(rules, holidays):
+    """Le fasce dell'app (orari e festività di serie) si leggono per significato: uguali a se stesse e a come le
+    restituisce il controller (il finto: com'è stata scritta), anche con altri fine riga e gli eventi in un altro
+    ordine."""
+    app = schedule_payload("s1", "Ufficio", "", rules, bool(holidays), holidays)
+    controller = FakeController()
+    await controller.set_schedule(app)
+    read = next(s for s in await controller.list_schedules() if s["token"] == "s1")
+    shuffled = {
+        **read,
+        "ScheduleDefinition": reversed_events(app["ScheduleDefinition"]).replace("\r\n", "\n"),
+        "ExceptionScheduleDefinition": reversed_events(app["ExceptionScheduleDefinition"]),
+    }
+    assert len(rules) == 1 or shuffled["ScheduleDefinition"] != app["ScheduleDefinition"].replace("\r\n", "\n")
+
+    for current in (app, read, shuffled):
+        [row] = compare(voluto({"fascia": {"s1": app}}), letto(schedules=[current]))["rows"]
+        assert (row["action"], row["changes"]) == ("uguale", [])
+    assert not schedule_meaning(app["ScheduleDefinition"]).startswith(("BEGIN", "testo"))
+    assert not exceptions_meaning(app["ExceptionScheduleDefinition"]).startswith(("BEGIN", "testo"))
+    assert signature("fascia", project("fascia", read, app)) == signature("fascia", app)
+
+
+async def test_schedule_changed_by_hand_is_a_difference_after_the_presa(plant, controller, db):  # noqa: F811
+    """La fascia Ufficio dell'app, con Natale tra le festività: senza differenze com'è stata scritta; con l'eccezione
+    allungata o una data di partenza messe dal sito Axis, da riportare."""
+    await app_made(plant)
+    token = next(t for t, s in controller.schedules.items() if s.get("Name") == "Ufficio")
+
+    async def row():
+        result = confronto(load_conf(db), await read_strict(controller), plant.controller_id)
+        return next(r for r in result["rows"] if r["key"] == f"fascia:{token}")
+
+    # Presa in carico com'è: uguale a come la vuole l'app
+    assert ((found := await row())["action"], found["changes"]) == ("prende", [])
+
+    schedule = controller.schedules[token]
+    written = dict(schedule)
+    schedule["ExceptionScheduleDefinition"] = written["ExceptionScheduleDefinition"].replace(
+        "DTEND;VALUE=DATE:20261226", "DTEND;VALUE=DATE:20270107"
+    )
+    found = await row()
+    assert found["action"] == "riporta"
+    assert found["changes"] == [
+        {"label": "Festività", "old": "dal 25/12/2026 al 06/01/2027 ogni anno", "new": "25/12/2026 ogni anno"}
+    ]
+
+    schedule["ExceptionScheduleDefinition"] = written["ExceptionScheduleDefinition"]
+    schedule["ScheduleDefinition"] = written["ScheduleDefinition"].replace("19700101T", "20270104T")
+    found = await row()
+    assert found["changes"] == [
+        {"label": "Orari", "old": "lun-ven 08:00–18:00 dal 04/01/2027", "new": "lun-ven 08:00–18:00"}
+    ]

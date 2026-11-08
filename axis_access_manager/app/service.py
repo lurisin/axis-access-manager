@@ -275,6 +275,9 @@ class AccessService:
         # Durante il recupero dal registro del controller: eventi segnati come recuperati, e quanti
         self._recovering = False
         self._recovered = 0
+        # Durante una pagina del recupero: quello che serve al «non abilitato» (porte, aree e strutture, tipologie
+        # delle persone e porte di ogni tipologia), letto una volta per pagina. Fuori dal recupero None
+        self._coverage: dict | None = None
         # Ora (del controller) dell'evento più recente letto dall'ultimo recupero, None se non ne ha letti
         self.recover_newest: datetime | None = None
         # L'ultimo recupero si è fermato a RECOVER_MAX righe con altre ancora da leggere: si continua al giro dopo
@@ -1528,17 +1531,35 @@ class AccessService:
         tipologia né per un accesso personalizzato: lì le porte le decide il profilo scelto a mano sulla tessera."""
         if not door:
             return False
-        person = self.db.get_person(card["person_id"])
-        category = self.db.get_category(person["category_id"]) if person and person["category_id"] else None
+        # Nella pagina del recupero ogni cosa si legge una volta: la pagina gira senza await, quindi niente cambia il
+        # database a metà (vedi recover_events). Fuori, per un evento solo, si legge solo quello che serve
+        page = self._coverage
+        cache = page if page is not None else {}
+        if page is None:
+            person = self.db.get_person(card["person_id"])
+            category_id = person["category_id"] if person else None
+        else:
+            if "persone" not in page:
+                page["persone"] = {p["id"]: p["category_id"] for p in self.db.all_persons()}
+            category_id = page["persone"].get(card["person_id"])
+        category_key = ("tipologia", category_id)
+        if category_key not in cache:
+            cache[category_key] = self.db.get_category(category_id) if category_id else None
+        category = cache[category_key]
         if category is None or card["access_profile"] != category["group_token"]:
             return False
         # Import qui: coverage importa installation, che importa questo modulo
         from .coverage import category_doors, places
 
-        layout = places(self.db)
-        if door not in {d["door_token"] for d in layout[0]}:
+        if "porte" not in cache:
+            cache["porte"] = places(self.db)
+            cache["porte dell'app"] = {d["door_token"] for d in cache["porte"][0]}
+        if door not in cache["porte dell'app"]:
             return False
-        return door not in category_doors(self.db, category["id"], layout)
+        doors_key = ("porte della tipologia", category["id"])
+        if doors_key not in cache:
+            cache[doors_key] = category_doors(self.db, category["id"], cache["porte"])
+        return door not in cache[doors_key]
 
     def _holder_name(self, data: dict) -> str:
         """Chi ha usato una tessera che l'app non ha più: l'A1210 manda il token dell'utente, non il nome.
@@ -1575,6 +1596,9 @@ class AccessService:
             # Prima, con il disco ancora pieno, il recupero dopo li saltava e si perdevano per sempre
             decisions = list(self._recent_decisions)
             self._recovering = True
+            # Per il «non abilitato»: letto una volta per pagina. La pagina gira tutta senza await, quindi nessun'altra
+            # operazione dell'app cambia porte, aree, tipologie o persone a metà; alla pagina dopo si rilegge
+            self._coverage = {}
             try:
                 # Una pagina, un commit
                 with self.db.batch():
@@ -1589,6 +1613,7 @@ class AccessService:
                 raise
             finally:
                 self._recovering = False
+                self._coverage = None
             if self._recovered > before:
                 self.writable_again()
                 self._changed()

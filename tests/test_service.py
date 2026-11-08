@@ -1211,6 +1211,73 @@ async def test_not_enabled_from_the_controller_log(service, controller, db):
     ]
 
 
+async def test_not_enabled_in_the_recovery_reads_the_database_once_a_page(service, controller, db, monkeypatch):
+    """Recupero di molti eventi: porte, aree e strutture, persone e porte della tipologia si leggono una volta per
+    pagina, non per ogni lettura o negato (il recupero della 0.27 non le leggeva affatto). Fra una pagina e l'altra
+    l'app può cambiare il database: la pagina dopo lo vede, e dopo il recupero si torna a leggere tutto ogni volta."""
+    from app import coverage
+    from app import service as service_module
+
+    plant = await _cleaning(service, controller, db)
+    scala = next(d["id"] for d in db.list_doors() if d["door_token"] == "porta")
+    cantina = next(d["id"] for d in db.list_doors() if d["door_token"] == "porta2")
+    category = plant["category"]["id"]
+    monkeypatch.setattr(service_module, "RECOVER_PAGE", 4)
+    counted = {"places": 0, "get_person": 0, "category_rules": 0}
+
+    def counting(name, real):
+        def call(*args, **kwargs):
+            counted[name] += 1
+            return real(*args, **kwargs)
+
+        return call
+
+    monkeypatch.setattr(coverage, "places", counting("places", coverage.places))
+    monkeypatch.setattr(db, "get_person", counting("get_person", db.get_person))
+    monkeypatch.setattr(db, "category_rules", counting("category_rules", db.category_rules))
+
+    def entry(rowid, values):
+        at = (MORNING + timedelta(seconds=rowid)).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+        return {"rowid": rowid, "UtcTime": at, "KeyValues": [{"Key": k, "Value": v} for k, v in values.items()]}
+
+    def read(reader):
+        return {"topic0": "IdPoint", "topic1": "Request", "topic2": "IdData", "IdPointToken": reader, "Card": "04aa"}
+
+    def denied(point):
+        values = {"topic0": "AccessControl", "topic1": "Denied", "topic2": "Credential", "AccessPointToken": point}
+        return {**values, "CredentialToken": plant["token"], "Reason": "NotPermittedAtThisTime"}
+
+    page = [read("lettore-2"), denied("ap-cantina"), read("lettore-1"), denied("ap-in")]
+    controller.log_events = [entry(n + 1, values) for n, values in enumerate(page * 3)]
+    fetch = controller.fetch_events
+    pages = []
+
+    async def fetched(*args, **kwargs):
+        pages.append(len(pages))
+        if len(pages) == 2:
+            # Dopo la prima pagina la tipologia apre anche la Cantina
+            rules = [{"target": "door", "target_id": door, "schedule": "standard_always"} for door in (scala, cantina)]
+            db.set_category_rules(category, rules)
+        return await fetch(*args, **kwargs)
+
+    controller.fetch_events = fetched
+
+    assert await service.recover_events(MORNING - timedelta(hours=1)) == 12
+
+    assert len(pages) == 3
+    assert counted == {"places": 3, "get_person": 0, "category_rules": 3}
+    rows = [(e["kind"], e["door"], e["detail"]) for e in reversed(db.list_events())]
+    outside = [("lettura", "porta2", "non abilitato"), ("negato", "porta2", "non abilitato")]
+    inside = [("lettura", "porta2", ""), ("negato", "porta2", "fuori fascia oraria")]
+    own = [("lettura", "porta", ""), ("negato", "porta", "fuori fascia oraria")]
+    assert rows == outside + own + (inside + own) * 2
+    # Fuori dal recupero, un evento alla volta: si legge tutto ogni volta
+    db.set_category_rules(category, [{"target": "door", "target_id": scala, "schedule": "standard_always"}])
+    service.record_event(_read("lettore-2", MORNING + timedelta(minutes=5)))
+    assert db.list_events()[0]["detail"] == "non abilitato"
+    assert counted["places"] == 4 and counted["get_person"] == 1
+
+
 async def test_suspended_expired_and_not_yet_valid_win_over_not_enabled(service, controller, db):
     plant = await _cleaning(service, controller, db)
     card = plant["person"]["cards"][0]
