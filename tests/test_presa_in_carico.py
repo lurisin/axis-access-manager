@@ -13,7 +13,7 @@ from test_rules_service import OFFICE
 from app.compare import compare, read_strict
 from app.desired import build, load_conf
 from app.main import create_app
-from app.presa_in_carico import confronto, presa_in_carico
+from app.presa_in_carico import category_for, confronto, presa_in_carico
 from app.rules import schedule_ical
 from app.service import ServiceError
 
@@ -468,3 +468,36 @@ async def test_factory_schedules_are_never_in_the_desired_state(plant, controlle
     ]
     assert [s["token"] for s in adopted["schedules"] if s["factory"]] == ["standard_always"]
     assert not [r for r in result["rows"] if r["action"] == "togli" or r["token"].startswith("standard_")]
+
+
+async def test_adopt_groups_stops_like_0_27_when_the_group_name_is_taken_too(plant, controller, db):
+    """Tre profili fatti a mano con lo stesso nome: il primo diventa «Impresa», il secondo «Impresa (gruppo)», e sul
+    terzo la 0.27 si fermava (nome già usato al salvataggio), con quello che veniva prima già salvato."""
+    db.set_setting("default_group", "profilo_sempre")
+    assert await plant.rules.adopt_groups() == 1
+    persons = []
+    for name, token, card in (("Anna", "om1", "04a1"), ("Bruno", "om2", "04b2"), ("Carla", "om3", "04c3")):
+        external_profile(controller, token, Name="Impresa", Description="")
+        persons.append(await plant.access.create_person(name, card, "admin", group=token))
+        db.set_person_category(persons[-1]["id"], 0)
+
+    with pytest.raises(ServiceError, match=r"esiste già una tipologia con il nome Impresa \(gruppo\)"):
+        await plant.rules.adopt_groups()
+
+    names = {c["id"]: c["name"] for c in plant.rules.list_categories()}
+    assert [names.get(db.get_person(p["id"])["category_id"]) for p in persons] == ["Impresa", "Impresa (gruppo)", None]
+
+
+def test_presa_gives_a_free_name_when_the_group_name_is_taken_too():
+    """Nella presa in carico in memoria lo stesso caso non ferma niente: il terzo prende il primo numero libero, e la
+    riga lo dice."""
+    categories = [
+        {"id": 1, "name": "Impresa", "group_token": "om1"},
+        {"id": 2, "name": "Impresa (gruppo)", "group_token": "om2"},
+    ]
+    warnings = []
+    category = category_for("om3", {"Name": "Impresa", "Description": ""}, categories, warnings)
+    assert category["name"] == "Impresa (gruppo 2)"
+    assert warnings == ["il nome Impresa (gruppo) è già di un'altra tipologia: diventa Impresa (gruppo 2)"]
+    with pytest.raises(ServiceError, match="esiste già una tipologia"):
+        category_for("om3", {"Name": "Impresa", "Description": ""}, categories)

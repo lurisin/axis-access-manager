@@ -771,7 +771,7 @@ def _limits(event: dict, rrule: dict[str, str], form: tuple[re.Pattern, str], pa
     if count is not None and until is not None:
         return None
     if count is not None:
-        if not count.isdigit() or int(count) < 1:
+        if not (count.isascii() and count.isdigit()) or int(count) < 1:
             return None
         text = f" per {plural(int(count), 'volta', 'volte')}"
     elif until is not None:

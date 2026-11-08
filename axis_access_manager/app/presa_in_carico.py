@@ -51,7 +51,7 @@ from .programming import (
     parse_duration,
 )
 from .rules import holidays_ical, parse_schedule_ical
-from .service import normalize_name, normalize_text
+from .service import ServiceError, normalize_name, normalize_text
 
 COLORS = ["blue", "green", "orange", "red", "purple", "teal", "pink", "gray"]
 # Elenchi senza i quali la presa in carico non si fa: un elenco non letto non è vuoto
@@ -159,6 +159,17 @@ def category_for(token: str, profile: dict, categories: list[dict], warnings: li
         return found
     if any(_nocase(c["name"]) == _nocase(name) for c in categories):
         name = f"{name[:33]} (gruppo)"
+    if any(_nocase(c["name"]) == _nocase(name) for c in categories):
+        # Anche «(gruppo)» è preso: la 0.27 si fermava qui (nome già usato al salvataggio). In memoria si prende il
+        # primo numero libero e lo si dice
+        if warnings is None:
+            raise ServiceError(f"esiste già una tipologia con il nome {name}")
+        taken = {_nocase(c["name"]) for c in categories}
+        base, number = name[:-1], 2
+        while _nocase(f"{base} {number})") in taken:
+            number += 1
+        warnings.append(f"il nome {name} è già di un'altra tipologia: diventa {base} {number})")
+        name = f"{base} {number})"
     return {
         "name": name,
         "color": COLORS[len(categories) % len(COLORS)],
