@@ -2495,6 +2495,8 @@ const KIND_DOT = {"k-ok": "ok", "k-warn": "warn", "k-err": "err", "k-info": "inf
 const LOG_ROW_WHAT = {concesso: "accesso concesso", negato: "accesso negato", lettura: "tessera letta"};
 // Origine dell'evento come la scrive l'app (db.SOURCE_LABELS); gli altri valori sono già nomi
 const LOG_SOURCES = {lettore: "Lettore", controller: "Controller", porta: "Porta"};
+// Dettagli da spiegare nel Dettaglio Evento (service.NOT_ENABLED)
+const DETAIL_HINTS = {"non abilitato": "la tipologia della persona non comprende questa porta"};
 // Riga compatta: ora, colore dell'esito, chi, cosa, dove (place false: elenco di una porta sola, il dove è già nel titolo)
 function logRow(e, {place = true} = {}) {
   const [label, cls] = KINDS[e.kind] || [e.kind, "k-muted"];
@@ -2515,7 +2517,7 @@ function eventDetail(e) {
     door ? ["Porta", `${can("stato") ? `<a href="#porte/${door.id}">${esc(door.name)}</a>` : esc(door.name)}${placeOf(door) ? ` <span class="muted">· ${esc(placeOf(door))}</span>` : ""}`] : e.door ? ["Porta", `<code>${esc(e.door)}</code>`] : null,
     e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
-    e.detail ? ["Dettaglio", esc(e.detail)] : null,
+    e.detail ? ["Dettaglio", `${esc(e.detail)}${DETAIL_HINTS[e.detail] ? ` <span class="muted">· ${esc(DETAIL_HINTS[e.detail])}</span>` : ""}`] : null,
     e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
     e.recovered ? ["Recuperato", "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(LOG_SOURCES[e.source] || e.source)] : null,

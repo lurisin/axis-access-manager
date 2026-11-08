@@ -15,7 +15,7 @@ from .backup_copy import error_reason
 from .config import Settings
 from .db import Database, now_iso
 from .events import Event, EventMonitor, door_of_topic, event_from_log
-from .rules import RuleError, check_validity, normalize_validity
+from .rules import RuleError, check_validity, normalize_validity, validity_state
 from .vapix import A1210Client, ControllerUnreachable, VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,6 +56,9 @@ DENIED_REASONS = {
     "AntipassbackViolation": "passaggio ripetuto (antipassback)",
     "Other": "negato dal controller",
 }
+VALIDITY_DETAILS = {"scaduta": DENIED_REASONS["CredentialExpired"], "futura": DENIED_REASONS["CredentialNotActive"]}
+# Tessera dell'app, attiva e valida, su una porta che la sua tipologia non apre
+NOT_ENABLED = "non abilitato"
 
 DOOR_ALARMS = {
     "DoorForcedOpen": "porta forzata",
@@ -1395,7 +1398,7 @@ class AccessService:
                     card=card["number"],
                     person_id=card["person_id"],
                     person_name=card["person_name"],
-                    detail="" if card["enabled"] else "tessera sospesa",
+                    detail=self._card_detail(card, event),
                     source="lettore",
                     raw=data,
                     door=door,
@@ -1430,13 +1433,20 @@ class AccessService:
                     )
                     self._unsaved_decision(key, row)
                 return
+            # Un consenso del controller resta un consenso, anche se la porta non è della tipologia
+            if granted:
+                detail = ""
+            elif card:
+                detail = self._card_detail(card, event, reason)
+            else:
+                detail = DENIED_REASONS.get(reason, reason)
             row = self.log_event(
                 ts=ts,
                 kind=kind,
                 card=card["number"] if card else number,
                 person_id=card["person_id"] if card else None,
                 person_name=card["person_name"] if card else self._holder_name(data),
-                detail="" if granted else DENIED_REASONS.get(reason, reason),
+                detail=detail,
                 source="controller",
                 raw=data,
                 door=door,
@@ -1497,6 +1507,38 @@ class AccessService:
             self.db.set_event_detail(row["id"], row["detail"] + mark)
             self._changed()
         return True
+
+    def _card_detail(self, card: dict, event: Event, reason: str = "") -> str:
+        """Dettaglio di una lettura o di un negato con una tessera dell'app, in quest'ordine: tessera sospesa, scaduta
+        o non ancora valida (all'ora dell'evento), porta che la sua tipologia non apre, poi il motivo del controller."""
+        if not card["enabled"] or reason == "CredentialNotEnabled":
+            return DENIED_REASONS["CredentialNotEnabled"]
+        if reason in ("CredentialExpired", "CredentialNotActive"):
+            return DENIED_REASONS[reason]
+        moment = event.timestamp if event.timestamp.tzinfo else event.timestamp.replace(tzinfo=UTC)
+        if validity := validity_state(card["valid_from"], card["valid_to"], moment):
+            return VALIDITY_DETAILS[validity]
+        if self._not_enabled(card, self._event_door(event)):
+            return NOT_ENABLED
+        return DENIED_REASONS.get(reason, reason)
+
+    def _not_enabled(self, card: dict, door: str) -> bool:
+        """Porta dell'app che la tipologia della persona non apre, secondo le sue righe nel database. Mai per una porta
+        non certa (evento senza punto di accesso o lettore conosciuto) o che l'app non gestisce, per chi non ha
+        tipologia né per un accesso personalizzato: lì le porte le decide il profilo scelto a mano sulla tessera."""
+        if not door:
+            return False
+        person = self.db.get_person(card["person_id"])
+        category = self.db.get_category(person["category_id"]) if person and person["category_id"] else None
+        if category is None or card["access_profile"] != category["group_token"]:
+            return False
+        # Import qui: coverage importa installation, che importa questo modulo
+        from .coverage import category_doors, places
+
+        layout = places(self.db)
+        if door not in {d["door_token"] for d in layout[0]}:
+            return False
+        return door not in category_doors(self.db, category["id"], layout)
 
     def _holder_name(self, data: dict) -> str:
         """Chi ha usato una tessera che l'app non ha più: l'A1210 manda il token dell'utente, non il nome.
@@ -1578,14 +1620,18 @@ class AccessService:
         return None
 
     def _door_of(self, event: Event) -> str:
-        """Porta dell'evento: dal topic, dai dati, dal punto di accesso o dal lettore; se no la porta principale."""
+        """Porta dell'evento: quella che indica l'evento, se no la porta principale."""
+        return self._event_door(event) or self.settings.door_token
+
+    def _event_door(self, event: Event) -> str:
+        """Porta indicata dall'evento: dal topic, dai dati, dal punto di accesso o dal lettore; vuota se non si sa."""
         token = door_of_topic(event.topic) or str(event.data.get("DoorToken") or "")
         if not token and event.data.get("AccessPointToken"):
             token = self.access_point_doors.get(str(event.data["AccessPointToken"]), "")
         if not token and event.data.get("IdPointToken"):
             # Le letture delle tessere portano solo il lettore
             token = self.idpoint_doors.get(str(event.data["IdPointToken"]), "")
-        return token or self.settings.door_token
+        return token
 
     def record_intercom(self, entity_id: str, name: str) -> dict:
         """Chiamata dal citofono (entità di Home Assistant)."""

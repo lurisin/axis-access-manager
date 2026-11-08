@@ -5,10 +5,10 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from collections.abc import Collection
 
+from . import coverage
 from .db import Database
-from .desired import door_schedules, profile_payload, profile_policies, schedule_payload
+from .desired import profile_payload, profile_policies, schedule_payload
 from .hardware import ALWAYS
 from .hardware import FACTORY_SCHEDULES as STANDARD_NAMES
 from .installation import InstallationService
@@ -548,20 +548,8 @@ class RulesService:
             "description": normalize_text(fields.get("description"), 200, "descrizione"),
         }
 
-    def _places(self, deleted_areas: Collection[int] = ()) -> tuple[list[dict], dict[int, int], dict[int, int]]:
-        """Porte del controller in uso, area di ogni porta e struttura di ogni area.
-        deleted_areas: come sarebbero dopo l'eliminazione di quelle aree (porte e controller restano senza)."""
-        installation = InstallationService(self.db)
-        controllers = {
-            c["id"]: {**c, "area_id": 0} if c["area_id"] in deleted_areas else c for c in self.db.list_controllers()
-        }
-        doors = [{**d, "area_id": 0} if d["area_id"] in deleted_areas else d for d in installation.doors()]
-        door_area = {d["id"]: installation.door_area(d, controllers) for d in doors}
-        area_site = {a["id"]: s["id"] for s in self.db.list_sites() for a in s["areas"] if a["id"] not in deleted_areas}
-        return doors, door_area, area_site
-
     def _check_access_rules(self, rows: list[dict] | None) -> list[dict]:
-        doors, _, area_site = self._places()
+        doors, _, area_site = coverage.places(self.db)
         targets = {
             "door": {d["id"] for d in doors},
             "area": set(area_site),
@@ -587,17 +575,12 @@ class RulesService:
             raise ServiceError("aggiungi almeno una riga: dove e quando entra chi ha questa tipologia")
         return rules
 
-    def _door_schedules(self, rules: list[dict], layout: tuple | None = None) -> dict[str, list[str]]:
-        """Porte coperte dalle righe, con le fasce di ognuna: area e struttura valgono per tutte le loro porte,
-        anche quelle aggiunte dopo. layout: il risultato di _places, se già letto."""
-        return door_schedules(rules, *(layout or self._places()))
-
     async def _build_profile(self, values: dict, rules: list[dict], base: dict | None, refresh: bool = False) -> dict:
         """Profilo della tipologia: una regola per ogni punto di accesso con lettore delle porte coperte.
         Le regole su porte che l'app non gestisce restano come sono.
         refresh: dopo una modifica a porte, aree o strutture le righe possono non coprire più nessuna porta
         dell'app: il profilo perde le sue regole su quelle porte (e si spegne se non gliene restano)."""
-        door_schedules = self._door_schedules(rules)
+        door_schedules = coverage.door_schedules(self.db, rules)
         points = await self.controller.list_access_points()
         owned = {r["access_point_token"] for r in self.db.all_controller_inputs() if r.get("access_point_token")}
         app_doors = {d["door_token"] for d in InstallationService(self.db).doors()}
@@ -677,8 +660,8 @@ class RulesService:
         # Porte e controller delle aree eliminate restano senza area: una porta con un'area sua passa a quella del
         # controller (ed entra nelle righe sulla sua area o struttura), le altre escono dalla struttura.
         # Nessuna tipologia deve aprire porte in più, né perderne, senza che lo si decida
-        before = self._places()
-        after = self._places(deleted_areas={place_id for kind, place_id in places if kind == "area"})
+        before = coverage.places(self.db)
+        after = coverage.places(self.db, deleted_areas={place_id for kind, place_id in places if kind == "area"})
         door_names = {d["door_token"]: d["name"] for d in before[0]}
         gaining: list[str] = []
         losing: list[str] = []
@@ -687,8 +670,8 @@ class RulesService:
         for category in categories:
             if not rules.get(category["id"]):
                 continue
-            old = self._door_schedules(rules[category["id"]], before)
-            new = self._door_schedules(rules[category["id"]], after)
+            old = coverage.door_schedules(self.db, rules[category["id"]], before)
+            new = coverage.door_schedules(self.db, rules[category["id"]], after)
             more = {door for door, schedules in new.items() if not set(schedules) <= set(old.get(door, []))}
             less = {door for door, schedules in old.items() if not set(schedules) <= set(new.get(door, []))}
             if more:
@@ -844,7 +827,7 @@ class RulesService:
                     await self.controller.set_access_profile(profile)
                 except (VapixError, ServiceError) as err:
                     raise ProfileNotWritten(str(err)) from err
-                if self._door_schedules(rules[category["id"]]):
+                if coverage.door_schedules(self.db, rules[category["id"]]):
                     detail = f"{category['name']}: porte di aree e strutture"
                 else:
                     detail = f"{category['name']}: le righe di accesso non comprendono più nessuna porta, accesso tolto"
