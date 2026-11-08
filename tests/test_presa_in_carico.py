@@ -1,15 +1,21 @@
 """Presa in carico in memoria: impianto come al banco → presa in carico → stato voluto → confronto senza righe, e i
 casi che il confronto deve mostrare (vedi presa_in_carico.py). Mai una scrittura sul controller."""
 
+import logging
+
 import pytest
+from fastapi.testclient import TestClient
 from test_backup import Plant
+from test_comparison import ADMIN
 from test_full_restore import bench_like
 from test_rules_service import OFFICE
 
 from app.compare import compare, read_strict
 from app.desired import build, load_conf
+from app.main import create_app
 from app.presa_in_carico import confronto, presa_in_carico
 from app.rules import schedule_ical
+from app.service import ServiceError
 
 
 def door_rule(plant, schedule="standard_always"):
@@ -261,6 +267,133 @@ async def test_old_groups_become_categories_in_creation_order(plant, controller,
     ]
     assert sempre["default"] is True
     assert await plant.rules.adopt_groups() == 0
+
+
+def external_profile(controller, token="lungo", **fields):
+    """Profilo fatto a mano sul sito Axis, sulla porta dell'app: di serie con una descrizione di 250 caratteri, che
+    l'app non accetta."""
+    policy = {"AccessPoint": "ap-in", "AuthorizationProfile": [], "Attribute": [], "Schedule": ["standard_always"]}
+    controller.profiles[token] = {
+        "token": token,
+        "Name": "Manutenzione",
+        "Description": "x" * 250,
+        "Enabled": True,
+        "Schedule": ["standard_always"],
+        "AccessPolicy": [policy],
+        **fields,
+    }
+
+
+async def test_adopt_groups_keeps_who_comes_before_a_profile_it_does_not_accept(plant, controller, db):
+    """Come la 0.27, che sistemava e salvava una persona alla volta in ordine di nome: un profilo esterno con una
+    descrizione di 250 caratteri ferma adopt_groups alla persona che lo usa. Anna, che viene prima, resta in Sempre nel
+    database; la modifica di Sempre riscrive profilo_sempre al suo posto, senza un profilo nuovo."""
+    db.set_setting("default_group", "profilo_sempre")
+    assert await plant.rules.adopt_groups() == 1
+    [sempre] = plant.rules.list_categories()
+    external_profile(controller)
+    # Tessere create da uno script e importate dalla sincronizzazione: persone senza tipologia
+    anna = await plant.access.create_person("Anna", "04aa", "admin", group="profilo_sempre")
+    zoe = await plant.access.create_person("Zoe", "04ee", "admin", group="lungo")
+    for person in (anna, zoe):
+        db.set_person_category(person["id"], 0)
+    calls, audit = list(controller.calls), db.list_audit()
+
+    with pytest.raises(ServiceError, match="descrizione oltre il limite di 200 caratteri"):
+        await plant.rules.adopt_groups()
+
+    assert [db.get_person(p["id"])["category_id"] for p in (anna, zoe)] == [sempre["id"], 0]
+    assert [c["name"] for c in plant.rules.list_categories()] == ["Sempre"]
+    # Come la 0.27: niente sul controller, e la riga nel registro delle modifiche solo quando tutto è sistemato
+    assert controller.calls == calls and db.list_audit() == audit
+    # Al giro dopo si ferma ancora su Zoe, senza toccare Anna
+    with pytest.raises(ServiceError, match="descrizione oltre il limite di 200 caratteri"):
+        await plant.rules.adopt_groups()
+    assert db.get_person(anna["id"])["category_id"] == sempre["id"]
+
+    controller.calls.clear()
+    rules = [door_rule(plant, "standard_office_hours")]
+    result = await plant.rules.save_category(sempre["id"], {"name": "Sempre", "rules": rules}, "admin")
+
+    assert result["token"] == "profilo_sempre"
+    assert controller.calls == [("set_access_profile", "profilo_sempre")]
+    assert controller.profiles["profilo_sempre"]["Schedule"] == ["standard_office_hours"]
+    assert db.get_person(anna["id"])["cards"][0]["access_profile"] == "profilo_sempre"
+
+
+@pytest.mark.parametrize(
+    ("fields", "error", "match", "born"),
+    [
+        ({}, ServiceError, "descrizione oltre il limite di 200 caratteri", []),
+        ({"Name": "   ", "Description": ""}, ServiceError, "manca il nome", []),
+        ({"Name": "N" * 150, "Description": ""}, ServiceError, "nome troppo lungo", []),
+        # Una regola che non si sa leggere: come nella 0.27 la tipologia di Zoe è già nata, senza righe
+        ({"Description": "", "AccessPolicy": ["illeggibile"]}, AttributeError, "no attribute 'get'", ["Manutenzione"]),
+    ],
+)
+async def test_adopt_groups_on_a_new_installation_saves_what_comes_before_the_error(
+    plant, controller, db, fields, error, match, born
+):
+    """Installazione nuova con le tessere già sul controller: Sempre nasce per Anna e resta nel database anche se
+    Zoe usa un profilo che l'app non accetta o non sa leggere. La tipologia predefinita viene dopo le persone: come
+    nella 0.27, non si arriva a sceglierla."""
+    db.set_setting("default_group", "profilo_sempre")
+    external_profile(controller, **fields)
+    anna = await plant.access.create_person("Anna", "04aa", "admin", group="profilo_sempre")
+    zoe = await plant.access.create_person("Zoe", "04ee", "admin", group="lungo")
+
+    with pytest.raises(error, match=match):
+        await plant.rules.adopt_groups()
+
+    categories = {c["name"]: c for c in plant.rules.list_categories()}
+    sempre = categories.pop("Sempre")
+    assert (sempre["group_token"], sempre["rules"]) == ("profilo_sempre", [door_rule(plant)])
+    assert [(c["name"], c["rules"]) for c in categories.values()] == [(name, []) for name in born]
+    assert [db.get_person(p["id"])["category_id"] for p in (anna, zoe)] == [sempre["id"], 0]
+    assert not db.get_setting("default_category")
+
+
+def test_adopt_groups_after_a_restart_like_0_27(settings, controller, tmp_path, monkeypatch, caplog):
+    """Impianto in servizio: uno script crea sul controller la tessera di Anna (profilo di Sempre) e quella di Zoe
+    (profilo con la descrizione lunga). Al riavvio la sincronizzazione le importa senza tipologia e la riparazione
+    dei gruppi non riesce su Zoe, ma Anna resta in Sempre: la modifica di Sempre riscrive profilo_sempre e Anna entra
+    solo in orario d'ufficio, come tutti quelli di Sempre."""
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    path = tmp_path / "riavvio.db"
+    with TestClient(create_app(settings, allow_any_client=True, controller=controller, db_path=path)) as client:
+        client.get("/api/me", headers=ADMIN)
+    external_profile(controller, Description="Profilo creato a mano per la ditta di manutenzione. " * 5)
+    for token, name, number, profile in (("s1", "Anna", "0a01", "profilo_sempre"), ("s2", "Zoe", "0a02", "lungo")):
+        controller.users[f"u_{token}"] = {"token": f"u_{token}", "Name": name, "Attribute": []}
+        controller.credentials[token] = {
+            "token": token,
+            "UserToken": f"u_{token}",
+            "Description": name,
+            "Enabled": True,
+            "IdData": [{"Name": "Card", "Value": number}],
+            "CredentialAccessProfile": [{"AccessProfile": profile, "ValidFrom": "", "ValidTo": ""}],
+            "ValidFrom": "",
+            "ValidTo": "",
+        }
+
+    with (
+        caplog.at_level(logging.WARNING, logger="app.main"),
+        TestClient(create_app(settings, allow_any_client=True, controller=controller, db_path=path)) as client,
+    ):
+        client.get("/api/me", headers=ADMIN)
+        assert "Riparazione all'avvio (gruppi) non riuscita, si riprova: descrizione oltre il limite" in caplog.text
+        [sempre] = client.get("/api/categories", headers=ADMIN).json()
+        persons = {p["name"]: p["category_id"] for p in client.app.state.db.list_persons()}
+        assert persons == {"Anna": sempre["id"], "Zoe": 0}
+        door = client.get("/api/installation", headers=ADMIN).json()["controllers"][0]["doors"][0]["id"]
+        controller.calls.clear()
+        rules = [{"target": "door", "target_id": door, "schedule": "standard_office_hours"}]
+        response = client.put(f"/api/categories/{sempre['id']}", json={"name": "Sempre", "rules": rules}, headers=ADMIN)
+
+    assert response.status_code == 200
+    assert controller.calls == [("set_access_profile", "profilo_sempre")]
+    assert controller.credentials["s1"]["CredentialAccessProfile"][0]["AccessProfile"] == "profilo_sempre"
+    assert controller.profiles["profilo_sempre"]["Schedule"] == ["standard_office_hours"]
 
 
 async def test_card_made_by_a_script_is_extra(plant, controller):

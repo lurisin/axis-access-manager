@@ -145,46 +145,60 @@ def _category(conf: dict, token: str, profiles: dict, points: dict, doors: dict)
     category = category_for(token, profile, categories)
     if "id" in category:
         return category
-    category = {**category, "id": _new_id(categories), "rules": rules_of(profile, points, doors) if profile else []}
+    category = {**category, "id": _new_id(categories), "rules": []}
     categories.append(category)
     # Nell'ordine del database (per nome, come COLLATE NOCASE): chi cerca dopo trova le tipologie come le troverebbe lì
     categories.sort(key=lambda c: _nocase(c["name"]))
+    if profile:
+        # Le righe dopo: come nella 0.27, una regola che non si sa leggere lascia la tipologia nata, senza righe
+        category["rules"] = rules_of(profile, points, doors)
     return category
 
 
-def adopt_groups(conf: dict, profiles: dict[str, dict], points: dict[str, str], doors: dict[str, int]):
+def adopt_groups(
+    conf: dict, profiles: dict[str, dict], points: dict[str, str], doors: dict[str, int]
+) -> tuple[dict, int, Exception | None]:
     """Dalle versioni con gruppi e tipologie separati, senza cambiare chi entra dove:
     - una tipologia senza gruppo prende quello predefinito, e le righe di accesso dal suo profilo;
     - chi non ha tipologia entra in quella del suo gruppo, creata con lo stesso nome se manca;
     - il gruppo predefinito diventa la tipologia predefinita.
-    conf: categories (con rules, nell'ordine per nome), persons (con cards), default_group, default_category;
-    profiles: i profili del controller per token; points: punto di accesso → porta; doors: porta dell'app → id.
-    Restituisce (conf cambiata, quante modifiche). Le tipologie nuove hanno un numero provvisorio negativo."""
+    conf: categories (con rules, nell'ordine per nome), persons (con cards, nell'ordine per nome), default_group,
+    default_category; profiles: i profili del controller per token; points: punto di accesso → porta; doors: porta
+    dell'app → id.
+    Restituisce (conf cambiata, quante modifiche, errore). Le tipologie nuove hanno un numero provvisorio negativo.
+    Come la 0.27, che salvava a ogni passo, un errore ferma tutto dove arriva e conf ha quello che è sistemato prima,
+    da salvare: errore è l'eccezione, None se tutto è sistemato. Per esempio un profilo con un nome o una
+    descrizione che l'app non accetta (ServiceError) ferma tutto alla persona (o alla tipologia predefinita) che lo
+    usa."""
     conf = copy.deepcopy(conf)
     default = conf.get("default_group") or ""
     fixed = 0
-    for category in conf["categories"]:
-        if not category["group_token"] and default:
-            category["group_token"] = default
-            fixed += 1
-    for category in conf["categories"]:
-        if not category["rules"] and category["group_token"] in profiles:
-            # Profilo solo su porte che l'app non gestisce: nessuna riga, e non è una modifica
-            if adopted := rules_of(profiles[category["group_token"]], points, doors):
-                category["rules"] = adopted
+    try:
+        for category in conf["categories"]:
+            if not category["group_token"] and default:
+                category["group_token"] = default
                 fixed += 1
-    for person in conf["persons"]:
-        if person["category_id"]:
-            continue
-        token = person["cards"][0]["access_profile"] if person["cards"] else default
-        if not token:
-            continue
-        person["category_id"] = _category(conf, token, profiles, points, doors)["id"]
-        fixed += 1
-    if not conf.get("default_category") and default:
-        conf["default_category"] = _category(conf, default, profiles, points, doors)["id"]
-        fixed += 1
-    return conf, fixed
+        for category in conf["categories"]:
+            if not category["rules"] and category["group_token"] in profiles:
+                # Profilo solo su porte che l'app non gestisce: nessuna riga, e non è una modifica
+                if adopted := rules_of(profiles[category["group_token"]], points, doors):
+                    category["rules"] = adopted
+                    fixed += 1
+        for person in conf["persons"]:
+            if person["category_id"]:
+                continue
+            token = person["cards"][0]["access_profile"] if person["cards"] else default
+            if not token:
+                continue
+            person["category_id"] = _category(conf, token, profiles, points, doors)["id"]
+            fixed += 1
+        if not conf.get("default_category") and default:
+            conf["default_category"] = _category(conf, default, profiles, points, doors)["id"]
+            fixed += 1
+    except Exception as err:  # noqa: BLE001 - chi chiama salva quello che è sistemato, poi la rilancia
+        # Nella 0.27 la persona (o la tipologia predefinita) a cui si ferma resta com'era: qui non è ancora cambiata
+        return conf, fixed, err
+    return conf, fixed, None
 
 
 # Ingressi fatti a mano
@@ -465,7 +479,10 @@ def _take_categories(conf: dict, controller_id: int, before: set[str], lists: di
     doors = {d["door_token"]: d["id"] for d in conf["doors"] if d["controller_id"] == controller_id}
     known = {c["id"] for c in conf["categories"]}
     fields = ("categories", "persons", "default_group", "default_category")
-    adopted, fixed = adopt_groups({key: conf.get(key) for key in fields}, profiles, points, doors)
+    adopted, fixed, error = adopt_groups({key: conf.get(key) for key in fields}, profiles, points, doors)
+    if error is not None:
+        # Meglio nessun confronto che un confronto a metà
+        raise error
     conf.update({key: adopted[key] for key in ("categories", "persons", "default_category")})
     if fixed:
         notes.append(_note("presa", "", "Gruppi", f"Gruppi delle versioni precedenti passati alle tipologie: {fixed}"))
