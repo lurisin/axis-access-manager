@@ -9,7 +9,7 @@ from datetime import datetime
 
 from .db import SOURCE_LABELS
 from .rules import RuleError, normalize_validity
-from .service import AccessService, ServiceError, normalize_card, normalize_name
+from .service import AccessService, ServiceError, normalize_card, normalize_name, plural
 from .vapix import VapixError
 
 EVENT_LABELS = {
@@ -280,6 +280,22 @@ def _changes(item: dict, person: dict, card: dict, group: str, category: dict | 
     return {key: (value, labels[key](value)) for key, value in changes.items()}
 
 
+def _access_label(access: dict, duration: dict | None, names: dict) -> str:
+    """Gruppo e validità di una tessera nuova; duration: la tipologia di cui vale la durata."""
+    group = access["access_profile"]
+    start, end = _local(access["valid_from"] or ""), _local(access["valid_to"] or "")
+    if start and end:
+        validity = f"valida dal {start} al {end}"
+    elif start or end:
+        validity = f"valida dal {start}" if start else f"valida al {end}"
+    else:
+        validity = "sempre valida"
+    if duration:
+        days = plural(duration["valid_days"], "giorno", "giorni")
+        validity += f" ({days}, durata della tipologia {duration['name']})"
+    return f"gruppo {names.get(group, group)}, {validity}"
+
+
 async def _update(service: AccessService, person: dict, card: dict, changes: dict, user: str) -> None:
     """Applica le modifiche a una persona: prima la sospensione della tessera card (se chiesta), poi ditta e note
     solo nell'add-on, gruppo e validità anche sul controller."""
@@ -305,6 +321,8 @@ async def _update(service: AccessService, person: dict, card: dict, changes: dic
             changes["valida_al"][0] if "valida_al" in changes else card.get("valid_to") or "",
             user,
             changes["tipologia"][0]["id"] if "tipologia" in changes else None,
+            # Letta senza tessere: se intanto ne ha avuta una la sua validità non si conosce, e non si toglie
+            with_validity=bool(card),
         )
 
 
@@ -371,8 +389,9 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
     """Controlla (apply=False) o esegue l'importazione.
 
     Le tessere nuove si aggiungono; per le persone già registrate si aggiornano gruppo, validità, ditta, note e
-    tipologia se nel file sono diversi, altrimenti la riga è saltata. Lo stato "sospesa" sospende la tessera,
-    "attiva" non riattiva una tessera sospesa. Una riga senza tessera registra una persona solo nell'app.
+    tipologia se nel file sono diversi, altrimenti la riga è saltata. La prima tessera di chi è registrato senza
+    tessere nasce con l'accesso che avrebbe per una persona nuova con la stessa riga. Lo stato "sospesa" sospende la
+    tessera, "attiva" non riattiva una tessera sospesa. Una riga senza tessera registra una persona solo nell'app.
     """
     names = {g["token"]: g["name"] for g in groups}
     # Persone già viste in una riga precedente (una persona ha una riga per tessera) → valori chiesti.
@@ -473,10 +492,29 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
             action = "tessera aggiunta" if adds else "nuova persona"
             if state == "sospesa":
                 action += ", sospesa" if adds else ", tessera sospesa"
+            # Prima tessera di una persona già registrata senza tessere: accesso e durata come per una persona nuova
+            # con la stessa riga, dalla tipologia della riga (se manca quella della persona) e da gruppo e date della
+            # riga. Non sono modifiche della persona da fare dopo con un'altra scrittura: la tessera nasce così
+            first = person is not None and not person["cards"]
+            first_access: dict = {}
+            if first:
+                changes = {key: value for key, value in changes.items() if key in ("ditta", "note", "tipologia")}
+                own = category or (service.db.get_category(person["category_id"]) if person["category_id"] else None)
+                duration = own if own and own["valid_days"] and not valid_to else None
+                first_access = {
+                    "group": group,
+                    "valid_from": valid_from,
+                    "valid_to": valid_to,
+                    "category_id": category["id"] if category else 0,
+                }
+                access = service._category_access(own, group, valid_from, valid_to)
             if apply:
                 # Una tessera «sospesa» si scrive già sospesa: non resta mai attiva sul controller
                 if person:
-                    await service.add_card(person["id"], number, user, enabled=state != "sospesa")
+                    await service.add_card(person["id"], number, user, enabled=state != "sospesa", **first_access)
+                    if first:
+                        # L'accesso che la tessera ha avuto davvero: la durata conta da quando è stata scritta
+                        access = service.db.card_by_number(number) or access
                 else:
                     saved = await service.create_person(
                         name,
@@ -491,8 +529,13 @@ async def import_persons(service: AccessService, text: str, groups: list[dict], 
                         enabled=state != "sospesa",
                     )
                     planned[saved["id"]] = wanted
-                if changes:
-                    await _update(service, person, card, changes, user)
+                # La tipologia della prima tessera è già cambiata insieme a lei: restano ditta e note
+                after = {key: value for key, value in changes.items() if not (first and key == "tipologia")}
+                if after:
+                    await _update(service, person, card, after, user)
+            if first:
+                # L'accesso della tessera nuova non è scritto nella riga: va detto, come lo avrà (o lo ha avuto)
+                action += "; " + _access_label(access, duration, names)
             if changes:
                 # La riga cambia anche la persona: si mostra come un aggiornamento
                 detail = "; ".join([action, *(label for _, label in changes.values())])

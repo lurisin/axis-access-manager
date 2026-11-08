@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -211,3 +211,145 @@ def test_events_csv_is_excel_friendly():
     text = events_csv([{"ts": "2026-10-25T08:00:00+00:00", "kind": "concesso", "person_name": "Anna", "card": "04aa"}])
     assert text.startswith("﻿Data e Ora;Evento;Persona")
     assert "Accesso Concesso;Anna;04aa" in text
+
+
+class _Clock(datetime):
+    """Ora ferma: la durata della tipologia conta da adesso, e due importazioni devono dare la stessa scadenza."""
+
+    @classmethod
+    def now(cls, tz=None):
+        moment = datetime(2026, 11, 7, 9, 30, tzinfo=UTC)
+        return moment.astimezone(tz) if tz else moment.astimezone().replace(tzinfo=None)
+
+
+FIRST_GROUPS = [
+    {"token": "tutte_porte", "name": "Tutte le Porte"},
+    {"token": "solo_ingresso", "name": "Solo Ingresso"},
+    {"token": "p2", "name": "Pulizie"},
+]
+
+
+@pytest.fixture
+def first_card(db, controller, settings, monkeypatch):
+    """Dipendenti (tutte le porte, senza scadenza) predefinita, Visitatori (solo ingresso, 1 giorno), Corsisti
+    (Pulizie, 30 giorni). Il gruppo predefinito è quello della tipologia predefinita, come dopo set_default_category."""
+    monkeypatch.setattr("app.service.datetime", _Clock)
+    for group in FIRST_GROUPS:
+        controller.profiles[group["token"]] = {"token": group["token"], "Name": group["name"], "AccessPolicy": []}
+    categories = {}
+    kinds = (("Dipendenti", "tutte_porte", 0), ("Visitatori", "solo_ingresso", 1), ("Corsisti", "p2", 30))
+    for name, token, days in kinds:
+        categories[name] = db.save_category(
+            None, {"name": name, "color": "blue", "group_token": token, "valid_days": days, "description": ""}
+        )
+    db.set_setting("default_category", str(categories["Dipendenti"]))
+    db.set_setting("default_group", "tutte_porte")
+    return AccessService(db, controller, settings), categories
+
+
+def _on_controller(controller, db, person_id: int) -> tuple:
+    [card] = db.get_person(person_id)["cards"]
+    credential = controller.credentials[card["axis_credential_token"]]
+    return (
+        (card["access_profile"], card["valid_from"], card["valid_to"]),
+        (credential["CredentialAccessProfile"][0]["AccessProfile"], credential["ValidFrom"], credential["ValidTo"]),
+    )
+
+
+@pytest.mark.parametrize(
+    "group, valid_to, category, profile, expiry, detail",
+    [
+        # Solo la scadenza: il gruppo resta quello della tipologia della persona, non il predefinito
+        ("", "31/12/2027", "Visitatori", "solo_ingresso", "2027-12-31T23:59:59", "gruppo Solo Ingresso, valida al "),
+        # Solo il gruppo: la durata della tipologia resta
+        ("Pulizie", "", "Visitatori", "p2", "2026-11-08T09:30:00Z", "gruppo Pulizie, valida dal "),
+        # Un'altra tipologia: il suo gruppo e la sua durata, e la persona passa a lei
+        ("", "", "Corsisti", "p2", "2026-12-07T09:30:00Z", "(30 giorni, durata della tipologia Corsisti)"),
+        # Niente nella riga: la tipologia della persona, non quella predefinita
+        ("", "", "", "solo_ingresso", "2026-11-08T09:30:00Z", "(1 giorno, durata della tipologia Visitatori)"),
+    ],
+)
+async def test_first_card_of_a_registered_person_is_like_a_new_person(
+    first_card, controller, db, group, valid_to, category, profile, expiry, detail
+):
+    """Esporta, scrivi tessera (e scadenza, gruppo o tipologia) nella riga di chi non ha tessere, reimporta: la tessera
+    nasce come per una persona nuova con la stessa riga, con una sola scrittura sul controller."""
+    service, categories = first_card
+    visitors = categories["Visitatori"]
+    rossi = await service.create_person("Ospite Rossi", "", "admin", company="Ditta", category_id=visitors)
+    names = {g["token"]: g["name"] for g in FIRST_GROUPS}
+    exported = persons_csv(db.list_persons(), names, {}, {i: n for n, i in categories.items()})
+    header, row = exported.lstrip("﻿").splitlines()[:2]
+    assert row == "Ospite Rossi;;;;;Ditta;;Visitatori;;"
+    cells = row.split(";")
+    cells[1], cells[2], cells[4], cells[7] = "04AA", group, valid_to, category
+    text = "\n".join([header, ";".join(cells)])
+
+    [preview] = (await import_persons(service, text, FIRST_GROUPS, "admin", apply=False))["righe"]
+    assert preview["dettaglio"].startswith("tessera aggiunta; ") and detail in preview["dettaglio"]
+    controller.calls.clear()
+    [applied] = (await import_persons(service, text, FIRST_GROUPS, "admin", apply=True))["righe"]
+    assert applied["esito"] != "errore" and detail in applied["dettaglio"]
+    assert applied["dettaglio"] == preview["dettaglio"]
+
+    # La stessa riga per una persona nuova (senza tipologia varrebbe la predefinita: si scrive quella di Rossi)
+    cells[0], cells[1], cells[7] = "Ospite Bianchi", "04BB", category or "Visitatori"
+    text = "\n".join([header, ";".join(cells)])
+    [new] = (await import_persons(service, text, FIRST_GROUPS, "admin", apply=True))["righe"]
+    assert new["esito"] == "ok"
+    bianchi = next(p for p in db.list_persons() if p["name"] == "Ospite Bianchi")
+
+    existing, created = _on_controller(controller, db, rossi["id"]), _on_controller(controller, db, bianchi["id"])
+    assert existing == created
+    assert existing[1][0] == profile and existing[1][2] == normalize_validity(expiry)
+    assert db.get_person(rossi["id"])["category_id"] == bianchi["category_id"]
+    token = db.get_person(rossi["id"])["cards"][0]["axis_credential_token"]
+    # Scritta una volta sola, già con il suo accesso: mai con il gruppo predefinito, neanche per un momento
+    assert [c for c in controller.calls if c == ("set_credential", token)] == [("set_credential", token)]
+    assert db.get_person(rossi["id"])["company"] == "Ditta"
+
+
+async def test_first_card_changes_the_category_and_the_company_together(first_card, controller, db):
+    service, categories = first_card
+    rossi = await service.create_person("Ospite Rossi", "", "admin", category_id=categories["Visitatori"])
+    text = "nome;tessera;ditta;tipologia\nOspite Rossi;04AA;Brillante;Corsisti"
+
+    [preview] = (await import_persons(service, text, FIRST_GROUPS, "admin", apply=False))["righe"]
+    assert preview["esito"] == "da aggiornare"
+    assert "; ditta — → Brillante" in preview["dettaglio"] and "; tipologia → Corsisti" in preview["dettaglio"]
+    assert db.get_person(rossi["id"])["category_id"] == categories["Visitatori"]
+    [row] = (await import_persons(service, text, FIRST_GROUPS, "admin", apply=True))["righe"]
+    assert row["esito"] == "aggiornata"
+    person = db.get_person(rossi["id"])
+    assert (person["category_id"], person["company"], person["cards"][0]["access_profile"]) == (
+        categories["Corsisti"],
+        "Brillante",
+        "p2",
+    )
+    actions = [a["action"] for a in db.list_audit()]
+    # Nessuna riscrittura dell'accesso dopo la tessera
+    assert "accesso modificato" not in actions and "tipologia cambiata" in actions
+
+
+async def test_row_without_card_read_before_a_card_arrives(first_card, controller, db, monkeypatch):
+    """Riga senza tessera con un'altra tipologia, letta quando la persona non aveva tessere: se intanto ne ha avuta
+    una (dalla pagina Da Registrare) la riga non le toglie la scadenza."""
+    service, categories = first_card
+    rossi = await service.create_person("Ospite Rossi", "", "admin", category_id=categories["Visitatori"])
+    before = db.get_person(rossi["id"])
+    [card] = (await service.add_card(rossi["id"], "04AA", "admin"))["cards"]
+    assert card["valid_to"]
+    # L'importazione legge la persona prima della tessera
+    stale = iter([before])
+    real = db.get_person
+    monkeypatch.setattr(db, "get_person", lambda person_id: next(stale, None) or real(person_id))
+    controller.calls.clear()
+
+    [row] = (await import_persons(service, "nome;tessera;tipologia\nOspite Rossi;;Corsisti", [], "admin", True))[
+        "righe"
+    ]
+
+    assert row["esito"] == "errore" and row["dettaglio"].startswith("Ospite Rossi ha ora 1 tessera")
+    [after] = real(rossi["id"])["cards"]
+    assert (after["valid_from"], after["valid_to"]) == (card["valid_from"], card["valid_to"])
+    assert real(rossi["id"])["category_id"] == categories["Visitatori"] and controller.calls == []

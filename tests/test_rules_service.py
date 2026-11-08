@@ -1,7 +1,7 @@
 import pytest
 
 from app.rules_service import ProfileNotWritten, RulesService
-from app.service import AccessService, ServiceError
+from app.service import AccessService, PersonChanged, ServiceError
 from app.vapix import VapixError
 
 OFFICE = [{"days": ["MO", "TU", "WE", "TH", "FR"], "start": "08:00", "end": "18:00"}]
@@ -281,6 +281,27 @@ async def test_categories_own_a_profile_built_from_doors_areas_and_sites(rules, 
         await rules.delete_category(clean["id"], "admin")
     await rules.delete_category(maint["id"], "admin")
     assert maint["token"] not in controller.profiles
+
+
+async def test_align_read_before_the_first_card_keeps_its_validity(rules, controller, db, monkeypatch):
+    """Allinea letta quando la persona non aveva tessere, tessera arrivata prima della scrittura: la tessera tiene la
+    durata della tipologia invece di restare senza scadenza."""
+    guest = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "profilo_sempre", "valid_days": 1, "description": ""}
+    )
+    person = await rules.access.create_person("Gina", "", "admin", category_id=guest)
+    before = db.get_person(person["id"])
+    [card] = (await rules.access.add_card(person["id"], "04aa", "admin"))["cards"]
+    stale, real = iter([before]), db.get_person
+    monkeypatch.setattr(db, "get_person", lambda person_id: next(stale, None) or real(person_id))
+    controller.calls.clear()
+
+    with pytest.raises(PersonChanged, match="Gina ha ora 1 tessera"):
+        await rules.align_person(person["id"], "admin")
+
+    [after] = real(person["id"])["cards"]
+    assert (after["valid_from"], after["valid_to"]) == (card["valid_from"], card["valid_to"]) != ("", "")
+    assert controller.calls == []
 
 
 async def test_groups_become_categories_without_changing_access(rules, controller, db):

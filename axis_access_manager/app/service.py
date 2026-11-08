@@ -112,6 +112,11 @@ class ServiceError(Exception):
     """Richiesta non valida o non eseguibile: il messaggio va mostrato all'utente."""
 
 
+class PersonChanged(ServiceError):
+    """La persona è cambiata dopo che la richiesta è stata preparata (un'altra scheda, un'importazione, la pagina Da
+    Registrare): niente è stato modificato, e va riletta prima di riprovare."""
+
+
 def normalize_card(value: str) -> str:
     number = re.sub(r"[\s:]", "", value or "")
     if not CARD_PATTERN.match(number):
@@ -712,26 +717,54 @@ class AccessService:
         except sqlite3.Error as err:
             _LOGGER.warning("Attività non salvata (%s: %s): %s", action, detail, err)
 
-    async def add_card(self, person_id: int, card: str, user: str, enabled: bool = True) -> dict:
-        """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»)."""
+    async def add_card(
+        self,
+        person_id: int,
+        card: str,
+        user: str,
+        enabled: bool = True,
+        *,
+        group: str = "",
+        valid_from: str = "",
+        valid_to: str = "",
+        category_id: int = 0,
+    ) -> dict:
+        """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»).
+
+        Gruppo, validità e tipologia (0: quella della persona) valgono per la prima tessera della persona, come per
+        una persona nuova con gli stessi valori (importazione): la tipologia decide gruppo e durata se non sono stati
+        scelti, e la persona passa alla tipologia scelta. Le tessere dopo la prima ereditano l'accesso di quelle che la
+        persona ha già: se nel frattempo ne ha avuta una, con valori scelti la tessera non si aggiunge."""
         number = normalize_card(card)
+        chosen = self._category(category_id)
         async with self.lock:
             person = self._person(person_id)
             self._check_card_free(number)
             if person["cards"]:
+                if group or valid_from or valid_to or chosen:
+                    # Prenderebbe l'accesso delle altre tessere, non quello chiesto: niente tessera
+                    raise PersonChanged(
+                        f"{person['name']} ha già {plural(len(person['cards']), 'tessera', 'tessere')}: la nuova ne "
+                        "prenderebbe l'accesso e non quello chiesto, riprova"
+                    )
                 # La nuova tessera eredita gruppo e validità di quelle che la persona ha già
                 first = person["cards"][0]
                 access = self._access(first.get("access_profile"), first.get("valid_from"), first.get("valid_to"))
             else:
-                # La prima: gruppo e durata della tipologia della persona, da adesso
-                category = self.db.get_category(person["category_id"]) if person["category_id"] else None
-                access = self._category_access(category)
+                # La prima: gruppo e durata della tipologia (scelta, altrimenti quella della persona), da adesso
+                category = chosen or (self.db.get_category(person["category_id"]) if person["category_id"] else None)
+                access = self._category_access(category, group, valid_from, valid_to)
+            moved = chosen is not None and chosen["id"] != person["category_id"]
             user_token, first_card = await self._user_for_card(person)
             credential_token = await self.controller.set_credential(
                 self._credential(user_token, person["name"], number, access, enabled)
             )
             try:
-                self.db.add_card(person_id, number, credential_token, enabled, access)
+                # Tutto o niente: la tipologia cambia insieme alla tessera che ne ha l'accesso
+                with self.db.batch():
+                    self.db.add_card(person_id, number, credential_token, enabled, access)
+                    if moved:
+                        self.db.set_person_category(person_id, chosen["id"])
             except sqlite3.Error as err:
                 # Come per una persona nuova: la tessera non resta attiva sul controller senza essere nell'app, e
                 # senza tessere neanche l'utente
@@ -740,6 +773,8 @@ class AccessService:
             self._changed()
             detail = f"{person['name']}, tessera {number}" + ("" if enabled else " sospesa")
             self._audit(user, "tessera aggiunta", detail)
+            if moved:
+                self._audit(user, "tipologia cambiata", f"{person['name']}: {chosen['name']}")
             return self.db.get_person(person_id)
 
     async def update_person(
@@ -790,17 +825,41 @@ class AccessService:
         valid_to: str,
         user: str,
         category_id: int | None = None,
+        with_validity: bool = True,
     ) -> dict:
-        """Gruppo e validità per tutte le tessere della persona; category_id None lascia la tipologia com'è."""
+        """Gruppo e validità per tutte le tessere della persona; category_id None lascia la tipologia com'è.
+
+        with_validity False: la richiesta non dice la validità (il modulo di una persona senza tessere). Se intanto la
+        persona ne ha avuta una non si cambia niente: le date vuote le toglierebbero la scadenza.
+
+        Senza tessere gruppo e validità non hanno dove stare: vale solo la tipologia, e la prima tessera ne prenderà
+        gruppo e durata."""
+        requested = (group or "").strip()
         category = self._category(category_id)
         if category and not group:
             group = category["group_token"]
         access = self._access(group, valid_from, valid_to)
         async with self.lock:
             person = self._person(person_id)
+            if person["cards"] and not with_validity:
+                # Scheda aperta quando non ne aveva: la tessera arrivata nel frattempo resterebbe senza scadenza
+                raise PersonChanged(
+                    f"{person['name']} ha ora {plural(len(person['cards']), 'tessera', 'tessere')}: salva di nuovo "
+                    "l'accesso dalla scheda aggiornata, con la validità"
+                )
             if not person["cards"] and (access["valid_from"] or access["valid_to"]):
                 # La validità sta sulle tessere: la prima prende la durata della tipologia
                 raise ServiceError("senza tessere la validità non si può salvare: aggiungi prima una tessera")
+            if not person["cards"] and requested:
+                # Anche il gruppo: la prima prende quello della tipologia (scelta o quella di adesso) o il predefinito.
+                # Un altro risulterebbe scelto in Attività senza essere salvato da nessuna parte
+                own = self.db.get_category(person["category_id"]) if person["category_id"] else None
+                target = category if category_id is not None else own
+                if requested != ((target["group_token"] if target else "") or self.default_group):
+                    raise ServiceError(
+                        "senza tessere il gruppo non si può salvare: la prima tessera prende quello della tipologia, "
+                        "aggiungi prima una tessera"
+                    )
             # Prima si leggono tutte le tessere presenti: se ne manca una non si cambia niente. Quelle già segnate
             # come non presenti prendono il nuovo accesso solo nell'app, e "Riscrivi" le riscrive con quello
             present = [card for card in person["cards"] if not card["missing_since"]]
@@ -834,6 +893,9 @@ class AccessService:
                 self.db.add_audit(
                     user, "tipologia cambiata", f"{person['name']}: {category['name'] if category else 'nessuna'}"
                 )
+            if not person["cards"]:
+                # Nessun accesso scritto da nessuna parte: in Attività solo la tipologia, se è cambiata
+                return self.db.get_person(person_id)
             detail = f"{person['name']}: {await self._profile_label(access['access_profile'])}"
             if access["valid_from"] and access["valid_to"]:
                 detail += f", valida dal {local_time(access['valid_from'])} al {local_time(access['valid_to'])}"
@@ -908,9 +970,16 @@ class AccessService:
             self._changed()
             return self.db.get_person(person["id"])
 
-    async def delete_person(self, person_id: int, user: str) -> None:
+    async def delete_person(self, person_id: int, user: str, cards: int | None = None) -> None:
+        """cards: quante tessere ha la persona per chi chiede di eliminarla (la conferma le conta); se ne ha un altro
+        numero non si elimina niente. None: tutte quelle che ha."""
         async with self.lock:
             person = self._person(person_id)
+            if cards is not None and len(person["cards"]) != cards:
+                # Per esempio «Non ha tessere» su una scheda vecchia, e intanto una tessera assegnata
+                have = len(person["cards"])
+                now = f"ha ora {plural(have, 'tessera', 'tessere')}" if have else "non ha più tessere"
+                raise PersonChanged(f"{person['name']} {now}: conferma l'eliminazione dalla scheda aggiornata")
             for card in person["cards"]:
                 if not card["missing_since"]:
                     await self.controller.remove_credential(card["axis_credential_token"])
@@ -918,7 +987,9 @@ class AccessService:
             await self._remove_axis_user(person)
             self.db.delete_person(person_id)
             numbers = ", ".join(card["number"] for card in person["cards"])
-            self.db.add_audit(user, "persona eliminata", f"{person['name']} ({numbers})")
+            detail = f"{person['name']} ({numbers})" if numbers else f"{person['name']}, senza tessere"
+            # Con il disco pieno la persona è già eliminata: non risulta un errore
+            self._audit(user, "persona eliminata", detail)
             self._changed()
 
     # Ripristino da backup

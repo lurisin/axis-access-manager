@@ -84,6 +84,42 @@ def test_person_without_card_through_api(client, controller):
     assert [c["number"] for c in person["cards"]] == ["04aa"] and person["axis_user_token"] in controller.users
 
 
+def test_sheet_opened_without_cards_does_not_change_a_card_added_meanwhile(client, controller):
+    """Scheda aperta quando la persona non aveva tessere, tessera assegnata intanto da un'altra scheda: il modulo
+    «senza tessere» (solo la tipologia) non le toglie la scadenza, Elimina Persona («Non ha tessere») non la toglie."""
+    db = client.app.state.db
+    guest = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "profilo_sempre", "valid_days": 1, "description": ""}
+    )
+    person = client.post("/api/persons", json={"name": "Gina", "category_id": guest}).json()
+    [card] = client.post(f"/api/persons/{person['id']}/cards", json={"card": "04aa55"}).json()["cards"]
+    assert card["valid_from"] and card["valid_to"]
+    credential = controller.credentials[card["axis_credential_token"]]
+    written = (credential["ValidFrom"], credential["ValidTo"])
+    controller.calls.clear()
+
+    # Quello che manda la scheda vecchia: la tipologia, senza la validità
+    response = client.put(f"/api/persons/{person['id']}/access", json={"category_id": guest})
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Gina ha ora 1 tessera: salva di nuovo l'accesso dalla scheda aggiornata, con la validità"
+    )
+    response = client.delete(f"/api/persons/{person['id']}", params={"cards": 0})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Gina ha ora 1 tessera: conferma l'eliminazione dalla scheda aggiornata"
+    [card] = client.get(f"/api/persons/{person['id']}").json()["cards"]
+    assert (card["valid_from"], card["valid_to"]) == written
+    credential = controller.credentials[card["axis_credential_token"]]
+    assert (credential["ValidFrom"], credential["ValidTo"]) == written and controller.calls == []
+
+    # Dalla scheda aggiornata: la validità si manda sempre, anche vuota (senza scadenza, scelto)
+    body = {"category_id": guest, "valid_from": "", "valid_to": ""}
+    assert client.put(f"/api/persons/{person['id']}/access", json=body).status_code == 200
+    assert controller.credentials[card["axis_credential_token"]]["ValidTo"] == ""
+    assert client.delete(f"/api/persons/{person['id']}", params={"cards": 1}).json() == {"ok": True}
+    assert controller.credentials == {}
+
+
 def test_controller_test_reports_serial_and_certificate(client, controller):
     connection = {"host": "a1210.local", "username": "root", "password": "x"}
     response = client.post("/api/controllers/test", json=connection)
@@ -230,7 +266,10 @@ def test_rules_and_dashboard_endpoints(client):
     ).json()["token"]
     group = client.post("/api/groups", json={"name": "Dipendenti", "schedule": schedule}).json()["token"]
     person = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": group}).json()
-    assert client.put(f"/api/persons/{person['id']}/access", json={"group": "profilo_sempre"}).status_code == 200
+    access = {"group": "profilo_sempre", "valid_from": "", "valid_to": ""}
+    assert client.put(f"/api/persons/{person['id']}/access", json=access).status_code == 200
+    # Senza la validità non vuol dire «senza scadenza»: chi ha tessere la manda sempre
+    assert client.put(f"/api/persons/{person['id']}/access", json={"group": "profilo_sempre"}).status_code == 409
     assert client.post("/api/holidays/italia", json={"year": 2026}).status_code == 200
     assert len(client.get("/api/holidays").json()) == 13
 
