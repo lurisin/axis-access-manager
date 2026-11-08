@@ -8,7 +8,11 @@ import logging
 from collections.abc import Collection
 
 from .db import Database
+from .desired import door_schedules, profile_payload, profile_policies, schedule_payload
+from .hardware import ALWAYS
+from .hardware import FACTORY_SCHEDULES as STANDARD_NAMES
 from .installation import InstallationService
+from .presa_in_carico import COLORS, adopt_groups
 from .programming import REX_PROFILE_NAME, REX_ROLES, is_rex_profile
 from .rules import (
     DAYS,
@@ -17,29 +21,18 @@ from .rules import (
     RuleError,
     describe_rules,
     holiday_label,
-    holidays_ical,
     italian_holidays,
     normalize_holiday,
     normalize_rules,
     parse_schedule_ical,
-    schedule_ical,
 )
 from .service import AccessService, ServiceError, normalize_name, normalize_text, plural
 from .vapix import VapixError
 
 _LOGGER = logging.getLogger(__name__)
 
-STANDARD_NAMES = {
-    "standard_always": "Sempre",
-    "standard_office_hours": "Orario d'Ufficio",
-    "standard_after_hours": "Fuori Orario",
-    "standard_weekends": "Fine Settimana",
-}
-
-ALWAYS = "standard_always"
 # Sempre fa da fascia del profilo quando le porte hanno fasce diverse: deve lasciar passare sempre
 ALWAYS_RULES = [{"days": list(DAYS), "start": "00:00", "end": "24:00"}]
-COLORS = ["blue", "green", "orange", "red", "purple", "teal", "pink", "gray"]
 # Profili lasciati da una tipologia (+ id) con persone ancora da spostare: si riprende al salvataggio successivo
 MOVING_PREFIX = "category_moving:"
 # Il 4 ottobre (festa nazionale dal 2026) si aggiunge una volta sola a chi aveva già le festività nazionali
@@ -158,14 +151,7 @@ class RulesService:
             return []
 
     def _schedule_body(self, token: str, name: str, description: str, rules: list[dict], holidays: bool) -> dict:
-        return {
-            "token": token,
-            "Name": name,
-            "Description": description,
-            "ScheduleDefinition": schedule_ical(rules),
-            "ExceptionScheduleDefinition": holidays_ical(self.db.list_holidays()) if holidays else None,
-            "Attribute": [],
-        }
+        return schedule_payload(token, name, description, rules, holidays, self.db.list_holidays() if holidays else [])
 
     @staticmethod
     def _check_rules(rules: list[dict]) -> list[dict]:
@@ -604,17 +590,7 @@ class RulesService:
     def _door_schedules(self, rules: list[dict], layout: tuple | None = None) -> dict[str, list[str]]:
         """Porte coperte dalle righe, con le fasce di ognuna: area e struttura valgono per tutte le loro porte,
         anche quelle aggiunte dopo. layout: il risultato di _places, se già letto."""
-        doors, door_area, area_site = layout or self._places()
-        result: dict[str, list[str]] = {}
-        for door in doors:
-            area = door_area.get(door["id"], 0)
-            places = {("door", door["id"]), ("area", area), ("site", area_site.get(area, 0))}
-            for rule in rules:
-                if (rule["target"], rule["target_id"]) in places:
-                    schedules = result.setdefault(door["door_token"], [])
-                    if rule["schedule"] not in schedules:
-                        schedules.append(rule["schedule"])
-        return result
+        return door_schedules(rules, *(layout or self._places()))
 
     async def _build_profile(self, values: dict, rules: list[dict], base: dict | None, refresh: bool = False) -> dict:
         """Profilo della tipologia: una regola per ogni punto di accesso con lettore delle porte coperte.
@@ -631,34 +607,10 @@ class RulesService:
             for policy in (base or {}).get("AccessPolicy") or []
             if policy.get("AccessPoint") in point_door and point_door[policy.get("AccessPoint")] not in app_doors
         ]
-        for point in points:
-            schedules = door_schedules.get(point.get("Entity"))
-            # Pulsanti e relè degli ingressi aprono senza tessera: non servono regole
-            if not schedules or point.get("token") in owned or "REXOnly" in (point.get("AuthenticationProfile") or []):
-                continue
-            policy = {"AccessPoint": point["token"], "AuthorizationProfile": [], "Attribute": []}
-            policies.append({**policy, "Schedule": list(schedules)})
+        policies += profile_policies(door_schedules, points, owned)
         if not refresh and not any(point_door.get(p["AccessPoint"]) in app_doors for p in policies):
             raise ServiceError("nelle porte scelte non c'è nessun lettore programmato sul controller")
-        used = {t for p in policies for t in p["Schedule"]}
-        profile = copy.deepcopy(base) if base else {}
-        profile.setdefault("token", "")
-        profile.update(
-            {
-                "Name": values["name"],
-                "Description": values["description"] or f"Tipologia {values['name']} (Axis Access Manager)",
-                # Senza nessuna regola non deve aprire niente
-                "Enabled": bool(policies),
-                "ValidFrom": profile.get("ValidFrom") or "",
-                "ValidTo": profile.get("ValidTo") or "",
-                "AuthenticationProfile": profile.get("AuthenticationProfile") or [],
-                "Attribute": profile.get("Attribute") or [],
-                # L'A1210 valuta anche la fascia del profilo: con fasce diverse per porta deve lasciar passare sempre
-                "Schedule": [next(iter(used))] if len(used) == 1 else [ALWAYS],
-                "AccessPolicy": policies,
-            }
-        )
-        return profile
+        return profile_payload(values, policies, base)
 
     def _profile_shared(self, token: str, category_id: int | None) -> bool:
         """Profilo usato anche da altre tipologie o da tessere di persone di altre tipologie."""
@@ -902,79 +854,40 @@ class RulesService:
         return changed
 
     async def adopt_groups(self) -> int:
-        """Dalle versioni con gruppi e tipologie separati, senza cambiare chi entra dove:
-        - una tipologia senza gruppo prende quello predefinito, e le righe di accesso dal suo profilo;
-        - chi non ha tipologia entra in quella del suo gruppo, creata con lo stesso nome se manca;
-        - il gruppo predefinito diventa la tipologia predefinita.
-        Restituisce quante persone o tipologie ha sistemato."""
-        default = self.access.default_group
+        """Dalle versioni con gruppi e tipologie separati, senza cambiare chi entra dove (vedi
+        presa_in_carico.adopt_groups). Restituisce quante persone o tipologie ha sistemato."""
         profiles = {p.get("token"): p for p in await self.controller.list_access_profiles()}
         points = {p.get("token"): p.get("Entity") for p in await self.controller.list_access_points()}
-        fixed = 0
-        for category in self.db.list_categories():
-            if not category["group_token"] and default:
-                self.db.save_category(category["id"], {**category, "group_token": default})
-                fixed += 1
-        rules = self.db.all_category_rules()
-        for category in self.db.list_categories():
-            if category["id"] not in rules and category["group_token"] in profiles:
-                # Profilo solo su porte che l'app non gestisce: nessuna riga, e non è una modifica
-                if adopted := self._rules_of(profiles[category["group_token"]], points):
-                    self.db.set_category_rules(category["id"], adopted)
-                    fixed += 1
-        for person in self.db.list_persons():
-            if person["category_id"]:
-                continue
-            token = person["cards"][0]["access_profile"] if person["cards"] else default
-            if not token:
-                continue
-            category = self._category_for(token, profiles, points)
-            self.db.set_person_category(person["id"], category["id"])
-            fixed += 1
-        if not self.default_category and default:
-            category = self._category_for(default, profiles, points)
-            self.db.set_setting("default_category", str(category["id"]))
-            fixed += 1
+        conf = {
+            "categories": [{**c, "rules": self.db.category_rules(c["id"])} for c in self.db.list_categories()],
+            "persons": self.db.list_persons(),
+            "default_group": self.access.default_group,
+            "default_category": self.default_category,
+        }
+        doors = {d["door_token"]: d["id"] for d in InstallationService(self.db).doors()}
+        adopted, fixed = adopt_groups(conf, profiles, points, doors)
+        before = {c["id"]: c for c in conf["categories"]}
+        # Le tipologie nuove nell'ordine in cui sono nate (numeri provvisori -1, -2...): il database dà i numeri veri
+        ids: dict[int, int] = {}
+        for category in sorted((c for c in adopted["categories"] if c["id"] not in before), key=lambda c: -c["id"]):
+            ids[category["id"]] = self.db.save_category(None, category)
+            self.db.set_category_rules(ids[category["id"]], category["rules"])
+        for category in adopted["categories"]:
+            old = before.get(category["id"])
+            if old is not None and category["group_token"] != old["group_token"]:
+                self.db.save_category(category["id"], category)
+            if old is not None and category["rules"] != old["rules"]:
+                self.db.set_category_rules(category["id"], category["rules"])
+        persons = {p["id"]: p for p in conf["persons"]}
+        for person in adopted["persons"]:
+            if person["category_id"] != persons[person["id"]]["category_id"]:
+                self.db.set_person_category(person["id"], ids.get(person["category_id"], person["category_id"]))
+        if adopted["default_category"] != conf["default_category"]:
+            category_id = adopted["default_category"]
+            self.db.set_setting("default_category", str(ids.get(category_id, category_id)))
         if fixed:
             self.db.add_audit("sistema", "gruppi passati alle tipologie", plural(fixed, "modifica", "modifiche"))
         return fixed
-
-    def _category_for(self, token: str, profiles: dict[str, dict], points: dict[str, str]) -> dict:
-        """Tipologia che usa il profilo, creata con il nome del gruppo se non c'è."""
-        profile = profiles.get(token) or {}
-        name = normalize_name(profile.get("Name") or token)[:40]
-        # Si cerca la tipologia nata da quel gruppo: un'altra con lo stesso profilo dice chi è un'altra persona
-        names = {name.lower(), f"{name[:33]} (gruppo)".lower()}
-        found = next(
-            (c for c in self.db.list_categories() if c["group_token"] == token and c["name"].lower() in names), None
-        )
-        if found:
-            return found
-        if self.db.category_by_name(name):
-            name = f"{name[:33]} (gruppo)"
-        values = {
-            "name": name,
-            "color": COLORS[len(self.db.list_categories()) % len(COLORS)],
-            "group_token": token,
-            "valid_days": 0,
-            "description": normalize_text(profile.get("Description"), 200, "descrizione"),
-        }
-        category_id = self.db.save_category(None, values)
-        if profile:
-            self.db.set_category_rules(category_id, self._rules_of(profile, points))
-        return self.db.get_category(category_id)
-
-    def _rules_of(self, profile: dict, points: dict[str, str]) -> list[dict]:
-        """Righe di accesso lette da un profilo esistente: una per porta dell'app, con la sua fascia."""
-        doors = {d["door_token"]: d["id"] for d in InstallationService(self.db).doors()}
-        rules: list[dict] = []
-        for policy in profile.get("AccessPolicy") or []:
-            door = doors.get(points.get(policy.get("AccessPoint"), ""))
-            schedule = next(iter(policy.get("Schedule") or profile.get("Schedule") or []), "")
-            rule = {"target": "door", "target_id": door, "schedule": schedule}
-            if door and schedule and rule not in rules:
-                rules.append(rule)
-        return rules
 
 
 def _policy_sig(profile: dict) -> tuple:

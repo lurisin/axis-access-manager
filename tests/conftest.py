@@ -14,6 +14,15 @@ from app.vapix import ControllerUnreachable, VapixError
 
 # Comandi alle porte: non sono scritture della configurazione e non sono letture
 DOOR_COMMANDS = ("access_door", "lock_door")
+# Elenchi che il client vero legge sempre strict: una risposta senza la chiave dell'elenco è un errore
+STRICT_LISTS = (
+    "list_credentials",
+    "list_access_profiles",
+    "list_access_controllers",
+    "list_schedules",
+    "list_doors",
+    "list_idpoints",
+)
 
 
 def refused(code: str) -> VapixError:
@@ -46,6 +55,12 @@ def _vapix(method):
                 else:
                     self._refusals[name] = (fault, times - 1)
             raise vapix._refused("la richiesta", fault)
+        if name in self.keyless:
+            # Risposta 200 senza la chiave dell'elenco: la lettura strict del client la rifiuta, l'altra la legge vuota
+            if kwargs.get("strict") or name in STRICT_LISTS:
+                raise VapixError("risposta del controller non riconosciuta")
+            self.reads.append((name, *copy.deepcopy(args)))
+            return ([], []) if name == "list_io" else []
         result = await method(self, *args, **kwargs)
         if write and self._writes_left is not None:
             self._writes_left -= 1
@@ -95,6 +110,9 @@ class FakeController:
     - factory(): quello che resta dopo un reset di fabbrica (factory_reset). T12, da fare: l'elenco esatto degli
       oggetti di serie lo dà la prova.
     - list_idpoint_configurations non supportato: variante prudente finché T11 non dice come risponde l'A1210.
+    - keyless: metodi list_* che rispondono senza la chiave dell'elenco, come potrebbe fare l'A1210 con un elenco
+      vuoto (T11, da fare). Con strict (e per gli elenchi che il client legge sempre strict) è un errore, senza è un
+      elenco vuoto, come nel client vero.
     Guasti, senza prova al banco perché sono quelli del collegamento:
     - down: il controller spento davvero, ogni metodo solleva ControllerUnreachable (anche le letture);
       offline fa fallire solo device_info, come prima.
@@ -116,6 +134,7 @@ class FakeController:
         self._refusals: dict[str, tuple[str, int | None]] = {}
         self._lost: dict[str, int] = {}
         self._writes_left: int | None = None
+        self.keyless: set[str] = set()
         self.log_events: list = []
         self.door = "Locked"
         # Come al collaudo: senza contatto porta (None) GetDoorState non dà né DoorPhysicalState né Alarm
@@ -398,7 +417,7 @@ class FakeController:
         self.doors[token] = {**copy.deepcopy(door), "token": token}
         return token
 
-    async def list_door_configurations(self):
+    async def list_door_configurations(self, *, strict=False):
         return [copy.deepcopy(c) for c in self.door_configs.values()]
 
     async def set_door_configuration(self, configuration):
@@ -414,7 +433,7 @@ class FakeController:
         self.doors.pop(token, None)
         self.door_configs.pop(token, None)
 
-    async def list_authentication_profiles(self):
+    async def list_authentication_profiles(self, *, strict=False):
         return [copy.deepcopy(p) for p in self.authentication_profiles.values()]
 
     async def set_authentication_profile(self, profile):
@@ -431,7 +450,7 @@ class FakeController:
         self.calls.append(("set_idpoint", idpoint["token"]))
         self.idpoints[idpoint["token"]] = copy.deepcopy(idpoint)
 
-    async def list_idpoint_configurations(self):
+    async def list_idpoint_configurations(self, *, strict=False):
         raise VapixError("non supportato")
 
     async def create_idpoint(self, idpoint):
@@ -490,7 +509,7 @@ class FakeController:
         """Punti di accesso per cui il controller decide."""
         return {t for c in self.access_controllers.values() for t in c["AccessPoint"]}
 
-    async def list_io(self):
+    async def list_io(self, *, strict=False):
         """Come risponde l'A1210 del banco: assegnati solo lettore e relè."""
         info = [
             {"IoName": "Ser0hd", "IoMode": ["rs485hd"], "PinInfo": [{"Name": "Reader 1:3", "Description": "A"}]},
@@ -534,7 +553,7 @@ class FakeController:
         self.access_points = [a for a in self.access_points if a["token"] != access_point["token"]]
         self.access_points.append(copy.deepcopy(access_point))
 
-    async def list_users(self):
+    async def list_users(self, *, strict=False):
         return [copy.deepcopy(u) for u in self.users.values()]
 
     async def get_users(self, tokens):
@@ -603,7 +622,7 @@ class FakeController:
         self.calls.append(("lock_door", door_token))
         self.door = "Locked"
 
-    async def list_access_points(self):
+    async def list_access_points(self, *, strict=False):
         return [copy.deepcopy(p) for p in self.access_points]
 
     async def list_access_profiles(self):

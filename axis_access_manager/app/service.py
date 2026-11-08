@@ -25,6 +25,8 @@ MAX_CLOCK_CORRECTION = 24 * 3600
 GRANT_LOG_TAIL = 30
 
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
+# Descrizione degli utenti che l'app crea sul controller
+USER_DESCRIPTION = "Registrato da Axis Access Manager"
 
 # Ruoli degli ingressi del controller che aprono la porta: tipo di apertura per il registro
 INPUT_SOURCES = {"rex": "Pulsante Uscita", "intercom": "Relè Citofono"}
@@ -194,6 +196,33 @@ def card_of_credential(credential: dict) -> str:
         if item.get("Name") == "Card":
             return str(item.get("Value") or "")
     return ""
+
+
+def apply_access(credential: dict, access: dict) -> dict:
+    """Gruppo e validità ({access_profile, valid_from, valid_to}) nella tessera Axis."""
+    credential["ValidFrom"] = access["valid_from"]
+    credential["ValidTo"] = access["valid_to"]
+    credential["CredentialAccessProfile"] = [
+        {"AccessProfile": access["access_profile"], "ValidFrom": "", "ValidTo": ""}
+    ]
+    return credential
+
+
+def new_credential(user_token: str, name: str, number: str, access: dict, enabled: bool = True) -> dict:
+    """Tessera Axis completa, senza token: utente, nome della persona, stato, numero, gruppo e validità."""
+    return apply_access(
+        {
+            "token": "",
+            "UserToken": user_token,
+            "Description": name,
+            "Enabled": bool(enabled),
+            "Status": "Enabled" if enabled else "Disabled",
+            "IdData": [{"Name": "Card", "Value": number}],
+            "Attribute": [],
+            "AuthenticationProfile": [],
+        },
+        access,
+    )
 
 
 class AccessService:
@@ -580,27 +609,10 @@ class AccessService:
 
     @staticmethod
     def _apply_access(credential: dict, access: dict) -> dict:
-        credential["ValidFrom"] = access["valid_from"]
-        credential["ValidTo"] = access["valid_to"]
-        credential["CredentialAccessProfile"] = [
-            {"AccessProfile": access["access_profile"], "ValidFrom": "", "ValidTo": ""}
-        ]
-        return credential
+        return apply_access(credential, access)
 
     def _credential(self, user_token: str, name: str, number: str, access: dict, enabled: bool = True) -> dict:
-        return self._apply_access(
-            {
-                "token": "",
-                "UserToken": user_token,
-                "Description": name,
-                "Enabled": bool(enabled),
-                "Status": "Enabled" if enabled else "Disabled",
-                "IdData": [{"Name": "Card", "Value": number}],
-                "Attribute": [],
-                "AuthenticationProfile": [],
-            },
-            access,
-        )
+        return new_credential(user_token, name, number, access, enabled)
 
     def _category_access(
         self, category: dict | None, group: str = "", valid_from: str = "", valid_to: str = ""
@@ -650,7 +662,7 @@ class AccessService:
             self._check_card_free(number)
             user_token = await self._new_user_token(name)
             await self.controller.set_user(
-                {"token": user_token, "Name": name, "Description": "Registrato da Axis Access Manager", "Attribute": []}
+                {"token": user_token, "Name": name, "Description": USER_DESCRIPTION, "Attribute": []}
             )
             try:
                 credential_token = await self.controller.set_credential(
@@ -1087,7 +1099,7 @@ class AccessService:
             {
                 "token": token,
                 "Name": person["name"],
-                "Description": "Registrato da Axis Access Manager",
+                "Description": USER_DESCRIPTION,
                 "Attribute": [],
             }
         )
@@ -1139,7 +1151,7 @@ class AccessService:
                 self._check_card_free(card["number"])
             user_token = await self._new_user_token(name)
             await self.controller.set_user(
-                {"token": user_token, "Name": name, "Description": "Registrato da Axis Access Manager", "Attribute": []}
+                {"token": user_token, "Name": name, "Description": USER_DESCRIPTION, "Attribute": []}
             )
             written: list[tuple[dict, str, dict]] = []
             try:

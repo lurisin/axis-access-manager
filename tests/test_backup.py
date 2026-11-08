@@ -40,7 +40,7 @@ class Plant:
         self.programming = ProgrammingService(db, controller, self.controller_id, self.access.lock)
         self.backups = BackupService(db, root, "0.19.0")
 
-        async def reader_configurations():
+        async def reader_configurations(*, strict=False):
             return []
 
         # Come l'A1210 del banco, che le configurazioni dei lettori le restituisce
