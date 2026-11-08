@@ -655,9 +655,9 @@ def _text(value) -> str:
 def _verbatim(value) -> str:
     """Calendario che il confronto non sa interpretare: si confronta il testo (_text), quindi è uguale solo a un testo
     uguale. Un testo che non comincia come un calendario prende «testo: » davanti, così non si confonde mai con un
-    significato («lun-ven 08:00–18:00»)."""
+    significato («lun-ven 08:00–18:00»). Solo spazi e righe vuote: come nessun calendario."""
     text = _text(value)
-    return text if text.upper().startswith("BEGIN:VCALENDAR") else f"testo: {text}"
+    return text if not text or text.upper().startswith("BEGIN:VCALENDAR") else f"testo: {text}"
 
 
 # Proprietà del calendario (fuori dagli eventi) che non cambiano quando vale una fascia, con il valore se conta

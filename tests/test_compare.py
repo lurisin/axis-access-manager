@@ -333,6 +333,8 @@ def test_schedules_are_compared_by_meaning():
     holidays = [{"day": "2026-12-25", "yearly": True}, {"day": "2026-04-06", "yearly": False}]
     assert exceptions_meaning(holidays_ical(holidays)) == "06/04/2026; 25/12/2026 ogni anno"
     assert exceptions_meaning(holidays_ical(holidays[::-1])) == exceptions_meaning(holidays_ical(holidays))
+    # Solo spazi e righe vuote: come nessun calendario
+    assert schedule_meaning(" \r\n") == exceptions_meaning("\r\n\r\n") == ""
 
 
 # Fasce per significato: uguale solo ciò che vale allo stesso modo
