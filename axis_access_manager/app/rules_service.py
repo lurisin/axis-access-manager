@@ -838,7 +838,10 @@ class RulesService:
 
     async def adopt_groups(self) -> int:
         """Dalle versioni con gruppi e tipologie separati, senza cambiare chi entra dove (vedi
-        presa_in_carico.adopt_groups). Restituisce quante persone o tipologie ha sistemato."""
+        presa_in_carico.adopt_groups). Restituisce quante persone o tipologie ha sistemato.
+        Come la 0.27, che salvava a ogni passo: un profilo con un nome o una descrizione che l'app non accetta ferma
+        tutto alla persona che lo usa (in ordine di nome); quello che è sistemato prima resta salvato e poi arriva il
+        ServiceError, senza la riga nel registro delle modifiche."""
         profiles = {p.get("token"): p for p in await self.controller.list_access_profiles()}
         points = {p.get("token"): p.get("Entity") for p in await self.controller.list_access_points()}
         conf = {
@@ -848,7 +851,7 @@ class RulesService:
             "default_category": self.default_category,
         }
         doors = {d["door_token"]: d["id"] for d in InstallationService(self.db).doors()}
-        adopted, fixed = adopt_groups(conf, profiles, points, doors)
+        adopted, fixed, error = adopt_groups(conf, profiles, points, doors)
         before = {c["id"]: c for c in conf["categories"]}
         # Le tipologie nuove nell'ordine in cui sono nate (numeri provvisori -1, -2...): il database dà i numeri veri
         ids: dict[int, int] = {}
@@ -868,6 +871,8 @@ class RulesService:
         if adopted["default_category"] != conf["default_category"]:
             category_id = adopted["default_category"]
             self.db.set_setting("default_category", str(ids.get(category_id, category_id)))
+        if error is not None:
+            raise error
         if fixed:
             self.db.add_audit("sistema", "gruppi passati alle tipologie", plural(fixed, "modifica", "modifiche"))
         return fixed

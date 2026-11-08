@@ -17,8 +17,9 @@ Cosa prende, senza cambiare chi entra dove:
 - profilo dei pulsanti (quello dell'app, riconosciuto come in programming);
 - gruppi delle versioni vecchie (adopt_groups), Accesso Personalizzato (la persona passa alla tipologia che usa già il
   profilo delle sue tessere: nessuna tessera cambia accesso) e profili esterni usati dalle tessere, che diventano
-  tipologie con lo stesso token (le righe dalle regole del profilo, rules_of); profili condivisi da più tipologie
-  separati (la prima tiene il token); righe per le porte che i profili tenevano fuori dall'app;
+  tipologie con lo stesso token (le righe dalle regole del profilo, rules_of; un nome o una descrizione che l'app non
+  accetta si accorciano, con un avviso); profili condivisi da più tipologie separati (la prima tiene il token); righe
+  per le porte che i profili tenevano fuori dall'app;
 - fasce: nomi e descrizioni, Sempre come riga di fabbrica, le altre standard_* in uso (o modificate nell'app)
   convertite in fasce dell'app con la stessa definizione e un token nuovo, le esterne in uso con lo stesso token.
 
@@ -118,10 +119,39 @@ def rules_of(profile: dict, points: dict[str, str], doors: dict[str, int]) -> li
     return rules
 
 
-def category_for(token: str, profile: dict, categories: list[dict]) -> dict:
+def _name_of(token: str, profile: dict, warnings: list[str] | None) -> str:
+    """Nome della tipologia nata dal profilo token: quello del profilo (o il token), al massimo 40 caratteri.
+    warnings None, come in un salvataggio: un nome che l'app non accetta (fatto solo di spazi, oltre 100 caratteri) è
+    un ServiceError. Altrimenti (presa in carico in memoria) non ferma niente: si accorcia, uno fatto solo di spazi
+    diventa il token, e warnings dice cosa è cambiato."""
+    if warnings is None:
+        return normalize_name(profile.get("Name") or token)[:40]
+    name = " ".join(str(profile.get("Name") or "").split())
+    if not name and profile.get("Name"):
+        warnings.append("nome fatto solo di spazi sul controller: la tipologia prende il nome dal token del profilo")
+    name = name or " ".join(token.split()) or "Tipologia"
+    if len(name) > 40:
+        warnings.append(f"nome accorciato a 40 caratteri (ne ha {len(name)})")
+    return name[:40]
+
+
+def _description_of(profile: dict, warnings: list[str] | None) -> str:
+    """Descrizione della tipologia nata dal profilo, al massimo 200 caratteri. warnings come in _name_of."""
+    if warnings is None:
+        return normalize_text(profile.get("Description"), 200, "descrizione")
+    text = str(profile.get("Description") or "").strip()
+    if len(text) > 200:
+        warnings.append(f"descrizione accorciata a 200 caratteri (sul controller ne ha {len(text)})")
+        text = text[:200].rstrip()
+    return text
+
+
+def category_for(token: str, profile: dict, categories: list[dict], warnings: list[str] | None = None) -> dict:
     """Tipologia che usa il profilo token: quella nata da quel gruppo, se c'è (con il suo id), altrimenti i campi di
-    una tipologia nuova con il nome del gruppo (senza id). categories: le tipologie di adesso."""
-    name = normalize_name(profile.get("Name") or token)[:40]
+    una tipologia nuova con il nome del gruppo (senza id). categories: le tipologie di adesso.
+    warnings None: un nome o una descrizione che l'app non accetta è un ServiceError, come nella 0.27; una lista:
+    si accorciano e la lista dice perché (vedi _name_of)."""
+    name = _name_of(token, profile, warnings)
     # Si cerca la tipologia nata da quel gruppo: un'altra con lo stesso profilo dice chi è un'altra persona
     names = {name.lower(), f"{name[:33]} (gruppo)".lower()}
     found = next((c for c in categories if c["group_token"] == token and c["name"].lower() in names), None)
@@ -134,57 +164,82 @@ def category_for(token: str, profile: dict, categories: list[dict]) -> dict:
         "color": COLORS[len(categories) % len(COLORS)],
         "group_token": token,
         "valid_days": 0,
-        "description": normalize_text(profile.get("Description"), 200, "descrizione"),
+        "description": _description_of(profile, warnings),
     }
 
 
-def _category(conf: dict, token: str, profiles: dict, points: dict, doors: dict) -> dict:
-    """Tipologia che usa il profilo, creata in memoria (numero provvisorio) se non c'è, con le righe dal profilo."""
+def _category(
+    conf: dict, token: str, profiles: dict, points: dict, doors: dict, shortened: dict[int, list[str]] | None = None
+) -> dict:
+    """Tipologia che usa il profilo, creata in memoria (numero provvisorio) se non c'è, con le righe dal profilo.
+    shortened None: un nome o una descrizione che l'app non accetta è un ServiceError; un dizionario: si accorciano,
+    e il dizionario riceve gli avvisi per numero della tipologia nuova."""
     profile = profiles.get(token) or {}
     categories = conf["categories"]
-    category = category_for(token, profile, categories)
+    warnings = None if shortened is None else []
+    category = category_for(token, profile, categories, warnings)
     if "id" in category:
         return category
-    category = {**category, "id": _new_id(categories), "rules": rules_of(profile, points, doors) if profile else []}
+    category = {**category, "id": _new_id(categories), "rules": []}
     categories.append(category)
+    if warnings:
+        shortened[category["id"]] = warnings
     # Nell'ordine del database (per nome, come COLLATE NOCASE): chi cerca dopo trova le tipologie come le troverebbe lì
     categories.sort(key=lambda c: _nocase(c["name"]))
+    if profile:
+        # Le righe dopo: come nella 0.27, una regola che non si sa leggere lascia la tipologia nata, senza righe
+        category["rules"] = rules_of(profile, points, doors)
     return category
 
 
-def adopt_groups(conf: dict, profiles: dict[str, dict], points: dict[str, str], doors: dict[str, int]):
+def adopt_groups(
+    conf: dict,
+    profiles: dict[str, dict],
+    points: dict[str, str],
+    doors: dict[str, int],
+    shortened: dict[int, list[str]] | None = None,
+) -> tuple[dict, int, Exception | None]:
     """Dalle versioni con gruppi e tipologie separati, senza cambiare chi entra dove:
     - una tipologia senza gruppo prende quello predefinito, e le righe di accesso dal suo profilo;
     - chi non ha tipologia entra in quella del suo gruppo, creata con lo stesso nome se manca;
     - il gruppo predefinito diventa la tipologia predefinita.
-    conf: categories (con rules, nell'ordine per nome), persons (con cards), default_group, default_category;
-    profiles: i profili del controller per token; points: punto di accesso → porta; doors: porta dell'app → id.
-    Restituisce (conf cambiata, quante modifiche). Le tipologie nuove hanno un numero provvisorio negativo."""
+    conf: categories (con rules, nell'ordine per nome), persons (con cards, nell'ordine per nome), default_group,
+    default_category; profiles: i profili del controller per token; points: punto di accesso → porta; doors: porta
+    dell'app → id; shortened: vedi _category (la presa in carico in memoria, che non si ferma mai).
+    Restituisce (conf cambiata, quante modifiche, errore). Le tipologie nuove hanno un numero provvisorio negativo.
+    Come la 0.27, che salvava a ogni passo, un errore ferma tutto dove arriva e conf ha quello che è sistemato prima,
+    da salvare: errore è l'eccezione, None se tutto è sistemato. Senza shortened è anche un profilo con un nome o una
+    descrizione che l'app non accetta (ServiceError), che ferma tutto alla persona (o alla tipologia predefinita) che
+    lo usa; con shortened resta solo un profilo che non si sa leggere."""
     conf = copy.deepcopy(conf)
     default = conf.get("default_group") or ""
     fixed = 0
-    for category in conf["categories"]:
-        if not category["group_token"] and default:
-            category["group_token"] = default
-            fixed += 1
-    for category in conf["categories"]:
-        if not category["rules"] and category["group_token"] in profiles:
-            # Profilo solo su porte che l'app non gestisce: nessuna riga, e non è una modifica
-            if adopted := rules_of(profiles[category["group_token"]], points, doors):
-                category["rules"] = adopted
+    try:
+        for category in conf["categories"]:
+            if not category["group_token"] and default:
+                category["group_token"] = default
                 fixed += 1
-    for person in conf["persons"]:
-        if person["category_id"]:
-            continue
-        token = person["cards"][0]["access_profile"] if person["cards"] else default
-        if not token:
-            continue
-        person["category_id"] = _category(conf, token, profiles, points, doors)["id"]
-        fixed += 1
-    if not conf.get("default_category") and default:
-        conf["default_category"] = _category(conf, default, profiles, points, doors)["id"]
-        fixed += 1
-    return conf, fixed
+        for category in conf["categories"]:
+            if not category["rules"] and category["group_token"] in profiles:
+                # Profilo solo su porte che l'app non gestisce: nessuna riga, e non è una modifica
+                if adopted := rules_of(profiles[category["group_token"]], points, doors):
+                    category["rules"] = adopted
+                    fixed += 1
+        for person in conf["persons"]:
+            if person["category_id"]:
+                continue
+            token = person["cards"][0]["access_profile"] if person["cards"] else default
+            if not token:
+                continue
+            person["category_id"] = _category(conf, token, profiles, points, doors, shortened)["id"]
+            fixed += 1
+        if not conf.get("default_category") and default:
+            conf["default_category"] = _category(conf, default, profiles, points, doors, shortened)["id"]
+            fixed += 1
+    except Exception as err:  # noqa: BLE001 - chi chiama salva quello che è sistemato, poi la rilancia
+        # Nella 0.27 la persona (o la tipologia predefinita) a cui si ferma resta com'era: qui non è ancora cambiata
+        return conf, fixed, err
+    return conf, fixed, None
 
 
 # Ingressi fatti a mano
@@ -465,7 +520,13 @@ def _take_categories(conf: dict, controller_id: int, before: set[str], lists: di
     doors = {d["door_token"]: d["id"] for d in conf["doors"] if d["controller_id"] == controller_id}
     known = {c["id"] for c in conf["categories"]}
     fields = ("categories", "persons", "default_group", "default_category")
-    adopted, fixed = adopt_groups({key: conf.get(key) for key in fields}, profiles, points, doors)
+    # Un profilo con un nome o una descrizione che l'app non accetta non ferma la presa in carico: la tipologia nuova
+    # li ha accorciati e la sua riga lo dice
+    shortened: dict[int, list[str]] = {}
+    adopted, fixed, error = adopt_groups({key: conf.get(key) for key in fields}, profiles, points, doors, shortened)
+    if error is not None:
+        # Un profilo che non si sa leggere: meglio nessun confronto che un confronto a metà
+        raise error
     conf.update({key: adopted[key] for key in ("categories", "persons", "default_category")})
     if fixed:
         notes.append(_note("presa", "", "Gruppi", f"Gruppi delle versioni precedenti passati alle tipologie: {fixed}"))
@@ -481,7 +542,7 @@ def _take_categories(conf: dict, controller_id: int, before: set[str], lists: di
             target = mine
         else:
             target = next((c for c in conf["categories"] if c["group_token"] == token), None) or _category(
-                conf, token, profiles, points, doors
+                conf, token, profiles, points, doors, shortened
             )
             person["category_id"] = target["id"]
             notes.append(
@@ -561,6 +622,16 @@ def _take_categories(conf: dict, controller_id: int, before: set[str], lists: di
                     "Righe aggiunte per le porte che il profilo apriva fuori dall'app",
                 )
             )
+    # Nomi e descrizioni accorciati: nella nota della riga del profilo della tipologia, con il token che ha adesso
+    # (anche dopo la separazione), nell'ultima nota di quella riga, che è quella che compare.compare usa
+    for category in conf["categories"]:
+        if warnings := shortened.get(category["id"]):
+            token = category["group_token"]
+            note = next((n for n in reversed(notes) if (n["kind"], n["key"]) == ("tipologia", token)), None)
+            if note is None:
+                notes.append(_note("tipologia", token, f"Tipologia {category['name']}", "Nuova tipologia"))
+                note = notes[-1]
+            note["warnings"] += warnings
 
 
 def _take_rex_profile(controller: dict, inputs: dict, lists: dict, notes: list[dict]) -> None:
