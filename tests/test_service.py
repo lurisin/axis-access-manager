@@ -421,6 +421,43 @@ async def test_access_of_a_person_without_cards(service, controller, db):
     assert person["category_id"] == category and controller.calls == []
 
 
+async def test_access_of_a_person_without_cards_is_only_the_category(service, controller, db):
+    """Senza tessere un gruppo diverso da quello della tipologia non ha dove stare: si rifiuta, invece di scriverlo in
+    Attività e dare poi alla prima tessera un altro accesso. In Attività solo la tipologia, quando cambia."""
+    controller.profiles["solo_ingresso"] = {"token": "solo_ingresso", "Name": "Solo Ingresso", "AccessPolicy": []}
+    guest = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "p2", "valid_days": 0, "description": ""}
+    )
+    anna = await service.create_person("Anna", "", "admin")
+    audit = len(db.list_audit())
+    with pytest.raises(ServiceError, match="senza tessere il gruppo non si può salvare"):
+        await service.set_person_access(anna["id"], "solo_ingresso", "", "", "admin")
+    with pytest.raises(ServiceError, match="senza tessere il gruppo non si può salvare"):
+        await service.set_person_access(anna["id"], "solo_ingresso", "", "", "admin", category_id=guest)
+    # Il gruppo che la prima tessera prenderà comunque passa, senza righe in Attività: non cambia niente
+    await service.set_person_access(anna["id"], "profilo_sempre", "", "", "admin")
+    await service.set_person_access(anna["id"], "", "", "", "admin")
+    assert len(db.list_audit()) == audit and db.get_person(anna["id"])["category_id"] == 0
+
+    await service.set_person_access(anna["id"], "p2", "", "", "admin", category_id=guest)
+    await service.set_person_access(anna["id"], "", "", "", "admin", category_id=guest)
+    [changed] = db.list_audit()[: len(db.list_audit()) - audit]
+    assert (changed["action"], changed["detail"]) == ("tipologia cambiata", "Anna: Ospite")
+    assert controller.calls == []
+    # La prima tessera prende proprio l'accesso della tipologia
+    [card] = (await service.add_card(anna["id"], "04aa", "admin"))["cards"]
+    assert card["access_profile"] == "p2"
+
+
+async def test_deleting_a_person_without_cards_says_so(service, db):
+    zeno = await service.create_person("Zeno", "", "admin")
+    await service.delete_person(zeno["id"], "admin")
+    assert (db.list_audit()[0]["action"], db.list_audit()[0]["detail"]) == ("persona eliminata", "Zeno, senza tessere")
+    anna = await service.create_person("Anna", "04aa", "admin")
+    await service.delete_person(anna["id"], "admin")
+    assert db.list_audit()[0]["detail"] == "Anna (04aa)"
+
+
 async def test_request_prepared_without_cards_does_not_touch_a_card_added_meanwhile(service, controller, db):
     """Tipologia senza validità (il modulo di chi non ha tessere) e Elimina Persona con 0 tessere contate: con una
     tessera arrivata nel frattempo non cambia niente, né nell'app né sul controller."""

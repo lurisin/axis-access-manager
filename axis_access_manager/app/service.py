@@ -830,7 +830,11 @@ class AccessService:
         """Gruppo e validità per tutte le tessere della persona; category_id None lascia la tipologia com'è.
 
         with_validity False: la richiesta non dice la validità (il modulo di una persona senza tessere). Se intanto la
-        persona ne ha avuta una non si cambia niente: le date vuote le toglierebbero la scadenza."""
+        persona ne ha avuta una non si cambia niente: le date vuote le toglierebbero la scadenza.
+
+        Senza tessere gruppo e validità non hanno dove stare: vale solo la tipologia, e la prima tessera ne prenderà
+        gruppo e durata."""
+        requested = (group or "").strip()
         category = self._category(category_id)
         if category and not group:
             group = category["group_token"]
@@ -846,6 +850,16 @@ class AccessService:
             if not person["cards"] and (access["valid_from"] or access["valid_to"]):
                 # La validità sta sulle tessere: la prima prende la durata della tipologia
                 raise ServiceError("senza tessere la validità non si può salvare: aggiungi prima una tessera")
+            if not person["cards"] and requested:
+                # Anche il gruppo: la prima prende quello della tipologia (scelta o quella di adesso) o il predefinito.
+                # Un altro risulterebbe scelto in Attività senza essere salvato da nessuna parte
+                own = self.db.get_category(person["category_id"]) if person["category_id"] else None
+                target = category if category_id is not None else own
+                if requested != ((target["group_token"] if target else "") or self.default_group):
+                    raise ServiceError(
+                        "senza tessere il gruppo non si può salvare: la prima tessera prende quello della tipologia, "
+                        "aggiungi prima una tessera"
+                    )
             # Prima si leggono tutte le tessere presenti: se ne manca una non si cambia niente. Quelle già segnate
             # come non presenti prendono il nuovo accesso solo nell'app, e "Riscrivi" le riscrive con quello
             present = [card for card in person["cards"] if not card["missing_since"]]
@@ -879,6 +893,9 @@ class AccessService:
                 self.db.add_audit(
                     user, "tipologia cambiata", f"{person['name']}: {category['name'] if category else 'nessuna'}"
                 )
+            if not person["cards"]:
+                # Nessun accesso scritto da nessuna parte: in Attività solo la tipologia, se è cambiata
+                return self.db.get_person(person_id)
             detail = f"{person['name']}: {await self._profile_label(access['access_profile'])}"
             if access["valid_from"] and access["valid_to"]:
                 detail += f", valida dal {local_time(access['valid_from'])} al {local_time(access['valid_to'])}"
@@ -970,7 +987,9 @@ class AccessService:
             await self._remove_axis_user(person)
             self.db.delete_person(person_id)
             numbers = ", ".join(card["number"] for card in person["cards"])
-            self.db.add_audit(user, "persona eliminata", f"{person['name']} ({numbers})")
+            detail = f"{person['name']} ({numbers})" if numbers else f"{person['name']}, senza tessere"
+            # Con il disco pieno la persona è già eliminata: non risulta un errore
+            self._audit(user, "persona eliminata", detail)
             self._changed()
 
     # Ripristino da backup
