@@ -237,6 +237,30 @@ def statistiche(durate: list[float]) -> dict:
     }
 
 
+def sospesa(tessera: dict | None) -> bool:
+    """Tessera riletta e sospesa: Enabled false. Non letta, senza Enabled o con un altro valore non conta come
+    sospesa."""
+    return isinstance(tessera, dict) and tessera.get("Enabled") is False
+
+
+def stato_tessera(tessera: dict | None) -> str:
+    if not isinstance(tessera, dict):
+        return "non letta"
+    return f"Enabled {tessera.get('Enabled')!r}, Status {tessera.get('Status')!r}"
+
+
+def con_numero(tessera: dict, numero: str) -> bool:
+    """La tessera ha quel numero (maiuscole o minuscole non contano)."""
+    numeri = [str(d.get("Value", "")).lower() for d in tessera.get("IdData") or [] if isinstance(d, dict)]
+    return numero.lower() in numeri
+
+
+def profili_legati(tessera: dict) -> list[str]:
+    return [
+        str(c.get("AccessProfile") if isinstance(c, dict) else c) for c in tessera.get("CredentialAccessProfile") or []
+    ]
+
+
 def _json(contenuto: bytes):
     try:
         return json.loads(contenuto)
@@ -740,18 +764,108 @@ class Kit:
         esito = await self.tenta("latest_events", 1)
         return max((int(r.get("rowid") or 0) for r in esito.valore or []), default=0) if esito.ok else 0
 
-    async def passaggio(self, caso: str, testo: str) -> list[dict] | None:
-        """L'operatore passa la tessera; restituisce gli eventi arrivati dopo, None se non l'ha fatto."""
+    async def eventi_dopo(self, riga: int) -> list[dict]:
+        """Eventi del registro arrivati dopo la riga, in ordine (al massimo gli ultimi 100)."""
+        esito = await self.tenta("latest_events", 100)
+        righe = [r for r in (esito.valore or []) if int(r.get("rowid") or 0) > riga] if esito.ok else []
+        return [riassunto_evento(r) for r in sorted(righe, key=lambda r: int(r.get("rowid") or 0))]
+
+    async def passaggio(self, caso: str, testo: str, numero: str, punto: str) -> list[dict] | None:
+        """L'operatore passa la tessera numero sul lettore del punto; restituisce gli eventi arrivati dopo, None se il
+        passaggio non c'è stato. Prima rilegge tessere e profili e non lo chiede se una tessera con quel numero
+        potrebbe aprire."""
+        if not await self.non_apre(caso, numero, punto):
+            return None
         riga = await self.ultimo_evento()
         risposta = self.operatore.chiedi(caso, f"{testo} Poi premi Invio (scrivi salta per non farlo).")
         if risposta.lower() == "salta":
             return None
         await self.pausa(3)
-        esito = await self.tenta("latest_events", 100)
-        righe = [r for r in (esito.valore or []) if int(r.get("rowid") or 0) > riga] if esito.ok else []
-        eventi = [riassunto_evento(r) for r in sorted(righe, key=lambda r: int(r.get("rowid") or 0))]
+        eventi = await self.eventi_dopo(riga)
         self.sezione.setdefault("eventi", []).append({"caso": caso, "eventi": eventi})
         return eventi
+
+    async def tessere_che_aprono(self, numero: str, punto: str) -> list[dict] | None:
+        """Tessere con quel numero che potrebbero aprire il punto: non sospese (Enabled non false) e con un profilo che
+        ha una regola per il punto, o che non si ritrova. None se qualcosa non si legge."""
+        tessere = await self.elenco("tessera")
+        if tessere is None:
+            return None
+        # Gli elenchi potrebbero non avere tutti i campi: tessere e profili si rileggono interi
+        candidate = [str(t.get("token")) for t in tessere if "IdData" not in t or con_numero(t, numero)]
+        lette: list[dict] = []
+        if candidate:
+            esito = await self.tenta("get_credentials", candidate)
+            lette = list(esito.valore or []) if esito.ok else []
+            if not esito.ok or {str(t.get("token")) for t in lette} != set(candidate):
+                return None
+        attive = [t for t in lette if con_numero(t, numero) and not sospesa(t)]
+        legati = sorted({p for t in attive for p in profili_legati(t)})
+        regole: dict[str, list] = {}
+        if legati:
+            esito = await self.tenta("get_access_profiles", legati)
+            if not esito.ok:
+                return None
+            regole = {
+                str(p.get("token")): [r.get("AccessPoint") for r in p.get("AccessPolicy") or [] if isinstance(r, dict)]
+                for p in esito.valore or []
+            }
+        return [t for t in attive if any(p not in regole or punto in regole[p] for p in profili_legati(t))]
+
+    async def non_apre(self, caso: str, numero: str, punto: str) -> bool:
+        """Nessuna tessera con quel numero può aprire il punto. Se una del kit potrebbe, la sospende o la toglie e
+        dice che il passaggio non si fa; se resta qualcosa che apre ferma la prova."""
+        aprono = await self.tessere_che_aprono(numero, punto)
+        if aprono is None:
+            self.nota(f"{caso}: tessere o profili non letti, non so se la tessera {numero} apre: passaggio non fatto")
+            return False
+        if not aprono:
+            return True
+        for tessera in aprono:
+            token = str(tessera.get("token"))
+            come = await self.metti_al_sicuro(token) if nostro("tessera", tessera) else "non è del kit, non la tocco"
+            self.nota(
+                f"{caso}: ATTENZIONE, la tessera {token} con il numero {numero} poteva aprire "
+                f"({stato_tessera(tessera)}, profili {', '.join(profili_legati(tessera))}): "
+                f"passaggio non fatto ({come})"
+            )
+        if await self.tessere_che_aprono(numero, punto) != []:
+            raise RuntimeError(f"una tessera con il numero {numero} può ancora aprire {punto}")
+        return False
+
+    async def metti_al_sicuro(self, token: str) -> str:
+        """Tessera del kit che potrebbe aprire: DisableCredential, controllato rileggendola; se non resta sospesa la
+        toglie. Dice cosa ha fatto. Se non riesce né a sospenderla né a toglierla ferma la prova (poi riprova la
+        pulizia)."""
+        if not token.startswith(PREFISSO):
+            # Tessera del kit con un token dato dal controller (come in pulisci)
+            self.permessi.extra.add(token)
+        esito = await self.tenta("disable_credential", token)
+        if esito.ok and sospesa(await self.leggi("tessera", token)):
+            return "sospesa con DisableCredential"
+        perche = esito.spiegazione() if not esito.ok else "riuscita, ma riletta non è sospesa"
+        tolta = await self.tenta("remove_credential", token)
+        if tolta.ok:
+            return f"DisableCredential {perche}: tessera tolta"
+        self.nota(f"ATTENZIONE: la tessera {token} può aprire e non si toglie ({tolta.spiegazione()})")
+        raise RuntimeError(f"tessera {token} né sospesa né tolta: {tolta.spiegazione()}")
+
+    async def set_sospende(self, sigla: str, utente: str, profilo: str) -> tuple[bool, str]:
+        """SetCredential con Enabled false scrive davvero una tessera nuova sospesa, anche con un profilo che apre?
+        Lo prova con una tessera del kit, che ha un numero che nessuno ha in mano, e la toglie subito; se no, dice
+        perché."""
+        prova = f"{PREFISSO}{sigla}_prova_sospesa"
+        tessera = self.modello(
+            "tessera", prova, {"utente": utente, "profilo": profilo}, Enabled=False, Status="Disabled"
+        )
+        esito = await self.crea("tessera", tessera)
+        letta = await self.leggi("tessera", prova)
+        await self.tenta("remove_credential", prova)
+        if not esito.ok:
+            return False, f"tessera di prova {prova} non scritta: {esito.spiegazione()}"
+        if not sospesa(letta):
+            return False, f"tessera di prova {prova} scritta sospesa e riletta con {stato_tessera(letta)}"
+        return True, ""
 
     def descrivi_passaggio(self, caso: str, eventi: list[dict] | None) -> None:
         if eventi is None:
@@ -1117,26 +1231,96 @@ class Kit:
         if not punto or not numero:
             self.nota("passaggi di tessera non fatti: servono un lettore configurato e il numero di una tessera")
             return
-        profilo = f"{PREFISSO}t4_profilo"
+        # La tessera vera non apre mai: il passaggio si chiede solo con la tessera riletta sospesa (e passaggio()
+        # ricontrolla tessere e profili subito prima)
+        await self.t4_sospesa_con_set(utente, punto, numero)
+        await self.t4_sospesa_con_disable(utente, punto, numero)
+
+    async def t4_sospesa_con_set(self, utente: str, punto: dict, numero: str) -> None:
+        """Primo passaggio: la tessera vera scritta sospesa con SetCredential e con un profilo che aprirebbe la porta
+        del banco, così il Denied parla solo della sospensione."""
+        caso = "sospesa con SetCredential"
         fasce = [s.get("token") for s in await self.elenco("fascia") or []]
-        fascia = "standard_always" if "standard_always" in fasce else None
-        if fascia is None:
-            fascia = f"{PREFISSO}t4_sempre"
+        fascia = "standard_always" if "standard_always" in fasce else f"{PREFISSO}t4_sempre"
+        if fascia != "standard_always":
             await self.crea("fascia", self.modello("fascia", fascia, ScheduleDefinition=SEMPRE))
-        await self.crea("profilo", self.modello("profilo", profilo, {"fascia": fascia, "punti": [punto["token"]]}))
+        profilo = f"{PREFISSO}t4_profilo"
+        esito = await self.crea(
+            "profilo", self.modello("profilo", profilo, {"fascia": fascia, "punti": [punto["token"]]})
+        )
+        if not esito.ok:
+            self.nota(f"{caso}: profilo {profilo} non creato ({esito.spiegazione()}): passaggio non fatto")
+            return
+        # Se SetCredential non sospende una tessera di prova scritta allo stesso modo, la tessera vera con il profilo
+        # non si scrive nemmeno: non c'è un momento in cui apre
+        sospende, perche = await self.set_sospende("t4", utente, profilo)
+        if not sospende:
+            self.nota(f"{caso}: SetCredential non sospende: passaggio non fatto ({perche})")
+            return
         vera = f"{PREFISSO}t4_tessera_vera"
         tessera = self.modello(
-            "tessera", vera, {"utente": utente, "profilo": profilo}, IdData=[{"Name": "Card", "Value": numero}]
+            "tessera",
+            vera,
+            {"utente": utente, "profilo": profilo},
+            IdData=[{"Name": "Card", "Value": numero}],
+            Enabled=False,
+            Status="Disabled",
         )
+        esito = await self.crea("tessera", tessera)
+        letta = await self.leggi("tessera", vera)
+        if not esito.ok or not sospesa(letta):
+            sicura = await self.metti_al_sicuro(vera)
+            if esito.ok:
+                self.nota(
+                    f"{caso}: SetCredential non sospende: passaggio non fatto (tessera vera riletta con "
+                    f"{stato_tessera(letta)}; {sicura})"
+                )
+            else:
+                self.nota(f"{caso}: tessera vera non scritta ({esito.spiegazione()}): passaggio non fatto ({sicura})")
+            return
         lettore = punto.get("Name") or punto["token"]
-        # La tessera non apre mai: sospesa fin dalla prima scrittura, poi abilitata ma senza profilo e sospesa
-        await self.crea("tessera", {**tessera, "Enabled": False, "Status": "Disabled"})
-        eventi = await self.passaggio("t4_set_disabled", f"Passa la tessera {numero} sul lettore di {lettore}.")
-        self.descrivi_passaggio("sospesa con SetCredential", eventi)
-        await self.crea("tessera", {**tessera, "CredentialAccessProfile": []})
-        await self.tenta("disable_credential", vera)
-        eventi = await self.passaggio("t4_disable", f"Passa di nuovo la tessera {numero} sul lettore di {lettore}.")
-        self.descrivi_passaggio("sospesa con DisableCredential, senza profilo (confronta con T8)", eventi)
+        invito = f"Passa la tessera {numero} sul lettore di {lettore}."
+        self.descrivi_passaggio(caso, await self.passaggio("t4_set_disabled", invito, numero, punto["token"]))
+
+    async def t4_sospesa_con_disable(self, utente: str, punto: dict, numero: str) -> None:
+        """Secondo passaggio: una tessera nuova con il numero vero, nata abilitata ma senza nessun profilo, poi sospesa
+        con DisableCredential. Non si riscrive quella del primo passaggio: SetCredential potrebbe tenerle il profilo
+        (T3). Quella va tolta prima: con due tessere con lo stesso numero (T5) non si sa quale legge il controller."""
+        caso = "sospesa con DisableCredential, senza profilo (confronta con T8)"
+        tolta = await self.tenta("remove_credential", f"{PREFISSO}t4_tessera_vera")
+        altre = await self.tessere_con_numero(numero)
+        if not tolta.ok or altre is None or altre:
+            if not tolta.ok:
+                perche = f"la tessera del primo passaggio non è tolta ({tolta.spiegazione()})"
+            elif altre is None:
+                perche = "tessere non lette"
+            else:
+                perche = f"sul controller c'è ancora una tessera con il numero {numero}: {', '.join(altre)}"
+            self.nota(f"{caso}: {perche}: passaggio non fatto")
+            return
+        seconda = f"{PREFISSO}t4_vera_senza_profilo"
+        esito = await self.crea(
+            "tessera", self.modello("tessera", seconda, {"utente": utente}, IdData=[{"Name": "Card", "Value": numero}])
+        )
+        if not esito.ok:
+            self.nota(f"{caso}: tessera non scritta ({esito.spiegazione()}): passaggio non fatto")
+            return
+        esito = await self.tenta("disable_credential", seconda)
+        letta = await self.leggi("tessera", seconda)
+        if not esito.ok or not sospesa(letta):
+            perche = esito.spiegazione() if not esito.ok else f"riuscita, ma riletta con {stato_tessera(letta)}"
+            self.nota(f"{caso}: DisableCredential {perche}: passaggio non fatto")
+            return
+        lettore = punto.get("Name") or punto["token"]
+        invito = f"Passa di nuovo la tessera {numero} sul lettore di {lettore}."
+        self.descrivi_passaggio(caso, await self.passaggio("t4_disable", invito, numero, punto["token"]))
+
+    async def tessere_con_numero(self, numero: str) -> list[str] | None:
+        """Token delle tessere con quel numero sul controller; None se l'elenco non si legge."""
+        tessere = await self.elenco("tessera")
+        if tessere is None:
+            return None
+        return [str(t.get("token")) for t in tessere if con_numero(t, numero)]
 
     async def t5(self) -> None:
         """Una tessera con un numero già usato da un'altra credenziale: rifiuto o doppione?"""
@@ -1264,21 +1448,35 @@ class Kit:
             ("profilo spento senza regole", profili["spento"]["token"], True),
             ("profilo senza regola per quel punto", profili["altro_punto"]["token"], True),
             ("CredentialAccessProfile vuoto", "", True),
-            # Profilo giusto: la tessera si scrive già sospesa, così non c'è un momento in cui apre
             ("credenziale disabilitata", profili["giusto"]["token"], False),
         ]
         for caso, profilo, abilitata in casi:
             tessera = self.modello("tessera", token, {"utente": utente, "profilo": profilo}, **dati)
             if not abilitata:
+                # Profilo giusto: la tessera si scrive da capo già sospesa, e solo se SetCredential sospende davvero
+                # una tessera di prova scritta allo stesso modo, così non c'è un momento in cui apre
+                sospende, perche = await self.set_sospende("t8", utente, profilo)
+                if not sospende:
+                    self.nota(f"{caso}: SetCredential non sospende: passaggio non fatto ({perche})")
+                    continue
+                tolta = await self.tenta("remove_credential", token)
+                if not tolta.ok:
+                    self.nota(f"{caso}: tessera del caso prima non tolta ({tolta.spiegazione()}): passaggio non fatto")
+                    continue
                 tessera.update(Enabled=False, Status="Disabled")
             esito = await self.crea("tessera", tessera)
-            if esito.ok and not abilitata:
-                esito = await self.tenta("disable_credential", token)
             if not esito.ok:
-                self.nota(f"{caso}: tessera non scritta ({esito.spiegazione()})")
+                sicura = f" ({await self.metti_al_sicuro(token)})" if not abilitata else ""
+                self.nota(f"{caso}: tessera non scritta ({esito.spiegazione()}){sicura}")
                 continue
-            self.descrivi_passaggio(caso, await self.passaggio(caso, invito))
-        self.nota("nessun caso con la tessera abilitata: il kit non fa aprire porte")
+            if not abilitata:
+                esito = await self.tenta("disable_credential", token)
+                if not esito.ok:
+                    sicura = await self.metti_al_sicuro(token)
+                    self.nota(f"{caso}: DisableCredential {esito.spiegazione()}: passaggio non fatto ({sicura})")
+                    continue
+            self.descrivi_passaggio(caso, await self.passaggio(caso, invito, numero, punto["token"]))
+        self.nota("nessun caso con la tessera abilitata e un profilo che apre: il kit non fa aprire porte")
 
     async def t9(self) -> None:
         """Festività tolte con null o stringa vuota, testo delle fasce restituito uguale, lunghezze massime."""

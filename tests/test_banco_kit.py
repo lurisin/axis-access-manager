@@ -371,6 +371,11 @@ async def test_the_whole_kit_on_a_factory_controller(tmp_path, check_references)
     for name in ("utenti", "porte", "lettori", "punti di accesso", "configurazioni delle porte"):
         assert f"{name}: chiave presente con []" in notes["T11"]
     assert "IdData arrivato" in notes["T8"] and "Reason=CredentialNotEnabled" in notes["T8"]
+    # Con un controller che sospende davvero, T4 fa tutti e due i passaggi
+    assert {"t4_set_disabled", "t4_disable"} <= set(operator.asked)
+    assert "sospesa con SetCredential: IdData arrivato" in notes["T4"]
+    assert "sospesa con DisableCredential, senza profilo (confronta con T8): IdData arrivato" in notes["T4"]
+    assert "credenziale disabilitata: IdData arrivato" in notes["T8"]
     assert "scritte 500 tessere" in notes["T18"]
     assert "pagine da 300: 2" in notes["T18"]
     assert "impronta del certificato CAMBIATA" in notes["T12"]
@@ -518,4 +523,214 @@ async def test_forbidden_requests_never_leave():
         with pytest.raises(kit.Vietata):
             await bench.tenta(method, *args)
     assert server.methods == [] and controller.calls == []
+    await bench.client.aclose()
+
+
+# T4 e T8: la tessera vera dell'operatore non deve mai poter aprire la porta del banco
+
+
+class IgnoresEnabled(FakeController):
+    """SetCredential che ignora Enabled e Status: la tessera resta abilitata (proprio la domanda di T4)."""
+
+    async def set_credential(self, credential):
+        return await super().set_credential({**credential, "Enabled": True, "Status": "Enabled"})
+
+
+class KeepsProfiles(FakeController):
+    """SetCredential su un token esistente che unisce: con CredentialAccessProfile vuoto tiene i profili (T3)."""
+
+    async def set_credential(self, credential):
+        old = self.credentials.get(credential.get("token") or "")
+        if old and not credential.get("CredentialAccessProfile"):
+            credential = {**credential, "CredentialAccessProfile": old.get("CredentialAccessProfile") or []}
+        return await super().set_credential(credential)
+
+
+class DisableDoesNothing(IgnoresEnabled):
+    """SetCredential ignora Enabled e DisableCredential risponde bene ma la tessera resta abilitata."""
+
+    async def disable_credential(self, token):
+        enabled = self.credentials.get(token, {}).get("Enabled")
+        await super().disable_credential(token)
+        if token in self.credentials:
+            self.credentials[token]["Enabled"] = enabled
+
+
+def opening_cards(controller: FakeController, point: str = "accesso_banco") -> list[tuple[str, str]]:
+    """Tessere con il numero vero che aprirebbero il punto: abilitate e con un profilo che ha una regola per il punto
+    (acceso o spento, per prudenza)."""
+    found = []
+    for credential in controller.credentials.values():
+        if credential.get("Enabled") is False or not any(d.get("Value") == CARD for d in credential["IdData"]):
+            continue
+        for link in credential.get("CredentialAccessProfile") or []:
+            profile = controller.profiles.get(link.get("AccessProfile")) or {}
+            if any(p.get("AccessPoint") == point for p in profile.get("AccessPolicy") or []):
+                found.append((credential["token"], profile["token"]))
+    return found
+
+
+class SwipeWatcher(BenchOperator):
+    """L'operatore che a ogni passaggio di tessera guarda se la porta del banco si aprirebbe."""
+
+    def __init__(self, controller: FakeController) -> None:
+        super().__init__(controller)
+        self.opening: list[tuple[str, str]] = []
+        self.swipes = 0
+
+    def swipe(self) -> None:
+        self.swipes += 1
+        self.opening += opening_cards(self.controller)
+        super().swipe()
+
+
+@pytest.mark.parametrize(
+    "variant",
+    ["ignora_enabled", "ignora_enabled_disable_rifiutato", "unisce_disable_rifiutato", "disable_che_non_sospende"],
+)
+async def test_t4_and_t8_never_ask_a_swipe_with_a_card_that_opens(variant):
+    cls = {
+        "ignora_enabled": IgnoresEnabled,
+        "ignora_enabled_disable_rifiutato": IgnoresEnabled,
+        "unisce_disable_rifiutato": KeepsProfiles,
+        "disable_che_non_sospende": DisableDoesNothing,
+    }[variant]
+    controller = cls.factory()
+    controller.serial = SERIAL
+    if variant.endswith("disable_rifiutato"):
+        controller.refuse("disable_credential", "env:Receiver ter:ActionNotSupported")
+    operator = SwipeWatcher(controller)
+    bench, server, _ = make_kit(controller, operator)
+
+    data = await kit.esegui(bench, ["T4", "T8"])
+
+    assert operator.opening == []
+    # Le tessere abilitate senza un profilo che apra quella porta si passano lo stesso (T8, e T4 se Disable riesce)
+    assert operator.swipes >= 3
+    assert {code: test["esito"] for code, test in data["prove"].items()} == {"T4": "fatta", "T8": "fatta"}
+    notes = {code: "\n".join(test["osservazioni"]) for code, test in data["prove"].items()}
+    if variant != "unisce_disable_rifiutato":
+        assert "sospesa con SetCredential: SetCredential non sospende: passaggio non fatto" in notes["T4"]
+        assert "credenziale disabilitata: SetCredential non sospende: passaggio non fatto" in notes["T8"]
+        assert "t4_set_disabled" not in operator.asked and "credenziale disabilitata" not in operator.asked
+    if variant != "ignora_enabled":
+        assert "sospesa con DisableCredential, senza profilo (confronta con T8): DisableCredential" in notes["T4"]
+        assert "t4_disable" not in operator.asked
+    assert leftovers(controller) == []
+    assert_nothing_forbidden(controller, server)
+
+
+async def test_t4_never_writes_the_real_card_enabled_with_its_profile():
+    """Se SetCredential non sospende, la tessera vera con il profilo che apre non si scrive nemmeno: basta la tessera
+    di prova, con un numero del kit."""
+    controller = IgnoresEnabled.factory()
+    controller.serial = SERIAL
+    operator = SwipeWatcher(controller)
+    seen: list[tuple[str, str]] = []
+    original = controller.set_credential
+
+    async def watching(credential):
+        token = await original(credential)
+        seen.extend(opening_cards(controller))
+        return token
+
+    controller.set_credential = watching
+    bench, server, _ = make_kit(controller, operator)
+
+    await kit.esegui(bench, ["T4", "T8"])
+
+    assert seen == []
+    assert leftovers(controller) == []
+
+
+async def configured_bench():
+    """Banco con il lettore configurato dall'operatore, un utente e un profilo del kit che apre il punto del banco."""
+    controller = factory_bench()
+    operator = BenchOperator(controller)
+    operator.chiedi("configura_lettore", "")
+    bench, server, _ = make_kit(controller, operator)
+    await bench.crea("utente", bench.modello("utente", f"{PREFIX}g_utente"))
+    profile = bench.modello("profilo", f"{PREFIX}g_profilo", {"fascia": "standard_always", "punti": ["accesso_banco"]})
+    await bench.crea("profilo", profile)
+    operator.asked.clear()
+    return controller, operator, bench
+
+
+async def test_swipe_is_not_asked_when_a_kit_card_could_open():
+    controller, operator, bench = await configured_bench()
+    card = bench.modello(
+        "tessera",
+        f"{PREFIX}g_tessera",
+        {"utente": f"{PREFIX}g_utente", "profilo": f"{PREFIX}g_profilo"},
+        IdData=[{"Name": "Card", "Value": CARD.upper()}],
+    )
+    await bench.crea("tessera", card)
+
+    assert await bench.passaggio("caso", "Passa la tessera.", CARD, "accesso_banco") is None
+
+    assert operator.asked == []
+    assert controller.credentials[f"{PREFIX}g_tessera"]["Enabled"] is False
+    assert "ATTENZIONE, la tessera aam_prova_g_tessera" in "\n".join(bench.dati["avvio"]["osservazioni"])
+
+    # DisableCredential rifiutato: la tessera si toglie
+    await bench.crea("tessera", card)
+    controller.refuse("disable_credential", "env:Receiver ter:ActionNotSupported")
+    assert await bench.passaggio("caso", "Passa la tessera.", CARD, "accesso_banco") is None
+    assert operator.asked == [] and f"{PREFIX}g_tessera" not in controller.credentials
+
+    # Né sospesa né tolta: la prova si ferma
+    await bench.crea("tessera", card)
+    controller.refuse("remove_credential", "env:Receiver ter:ActionNotSupported")
+    with pytest.raises(RuntimeError, match="né sospesa né tolta"):
+        await bench.passaggio("caso", "Passa la tessera.", CARD, "accesso_banco")
+    assert operator.asked == []
+    await bench.client.aclose()
+
+
+async def test_swipe_is_not_asked_with_a_foreign_card_or_without_reading():
+    controller, operator, bench = await configured_bench()
+    # Tessere o profili non letti: non si sa, il passaggio non si chiede
+    controller.refuse("list_credentials", "env:Receiver ter:ActionNotSupported", times=1)
+    assert await bench.passaggio("caso", "Passa la tessera.", CARD, "accesso_banco") is None
+    card = bench.modello(
+        "tessera",
+        f"{PREFIX}g_tessera",
+        {"utente": f"{PREFIX}g_utente", "profilo": f"{PREFIX}g_profilo"},
+        IdData=[{"Name": "Card", "Value": CARD}],
+    )
+    await bench.crea("tessera", card)
+    for method in ("get_credentials", "get_access_profiles"):
+        controller.refuse(method, "env:Receiver ter:ActionNotSupported", times=1)
+        assert await bench.passaggio("caso", "Passa la tessera.", CARD, "accesso_banco") is None
+    assert operator.asked == []
+    await bench.tenta("remove_credential", f"{PREFIX}g_tessera")
+    # Una tessera che non è del kit e apre: il kit non la tocca e si ferma
+    controller.profiles["profilo_vero"] = {
+        "token": "profilo_vero",
+        "Name": "Vero",
+        "AccessPolicy": [{"AccessPoint": "accesso_banco", "Schedule": ["standard_always"]}],
+    }
+    foreign = controller.add_existing("utente_vero", "Vero", CARD)
+    controller.credentials[foreign]["CredentialAccessProfile"] = [{"AccessProfile": "profilo_vero"}]
+    with pytest.raises(RuntimeError, match="può ancora aprire"):
+        await bench.passaggio("caso", "Passa la tessera.", CARD, "accesso_banco")
+    assert operator.asked == []
+    assert not [c for c in controller.calls if foreign in c]
+    assert "non è del kit, non la tocco" in "\n".join(bench.dati["avvio"]["osservazioni"])
+    await bench.client.aclose()
+
+
+async def test_swipe_is_asked_with_a_suspended_card_or_one_that_opens_nothing():
+    controller, operator, bench = await configured_bench()
+    for profile in ("", f"{PREFIX}g_profilo"):
+        card = bench.modello(
+            "tessera",
+            f"{PREFIX}g_tessera",
+            {"utente": f"{PREFIX}g_utente", "profilo": profile},
+            IdData=[{"Name": "Card", "Value": CARD}],
+            Enabled=bool(not profile),
+        )
+        await bench.crea("tessera", card)
+        assert await bench.passaggio("caso", "Passa la tessera.", CARD, "accesso_banco") is not None
+    assert operator.asked == ["caso", "caso"]
     await bench.client.aclose()

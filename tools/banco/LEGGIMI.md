@@ -32,7 +32,11 @@ che chiedono all'operatore (T2, T8, T12 e le domande di T4, T16, T18). `--quante
 - **T2**: staccare il cavo di rete del controller e premere Invio (ogni scrittura aspetta fino a 10 secondi),
   poi riattaccarlo e premere Invio.
 - **T4, T8**: passare la tessera sul lettore quando lo chiede, poi Invio. La tessera non apre mai: il kit la
-  scrive sospesa, oppure abilitata ma senza nessun profilo che apra quella porta.
+  scrive sospesa, oppure abilitata ma senza nessun profilo che apra quella porta. La tessera vera con il profilo
+  che apre si scrive sospesa solo se prima una tessera di prova, con un numero del kit, è tornata davvero sospesa;
+  altrimenti il rapporto dice «SetCredential non sospende: passaggio non fatto». Prima di ogni passaggio il kit
+  rilegge tessere e profili: se una tessera con quel numero risulta abilitata con un profilo che apre quella porta,
+  il passaggio non lo chiede, e la sospende o la toglie (se non è del kit non la tocca e si ferma).
 - **T12**: fare il reset di fabbrica dalla pagina web del controller, ricreare l'account con lo stesso utente e la
   stessa password e rimettere lo stesso indirizzo, poi Invio. Il reset non lo fa il kit: dopo legge soltanto.
 - **T16**: dire come compare l'utente `aam_prova_impianto` nella pagina del controller.
@@ -48,6 +52,8 @@ Scrivendo `salta` a una domanda quella parte non si fa.
 - Crea solo oggetti con token e nome `aam_prova_` e li toglie tutti dopo ogni prova e alla fine, anche dopo un
   errore o con Ctrl+C (una volta sola; se il kit aspetta una risposta, poi Invio), e stampa quello che non è
   riuscito a togliere. Alla partenza toglie quelli rimasti da una volta precedente.
+- La tessera vera dell'operatore non ha mai insieme un profilo che apre la porta e lo stato abilitato quando il kit
+  chiede di passarla (vedi T4 e T8).
 - Le richieste passano da un filtro (`Registratore`) che lascia partire solo le letture e le scritture elencate nel
   kit, e le scritture solo su oggetti `aam_prova_`. Non partono mai comandi alle porte (AccessDoor, UnlockDoor,
   LockDoor, DoorSchedule…), configurazioni di porte e lettori, morsetti, controllo accessi, modi di
