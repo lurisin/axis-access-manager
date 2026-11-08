@@ -21,7 +21,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -52,8 +52,13 @@ TITOLI = {
     "T11": "Elenchi vuoti: chiave vuota o assente",
     "T12": "Oggetti di serie dopo il reset di fabbrica (il reset lo fa l'operatore)",
     "T16": "Utente sentinella senza tessere",
-    "T18": "Tempi con molte tessere",
+    "T18": "Tempi con molte tessere; limiti e pulsante durante la scrittura con --limiti",
 }
+# T18 con --limiti: tetto di ogni ricerca (si cambia con --tetto nome=numero), prudente per il tempo al banco e per la
+# memoria del controller; oltre il tetto il kit non scrive anche senza CapabilityViolated
+TETTI = {"utenti": 2000, "tessere": 2000, "profili": 200, "fasce": 200, "eccezioni": 500, "regole": 100}
+# Oggetti (o voci) scritti tra un controllo e l'altro, al massimo; con tetti piccoli i blocchi si accorciano
+BLOCCHI = {"utenti": 100, "tessere": 100, "profili": 20, "fasce": 20, "eccezioni": 25, "regole": 10, "punti": 10}
 
 # Metodi VAPIX che possono partire. Tutto il resto lo ferma il Registratore prima che esca: comandi alle porte
 # (AccessDoor, UnlockDoor, LockDoor, DoorSchedule...), SetDoorConfiguration, SetIdPointConfiguration, SetIoAssignment,
@@ -237,6 +242,35 @@ def statistiche(durate: list[float]) -> dict:
     }
 
 
+def sospesa(tessera: dict | None) -> bool:
+    """Tessera riletta e sospesa: Enabled false. Non letta, senza Enabled o con un altro valore non conta come
+    sospesa."""
+    return isinstance(tessera, dict) and tessera.get("Enabled") is False
+
+
+def stato_tessera(tessera: dict | None) -> str:
+    if not isinstance(tessera, dict):
+        return "non letta"
+    return f"Enabled {tessera.get('Enabled')!r}, Status {tessera.get('Status')!r}"
+
+
+def con_numero(tessera: dict, numero: str) -> bool:
+    """La tessera ha quel numero (maiuscole o minuscole non contano)."""
+    numeri = [str(d.get("Value", "")).lower() for d in tessera.get("IdData") or [] if isinstance(d, dict)]
+    return numero.lower() in numeri
+
+
+def profili_legati(tessera: dict) -> list[str]:
+    return [
+        str(c.get("AccessProfile") if isinstance(c, dict) else c) for c in tessera.get("CredentialAccessProfile") or []
+    ]
+
+
+def blocco_di(nome: str, tetto: int) -> int:
+    """Blocco della ricerca di un limite: almeno dieci blocchi fino al tetto, al massimo BLOCCHI[nome]."""
+    return max(1, min(BLOCCHI[nome], tetto // 10))
+
+
 def _json(contenuto: bytes):
     try:
         return json.loads(contenuto)
@@ -364,6 +398,10 @@ class Esito:
             return "riuscita"
         return f"{self.errore}" + (f" [{self.fault}]" if self.fault else "")
 
+    def limite(self) -> bool:
+        """Rifiutata perché il controller è pieno (CapabilityViolated)."""
+        return not self.ok and "CapabilityViolated" in self.fault
+
 
 class Operatore:
     """Chi sta al banco: legge le istruzioni e risponde da tastiera."""
@@ -401,6 +439,8 @@ class Kit:
         quante: int = 500,
         tessera: str = "",
         pausa=asyncio.sleep,
+        limiti: bool = False,
+        tetti: dict[str, int] | None = None,
     ) -> None:
         self.client = client
         self.registro = registro
@@ -411,6 +451,11 @@ class Kit:
         self.quante = quante
         self.tessera = tessera
         self.pausa = pausa
+        # T18: ricerca dei limiti, con i tetti di TETTI cambiati da --tetto
+        self.limiti = limiti
+        self.tetti = {**TETTI, **(tetti or {})}
+        # Migliaia di scritture (ricerca dei limiti): delle operazioni riuscite il rapporto tiene solo metodo e durata
+        self.leggero = False
         self.file: Path | None = None
         self._numeri = itertools.count(1)
         self.dati: dict = {
@@ -443,6 +488,11 @@ class Kit:
         valore = esito.valore
         if metodo.startswith("list_") and isinstance(valore, list):
             valore = {"quanti": len(valore)}
+        if self.leggero and esito.ok:
+            # Gli errori, e le risposte grezze di un CapabilityViolated, restano per intero
+            voce = {"metodo": metodo, "esito": "riuscita", "durata_s": esito.durata}
+            self.sezione["operazioni"].append(voce | ({"valore": valore} if metodo.startswith("list_") else {}))
+            return
         self.sezione["operazioni"].append(
             {
                 "metodo": metodo,
@@ -740,18 +790,108 @@ class Kit:
         esito = await self.tenta("latest_events", 1)
         return max((int(r.get("rowid") or 0) for r in esito.valore or []), default=0) if esito.ok else 0
 
-    async def passaggio(self, caso: str, testo: str) -> list[dict] | None:
-        """L'operatore passa la tessera; restituisce gli eventi arrivati dopo, None se non l'ha fatto."""
+    async def eventi_dopo(self, riga: int) -> list[dict]:
+        """Eventi del registro arrivati dopo la riga, in ordine (al massimo gli ultimi 100)."""
+        esito = await self.tenta("latest_events", 100)
+        righe = [r for r in (esito.valore or []) if int(r.get("rowid") or 0) > riga] if esito.ok else []
+        return [riassunto_evento(r) for r in sorted(righe, key=lambda r: int(r.get("rowid") or 0))]
+
+    async def passaggio(self, caso: str, testo: str, numero: str, punto: str) -> list[dict] | None:
+        """L'operatore passa la tessera numero sul lettore del punto; restituisce gli eventi arrivati dopo, None se il
+        passaggio non c'è stato. Prima rilegge tessere e profili e non lo chiede se una tessera con quel numero
+        potrebbe aprire."""
+        if not await self.non_apre(caso, numero, punto):
+            return None
         riga = await self.ultimo_evento()
         risposta = self.operatore.chiedi(caso, f"{testo} Poi premi Invio (scrivi salta per non farlo).")
         if risposta.lower() == "salta":
             return None
         await self.pausa(3)
-        esito = await self.tenta("latest_events", 100)
-        righe = [r for r in (esito.valore or []) if int(r.get("rowid") or 0) > riga] if esito.ok else []
-        eventi = [riassunto_evento(r) for r in sorted(righe, key=lambda r: int(r.get("rowid") or 0))]
+        eventi = await self.eventi_dopo(riga)
         self.sezione.setdefault("eventi", []).append({"caso": caso, "eventi": eventi})
         return eventi
+
+    async def tessere_che_aprono(self, numero: str, punto: str) -> list[dict] | None:
+        """Tessere con quel numero che potrebbero aprire il punto: non sospese (Enabled non false) e con un profilo che
+        ha una regola per il punto, o che non si ritrova. None se qualcosa non si legge."""
+        tessere = await self.elenco("tessera")
+        if tessere is None:
+            return None
+        # Gli elenchi potrebbero non avere tutti i campi: tessere e profili si rileggono interi
+        candidate = [str(t.get("token")) for t in tessere if "IdData" not in t or con_numero(t, numero)]
+        lette: list[dict] = []
+        if candidate:
+            esito = await self.tenta("get_credentials", candidate)
+            lette = list(esito.valore or []) if esito.ok else []
+            if not esito.ok or {str(t.get("token")) for t in lette} != set(candidate):
+                return None
+        attive = [t for t in lette if con_numero(t, numero) and not sospesa(t)]
+        legati = sorted({p for t in attive for p in profili_legati(t)})
+        regole: dict[str, list] = {}
+        if legati:
+            esito = await self.tenta("get_access_profiles", legati)
+            if not esito.ok:
+                return None
+            regole = {
+                str(p.get("token")): [r.get("AccessPoint") for r in p.get("AccessPolicy") or [] if isinstance(r, dict)]
+                for p in esito.valore or []
+            }
+        return [t for t in attive if any(p not in regole or punto in regole[p] for p in profili_legati(t))]
+
+    async def non_apre(self, caso: str, numero: str, punto: str) -> bool:
+        """Nessuna tessera con quel numero può aprire il punto. Se una del kit potrebbe, la sospende o la toglie e
+        dice che il passaggio non si fa; se resta qualcosa che apre ferma la prova."""
+        aprono = await self.tessere_che_aprono(numero, punto)
+        if aprono is None:
+            self.nota(f"{caso}: tessere o profili non letti, non so se la tessera {numero} apre: passaggio non fatto")
+            return False
+        if not aprono:
+            return True
+        for tessera in aprono:
+            token = str(tessera.get("token"))
+            come = await self.metti_al_sicuro(token) if nostro("tessera", tessera) else "non è del kit, non la tocco"
+            self.nota(
+                f"{caso}: ATTENZIONE, la tessera {token} con il numero {numero} poteva aprire "
+                f"({stato_tessera(tessera)}, profili {', '.join(profili_legati(tessera))}): "
+                f"passaggio non fatto ({come})"
+            )
+        if await self.tessere_che_aprono(numero, punto) != []:
+            raise RuntimeError(f"una tessera con il numero {numero} può ancora aprire {punto}")
+        return False
+
+    async def metti_al_sicuro(self, token: str) -> str:
+        """Tessera del kit che potrebbe aprire: DisableCredential, controllato rileggendola; se non resta sospesa la
+        toglie. Dice cosa ha fatto. Se non riesce né a sospenderla né a toglierla ferma la prova (poi riprova la
+        pulizia)."""
+        if not token.startswith(PREFISSO):
+            # Tessera del kit con un token dato dal controller (come in pulisci)
+            self.permessi.extra.add(token)
+        esito = await self.tenta("disable_credential", token)
+        if esito.ok and sospesa(await self.leggi("tessera", token)):
+            return "sospesa con DisableCredential"
+        perche = esito.spiegazione() if not esito.ok else "riuscita, ma riletta non è sospesa"
+        tolta = await self.tenta("remove_credential", token)
+        if tolta.ok:
+            return f"DisableCredential {perche}: tessera tolta"
+        self.nota(f"ATTENZIONE: la tessera {token} può aprire e non si toglie ({tolta.spiegazione()})")
+        raise RuntimeError(f"tessera {token} né sospesa né tolta: {tolta.spiegazione()}")
+
+    async def set_sospende(self, sigla: str, utente: str, profilo: str) -> tuple[bool, str]:
+        """SetCredential con Enabled false scrive davvero una tessera nuova sospesa, anche con un profilo che apre?
+        Lo prova con una tessera del kit, che ha un numero che nessuno ha in mano, e la toglie subito; se no, dice
+        perché."""
+        prova = f"{PREFISSO}{sigla}_prova_sospesa"
+        tessera = self.modello(
+            "tessera", prova, {"utente": utente, "profilo": profilo}, Enabled=False, Status="Disabled"
+        )
+        esito = await self.crea("tessera", tessera)
+        letta = await self.leggi("tessera", prova)
+        await self.tenta("remove_credential", prova)
+        if not esito.ok:
+            return False, f"tessera di prova {prova} non scritta: {esito.spiegazione()}"
+        if not sospesa(letta):
+            return False, f"tessera di prova {prova} scritta sospesa e riletta con {stato_tessera(letta)}"
+        return True, ""
 
     def descrivi_passaggio(self, caso: str, eventi: list[dict] | None) -> None:
         if eventi is None:
@@ -769,8 +909,9 @@ class Kit:
         if concessi:
             self.nota(f"{caso}: ATTENZIONE, accesso concesso ({concessi[0]['argomento']})")
 
-    async def lettore_vero(self) -> dict | None:
-        """Punto di accesso con un lettore, gestito dal controller e non del kit, per i passaggi di tessera."""
+    async def lettore_vero(self, testo: str = "") -> dict | None:
+        """Punto di accesso con un lettore, gestito dal controller e non del kit, per i passaggi di tessera e per il
+        pulsante di uscita della sua porta; testo: la richiesta all'operatore se non c'è."""
         for tentativo in range(2):
             punti = await self.elenco("punto") or []
             controllori = (await self.tenta("list_access_controllers")).valore or []
@@ -785,7 +926,8 @@ class Kit:
                 return None
             risposta = self.operatore.chiedi(
                 "configura_lettore",
-                "Per questa prova serve un lettore di tessere configurato sul controller (porta e lettore, con la "
+                testo
+                or "Per questa prova serve un lettore di tessere configurato sul controller (porta e lettore, con la "
                 "procedura guidata della pagina del controller). Configuralo e premi Invio, oppure scrivi salta.",
             )
             if risposta.lower() == "salta":
@@ -1117,26 +1259,96 @@ class Kit:
         if not punto or not numero:
             self.nota("passaggi di tessera non fatti: servono un lettore configurato e il numero di una tessera")
             return
-        profilo = f"{PREFISSO}t4_profilo"
+        # La tessera vera non apre mai: il passaggio si chiede solo con la tessera riletta sospesa (e passaggio()
+        # ricontrolla tessere e profili subito prima)
+        await self.t4_sospesa_con_set(utente, punto, numero)
+        await self.t4_sospesa_con_disable(utente, punto, numero)
+
+    async def t4_sospesa_con_set(self, utente: str, punto: dict, numero: str) -> None:
+        """Primo passaggio: la tessera vera scritta sospesa con SetCredential e con un profilo che aprirebbe la porta
+        del banco, così il Denied parla solo della sospensione."""
+        caso = "sospesa con SetCredential"
         fasce = [s.get("token") for s in await self.elenco("fascia") or []]
-        fascia = "standard_always" if "standard_always" in fasce else None
-        if fascia is None:
-            fascia = f"{PREFISSO}t4_sempre"
+        fascia = "standard_always" if "standard_always" in fasce else f"{PREFISSO}t4_sempre"
+        if fascia != "standard_always":
             await self.crea("fascia", self.modello("fascia", fascia, ScheduleDefinition=SEMPRE))
-        await self.crea("profilo", self.modello("profilo", profilo, {"fascia": fascia, "punti": [punto["token"]]}))
+        profilo = f"{PREFISSO}t4_profilo"
+        esito = await self.crea(
+            "profilo", self.modello("profilo", profilo, {"fascia": fascia, "punti": [punto["token"]]})
+        )
+        if not esito.ok:
+            self.nota(f"{caso}: profilo {profilo} non creato ({esito.spiegazione()}): passaggio non fatto")
+            return
+        # Se SetCredential non sospende una tessera di prova scritta allo stesso modo, la tessera vera con il profilo
+        # non si scrive nemmeno: non c'è un momento in cui apre
+        sospende, perche = await self.set_sospende("t4", utente, profilo)
+        if not sospende:
+            self.nota(f"{caso}: SetCredential non sospende: passaggio non fatto ({perche})")
+            return
         vera = f"{PREFISSO}t4_tessera_vera"
         tessera = self.modello(
-            "tessera", vera, {"utente": utente, "profilo": profilo}, IdData=[{"Name": "Card", "Value": numero}]
+            "tessera",
+            vera,
+            {"utente": utente, "profilo": profilo},
+            IdData=[{"Name": "Card", "Value": numero}],
+            Enabled=False,
+            Status="Disabled",
         )
+        esito = await self.crea("tessera", tessera)
+        letta = await self.leggi("tessera", vera)
+        if not esito.ok or not sospesa(letta):
+            sicura = await self.metti_al_sicuro(vera)
+            if esito.ok:
+                self.nota(
+                    f"{caso}: SetCredential non sospende: passaggio non fatto (tessera vera riletta con "
+                    f"{stato_tessera(letta)}; {sicura})"
+                )
+            else:
+                self.nota(f"{caso}: tessera vera non scritta ({esito.spiegazione()}): passaggio non fatto ({sicura})")
+            return
         lettore = punto.get("Name") or punto["token"]
-        # La tessera non apre mai: sospesa fin dalla prima scrittura, poi abilitata ma senza profilo e sospesa
-        await self.crea("tessera", {**tessera, "Enabled": False, "Status": "Disabled"})
-        eventi = await self.passaggio("t4_set_disabled", f"Passa la tessera {numero} sul lettore di {lettore}.")
-        self.descrivi_passaggio("sospesa con SetCredential", eventi)
-        await self.crea("tessera", {**tessera, "CredentialAccessProfile": []})
-        await self.tenta("disable_credential", vera)
-        eventi = await self.passaggio("t4_disable", f"Passa di nuovo la tessera {numero} sul lettore di {lettore}.")
-        self.descrivi_passaggio("sospesa con DisableCredential, senza profilo (confronta con T8)", eventi)
+        invito = f"Passa la tessera {numero} sul lettore di {lettore}."
+        self.descrivi_passaggio(caso, await self.passaggio("t4_set_disabled", invito, numero, punto["token"]))
+
+    async def t4_sospesa_con_disable(self, utente: str, punto: dict, numero: str) -> None:
+        """Secondo passaggio: una tessera nuova con il numero vero, nata abilitata ma senza nessun profilo, poi sospesa
+        con DisableCredential. Non si riscrive quella del primo passaggio: SetCredential potrebbe tenerle il profilo
+        (T3). Quella va tolta prima: con due tessere con lo stesso numero (T5) non si sa quale legge il controller."""
+        caso = "sospesa con DisableCredential, senza profilo (confronta con T8)"
+        tolta = await self.tenta("remove_credential", f"{PREFISSO}t4_tessera_vera")
+        altre = await self.tessere_con_numero(numero)
+        if not tolta.ok or altre is None or altre:
+            if not tolta.ok:
+                perche = f"la tessera del primo passaggio non è tolta ({tolta.spiegazione()})"
+            elif altre is None:
+                perche = "tessere non lette"
+            else:
+                perche = f"sul controller c'è ancora una tessera con il numero {numero}: {', '.join(altre)}"
+            self.nota(f"{caso}: {perche}: passaggio non fatto")
+            return
+        seconda = f"{PREFISSO}t4_vera_senza_profilo"
+        esito = await self.crea(
+            "tessera", self.modello("tessera", seconda, {"utente": utente}, IdData=[{"Name": "Card", "Value": numero}])
+        )
+        if not esito.ok:
+            self.nota(f"{caso}: tessera non scritta ({esito.spiegazione()}): passaggio non fatto")
+            return
+        esito = await self.tenta("disable_credential", seconda)
+        letta = await self.leggi("tessera", seconda)
+        if not esito.ok or not sospesa(letta):
+            perche = esito.spiegazione() if not esito.ok else f"riuscita, ma riletta con {stato_tessera(letta)}"
+            self.nota(f"{caso}: DisableCredential {perche}: passaggio non fatto")
+            return
+        lettore = punto.get("Name") or punto["token"]
+        invito = f"Passa di nuovo la tessera {numero} sul lettore di {lettore}."
+        self.descrivi_passaggio(caso, await self.passaggio("t4_disable", invito, numero, punto["token"]))
+
+    async def tessere_con_numero(self, numero: str) -> list[str] | None:
+        """Token delle tessere con quel numero sul controller; None se l'elenco non si legge."""
+        tessere = await self.elenco("tessera")
+        if tessere is None:
+            return None
+        return [str(t.get("token")) for t in tessere if con_numero(t, numero)]
 
     async def t5(self) -> None:
         """Una tessera con un numero già usato da un'altra credenziale: rifiuto o doppione?"""
@@ -1264,21 +1476,35 @@ class Kit:
             ("profilo spento senza regole", profili["spento"]["token"], True),
             ("profilo senza regola per quel punto", profili["altro_punto"]["token"], True),
             ("CredentialAccessProfile vuoto", "", True),
-            # Profilo giusto: la tessera si scrive già sospesa, così non c'è un momento in cui apre
             ("credenziale disabilitata", profili["giusto"]["token"], False),
         ]
         for caso, profilo, abilitata in casi:
             tessera = self.modello("tessera", token, {"utente": utente, "profilo": profilo}, **dati)
             if not abilitata:
+                # Profilo giusto: la tessera si scrive da capo già sospesa, e solo se SetCredential sospende davvero
+                # una tessera di prova scritta allo stesso modo, così non c'è un momento in cui apre
+                sospende, perche = await self.set_sospende("t8", utente, profilo)
+                if not sospende:
+                    self.nota(f"{caso}: SetCredential non sospende: passaggio non fatto ({perche})")
+                    continue
+                tolta = await self.tenta("remove_credential", token)
+                if not tolta.ok:
+                    self.nota(f"{caso}: tessera del caso prima non tolta ({tolta.spiegazione()}): passaggio non fatto")
+                    continue
                 tessera.update(Enabled=False, Status="Disabled")
             esito = await self.crea("tessera", tessera)
-            if esito.ok and not abilitata:
-                esito = await self.tenta("disable_credential", token)
             if not esito.ok:
-                self.nota(f"{caso}: tessera non scritta ({esito.spiegazione()})")
+                sicura = f" ({await self.metti_al_sicuro(token)})" if not abilitata else ""
+                self.nota(f"{caso}: tessera non scritta ({esito.spiegazione()}){sicura}")
                 continue
-            self.descrivi_passaggio(caso, await self.passaggio(caso, invito))
-        self.nota("nessun caso con la tessera abilitata: il kit non fa aprire porte")
+            if not abilitata:
+                esito = await self.tenta("disable_credential", token)
+                if not esito.ok:
+                    sicura = await self.metti_al_sicuro(token)
+                    self.nota(f"{caso}: DisableCredential {esito.spiegazione()}: passaggio non fatto ({sicura})")
+                    continue
+            self.descrivi_passaggio(caso, await self.passaggio(caso, invito, numero, punto["token"]))
+        self.nota("nessun caso con la tessera abilitata e un profilo che apre: il kit non fa aprire porte")
 
     async def t9(self) -> None:
         """Festività tolte con null o stringa vuota, testo delle fasce restituito uguale, lunghezze massime."""
@@ -1495,10 +1721,14 @@ class Kit:
             self.nota(f"sul sito Axis: {risposta}")
         ancora = "c'è ancora" if await self.leggi("utente", token) else "NON C'È PIÙ"
         self.nota(f"la sentinella senza tessere {ancora} alla fine della prova")
-        self.nota("il peso sui limiti non si misura qui: serve la ricerca dei limiti, che il kit non fa")
+        self.nota(
+            "il peso sui limiti non si misura qui: la sentinella è un utente, il limite degli utenti lo cerca T18 con "
+            "--limiti"
+        )
 
     async def t18(self) -> None:
-        """Molte tessere: tempi di scrittura, di lettura completa e di rimozione."""
+        """Molte tessere: tempi di scrittura, di lettura completa e di rimozione. Con --limiti anche i limiti del
+        controller e il pulsante di uscita premuto durante la scrittura."""
         n = self.quante
         self.scrivi(f"  scrivo {n} utenti e {n} tessere aam_prova_: ci vuole qualche minuto")
         profilo = f"{PREFISSO}t18_profilo"
@@ -1551,6 +1781,15 @@ class Kit:
                 self.nota(
                     f"{metodo}: media {s['media_ms']} ms, 95% entro {s['p95_ms']} ms, massimo {s['massimo_ms']} ms"
                 )
+        if self.limiti:
+            await self.t18_limiti()
+        else:
+            self.sezione["limiti"] = {"provati": False}
+            self.nota(
+                "T18 parziale: solo i tempi. NON provati i limiti con CapabilityViolated (tessere, utenti, profili, "
+                "fasce, eccezioni per fascia, regole per profilo) né le aperture con il pulsante durante la "
+                "scrittura: si provano con --limiti"
+            )
         lente = [o for o in self.sezione["operazioni"] if o["durata_s"] > 5]
         if lente:
             self.nota(f"ATTENZIONE: {len(lente)} chiamate oltre 5 s (il client aspetta al massimo 10 s)")
@@ -1559,6 +1798,315 @@ class Kit:
         )
         if risposta:
             self.nota(f"dall'operatore: {risposta}")
+
+    async def t18_limiti(self) -> None:
+        """Limiti del controller: oggetti aam_prova_ scritti uno alla volta, a blocchi, fino a CapabilityViolated o al
+        tetto, e tolti dopo ogni ricerca con la pulizia di sempre. Mentre scrive le tessere l'operatore preme il
+        pulsante di uscita della porta del banco: nessuna tessera da passare, e nessun oggetto del kit apre qualcosa
+        (i profili non hanno regole, o le hanno solo per punti di accesso del kit, senza serratura)."""
+        limiti: dict = {"provati": True, "tetti": dict(self.tetti), "risultati": {}, "rimozioni": []}
+        self.sezione["limiti"] = limiti
+        risultati = limiti["risultati"]
+        self.scrivi(f"  ricerca dei limiti, tetti: {', '.join(f'{k} {v}' for k, v in self.tetti.items())}")
+        self.leggero = True
+        try:
+            await self.pulisci_fase("i tempi")
+            porta = await self.porta_del_pulsante()
+
+            utenti: list[str] = []
+
+            async def utente(i: int) -> Esito:
+                token = f"{PREFISSO}t18_lim_u{i:05d}"
+                esito = await self.crea("utente", self.modello("utente", token))
+                if esito.ok:
+                    utenti.append(token)
+                return esito
+
+            await self.limite_a_oggetti("utenti", "utente", utente)
+            if utenti:
+                # Tessere con gli utenti appena scritti, a giro, e con un profilo senza regole: non aprono niente
+                profilo = f"{PREFISSO}t18_lim_profilo"
+                con_profilo = (await self.crea("profilo", self.modello("profilo", profilo))).ok
+
+                async def tessera(i: int) -> Esito:
+                    rif = {"utente": utenti[(i - 1) % len(utenti)], "profilo": profilo if con_profilo else ""}
+                    return await self.crea("tessera", self.modello("tessera", f"{PREFISSO}t18_lim_t{i:05d}", rif))
+
+                r = await self.limite_a_oggetti("tessere", "tessera", tessera, pulsante=porta)
+                r["utenti"], r["con_profilo"] = len(utenti), con_profilo
+            else:
+                self.non_provato("tessere", "nessun utente scritto")
+            if porta is not None and "pulsante" not in limiti:
+                self.nota("aperture con il pulsante durante la scrittura non provate: le tessere non si sono scritte")
+            await self.pulisci_fase("utenti e tessere")
+
+            async def profilo_n(i: int) -> Esito:
+                return await self.crea("profilo", self.modello("profilo", f"{PREFISSO}t18_lim_p{i:04d}"))
+
+            await self.limite_a_oggetti("profili", "profilo", profilo_n)
+            await self.pulisci_fase("profili")
+
+            async def fascia_n(i: int) -> Esito:
+                return await self.crea("fascia", self.modello("fascia", f"{PREFISSO}t18_lim_f{i:04d}"))
+
+            await self.limite_a_oggetti("fasce", "fascia", fascia_n)
+            await self.pulisci_fase("fasce")
+            await self.limite_eccezioni()
+            await self.pulisci_fase("eccezioni")
+            await self.limite_regole()
+            await self.pulisci_fase("regole")
+        finally:
+            self.leggero = False
+        trovati = []
+        for nome, r in risultati.items():
+            if r["esito"] == "CapabilityViolated":
+                trovati.append(f"{nome} {r['limite']}")
+            elif r["esito"] in ("tetto", "punti finiti"):
+                trovati.append(f"{nome} almeno {r['limite']}")
+            else:
+                trovati.append(f"{nome} non trovato ({r['esito']})")
+        self.nota(f"limiti per hardware.LIMITS: {', '.join(trovati)}")
+
+    def non_provato(self, nome: str, perche: str) -> None:
+        self.nota(f"{nome}: limite non provato, {perche}")
+        self.sezione["limiti"]["risultati"][nome] = {"esito": "non provato", "perche": perche}
+
+    def fine_ricerca(self, nome: str, risultato: dict, testo: str, spento: bool) -> dict:
+        """Il risultato di una ricerca va nel rapporto; se il controller non risponde più ferma la prova (la pulizia
+        dopo la prova riprova a togliere tutto)."""
+        self.sezione["limiti"]["risultati"][nome] = risultato
+        self.nota(f"{nome}: {testo}")
+        if spento:
+            raise RuntimeError(f"il controller non risponde durante la ricerca del limite di {nome}")
+        return risultato
+
+    async def pulisci_fase(self, dopo: str) -> None:
+        """Toglie tutti gli oggetti del kit tra una ricerca e l'altra; se resta qualcosa ferma la prova."""
+        inizio = time.monotonic()
+        pulizia = await self.pulisci()
+        durata = round(time.monotonic() - inizio, 1)
+        voce = {"dopo": dopo, "tolti": len(pulizia["tolti"]), "durata_s": durata, "non_tolti": pulizia["non_tolti"]}
+        self.sezione["limiti"]["rimozioni"].append(voce)
+        if pulizia["tolti"]:
+            self.nota(f"pulizia dopo {dopo}: {len(pulizia['tolti'])} oggetti tolti in {durata} s")
+        if pulizia["non_tolti"]:
+            raise RuntimeError(f"dopo {dopo} restano oggetti del kit: {'; '.join(pulizia['non_tolti'][:5])}")
+
+    async def porta_del_pulsante(self) -> dict | None:
+        """Punto di accesso della porta del banco, per il pulsante di uscita; None se non si prova."""
+        if not self.operatore.interattivo:
+            self.nota("aperture con il pulsante durante la scrittura non provate: serve l'operatore")
+            return None
+        punto = await self.lettore_vero(
+            "Per provare il pulsante di uscita mentre il kit scrive serve la porta del banco configurata sul "
+            "controller, con lettore e pulsante di uscita (procedura guidata della pagina del controller). "
+            "Configurala e premi Invio, oppure scrivi salta."
+        )
+        if punto is None:
+            self.nota("aperture con il pulsante durante la scrittura non provate: nessuna porta configurata")
+        return punto
+
+    async def pulsante_prima(self, punto: dict, quanti: int, nome: str) -> dict | None:
+        """Prima di un blocco: l'operatore si prepara a premere il pulsante di uscita mentre il kit scrive."""
+        porta = str(punto.get("Entity") or "")
+        nome_porta = (await self.leggi("porta", porta) or {}).get("Name") or porta
+        risposta = self.operatore.chiedi(
+            "pulsante_pronto",
+            f"Ora il kit scrive {quanti} {nome} di fila. Premi Invio e, mentre scrive, premi il PULSANTE DI USCITA "
+            f"della porta {nome_porta} una o due volte: guarda se la porta si apre subito. NON passare tessere. "
+            "Scrivi salta per non farlo.",
+        )
+        if risposta.lower() == "salta":
+            self.sezione["limiti"]["pulsante"] = {"risposta": "salta"}
+            self.nota("aperture con il pulsante durante la scrittura non provate: saltato dall'operatore")
+            return None
+        stato = {"riga": await self.ultimo_evento(), "inizio": datetime.now(tz=UTC).isoformat(timespec="seconds")}
+        self.scrivi("  scrivo: premi ora il pulsante di uscita")
+        return stato
+
+    async def pulsante_dopo(self, stato: dict, quanti: int, nome: str, durata: float) -> None:
+        risposta = self.operatore.chiedi(
+            "pulsante_esito",
+            f"Scrittura finita ({quanti} {nome} in {durata} s). Con il pulsante di uscita la porta si è aperta subito? "
+            "Scrivi sì, in ritardo (di quanti secondi), no, oppure non premuto.",
+        )
+        eventi = await self.eventi_dopo(stato["riga"])
+        self.sezione["limiti"]["pulsante"] = {
+            **stato,
+            "durante": f"{quanti} {nome}",
+            "durata_s": durata,
+            "risposta": risposta,
+            "eventi": eventi,
+        }
+        argomenti = sorted({e["argomento"] for e in eventi})
+        self.nota(
+            f"pulsante di uscita durante la scrittura di {quanti} {nome} ({durata} s): "
+            f"«{risposta or 'nessuna risposta'}»; eventi intanto: {len(eventi)} ({', '.join(argomenti) or 'nessuno'})"
+        )
+
+    async def limite_a_oggetti(
+        self, nome: str, tipo: str, crea_uno, pulsante: dict | None = None, tetto: int | None = None
+    ) -> dict:
+        """Un oggetto nuovo alla volta (crea_uno(i) scrive l'i-esimo), a blocchi, fino a CapabilityViolated, a un altro
+        errore o al tetto; tra un blocco e l'altro ricontrolla il controller. Con pulsante, durante il primo blocco
+        l'operatore preme il pulsante di uscita."""
+        tetto = tetto or self.tetti[nome]
+        blocco = blocco_di(nome, tetto)
+        elenco = await self.elenco(tipo)
+        presenti = None if elenco is None else len([o for o in elenco if not nostro(tipo, o)])
+        scritti, durate, blocchi = 0, [], []
+        fermo: Esito | None = None
+        spento = False
+        while scritti < tetto and fermo is None:
+            quanti = min(blocco, tetto - scritti)
+            attesa = await self.pulsante_prima(pulsante, quanti, nome) if pulsante and not blocchi else None
+            inizio = time.monotonic()
+            for _ in range(quanti):
+                esito = await crea_uno(scritti + 1)
+                durate.append(esito.durata)
+                if not esito.ok:
+                    fermo = esito
+                    break
+                scritti += 1
+            blocchi.append({"fino_a": scritti, "durata_s": round(time.monotonic() - inizio, 2)})
+            if attesa is not None:
+                await self.pulsante_dopo(attesa, quanti, nome, blocchi[-1]["durata_s"])
+            self.scrivi(f"  {nome}: {scritti}")
+            if (fermo is not None and fermo.irraggiungibile) or (fermo is None and not await self.identita()):
+                spento = True
+                break
+        lettura = await self.tenta(TIPI[tipo].elenco)
+        nostri = len([o for o in lettura.valore or [] if nostro(tipo, o)]) if lettura.ok else None
+        risultato: dict = {
+            "accettati": scritti,
+            "gia_presenti": presenti,
+            "tetto": tetto,
+            "blocco": blocco,
+            "scrittura": statistiche(durate),
+            "blocchi": blocchi,
+            "lettura": {"esito": lettura.spiegazione(), "durata_s": lettura.durata, "del_kit": nostri},
+        }
+        altri = f" più {presenti} già presenti" if presenti else ("" if presenti == 0 else " più quelli già presenti")
+        if fermo is not None and fermo.limite():
+            risultato.update(esito="CapabilityViolated", limite=scritti + (presenti or 0), fault=fermo.fault)
+            testo = f"CapabilityViolated al {scritti + 1}°: entrano {scritti} aam_prova_{altri}"
+        elif spento:
+            risultato.update(esito="controller non risponde", limite=None)
+            testo = f"il controller non risponde dopo {scritti}: limite non trovato"
+        elif fermo is not None:
+            risultato.update(esito="altro errore", limite=None, errore=fermo.errore, fault=fermo.fault)
+            testo = f"fermo al {scritti + 1}° per un altro errore ({fermo.spiegazione()}): limite non trovato"
+        else:
+            risultato.update(esito="tetto", limite=scritti + (presenti or 0))
+            testo = f"tetto di {tetto} raggiunto senza CapabilityViolated: entrano almeno {scritti} aam_prova_{altri}"
+        s = risultato["scrittura"]
+        if s["quante"]:
+            testo += f"; scrittura media {s['media_ms']} ms, 95% entro {s['p95_ms']} ms"
+        testo += f"; lettura completa in {lettura.durata} s ({lettura.spiegazione()})"
+        self.fine_ricerca(nome, risultato, testo, spento)
+        if nostri is not None and nostri != scritti:
+            self.nota(f"{nome}: ATTENZIONE, il controller ne elenca {nostri} del kit, non {scritti}")
+        return risultato
+
+    async def limite_in_un_oggetto(self, nome: str, scrivi_con, tetto: int | None = None) -> dict:
+        """Lo stesso oggetto riscritto con sempre più voci (scrivi_con(n) lo scrive con n), a blocchi, fino a
+        CapabilityViolated, a un altro errore o al tetto; dopo un CapabilityViolated il numero esatto si trova
+        dimezzando l'intervallo."""
+        tetto = tetto or self.tetti[nome]
+        blocco = blocco_di(nome, tetto)
+        buono, cattivo = 0, None
+        prove: list[dict] = []
+        fermo: Esito | None = None
+
+        async def prova(n: int) -> Esito:
+            esito = await scrivi_con(n)
+            prove.append({"voci": n, "esito": esito.spiegazione(), "durata_s": esito.durata})
+            return esito
+
+        n = min(blocco, tetto)
+        while True:
+            esito = await prova(n)
+            if not esito.ok:
+                fermo, cattivo = esito, n
+                break
+            buono = n
+            if n >= tetto:
+                break
+            n = min(n + blocco, tetto)
+        limite_visto = fermo is not None and fermo.limite()
+        interrotta: Esito | None = None
+        while limite_visto and cattivo - buono > 1:
+            mezzo = (buono + cattivo) // 2
+            esito = await prova(mezzo)
+            if esito.ok:
+                buono = mezzo
+            elif esito.limite():
+                cattivo = mezzo
+            else:
+                # Un altro errore a metà della ricerca: il limite resta tra buono e cattivo
+                interrotta = esito
+                break
+        risultato: dict = {"accettate": buono, "tetto": tetto, "blocco": blocco, "prove": prove}
+        if limite_visto:
+            esatto = cattivo - buono == 1
+            risultato.update(esito="CapabilityViolated", limite=buono, rifiutate=cattivo, esatto=esatto)
+            testo = f"CapabilityViolated con {cattivo}: entrano {buono}"
+            if interrotta is not None:
+                testo += f" (il limite è tra {buono} e {cattivo}: ricerca fermata da {interrotta.spiegazione()})"
+        elif fermo is not None:
+            risultato.update(esito="altro errore", limite=None, errore=fermo.errore, fault=fermo.fault)
+            testo = f"fermo con {cattivo} per un altro errore ({fermo.spiegazione()}): limite non trovato"
+        else:
+            risultato.update(esito="tetto", limite=buono)
+            testo = f"tetto di {tetto} raggiunto senza CapabilityViolated: entrano almeno {buono}"
+        spento = any(e is not None and e.irraggiungibile for e in (fermo, interrotta))
+        return self.fine_ricerca(nome, risultato, testo, spento)
+
+    async def limite_eccezioni(self) -> None:
+        """Eccezioni (giornate intere) in una fascia sola, sempre più."""
+        fascia = f"{PREFISSO}t18_lim_eccezioni"
+        primo = date(2027, 1, 1)
+
+        def eccezioni(n: int) -> str | None:
+            return holidays_ical([{"day": (primo + timedelta(days=i)).isoformat()} for i in range(n)])
+
+        async def scrivi_con(n: int) -> Esito:
+            return await self.crea("fascia", self.modello("fascia", fascia, ExceptionScheduleDefinition=eccezioni(n)))
+
+        r = await self.limite_in_un_oggetto("eccezioni", scrivi_con)
+        r["caratteri"] = len(eccezioni(r["accettate"]) or "")
+        self.nota(f"eccezioni: con {r['accettate']} il testo delle eccezioni è di {r['caratteri']} caratteri")
+
+    async def limite_regole(self) -> None:
+        """Regole in un profilo solo, una per punto di accesso come le scrive l'app: prima i punti di accesso del kit,
+        tutti sulla stessa porta e sullo stesso lettore del kit (senza configurazione: niente serratura, niente
+        morsetti), poi il profilo con sempre più regole. Nessuna tessera usa il profilo."""
+        porta, lettore = f"{PREFISSO}t18_lim_porta", f"{PREFISSO}t18_lim_lettore"
+        for tipo, token in (("porta", porta), ("lettore", lettore)):
+            esito = await self.crea(tipo, self.modello(tipo, token))
+            if not esito.ok:
+                return self.non_provato("regole", f"{tipo} del kit non creato ({esito.spiegazione()})")
+        punti: list[str] = []
+
+        async def punto(i: int) -> Esito:
+            token = f"{PREFISSO}t18_lim_ap{i:04d}"
+            esito = await self.crea("punto", self.modello("punto", token, {"porta": porta, "lettore": lettore}))
+            if esito.ok:
+                punti.append(token)
+            return esito
+
+        await self.limite_a_oggetti("punti", "punto", punto, tetto=self.tetti["regole"])
+        if not punti:
+            return self.non_provato("regole", "nessun punto di accesso del kit")
+        profilo = f"{PREFISSO}t18_lim_regole"
+
+        async def scrivi_con(n: int) -> Esito:
+            return await self.crea("profilo", self.modello("profilo", profilo, {"punti": punti[:n]}))
+
+        r = await self.limite_in_un_oggetto("regole", scrivi_con, tetto=len(punti))
+        if r["esito"] == "tetto" and len(punti) < self.tetti["regole"]:
+            r["esito"] = "punti finiti"
+            self.nota(f"regole: non si va oltre {len(punti)}, i punti di accesso del kit finiscono lì")
 
 
 async def esegui(kit: Kit, prove: list[str]) -> dict:
@@ -1580,6 +2128,14 @@ async def esegui(kit: Kit, prove: list[str]) -> dict:
     return kit.dati
 
 
+def tetto(valore: str) -> tuple[str, int]:
+    """--tetto nome=numero: tetto di una ricerca dei limiti di T18."""
+    nome, _, numero = valore.partition("=")
+    if nome not in TETTI or not numero.isdigit() or int(numero) < 1:
+        raise argparse.ArgumentTypeError(f"scrivi nome=numero con nome tra {', '.join(TETTI)}, non {valore!r}")
+    return nome, int(numero)
+
+
 def argomenti(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Prove al banco sull'A1210 (T1-T12, T16, T18). Solo su un controller di banco resettato."
@@ -1590,6 +2146,21 @@ def argomenti(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--prova", action="append", choices=ORDINE, help="solo questa prova; si può ripetere")
     parser.add_argument("--tessera", default="", help="numero della tessera da passare sul lettore (T4 e T8)")
     parser.add_argument("--quante", type=int, default=500, help="tessere da scrivere in T18 (di serie 500)")
+    parser.add_argument(
+        "--limiti",
+        action="store_true",
+        help="in T18 cerca anche i limiti del controller (CapabilityViolated) e prova il pulsante di uscita durante "
+        "la scrittura",
+    )
+    parser.add_argument(
+        "--tetto",
+        type=tetto,
+        action="append",
+        default=[],
+        metavar="NOME=NUMERO",
+        help="tetto di una ricerca dei limiti, si può ripetere; di serie "
+        + ", ".join(f"{k}={v}" for k, v in TETTI.items()),
+    )
     parser.add_argument("--uscita", help="file JSON del rapporto (di serie prove_a1210_<serie>_<ora>.json)")
     parser.add_argument("--non-interattivo", action="store_true", help="salta le parti che chiedono all'operatore")
     parser.add_argument("--verifica-certificato", action="store_true", help="verifica il certificato HTTPS")
@@ -1603,7 +2174,16 @@ def main(argv: list[str] | None = None) -> int:
     password = os.environ.get("AAM_BANCO_PASSWORD") or getpass.getpass(f"Password di {scelte.utente} sul controller: ")
     client, registro = cliente(scelte.host, scelte.utente, password, scelte.verifica_certificato)
     operatore = SenzaOperatore() if scelte.non_interattivo else Operatore()
-    kit = Kit(client, registro, scelte.serie, operatore, quante=scelte.quante, tessera=scelte.tessera)
+    kit = Kit(
+        client,
+        registro,
+        scelte.serie,
+        operatore,
+        quante=scelte.quante,
+        tessera=scelte.tessera,
+        limiti=scelte.limiti,
+        tetti=dict(scelte.tetto),
+    )
     ora = datetime.now().strftime("%Y%m%d_%H%M%S")
     kit.file = Path(scelte.uscita or f"prove_a1210_{serie_pulita(scelte.serie)}_{ora}.json")
     try:
