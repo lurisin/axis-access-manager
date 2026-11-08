@@ -329,3 +329,27 @@ async def test_first_card_changes_the_category_and_the_company_together(first_ca
     actions = [a["action"] for a in db.list_audit()]
     # Nessuna riscrittura dell'accesso dopo la tessera
     assert "accesso modificato" not in actions and "tipologia cambiata" in actions
+
+
+async def test_row_without_card_read_before_a_card_arrives(first_card, controller, db, monkeypatch):
+    """Riga senza tessera con un'altra tipologia, letta quando la persona non aveva tessere: se intanto ne ha avuta
+    una (dalla pagina Da Registrare) la riga non le toglie la scadenza."""
+    service, categories = first_card
+    rossi = await service.create_person("Ospite Rossi", "", "admin", category_id=categories["Visitatori"])
+    before = db.get_person(rossi["id"])
+    [card] = (await service.add_card(rossi["id"], "04AA", "admin"))["cards"]
+    assert card["valid_to"]
+    # L'importazione legge la persona prima della tessera
+    stale = iter([before])
+    real = db.get_person
+    monkeypatch.setattr(db, "get_person", lambda person_id: next(stale, None) or real(person_id))
+    controller.calls.clear()
+
+    [row] = (await import_persons(service, "nome;tessera;tipologia\nOspite Rossi;;Corsisti", [], "admin", True))[
+        "righe"
+    ]
+
+    assert row["esito"] == "errore" and row["dettaglio"].startswith("Ospite Rossi ha ora 1 tessera")
+    [after] = real(rossi["id"])["cards"]
+    assert (after["valid_from"], after["valid_to"]) == (card["valid_from"], card["valid_to"])
+    assert real(rossi["id"])["category_id"] == categories["Visitatori"] and controller.calls == []

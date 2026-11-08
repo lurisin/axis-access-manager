@@ -98,6 +98,7 @@ from .service import (
     DENIED_REASONS,
     INPUT_TERMINALS,
     AccessService,
+    PersonChanged,
     ServiceError,
     input_detail,
     mass_missing,
@@ -756,6 +757,11 @@ def create_app(
     async def service_error(request: Request, err: ServiceError) -> JSONResponse:
         return JSONResponse({"detail": str(err)}, status_code=400)
 
+    @app.exception_handler(PersonChanged)
+    async def person_changed(request: Request, err: PersonChanged) -> JSONResponse:
+        # Niente è stato modificato: l'interfaccia rilegge la scheda della persona e mostra il motivo
+        return JSONResponse({"detail": str(err)}, status_code=409)
+
     @app.exception_handler(UserError)
     async def user_error(request: Request, err: UserError) -> JSONResponse:
         return JSONResponse({"detail": str(err)}, status_code=400)
@@ -1103,12 +1109,21 @@ def create_app(
     @app.put("/api/persons/{person_id}/access", dependencies=[need("persone_modifica")])
     async def set_access(person_id: int, body: AccessIn, request: Request) -> dict:
         return await request.app.state.service.set_person_access(
-            person_id, body.group, body.valid_from, body.valid_to, request_user(request), body.category_id
+            person_id,
+            body.group,
+            body.valid_from,
+            body.valid_to,
+            request_user(request),
+            body.category_id,
+            # Validità non mandata (il modulo di chi non ha tessere) non vuol dire «senza scadenza»: se intanto la
+            # persona ha una tessera la richiesta si rifiuta
+            with_validity={"valid_from", "valid_to"} <= body.model_fields_set,
         )
 
     @app.delete("/api/persons/{person_id}", dependencies=[need("persone_modifica")])
-    async def delete_person(person_id: int, request: Request) -> dict:
-        await request.app.state.service.delete_person(person_id, request_user(request))
+    async def delete_person(person_id: int, request: Request, cards: Annotated[int | None, Query(ge=0)] = None) -> dict:
+        # cards: le tessere contate nella conferma; con un altro numero (scheda vecchia) non si elimina niente
+        await request.app.state.service.delete_person(person_id, request_user(request), cards)
         return {"ok": True}
 
     @app.post("/api/persons/{person_id}/cards", dependencies=[need("persone_modifica")])

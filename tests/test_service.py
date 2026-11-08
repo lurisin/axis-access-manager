@@ -421,6 +421,34 @@ async def test_access_of_a_person_without_cards(service, controller, db):
     assert person["category_id"] == category and controller.calls == []
 
 
+async def test_request_prepared_without_cards_does_not_touch_a_card_added_meanwhile(service, controller, db):
+    """Tipologia senza validità (il modulo di chi non ha tessere) e Elimina Persona con 0 tessere contate: con una
+    tessera arrivata nel frattempo non cambia niente, né nell'app né sul controller."""
+    guest = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "p2", "valid_days": 1, "description": ""}
+    )
+    person = await service.create_person("Gina", "", "admin", category_id=guest)
+    # Senza tessere va come prima
+    await service.set_person_access(person["id"], "", "", "", "admin", category_id=guest, with_validity=False)
+    [card] = (await service.add_card(person["id"], "04aa", "admin"))["cards"]
+    controller.calls.clear()
+
+    with pytest.raises(PersonChanged, match="Gina ha ora 1 tessera: salva di nuovo l'accesso"):
+        await service.set_person_access(person["id"], "", "", "", "admin", category_id=guest, with_validity=False)
+    with pytest.raises(PersonChanged, match="Gina ha ora 1 tessera: conferma l'eliminazione"):
+        await service.delete_person(person["id"], "admin", cards=0)
+
+    [after] = db.get_person(person["id"])["cards"]
+    assert (after["valid_from"], after["valid_to"]) == (card["valid_from"], card["valid_to"]) != ("", "")
+    assert controller.calls == [] and controller.credentials[card["axis_credential_token"]]["ValidTo"]
+    # Tessera tolta nel frattempo da un'altra scheda: la conferma ne contava una
+    await service.delete_card(card["id"], "admin")
+    with pytest.raises(PersonChanged, match="Gina non ha più tessere"):
+        await service.delete_person(person["id"], "admin", cards=1)
+    await service.delete_person(person["id"], "admin", cards=0)
+    assert db.list_persons() == []
+
+
 async def test_sync_keeps_persons_without_cards(service, controller, db):
     anna = await service.create_person("Anna", "", "admin", company="Pulizie")
     token = controller.add_existing("utente_mario", "Mario Rossi", "04aa")

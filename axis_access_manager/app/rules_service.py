@@ -866,8 +866,9 @@ class RulesService:
             raise ServiceError("la persona non ha una tipologia")
         cards = person["cards"]
         first = cards[0] if cards else {"valid_from": "", "valid_to": ""}
+        # Letta senza tessere: una tessera arrivata prima della scrittura tiene la sua validità
         return await self.access.set_person_access(
-            person_id, category["group_token"], first["valid_from"], first["valid_to"], user
+            person_id, category["group_token"], first["valid_from"], first["valid_to"], user, with_validity=bool(cards)
         )
 
     async def refresh_category_profiles(self) -> int:

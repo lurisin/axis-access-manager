@@ -825,14 +825,24 @@ class AccessService:
         valid_to: str,
         user: str,
         category_id: int | None = None,
+        with_validity: bool = True,
     ) -> dict:
-        """Gruppo e validità per tutte le tessere della persona; category_id None lascia la tipologia com'è."""
+        """Gruppo e validità per tutte le tessere della persona; category_id None lascia la tipologia com'è.
+
+        with_validity False: la richiesta non dice la validità (il modulo di una persona senza tessere). Se intanto la
+        persona ne ha avuta una non si cambia niente: le date vuote le toglierebbero la scadenza."""
         category = self._category(category_id)
         if category and not group:
             group = category["group_token"]
         access = self._access(group, valid_from, valid_to)
         async with self.lock:
             person = self._person(person_id)
+            if person["cards"] and not with_validity:
+                # Scheda aperta quando non ne aveva: la tessera arrivata nel frattempo resterebbe senza scadenza
+                raise PersonChanged(
+                    f"{person['name']} ha ora {plural(len(person['cards']), 'tessera', 'tessere')}: salva di nuovo "
+                    "l'accesso dalla scheda aggiornata, con la validità"
+                )
             if not person["cards"] and (access["valid_from"] or access["valid_to"]):
                 # La validità sta sulle tessere: la prima prende la durata della tipologia
                 raise ServiceError("senza tessere la validità non si può salvare: aggiungi prima una tessera")
@@ -943,9 +953,16 @@ class AccessService:
             self._changed()
             return self.db.get_person(person["id"])
 
-    async def delete_person(self, person_id: int, user: str) -> None:
+    async def delete_person(self, person_id: int, user: str, cards: int | None = None) -> None:
+        """cards: quante tessere ha la persona per chi chiede di eliminarla (la conferma le conta); se ne ha un altro
+        numero non si elimina niente. None: tutte quelle che ha."""
         async with self.lock:
             person = self._person(person_id)
+            if cards is not None and len(person["cards"]) != cards:
+                # Per esempio «Non ha tessere» su una scheda vecchia, e intanto una tessera assegnata
+                have = len(person["cards"])
+                now = f"ha ora {plural(have, 'tessera', 'tessere')}" if have else "non ha più tessere"
+                raise PersonChanged(f"{person['name']} {now}: conferma l'eliminazione dalla scheda aggiornata")
             for card in person["cards"]:
                 if not card["missing_since"]:
                     await self.controller.remove_credential(card["axis_credential_token"])

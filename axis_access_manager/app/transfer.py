@@ -321,6 +321,8 @@ async def _update(service: AccessService, person: dict, card: dict, changes: dic
             changes["valida_al"][0] if "valida_al" in changes else card.get("valid_to") or "",
             user,
             changes["tipologia"][0]["id"] if "tipologia" in changes else None,
+            # Letta senza tessere: se intanto ne ha avuta una la sua validità non si conosce, e non si toglie
+            with_validity=bool(card),
         )
 
 
