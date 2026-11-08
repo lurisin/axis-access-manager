@@ -878,8 +878,10 @@ class Kit:
 
     async def set_sospende(self, sigla: str, utente: str, profilo: str) -> tuple[bool, str]:
         """SetCredential con Enabled false scrive davvero una tessera nuova sospesa, anche con un profilo che apre?
-        Lo prova con una tessera del kit, che ha un numero che nessuno ha in mano, e la toglie subito; se no, dice
-        perché."""
+        Lo prova con una tessera del kit, che ha un numero che nessuno ha in mano, e la toglie subito. Se no, dice
+        perché: «SetCredential non sospende» solo se la tessera è stata scritta e riletta non sospesa; una scrittura o
+        una rilettura che non riesce per altri motivi lascia la domanda aperta («prova della sospensione non
+        conclusa»)."""
         prova = f"{PREFISSO}{sigla}_prova_sospesa"
         tessera = self.modello(
             "tessera", prova, {"utente": utente, "profilo": profilo}, Enabled=False, Status="Disabled"
@@ -888,9 +890,17 @@ class Kit:
         letta = await self.leggi("tessera", prova)
         await self.tenta("remove_credential", prova)
         if not esito.ok:
-            return False, f"tessera di prova {prova} non scritta: {esito.spiegazione()}"
+            return (
+                False,
+                f"prova della sospensione non conclusa: tessera di prova {prova} non scritta: {esito.spiegazione()}",
+            )
+        if not isinstance(letta, dict):
+            return False, f"prova della sospensione non conclusa: tessera di prova {prova} scritta ma non riletta"
         if not sospesa(letta):
-            return False, f"tessera di prova {prova} scritta sospesa e riletta con {stato_tessera(letta)}"
+            return False, (
+                f"SetCredential non sospende: tessera di prova {prova} scritta sospesa e riletta con "
+                f"{stato_tessera(letta)}"
+            )
         return True, ""
 
     def descrivi_passaggio(self, caso: str, eventi: list[dict] | None) -> None:
@@ -1283,7 +1293,7 @@ class Kit:
         # non si scrive nemmeno: non c'è un momento in cui apre
         sospende, perche = await self.set_sospende("t4", utente, profilo)
         if not sospende:
-            self.nota(f"{caso}: SetCredential non sospende: passaggio non fatto ({perche})")
+            self.nota(f"{caso}: passaggio non fatto ({perche})")
             return
         vera = f"{PREFISSO}t4_tessera_vera"
         tessera = self.modello(
@@ -1298,11 +1308,13 @@ class Kit:
         letta = await self.leggi("tessera", vera)
         if not esito.ok or not sospesa(letta):
             sicura = await self.metti_al_sicuro(vera)
-            if esito.ok:
+            if esito.ok and isinstance(letta, dict):
                 self.nota(
                     f"{caso}: SetCredential non sospende: passaggio non fatto (tessera vera riletta con "
                     f"{stato_tessera(letta)}; {sicura})"
                 )
+            elif esito.ok:
+                self.nota(f"{caso}: tessera vera scritta ma non riletta: passaggio non fatto ({sicura})")
             else:
                 self.nota(f"{caso}: tessera vera non scritta ({esito.spiegazione()}): passaggio non fatto ({sicura})")
             return
@@ -1485,7 +1497,7 @@ class Kit:
                 # una tessera di prova scritta allo stesso modo, così non c'è un momento in cui apre
                 sospende, perche = await self.set_sospende("t8", utente, profilo)
                 if not sospende:
-                    self.nota(f"{caso}: SetCredential non sospende: passaggio non fatto ({perche})")
+                    self.nota(f"{caso}: passaggio non fatto ({perche})")
                     continue
                 tolta = await self.tenta("remove_credential", token)
                 if not tolta.ok:
@@ -1859,8 +1871,11 @@ class Kit:
             self.leggero = False
         trovati = []
         for nome, r in risultati.items():
-            if r["esito"] == "CapabilityViolated":
+            if r["esito"] == "CapabilityViolated" and r.get("esatto", True):
                 trovati.append(f"{nome} {r['limite']}")
+            elif r["esito"] == "CapabilityViolated":
+                # Ricerca interrotta da un altro errore: il limite vero sta fra l'ultimo accettato e il primo rifiutato
+                trovati.append(f"{nome} almeno {r['limite']} (tra {r['limite']} e {r['rifiutate']})")
             elif r["esito"] in ("tetto", "punti finiti"):
                 trovati.append(f"{nome} almeno {r['limite']}")
             else:

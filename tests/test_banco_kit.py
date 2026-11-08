@@ -613,8 +613,8 @@ async def test_t4_and_t8_never_ask_a_swipe_with_a_card_that_opens(variant):
     assert {code: test["esito"] for code, test in data["prove"].items()} == {"T4": "fatta", "T8": "fatta"}
     notes = {code: "\n".join(test["osservazioni"]) for code, test in data["prove"].items()}
     if variant != "unisce_disable_rifiutato":
-        assert "sospesa con SetCredential: SetCredential non sospende: passaggio non fatto" in notes["T4"]
-        assert "credenziale disabilitata: SetCredential non sospende: passaggio non fatto" in notes["T8"]
+        assert "sospesa con SetCredential: passaggio non fatto (SetCredential non sospende:" in notes["T4"]
+        assert "credenziale disabilitata: passaggio non fatto (SetCredential non sospende:" in notes["T8"]
         assert "t4_set_disabled" not in operator.asked and "credenziale disabilitata" not in operator.asked
     if variant != "ignora_enabled":
         assert "sospesa con DisableCredential, senza profilo (confronta con T8): DisableCredential" in notes["T4"]
@@ -644,6 +644,32 @@ async def test_t4_never_writes_the_real_card_enabled_with_its_profile():
 
     assert seen == []
     assert leftovers(controller) == []
+
+
+class RefusesTheProbeCard(FakeController):
+    """SetCredential della tessera di prova rifiutata per un motivo che con la sospensione non c'entra."""
+
+    async def set_credential(self, credential):
+        if str(credential.get("token") or "").endswith("_prova_sospesa"):
+            raise refused("ter:InvalidArgVal")
+        return await super().set_credential(credential)
+
+
+async def test_probe_card_not_written_is_not_an_answer_about_suspension():
+    """La tessera di prova non scritta (rifiuto, tempo scaduto) non dice che SetCredential non sospende: la prova
+    resta non conclusa e il passaggio non si chiede."""
+    controller = RefusesTheProbeCard.factory()
+    controller.serial = SERIAL
+    operator = SwipeWatcher(controller)
+    bench, server, _ = make_kit(controller, operator)
+
+    data = await kit.esegui(bench, ["T4", "T8"])
+
+    notes = {code: "\n".join(test["osservazioni"]) for code, test in data["prove"].items()}
+    assert "sospesa con SetCredential: passaggio non fatto (prova della sospensione non conclusa:" in notes["T4"]
+    assert "credenziale disabilitata: passaggio non fatto (prova della sospensione non conclusa:" in notes["T8"]
+    assert "SetCredential non sospende" not in notes["T4"] + notes["T8"]
+    assert operator.opening == [] and leftovers(controller) == []
 
 
 async def configured_bench():
@@ -783,6 +809,16 @@ class LimitedController(FakeController):
         exists = any(a["token"] == access_point.get("token") for a in self.access_points)
         self._full("punti", exists, len(self.access_points))
         return await super().create_access_point(access_point)
+
+
+class InterruptedSearch(LimitedController):
+    """Durante il dimezzamento delle eccezioni un altro rifiuto: il limite resta solo un intervallo."""
+
+    async def set_schedule(self, schedule):
+        exceptions = str(schedule.get("ExceptionScheduleDefinition") or "").count("BEGIN:VEVENT")
+        if schedule.get("token") == f"{PREFIX}t18_lim_eccezioni" and 25 < exceptions < 50:
+            raise refused("ter:InvalidArgVal")
+        return await super().set_schedule(schedule)
 
 
 class ButtonOperator(BenchOperator):
@@ -978,3 +1014,24 @@ def test_limits_options_on_the_command_line():
             kit.argomenti(["--host", "x", "--serie", "y", "--tetto", wrong])
     bench = kit.Kit(None, kit.Registratore(None), "y", kit.SenzaOperatore(), tetti={"tessere": 5000})
     assert bench.tetti == {**kit.TETTI, "tessere": 5000}
+
+
+async def test_t18_limit_found_only_as_a_range_is_not_given_as_exact():
+    controller = InterruptedSearch.factory()
+    controller.serial = SERIAL
+    controller.capacity = {"eccezioni": 37}
+    caps = dict.fromkeys(kit.TETTI, 100) | {"eccezioni": 250}
+    bench, server, _ = make_kit(controller, ButtonOperator(controller), quante=2, limiti=True, tetti=caps)
+
+    data = await kit.esegui(bench, ["T18"])
+
+    result = data["prove"]["T18"]["limiti"]["risultati"]["eccezioni"]
+    assert (result["esito"], result["limite"], result["rifiutate"], result["esatto"]) == (
+        "CapabilityViolated",
+        25,
+        50,
+        False,
+    )
+    notes = "\n".join(data["prove"]["T18"]["osservazioni"])
+    assert "eccezioni almeno 25 (tra 25 e 50)" in notes
+    assert leftovers(controller) == []
