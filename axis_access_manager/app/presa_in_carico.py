@@ -655,11 +655,11 @@ def _take_schedules(conf: dict, inputs: dict, lists: dict, notes: list[dict]) ->
             row["schedule"] = renamed[row["schedule"]]
 
 
-def confronto(conf: dict, letto: dict, controller_id: int) -> dict:
+def confronto(conf: dict, letto: dict, controller_id: int, kinds=None) -> dict:
     """Presa in carico, stato voluto e confronto in una volta, in memoria e in sola lettura: cosa l'app prenderebbe
     in carico («prende»), cosa riporterebbe com'è nell'app, cosa ricreerebbe e cosa toglierebbe. Come compare.compare,
-    più "notes": le note della presa in carico."""
+    più "notes": le note della presa in carico. kinds: i tipi da confrontare (compare.KINDS), None tutti."""
     adopted, notes = presa_in_carico(conf, letto, controller_id)
-    result = compare(build(adopted, controller_id), letto, notes)
+    result = compare(build(adopted, controller_id, kinds), letto, notes)
     result["notes"] = notes
     return result

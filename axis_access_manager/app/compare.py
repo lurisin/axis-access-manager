@@ -255,17 +255,19 @@ def lists_for(kinds=None) -> list[str]:
 async def read_strict(client, kinds=None) -> dict:
     """Legge dal controller gli elenchi che servono ai tipi kinds (vedi lists_for), solo con letture.
 
-    Restituisce {"lists": {elenco: oggetti}, "unread": {elenco: motivo}, "serial": numero di serie}: ogni elenco
-    chiesto è in lists, se si è letto davvero, oppure in unread. Non letto è una risposta senza la chiave dell'elenco
-    (la lettura strict del client), un rifiuto o il controller che non risponde: dopo il primo «non risponde» gli
-    elenchi rimasti non si chiedono neanche, e restano non letti con lo stesso motivo. Non solleva eccezioni del
-    controller. "device" sono le impostazioni del dispositivo: dentro ci sono solo quelle lette."""
+    Restituisce {"lists": {elenco: oggetti}, "unread": {elenco: motivo}, "serial": numero di serie, "offline":
+    motivo}: ogni elenco chiesto è in lists, se si è letto davvero, oppure in unread. Non letto è una risposta senza la
+    chiave dell'elenco (la lettura strict del client), un rifiuto o il controller che non risponde: dopo il primo «non
+    risponde» gli elenchi rimasti non si chiedono neanche, e restano non letti con lo stesso motivo, che è anche in
+    offline (vuoto se il controller ha risposto fino alla fine). Non solleva eccezioni del controller. "device" sono
+    le impostazioni del dispositivo: dentro ci sono solo quelle lette."""
     keys = lists_for(kinds)
-    reading: dict = {"lists": {}, "unread": {}, "serial": ""}
+    reading: dict = {"lists": {}, "unread": {}, "serial": "", "offline": ""}
     try:
         info = await client.device_info()
     except ControllerUnreachable as err:
         reading["unread"] = dict.fromkeys(keys, str(err))
+        reading["offline"] = str(err)
         return reading
     except VapixError as err:
         info, info_error = None, str(err)
@@ -304,6 +306,7 @@ async def read_strict(client, kinds=None) -> dict:
                     _LOGGER.debug("%s non letto: %s", method, err)
             device = _device(info, *(values.get(method) for _, method in DEVICE_READS))
             reading["lists"][DEVICE] = {k: v for k, v in device.items() if k not in dict(DEVICE_READS) or k in read}
+    reading["offline"] = offline
     return reading
 
 
@@ -931,7 +934,9 @@ def compare(voluto: dict, letto: dict, notes: list[dict] | None = None) -> dict:
             item = _make(kind, key, action, want, have, names)
             if action == "uguale":
                 item["changes"] = _differences(
-                    normalize(kind, project(kind, have, want)), normalize(kind, want), COMPARE_NAMES
+                    _without_pin(normalize(kind, project(kind, have, want))),
+                    _without_pin(normalize(kind, want)),
+                    COMPARE_NAMES,
                 )
                 if item["changes"]:
                     item.update(action="riporta", text=ACTIONS["riporta"])
@@ -955,6 +960,18 @@ def compare(voluto: dict, letto: dict, notes: list[dict] | None = None) -> dict:
                     item["surprises"].append(SURPRISE_SCHEDULE)
                     rows.append(item)
     return {"rows": rows, "unread": unread}
+
+
+def _without_pin(data: dict) -> dict:
+    """Senza il valore del PIN e degli altri dati della tessera che non sono il numero: le differenze si mostrano nella
+    pagina del controller e nel log. L'app non scrive PIN, quindi un PIN sul controller resta una differenza."""
+    if not isinstance(data.get("IdData"), list):
+        return data
+    items = [
+        {**item, "Value": "••••"} if isinstance(item, dict) and item.get("Name") != "Card" else item
+        for item in data["IdData"]
+    ]
+    return {**data, "IdData": items}
 
 
 def _make(kind: str, key: str, action: str, wanted: dict | None, current: dict | None, names: dict) -> dict:

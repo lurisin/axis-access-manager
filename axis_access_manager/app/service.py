@@ -27,6 +27,8 @@ GRANT_LOG_TAIL = 30
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
 # Descrizione degli utenti che l'app crea sul controller
 USER_DESCRIPTION = "Registrato da Axis Access Manager"
+# Elenco degli utenti letto vuoto dalla sincronizzazione (senza strict): per il confronto in ombra non è letto
+USERS_UNSURE = "utenti: elenco vuoto, che senza la lettura strict non si distingue da un elenco non mandato"
 
 # Ruoli degli ingressi del controller che aprono la porta: tipo di apertura per il registro
 INPUT_SOURCES = {"rex": "Pulsante Uscita", "intercom": "Relè Citofono"}
@@ -241,6 +243,8 @@ class AccessService:
         self.after_event: Callable[[dict], Awaitable[None]] | None = None
         # Chiamata quando cambia qualcosa che Home Assistant mostra (porta, contatori)
         self.on_change: Callable[[], Awaitable[None]] | None = None
+        # Chiamata dopo ogni sincronizzazione riuscita, con la sua lettura di tessere e utenti (confronto in ombra)
+        self.after_sync: Callable[[dict], Awaitable[None]] | None = None
         self._tasks: set[asyncio.Task] = set()
         # Ultimi esiti del controller: lo stesso diniego arriva su più topic e va registrato una volta
         self._recent_decisions: deque[tuple] = deque(maxlen=20)
@@ -420,12 +424,20 @@ class AccessService:
             raise ServiceError(f"sincronizzazione sospesa: {paused}")
         async with self.lock:
             credentials = await self.controller.list_credentials()
+            # La stessa lettura per il confronto in ombra. Gli utenti si leggono senza strict: un elenco vuoto non si
+            # distingue da una risposta senza l'elenco, quindi non vale come letto
+            reading = {"lists": {"credentials": credentials}, "unread": {}, "serial": ""}
             try:
                 users = await self.controller.list_users()
             except VapixError as err:
                 # Senza elenco utenti i nomi si prendono dalla descrizione delle tessere
                 _LOGGER.warning("Elenco utenti non leggibile: %s", err)
                 users = []
+                reading["unread"]["users"] = f"utenti: {err}"
+            if users:
+                reading["lists"]["users"] = users
+            else:
+                reading["unread"].setdefault("users", USERS_UNSURE)
             names = {u.get("token"): (u.get("Name") or "").strip() for u in users}
             seen_cards: set[str] = set()
             added = 0
@@ -488,7 +500,7 @@ class AccessService:
             except VapixError as err:
                 _LOGGER.debug("Punti di accesso non leggibili: %s", err)
             self._changed()
-            return {
+            result = {
                 "cards": len(seen_cards),
                 "added": added,
                 "removed": 0,
@@ -496,6 +508,13 @@ class AccessService:
                 "new_missing": len(new_missing),
                 "mass_missing": mass_missing(len(cards), len(missing)),
             }
+        if self.after_sync is not None:
+            # Fuori dal lock: le operazioni sulle tessere non aspettano il confronto
+            try:
+                await self.after_sync(reading)
+            except Exception:  # noqa: BLE001 - il confronto in ombra non cambia l'esito della sincronizzazione
+                _LOGGER.exception("Confronto in ombra di utenti e tessere non riuscito")
+        return result
 
     @staticmethod
     def _card_changed(card: dict, person_id: int, number: str, enabled: bool, access: dict) -> bool:
