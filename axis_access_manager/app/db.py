@@ -8,6 +8,7 @@ import logging
 import shutil
 import sqlite3
 import threading
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, time, timedelta
@@ -302,6 +303,8 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
         # Prima della 0.26.0 la modalità degli ingressi di allarme non contava e si salvava sempre "no"
         ["UPDATE controller_inputs SET contact = '' WHERE role = 'alarm'"],
     ),
+    # Solo aggiunte, il registro non si riscrive: vedi _events_controller e _new_install_id
+    (9, "controller degli eventi e identità dell'installazione", []),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 # Ultimo accesso di ogni persona e passaggi di una persona senza leggere tutto il registro (un anno: 1,5 milioni).
@@ -322,12 +325,23 @@ READ_SLOTS = 2
 SETTING_APP_VERSION = "app_version"
 # Numero più alto mai dato a una persona: i numeri delle persone eliminate non si riusano
 SETTING_LAST_PERSON = "persons_last_id"
+# Identità di questa installazione (uuid4): sta nel database, quindi un ripristino di Home Assistant la riporta uguale
+# e un database ripartito vuoto ne ha una nuova. Fuori dai backup dell'app (vedi backup.SETTINGS_KEPT)
+SETTING_INSTALL_ID = "install_id"
 
 
 # Campi degli eventi che servono alle pagine (il messaggio originale resta nel database)
 EVENT_COLUMNS = "id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door, recovered"
 # Origini fisse degli eventi: nel database il codice, per l'utente l'etichetta
 SOURCE_LABELS = {"lettore": "Lettore", "controller": "Controller", "porta": "Porta"}
+
+
+def events_of_controller(controller_id: int, primary: bool) -> tuple[str, tuple]:
+    """Condizione SQL e parametri per leggere gli eventi di un controller. events.controller_id NULL vuol dire il
+    controller principale: gli eventi di prima della 0.27.0 e quelli registrati senza un controller configurato."""
+    if primary:
+        return "(controller_id = ? OR controller_id IS NULL)", (controller_id,)
+    return "controller_id = ?", (controller_id,)
 
 
 def _in_event_loop() -> bool:
@@ -443,6 +457,9 @@ class Database:
                         self._add_legacy_columns()
                     if step == 8:
                         self._generic_inputs_history()
+                    if step == 9:
+                        self._events_controller()
+                        self._new_install_id()
                     for sql in statements:
                         self._conn.execute(sql)
                     self._conn.execute(f"PRAGMA user_version = {step}")
@@ -524,6 +541,24 @@ class Database:
                 sets = ", ".join(f"{column} = ?" for column in values)
                 self._conn.execute(f"UPDATE controller_changes SET {sets} WHERE id = ?", (*values.values(), row["id"]))
 
+    def _events_controller(self) -> None:
+        """Migrazione 9: events.controller_id, il controller che ha mandato l'evento (lo scrive chi riceve gli eventi,
+        vedi AccessService.controller_id). NULL vuol dire il controller principale (vedi events_of_controller): le
+        righe che ci sono restano NULL. Un UPDATE riscriverebbe tutto il registro (un anno, con le foto, sono
+        centinaia di migliaia di righe) e con il disco quasi pieno non finirebbe; ADD COLUMN senza valore predefinito
+        cambia solo lo schema. Senza REFERENCES: gli eventi restano anche dopo l'eliminazione del controller."""
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(events)")}
+        # Già presente in un database riportato a mano a uno schema precedente: non si aggiunge due volte
+        if "controller_id" not in columns:
+            self._conn.execute("ALTER TABLE events ADD COLUMN controller_id INTEGER")
+
+    def _new_install_id(self) -> None:
+        """Migrazione 9, anche per un database nuovo: identità dell'installazione, creata una volta se manca."""
+        self._conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
+            (SETTING_INSTALL_ID, str(uuid.uuid4())),
+        )
+
     def _add_legacy_columns(self) -> None:
         for table, column, definition in LEGACY_COLUMNS:
             columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
@@ -534,6 +569,11 @@ class Database:
     def schema_version(self) -> int:
         with self._lock:
             return self._conn.execute("PRAGMA user_version").fetchone()[0]
+
+    @property
+    def install_id(self) -> str:
+        """Identità di questa installazione (vedi SETTING_INSTALL_ID e _new_install_id)."""
+        return self.get_setting(SETTING_INSTALL_ID)
 
     def close(self) -> None:
         with self._read_lock:
@@ -1414,10 +1454,12 @@ class Database:
         door: str = "",
         recovered: bool = False,
         ref: str = "",
+        controller_id: int | None = None,
     ) -> int:
+        """controller_id: il controller che ha mandato l'evento; None (NULL) vuol dire il principale."""
         return self._execute(
-            "INSERT INTO events (ts, kind, card, person_id, person_name, detail, source, raw, door, recovered, ref) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO events (ts, kind, card, person_id, person_name, detail, source, raw, door, recovered, ref, "
+            "controller_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 ts,
                 kind,
@@ -1430,6 +1472,7 @@ class Database:
                 door,
                 int(recovered),
                 ref,
+                controller_id,
             ),
         )
 

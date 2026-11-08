@@ -58,6 +58,11 @@ def _fault_code(data) -> str:
     return " ".join(str(p) for p in parts if p not in (None, ""))
 
 
+def _is_not_found(fault: str) -> bool:
+    """Il codice è proprio NotFound (ter:NotFound): non ReferenceNotFound, che dice un riferimento mancante."""
+    return any(part.rsplit(":", 1)[-1] == "NotFound" for part in fault.split())
+
+
 def _refused(what: str, fault: str) -> VapixError:
     reason = next((text for code, text in FAULT_TEXTS.items() if code in fault), "")
     return VapixError(f"il controller ha rifiutato {what}" + (f" ({reason})" if reason else ""), fault)
@@ -324,7 +329,9 @@ class A1210Client:
         return data.get("DoorInfo", [])
 
     async def _list_all(self, path: str, method: str, key: str, required: bool = False) -> list[dict]:
-        """Elenco completo letto a pagine da CREDENTIAL_PAGE_SIZE."""
+        """Elenco completo letto a pagine da CREDENTIAL_PAGE_SIZE. required (strict per gli elenchi che lo
+        chiedono): una risposta senza la chiave dell'elenco è un errore e non un elenco vuoto, «non letto» non è
+        «vuoto»."""
         items: list[dict] = []
         start: str | None = None
         while True:
@@ -332,7 +339,7 @@ class A1210Client:
             if start:
                 request["StartReference"] = start
             data = await self._post(path, {method: request})
-            if required and key not in data:
+            if required and (not isinstance(data, dict) or key not in data):
                 raise VapixError("risposta del controller non riconosciuta")
             items.extend(data.get(key) or [])
             start = data.get("NextStartReference")
@@ -342,9 +349,9 @@ class A1210Client:
     async def list_credentials(self) -> list[dict]:
         return await self._list_all("/vapix/pacs", "pacsaxis:GetCredentialList", "Credential", required=True)
 
-    async def list_users(self) -> list[dict]:
+    async def list_users(self, *, strict: bool = False) -> list[dict]:
         """Tutti gli utenti (titolari delle tessere)."""
-        return await self._list_all("/vapix/pacs", "axudb:GetUserList", "User")
+        return await self._list_all("/vapix/pacs", "axudb:GetUserList", "User", required=strict)
 
     async def get_users(self, tokens: list[str]) -> list[dict]:
         data = await self._post("/vapix/pacs", {"axudb:GetUser": {"Token": tokens}})
@@ -355,7 +362,7 @@ class A1210Client:
         await self._post("/vapix/pacs", {"axudb:SetUser": {"User": [user]}})
 
     async def remove_user(self, token: str) -> None:
-        await self._post("/vapix/pacs", {"axudb:RemoveUser": {"Token": [token]}})
+        await self._remove_if_present("/vapix/pacs", "axudb:RemoveUser", token)
 
     async def get_credentials(self, tokens: list[str]) -> list[dict]:
         data = await self._post("/vapix/pacs", {"pacsaxis:GetCredential": {"Token": tokens}})
@@ -367,7 +374,7 @@ class A1210Client:
         return _first_token(data, credential)
 
     async def remove_credential(self, token: str) -> None:
-        await self._post("/vapix/pacs", {"pacsaxis:RemoveCredential": {"Token": [token]}})
+        await self._remove_if_present("/vapix/pacs", "pacsaxis:RemoveCredential", token)
 
     async def enable_credential(self, token: str) -> None:
         await self._post("/vapix/pacs", {"pacsaxis:EnableCredential": {"Token": token}})
@@ -377,8 +384,8 @@ class A1210Client:
 
     # Gruppi (profili di accesso) e punti di accesso
 
-    async def list_access_points(self) -> list[dict]:
-        return await self._list_all("/vapix/pacs", "pacsaxis:GetAccessPointList", "AccessPoint")
+    async def list_access_points(self, *, strict: bool = False) -> list[dict]:
+        return await self._list_all("/vapix/pacs", "pacsaxis:GetAccessPointList", "AccessPoint", required=strict)
 
     async def list_access_profiles(self) -> list[dict]:
         return await self._list_all("/vapix/pacs", "pacsaxis:GetAccessProfileList", "AccessProfile", required=True)
@@ -393,11 +400,13 @@ class A1210Client:
         return _first_token(data, profile)
 
     async def remove_access_profile(self, token: str) -> None:
-        await self._post("/vapix/pacs", {"pacsaxis:RemoveAccessProfile": {"Token": [token]}})
+        await self._remove_if_present("/vapix/pacs", "pacsaxis:RemoveAccessProfile", token)
 
-    async def list_authentication_profiles(self) -> list[dict]:
+    async def list_authentication_profiles(self, *, strict: bool = False) -> list[dict]:
         """Modi di identificazione dei punti di accesso (CardOnly, REXOnly... e quelli creati a mano)."""
-        return await self._list_all("/vapix/pacs", "pacsaxis:GetAuthenticationProfileList", "AuthenticationProfile")
+        return await self._list_all(
+            "/vapix/pacs", "pacsaxis:GetAuthenticationProfileList", "AuthenticationProfile", required=strict
+        )
 
     async def set_authentication_profile(self, profile: dict) -> None:
         await self._post("/vapix/pacs", {"pacsaxis:SetAuthenticationProfile": {"AuthenticationProfile": [profile]}})
@@ -423,7 +432,7 @@ class A1210Client:
         return _first_token(data, schedule)
 
     async def remove_schedule(self, token: str) -> None:
-        await self._post("/vapix/schedule", {"axsch:RemoveSchedule": {"Token": [token]}})
+        await self._remove_if_present("/vapix/schedule", "axsch:RemoveSchedule", token)
 
     # Programmazione: porte, lettori (IdPoint) e punti di accesso
 
@@ -438,8 +447,10 @@ class A1210Client:
         data = await self._post("/vapix/doorcontrol", {"axtdc:SetDoor": {"Door": [door]}})
         return _first_token(data, door)
 
-    async def list_door_configurations(self) -> list[dict]:
-        return await self._list_all("/vapix/doorcontrol", "axtdc:GetDoorConfigurationList", "DoorConfiguration")
+    async def list_door_configurations(self, *, strict: bool = False) -> list[dict]:
+        return await self._list_all(
+            "/vapix/doorcontrol", "axtdc:GetDoorConfigurationList", "DoorConfiguration", required=strict
+        )
 
     async def set_door_configuration(self, configuration: dict) -> None:
         """Serratura, contatto porta e relè della porta. DeviceUUID vuoto = questo controller."""
@@ -447,16 +458,17 @@ class A1210Client:
 
     async def remove_door(self, token: str) -> None:
         """Toglie la porta e la sua configurazione."""
-        await self._post("/vapix/doorcontrol", {"axtdc:RemoveDoor": {"Token": [token]}})
+        await self._remove_if_present("/vapix/doorcontrol", "axtdc:RemoveDoor", token)
         await self._remove_if_present("/vapix/doorcontrol", "axtdc:RemoveDoorConfiguration", token)
 
     async def _remove_if_present(self, path: str, method: str, token: str) -> None:
         """Toglie un oggetto, o la configurazione che va tolta con lui: se non c'è già più il controller risponde
-        NotFound, e va bene così."""
+        NotFound, e va bene così (tutte le remove_*). Gli altri errori, e il controller che non risponde, restano
+        errori."""
         try:
             await self._post(path, {method: {"Token": [token]}})
         except VapixError as err:
-            if "NotFound" not in err.fault:
+            if not _is_not_found(err.fault):
                 raise
 
     async def list_idpoints(self) -> list[dict]:
@@ -469,6 +481,9 @@ class A1210Client:
     async def set_idpoint(self, idpoint: dict) -> None:
         try:
             await self._post("/vapix/idpoint", {"axtid:SetIdPoint": {"IdPoint": [idpoint]}})
+        except ControllerUnreachable:
+            # Senza risposta la scrittura può essere arrivata: ripeterla con l'altro nome la farebbe due volte
+            raise
         except VapixError:
             # Nella documentazione Axis il metodo compare anche come SetIdPointList
             await self._post("/vapix/idpoint", {"axtid:SetIdPointList": {"IdPoint": [idpoint]}})
@@ -516,8 +531,10 @@ class A1210Client:
         assigned = await self._post("/vapix/pin", {"axisio:GetIoAssignmentList": {}})
         return info.get("IoInfo", []), assigned.get("IoAssignment", [])
 
-    async def list_idpoint_configurations(self) -> list[dict]:
-        return await self._list_all("/vapix/idpoint", "axtid:GetIdPointConfigurationList", "IdPointConfiguration")
+    async def list_idpoint_configurations(self, *, strict: bool = False) -> list[dict]:
+        return await self._list_all(
+            "/vapix/idpoint", "axtid:GetIdPointConfigurationList", "IdPointConfiguration", required=strict
+        )
 
     async def get_access_points(self, tokens: list[str]) -> list[dict]:
         data = await self._post("/vapix/pacs", {"pacsaxis:GetAccessPoint": {"Token": tokens}})

@@ -98,6 +98,7 @@ from .service import (
     DENIED_REASONS,
     INPUT_TERMINALS,
     AccessService,
+    PersonChanged,
     ServiceError,
     input_detail,
     mass_missing,
@@ -154,7 +155,8 @@ BACKUP_TICK = 60
 
 class PersonIn(BaseModel):
     name: str
-    card: str
+    # Vuota: persona senza tessera, solo nell'app
+    card: str = ""
     group: str = ""
     valid_from: str = ""
     valid_to: str = ""
@@ -755,6 +757,11 @@ def create_app(
     async def service_error(request: Request, err: ServiceError) -> JSONResponse:
         return JSONResponse({"detail": str(err)}, status_code=400)
 
+    @app.exception_handler(PersonChanged)
+    async def person_changed(request: Request, err: PersonChanged) -> JSONResponse:
+        # Niente è stato modificato: l'interfaccia rilegge la scheda della persona e mostra il motivo
+        return JSONResponse({"detail": str(err)}, status_code=409)
+
     @app.exception_handler(UserError)
     async def user_error(request: Request, err: UserError) -> JSONResponse:
         return JSONResponse({"detail": str(err)}, status_code=400)
@@ -1102,12 +1109,25 @@ def create_app(
     @app.put("/api/persons/{person_id}/access", dependencies=[need("persone_modifica")])
     async def set_access(person_id: int, body: AccessIn, request: Request) -> dict:
         return await request.app.state.service.set_person_access(
-            person_id, body.group, body.valid_from, body.valid_to, request_user(request), body.category_id
+            person_id,
+            body.group,
+            body.valid_from,
+            body.valid_to,
+            request_user(request),
+            body.category_id,
+            # Validità non mandata (il modulo di chi non ha tessere) non vuol dire «senza scadenza»: se intanto la
+            # persona ha una tessera la richiesta si rifiuta
+            with_validity={"valid_from", "valid_to"} <= body.model_fields_set,
         )
 
     @app.delete("/api/persons/{person_id}", dependencies=[need("persone_modifica")])
-    async def delete_person(person_id: int, request: Request) -> dict:
-        await request.app.state.service.delete_person(person_id, request_user(request))
+    async def delete_person(
+        person_id: int, request: Request, cards: Annotated[str | None, Query(pattern=r"^(\d+(,\d+)*)?$")] = None
+    ) -> dict:
+        # cards: le tessere (id, separati da virgole) elencate nella conferma; con una tessera nuova (scheda vecchia)
+        # non si elimina niente. Vuoto: la conferma diceva che non ne aveva
+        seen = None if cards is None else {int(card) for card in cards.split(",") if card}
+        await request.app.state.service.delete_person(person_id, request_user(request), seen)
         return {"ok": True}
 
     @app.post("/api/persons/{person_id}/cards", dependencies=[need("persone_modifica")])
@@ -1581,7 +1601,8 @@ def create_app(
 
     @app.post("/api/controllers/test", dependencies=[need("impianti")])
     async def test_controller(body: ControllerTestIn, request: Request) -> dict:
-        """Prova indirizzo e credenziali senza salvarli; elenca le porte trovate."""
+        """Prova indirizzo e credenziali senza salvarli; elenca le porte trovate. Numero di serie e impronta del
+        certificato dicono quale apparecchio risponde a quell'indirizzo."""
         host = check_host(body.host)
         password = body.password
         existing = request.app.state.db.get_controller(body.controller_id) if body.controller_id else None
@@ -1591,9 +1612,17 @@ def create_app(
                 raise ServiceError("indirizzo o utente cambiati: scrivi di nuovo la password del controller")
             password = existing["password"]
         client = request.app.state.injected_controller or A1210Client(host, body.username, password, body.verify_ssl)
+        fingerprint = ""
         try:
             info = await client.device_info()
             doors = await client.door_info_list()
+            # Come il controllo periodico (health): un certificato non letto non fa fallire la prova
+            read_fingerprint = getattr(client, "certificate_fingerprint", None)
+            if read_fingerprint:
+                try:
+                    fingerprint = await read_fingerprint()
+                except VapixError as err:
+                    _LOGGER.debug("Certificato di %s non letto: %s", host, err)
         finally:
             if request.app.state.injected_controller is None:
                 await client.aclose()
@@ -1601,6 +1630,7 @@ def create_app(
             "model": info.get("ProdNbr") or info.get("ProdShortName", ""),
             "firmware": info.get("Version", ""),
             "serial": info.get("SerialNumber", ""),
+            "cert_fingerprint": fingerprint,
             "doors": [{"token": d.get("token", ""), "name": d.get("Name") or d.get("token", "")} for d in doors],
         }
 
@@ -2355,6 +2385,7 @@ async def _start_runtime(app: FastAPI) -> None:
     state.state_keeper = StateKeeper(state.monitor, getattr(state, "state_wake", None))
     state.state_keeper.request_full()
     state.service = AccessService(state.db, state.controller, cfg, state.monitor)
+    state.service.controller_id = (state.installation.primary or {}).get("id")
     if old_service is not None:
         # Le operazioni ancora in corso con la configurazione di prima e le nuove non si accavallano
         state.service.lock = old_service.lock

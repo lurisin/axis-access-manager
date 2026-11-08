@@ -10,6 +10,7 @@ from app.config import parse_options
 from app.db import Database
 from app.ha import HomeAssistant
 from app.main import create_app
+from app.vapix import ControllerUnreachable, VapixError
 
 
 @pytest.fixture
@@ -59,8 +60,104 @@ def test_person_lifecycle_through_api(client, controller):
 
     assert client.patch(f"/api/persons/{person['id']}", json={"name": "Anna B"}).json()["name"] == "Anna B"
     assert client.patch(f"/api/cards/{card_id}", json={"enabled": False}).json()["cards"][0]["enabled"] is False
-    assert client.delete(f"/api/cards/{card_id}").json() == {"ok": True, "person": None}
+    # L'ultima tessera: la persona resta in anagrafica, senza tessere e senza utente sul controller
+    response = client.delete(f"/api/cards/{card_id}").json()
+    assert response["ok"] is True and response["person"]["cards"] == []
+    assert [(p["name"], p["cards"]) for p in client.get("/api/persons").json()] == [("Anna B", [])]
+    assert controller.users == {} and controller.credentials == {}
+    assert client.delete(f"/api/persons/{person['id']}").json() == {"ok": True}
     assert client.get("/api/persons").json() == []
+
+
+def test_person_without_card_through_api(client, controller):
+    controller.calls.clear()
+    response = client.post("/api/persons", json={"name": "Anna", "company": "Pulizie"})
+    assert response.status_code == 200
+    person = response.json()
+    assert person["cards"] == [] and person["company"] == "Pulizie" and controller.calls == []
+    assert client.post("/api/persons", json={"name": "Luca", "card": ""}).status_code == 200
+    # Validità senza tessera: non c'è dove salvarla
+    response = client.post("/api/persons", json={"name": "Mario", "valid_to": "2026-12-31T00:00:00Z"})
+    assert response.status_code == 400 and "valgono per le tessere" in response.json()["detail"]
+    # La tessera si aggiunge dopo
+    person = client.post(f"/api/persons/{person['id']}/cards", json={"card": "04aa"}).json()
+    assert [c["number"] for c in person["cards"]] == ["04aa"] and person["axis_user_token"] in controller.users
+
+
+def test_sheet_opened_without_cards_does_not_change_a_card_added_meanwhile(client, controller):
+    """Scheda aperta quando la persona non aveva tessere, tessera assegnata intanto da un'altra scheda: il modulo
+    «senza tessere» (solo la tipologia) non le toglie la scadenza, Elimina Persona («Non ha tessere») non la toglie."""
+    db = client.app.state.db
+    guest = db.save_category(
+        None, {"name": "Ospite", "color": "blue", "group_token": "profilo_sempre", "valid_days": 1, "description": ""}
+    )
+    person = client.post("/api/persons", json={"name": "Gina", "category_id": guest}).json()
+    [card] = client.post(f"/api/persons/{person['id']}/cards", json={"card": "04aa55"}).json()["cards"]
+    assert card["valid_from"] and card["valid_to"]
+    credential = controller.credentials[card["axis_credential_token"]]
+    written = (credential["ValidFrom"], credential["ValidTo"])
+    controller.calls.clear()
+
+    # Quello che manda la scheda vecchia: la tipologia, senza la validità
+    response = client.put(f"/api/persons/{person['id']}/access", json={"category_id": guest})
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Gina ha ora 1 tessera: la modifica era stata preparata quando non ne aveva, rileggi e riprova"
+    )
+    response = client.delete(f"/api/persons/{person['id']}", params={"cards": ""})
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Gina ha ora 1 tessera: conferma l'eliminazione dalla scheda aggiornata"
+    [card] = client.get(f"/api/persons/{person['id']}").json()["cards"]
+    assert (card["valid_from"], card["valid_to"]) == written
+    credential = controller.credentials[card["axis_credential_token"]]
+    assert (credential["ValidFrom"], credential["ValidTo"]) == written and controller.calls == []
+
+    # Dalla scheda aggiornata: la validità si manda sempre, anche vuota (senza scadenza, scelto)
+    body = {"category_id": guest, "valid_from": "", "valid_to": ""}
+    assert client.put(f"/api/persons/{person['id']}/access", json=body).status_code == 200
+    assert controller.credentials[card["axis_credential_token"]]["ValidTo"] == ""
+    assert client.delete(f"/api/persons/{person['id']}", params={"cards": "1,x"}).status_code == 422
+    assert client.delete(f"/api/persons/{person['id']}", params={"cards": str(card["id"])}).json() == {"ok": True}
+    assert controller.credentials == {}
+
+
+def test_retry_of_a_deletion_left_halfway_finishes_it(client, controller):
+    """Elimina Persona con il controller che smette di rispondere dopo la prima tessera: Riprova manda la stessa
+    conferma (le tessere elencate), e la tessera rimasta va tolta, non rifiutata come «scheda vecchia»."""
+    person = client.post("/api/persons", json={"name": "Gina", "card": "04aa55"}).json()
+    cards = client.post(f"/api/persons/{person['id']}/cards", json={"card": "04bb66"}).json()["cards"]
+    seen = ",".join(str(card["id"]) for card in cards)
+    remove = controller.remove_credential
+    removed = []
+
+    async def stops_answering(token):
+        if removed:
+            raise ControllerUnreachable("il controller non risponde")
+        removed.append(token)
+        await remove(token)
+
+    controller.remove_credential = stops_answering
+    assert client.delete(f"/api/persons/{person['id']}", params={"cards": seen}).status_code == 502
+    assert len(client.get(f"/api/persons/{person['id']}").json()["cards"]) == 1
+    controller.remove_credential = remove
+    assert client.delete(f"/api/persons/{person['id']}", params={"cards": seen}).json() == {"ok": True}
+    assert controller.credentials == {} and client.get("/api/persons").json() == []
+
+
+def test_controller_test_reports_serial_and_certificate(client, controller):
+    connection = {"host": "a1210.local", "username": "root", "password": "x"}
+    response = client.post("/api/controllers/test", json=connection)
+    data = response.json()
+    assert response.status_code == 200
+    assert (data["serial"], data["cert_fingerprint"], data["model"]) == ("X", "AA:BB", "A1210")
+
+    # Certificato non leggibile: la prova riesce lo stesso, senza impronta
+    async def unreadable():
+        raise VapixError("certificato non leggibile (tempo scaduto)")
+
+    controller.certificate_fingerprint = unreadable
+    data = client.post("/api/controllers/test", json=connection).json()
+    assert data["cert_fingerprint"] == "" and data["serial"] == "X"
 
 
 def test_errors_are_reported_in_italian(client):
@@ -193,7 +290,10 @@ def test_rules_and_dashboard_endpoints(client):
     ).json()["token"]
     group = client.post("/api/groups", json={"name": "Dipendenti", "schedule": schedule}).json()["token"]
     person = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": group}).json()
-    assert client.put(f"/api/persons/{person['id']}/access", json={"group": "profilo_sempre"}).status_code == 200
+    access = {"group": "profilo_sempre", "valid_from": "", "valid_to": ""}
+    assert client.put(f"/api/persons/{person['id']}/access", json=access).status_code == 200
+    # Senza la validità non vuol dire «senza scadenza»: chi ha tessere la manda sempre
+    assert client.put(f"/api/persons/{person['id']}/access", json={"group": "profilo_sempre"}).status_code == 409
     assert client.post("/api/holidays/italia", json={"year": 2026}).status_code == 200
     assert len(client.get("/api/holidays").json()) == 13
 
@@ -404,6 +504,9 @@ def test_changed_controller_through_api(client, controller):
     assert "numero di serie X → NUOVO" in ctrl["health"]["identity_change"]
     response = client.post("/api/persons", json={"name": "Anna", "card": "04aa", "group": "profilo_sempre"})
     assert response.status_code == 502 and "scritture sospese" in response.json()["detail"]
+    # Senza tessera si salva solo nell'app: anche con le scritture sospese
+    response = client.post("/api/persons", json={"name": "Luca"})
+    assert response.status_code == 200 and response.json()["cards"] == []
     assert "sincronizzazione sospesa" in client.post("/api/sync").json()["detail"]
     assert "Controller Cambiato" in [i["title"] for i in client.get("/api/summary").json()["faults"]]
 

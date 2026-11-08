@@ -1,23 +1,122 @@
 import copy
+import functools
+import inspect
 import itertools
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
-from app import ha
+from app import ha, vapix
 from app.config import parse_options
 from app.db import Database
-from app.vapix import VapixError
+from app.vapix import ControllerUnreachable, VapixError
+
+# Comandi alle porte: non sono scritture della configurazione e non sono letture
+DOOR_COMMANDS = ("access_door", "lock_door")
 
 
+def refused(code: str) -> VapixError:
+    """Errore come quello del client vero quando il controller risponde con un Fault {"Fault": "env:Sender",
+    "FaultCode": code}: stesso messaggio e stesso codice grezzo in .fault (vedi vapix._post)."""
+    return vapix._refused("la richiesta", vapix._fault_code({"Fault": "env:Sender", "FaultCode": code}))
+
+
+def _vapix(method):
+    """Ogni metodo del client passa di qui: controller spento, rifiuti, scritture contate e risposte perse."""
+    name = method.__name__
+    write = name.startswith(vapix.WRITE_PREFIXES)
+
+    @functools.wraps(method)
+    async def call(self, *args, **kwargs):
+        self.attempts.append(name)
+        if self.down:
+            if name == "certificate_fingerprint":
+                # Come il client vero: il certificato si legge con un collegamento TLS a parte e senza risposta
+                # dà VapixError, non ControllerUnreachable
+                raise VapixError("certificato non leggibile (tempo scaduto)")
+            raise ControllerUnreachable("il controller non risponde (tempo scaduto)")
+        if write and self._writes_left is not None and self._writes_left <= 0:
+            raise ControllerUnreachable("il controller non risponde (tempo scaduto)")
+        if name in self._refusals:
+            fault, times = self._refusals[name]
+            if times is not None:
+                if times <= 1:
+                    del self._refusals[name]
+                else:
+                    self._refusals[name] = (fault, times - 1)
+            raise vapix._refused("la richiesta", fault)
+        result = await method(self, *args, **kwargs)
+        if write and self._writes_left is not None:
+            self._writes_left -= 1
+        if self._lost.get(name):
+            self._lost[name] -= 1
+            raise ControllerUnreachable("il controller non risponde (nessuna risposta in tempo)")
+        if not write and name not in DOOR_COMMANDS:
+            self.reads.append((name, *copy.deepcopy(args)))
+        return result
+
+    return call
+
+
+def _answers(cls):
+    """Applica _vapix a tutti i metodi asincroni del finto, cioè a quelli del client VAPIX."""
+    for name, method in list(vars(cls).items()):
+        if inspect.iscoroutinefunction(method) and name != "aclose":
+            setattr(cls, name, _vapix(method))
+    return cls
+
+
+@_answers
 class FakeController:
-    """A1210 finto: tiene utenti e tessere in memoria e registra i comandi ricevuti."""
+    """A1210 finto: tiene utenti e tessere in memoria e registra i comandi ricevuti.
+
+    Prende il posto di vapix.A1210Client: ogni metodo si comporta come il client vero davanti al controller vero.
+
+    Regola: ogni comportamento cita la prova al banco che lo dimostra (T1..T20, kit in tools/banco). Finché la prova
+    non è fatta il finto ha la variante prudente, quella che mette più in difficoltà l'app, oppure, dove serve
+    provare tutte e due le ipotesi, un attributo che le sceglie. Comportamenti e prove:
+    - Set con un token scelto crea l'oggetto con quel token e GetXList lo restituisce uguale. T1, da fare: oggi è
+      provato solo per SetUser e per i token dati dallo stesso controller (Ripristino Completo al banco).
+      refuse_axis_tokens fa rifiutare i token Axis-<serie> di un altro apparecchio (T1, da fare).
+    - Set ripetuto con lo stesso token aggiorna lo stesso oggetto, senza doppioni. T2, da fare.
+    - Set su un token esistente sostituisce l'oggetto intero: le chiavi omesse spariscono. T3, da fare; è la
+      variante prudente, chi manda oggetti incompleti perde dati.
+    - DisableCredential ed EnableCredential cambiano solo Enabled; su un token che non c'è rispondono NotFound.
+      T4 e T7, da fare: variante prudente.
+    - Due tessere con lo stesso numero sono accettate tutte e due. T5, da fare.
+    - Riferimenti (check_references, spento di default): tessera → utente e profili, profilo → fasce e punti di
+      accesso, punto di accesso → porta e lettore. Un riferimento a un oggetto che non c'è dà ReferenceNotFound, la
+      rimozione di un oggetto ancora citato ReferenceInUse. T6, da fare: acceso è la variante prudente.
+    - Remove di un oggetto che non c'è riesce senza errore, come il client che conta NotFound come fatto
+      (_remove_if_present). T7, da fare.
+    - Il controllo accessi decide solo per i punti di accesso nel suo elenco, e il reset lo svuota. Provato al banco
+      (collaudo del Ripristino Completo, 0.21.1). Che rifiuti un punto che non c'è è la variante prudente (T6).
+    - factory(): quello che resta dopo un reset di fabbrica (factory_reset). T12, da fare: l'elenco esatto degli
+      oggetti di serie lo dà la prova.
+    - list_idpoint_configurations non supportato: variante prudente finché T11 non dice come risponde l'A1210.
+    Guasti, senza prova al banco perché sono quelli del collegamento:
+    - down: il controller spento davvero, ogni metodo solleva ControllerUnreachable (anche le letture);
+      offline fa fallire solo device_info, come prima.
+    - lose_response(metodo): la scrittura avviene, poi la risposta si perde (ControllerUnreachable).
+    - fail_after(n): dopo n scritture riuscite le altre falliscono come a controller spento.
+    - refuse(metodo, fault): il metodo risponde con un Fault (VapixError con il codice grezzo in .fault).
+    Registri: calls (scritture e comandi fatti), reads (letture con risposta), attempts (ogni chiamata tentata,
+    anche quelle fallite). Letture e scritture passano copie profonde: chi chiama non cambia lo stato del finto.
+    """
 
     def __init__(self):
         self.users: dict[str, dict] = {}
         self.credentials: dict[str, dict] = {}
         self.calls: list[tuple] = []
+        self.reads: list[tuple] = []
+        self.attempts: list[str] = []
+        self.down = False
+        self.check_references = False
+        self._refusals: dict[str, tuple[str, int | None]] = {}
+        self._lost: dict[str, int] = {}
+        self._writes_left: int | None = None
+        self.log_events: list = []
         self.door = "Locked"
         # Come al collaudo: senza contatto porta (None) GetDoorState non dà né DoorPhysicalState né Alarm
         self.door_physical = "Closed"
@@ -110,6 +209,99 @@ class FakeController:
     async def aclose(self):
         pass
 
+    @classmethod
+    def bench(cls) -> "FakeController":
+        """Come l'A1210 del banco programmato: porte, lettori, punto di accesso, profilo e fasce (lo stato di sempre
+        dei test)."""
+        return cls()
+
+    @classmethod
+    def factory(cls) -> "FakeController":
+        """Come un A1210 appena resettato: solo gli oggetti di serie, nessuna porta, nessun lettore, nessuna tessera."""
+        controller = cls()
+        controller.factory_reset()
+        return controller
+
+    def lose_response(self, method: str, times: int = 1) -> None:
+        """Le prossime chiamate a method arrivano al controller, ma la risposta si perde (tempo scaduto)."""
+        self._lost[method] = times
+
+    def fail_after(self, writes: int | None) -> None:
+        """Dopo writes scritture riuscite le altre falliscono come a controller spento; None torna normale."""
+        self._writes_left = writes
+
+    def refuse(self, method: str, fault: str | None = None, times: int | None = None) -> None:
+        """method risponde con un Fault (per esempio "ter:CapabilityViolated"), sempre o per times volte; senza
+        fault torna normale."""
+        if fault is None:
+            self._refusals.pop(method, None)
+        else:
+            self._refusals[method] = (fault, times)
+
+    def heal(self) -> None:
+        """Toglie tutti i guasti: acceso, nessun rifiuto, nessuna risposta persa, scritture senza limite."""
+        self.down = self.offline = False
+        self._refusals.clear()
+        self._lost.clear()
+        self._writes_left = None
+
+    def _check_references(self, kind: str, item: dict) -> None:
+        """Un oggetto che ne cita un altro che sul controller non c'è: ReferenceNotFound (T6, da fare)."""
+        if not self.check_references:
+            return
+        wanted: list[tuple] = []
+        if kind == "credential":
+            if item.get("UserToken"):
+                wanted.append((item["UserToken"], self.users))
+            wanted += [(p.get("AccessProfile"), self.profiles) for p in item.get("CredentialAccessProfile") or []]
+        elif kind == "profile":
+            points = {a["token"] for a in self.access_points}
+            wanted += [(t, self.schedules) for t in item.get("Schedule") or []]
+            for policy in item.get("AccessPolicy") or []:
+                wanted.append((policy.get("AccessPoint"), points))
+                wanted += [(t, self.schedules) for t in policy.get("Schedule") or []]
+        elif kind == "access_point":
+            wanted.append((item.get("Entity"), self.doors))
+            wanted += [(d.get("IdPoint"), self.idpoints) for d in item.get("IdPointDevice") or []]
+        if any(token not in objects for token, objects in wanted):
+            raise refused("ter:ReferenceNotFound")
+
+    def _users_of(self, kind: str, token: str) -> list[dict]:
+        """Oggetti che citano token."""
+        if kind == "user":
+            return [c for c in self.credentials.values() if c.get("UserToken") == token]
+        if kind == "profile":
+            return [
+                c
+                for c in self.credentials.values()
+                if token in [p.get("AccessProfile") for p in c.get("CredentialAccessProfile") or []]
+            ]
+        if kind == "schedule":
+            owners = [*self.profiles.values(), *self.authentication_profiles.values()]
+            return [
+                o
+                for o in owners
+                if token in (o.get("Schedule") or [])
+                or any(token in (p.get("Schedule") or []) for p in o.get("AccessPolicy") or [])
+            ]
+        if kind == "access_point":
+            owners = [
+                p
+                for p in self.profiles.values()
+                if any(a.get("AccessPoint") == token for a in p.get("AccessPolicy") or [])
+            ]
+            return owners + [c for c in self.access_controllers.values() if token in c.get("AccessPoint", [])]
+        if kind == "door":
+            return [a for a in self.access_points if a.get("Entity") == token]
+        if kind == "idpoint":
+            return [a for a in self.access_points if token in [d.get("IdPoint") for d in a.get("IdPointDevice") or []]]
+        return []
+
+    def _check_unused(self, kind: str, token: str) -> None:
+        """Rimozione di un oggetto ancora citato da un altro: ReferenceInUse (T6, da fare)."""
+        if self.check_references and self._users_of(kind, token):
+            raise refused("ter:ReferenceInUse")
+
     serial = "X"
     firmware = "10.12.288.1"
     fingerprint = "AA:BB"
@@ -182,11 +374,9 @@ class FakeController:
             }
         }
 
-    log_events: list = []
-
     async def fetch_events(self, start, limit=1000, row_id=None):
         rows = [
-            e
+            copy.deepcopy(e)
             for e in self.log_events
             if e["UtcTime"] >= start.replace("Z", "") and (row_id is None or e["rowid"] > row_id)
         ]
@@ -219,6 +409,7 @@ class FakeController:
         }
 
     async def remove_door(self, token):
+        self._check_unused("door", token)
         self.calls.append(("remove_door", token))
         self.doors.pop(token, None)
         self.door_configs.pop(token, None)
@@ -255,6 +446,7 @@ class FakeController:
         self.idpoint_configs[token] = {"DeviceUUID": device_uuid or self.device_uuid, **configuration}
 
     async def remove_idpoint(self, token):
+        self._check_unused("idpoint", token)
         self.calls.append(("remove_idpoint", token))
         self.idpoints.pop(token, None)
         self.idpoint_configs.pop(token, None)
@@ -272,6 +464,7 @@ class FakeController:
 
     async def create_access_point(self, access_point):
         self._check_token(access_point)
+        self._check_references("access_point", access_point)
         token = access_point.get("token") or f"ap-{next(self._ids)}"
         self.calls.append(("create_access_point", token))
         self.access_points = [a for a in self.access_points if a["token"] != token]
@@ -279,6 +472,7 @@ class FakeController:
         return token
 
     async def remove_access_point(self, token):
+        self._check_unused("access_point", token)
         self.calls.append(("remove_access_point", token))
         self.access_points = [a for a in self.access_points if a["token"] != token]
 
@@ -335,36 +529,39 @@ class FakeController:
         return [copy.deepcopy(a) for a in self.access_points if a["token"] in tokens]
 
     async def set_access_point(self, access_point):
+        self._check_references("access_point", access_point)
         self.calls.append(("set_access_point", access_point["token"]))
         self.access_points = [a for a in self.access_points if a["token"] != access_point["token"]]
         self.access_points.append(copy.deepcopy(access_point))
 
     async def list_users(self):
-        return list(self.users.values())
+        return [copy.deepcopy(u) for u in self.users.values()]
 
     async def get_users(self, tokens):
-        return [dict(self.users[t]) for t in tokens if t in self.users]
+        return [copy.deepcopy(self.users[t]) for t in tokens if t in self.users]
 
     async def set_user(self, user):
         self.calls.append(("set_user", user["token"]))
-        self.users[user["token"]] = dict(user)
+        self.users[user["token"]] = copy.deepcopy(user)
 
     async def remove_user(self, token):
+        self._check_unused("user", token)
         self.calls.append(("remove_user", token))
         self.users.pop(token, None)
 
     async def list_credentials(self):
-        return list(self.credentials.values())
+        return [copy.deepcopy(c) for c in self.credentials.values()]
 
     async def get_credentials(self, tokens):
-        return [dict(self.credentials[t]) for t in tokens if t in self.credentials]
+        return [copy.deepcopy(self.credentials[t]) for t in tokens if t in self.credentials]
 
     async def set_credential(self, credential):
         if self.fail_set_credential:
             raise VapixError("errore finto")
+        self._check_references("credential", credential)
         token = credential.get("token") or f"cred-{next(self._ids)}"
         self.calls.append(("set_credential", token))
-        self.credentials[token] = {**credential, "token": token}
+        self.credentials[token] = {**copy.deepcopy(credential), "token": token}
         return token
 
     async def remove_credential(self, token):
@@ -372,10 +569,14 @@ class FakeController:
         self.credentials.pop(token, None)
 
     async def enable_credential(self, token):
+        if token not in self.credentials:
+            raise refused("ter:NotFound")
         self.calls.append(("enable_credential", token))
         self.credentials[token]["Enabled"] = True
 
     async def disable_credential(self, token):
+        if token not in self.credentials:
+            raise refused("ter:NotFound")
         self.calls.append(("disable_credential", token))
         self.credentials[token]["Enabled"] = False
 
@@ -393,7 +594,7 @@ class FakeController:
 
     async def latest_events(self, limit, before=None):
         rows = sorted(self.log_events, key=lambda e: e["rowid"], reverse=True)
-        return [e for e in rows if before is None or e["rowid"] < before][:limit]
+        return [copy.deepcopy(e) for e in rows if before is None or e["rowid"] < before][:limit]
 
     async def access_door(self, door_token, extended=False):
         self.calls.append(("access_door", door_token, extended))
@@ -413,26 +614,29 @@ class FakeController:
 
     async def set_access_profile(self, profile):
         self._check_token(profile)
+        self._check_references("profile", profile)
         token = profile.get("token") or f"profile-{next(self._ids)}"
         self.calls.append(("set_access_profile", token))
         self.profiles[token] = {**copy.deepcopy(profile), "token": token}
         return token
 
     async def remove_access_profile(self, token):
+        self._check_unused("profile", token)
         self.calls.append(("remove_access_profile", token))
         self.profiles.pop(token, None)
 
     async def list_schedules(self):
-        return [dict(s) for s in self.schedules.values()]
+        return [copy.deepcopy(s) for s in self.schedules.values()]
 
     async def set_schedule(self, schedule):
         self._check_token(schedule)
         token = schedule.get("token") or f"schedule-{next(self._ids)}"
         self.calls.append(("set_schedule", token))
-        self.schedules[token] = {**schedule, "token": token}
+        self.schedules[token] = {**copy.deepcopy(schedule), "token": token}
         return token
 
     async def remove_schedule(self, token):
+        self._check_unused("schedule", token)
         self.calls.append(("remove_schedule", token))
         self.schedules.pop(token, None)
 

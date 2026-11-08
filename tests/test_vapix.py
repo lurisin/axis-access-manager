@@ -5,7 +5,7 @@ import socket
 import httpx
 import pytest
 
-from app.vapix import CREDENTIAL_PAGE_SIZE, A1210Client, VapixError
+from app.vapix import CREDENTIAL_PAGE_SIZE, A1210Client, ControllerUnreachable, VapixError
 
 
 def client_with(handler) -> A1210Client:
@@ -183,3 +183,141 @@ async def test_access_controller_read_and_written_as_on_the_bench():
         "/vapix/pacs",
         {"pacsaxis:SetAccessController": {"AccessController": [{**factory, "AccessPoint": ["accesso_scala"]}]}},
     )
+
+
+@pytest.mark.parametrize(
+    "lost",
+    [httpx.ReadTimeout("risposta persa"), httpx.RemoteProtocolError("collegamento caduto")],
+)
+async def test_reader_write_without_an_answer_is_not_sent_again(lost):
+    sent = []
+
+    def handler(request):
+        sent.append(next(iter(json.loads(request.content))))
+        raise lost
+
+    # Senza risposta la scrittura può essere arrivata: con l'altro nome del metodo sarebbe fatta due volte
+    with pytest.raises(ControllerUnreachable):
+        await client_with(handler).set_idpoint({"token": "lettore-1", "Name": "Lettore esterno"})
+    assert sent == ["axtid:SetIdPoint"]
+
+
+async def test_reader_write_refused_is_tried_with_the_other_method_name():
+    sent = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        sent.append(body)
+        if "axtid:SetIdPoint" in body:
+            return httpx.Response(400, json={"Fault": "env:Sender", "FaultCode": "ter:ActionNotSupported"})
+        return httpx.Response(200, json={})
+
+    reader = {"token": "lettore-1", "Name": "Lettore esterno"}
+    await client_with(handler).set_idpoint(reader)
+    assert sent == [{"axtid:SetIdPoint": {"IdPoint": [reader]}}, {"axtid:SetIdPointList": {"IdPoint": [reader]}}]
+
+
+# Ogni remove_* con le richieste che manda: path e metodi, nell'ordine
+REMOVALS = {
+    "remove_user": ("/vapix/pacs", ["axudb:RemoveUser"]),
+    "remove_credential": ("/vapix/pacs", ["pacsaxis:RemoveCredential"]),
+    "remove_access_profile": ("/vapix/pacs", ["pacsaxis:RemoveAccessProfile"]),
+    "remove_schedule": ("/vapix/schedule", ["axsch:RemoveSchedule"]),
+    "remove_door": ("/vapix/doorcontrol", ["axtdc:RemoveDoor", "axtdc:RemoveDoorConfiguration"]),
+    "remove_idpoint": ("/vapix/idpoint", ["axtid:RemoveIdPoint", "axtid:RemoveIdPointConfiguration"]),
+    "remove_access_point": ("/vapix/pacs", ["pacsaxis:RemoveAccessPoint"]),
+}
+
+
+def test_every_removal_is_listed():
+    assert {name for name in dir(A1210Client) if name.startswith("remove_")} == set(REMOVALS)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        {"Fault": "env:Sender", "FaultCode": "ter:NotFound"},
+        {"Fault": "env:Sender", "FaultCode": "ter:InvalidArgVal", "Subcode": "ter:NotFound"},
+    ],
+)
+@pytest.mark.parametrize("name", sorted(REMOVALS))
+async def test_removing_what_is_not_there_anymore_is_done(name, fault):
+    path, methods = REMOVALS[name]
+    sent = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        sent.append((request.url.path, body))
+        return httpx.Response(400, json=fault)
+
+    # Tolto a mano dal sito Axis, o tolto da un tentativo di prima con la risposta persa: è già come si voleva
+    await getattr(client_with(handler), name)("oggetto-x")
+    assert sent == [(path, {method: {"Token": ["oggetto-x"]}}) for method in methods]
+
+
+@pytest.mark.parametrize("name", sorted(REMOVALS))
+async def test_removal_refused_or_without_an_answer_is_still_an_error(name):
+    def in_use(request):
+        return httpx.Response(400, json={"Fault": "env:Sender", "FaultCode": "ter:ReferenceInUse"})
+
+    with pytest.raises(VapixError, match=r"rifiutato la richiesta \(oggetto ancora in uso\)"):
+        await getattr(client_with(in_use), name)("oggetto-x")
+
+    def missing_reference(request):
+        return httpx.Response(400, json={"Fault": "env:Sender", "FaultCode": "ter:ReferenceNotFound"})
+
+    # Un riferimento mancante non è «già tolto»: il nome contiene NotFound, ma il codice è un altro
+    with pytest.raises(VapixError):
+        await getattr(client_with(missing_reference), name)("oggetto-x")
+
+    def lost(request):
+        raise httpx.ReadTimeout("risposta persa")
+
+    with pytest.raises(ControllerUnreachable):
+        await getattr(client_with(lost), name)("oggetto-x")
+
+
+# Elenchi che con strict distinguono «non letto» da «vuoto»: metodo e chiave dell'elenco
+STRICT_LISTS = {
+    "list_users": ("axudb:GetUserList", "User"),
+    "list_access_points": ("pacsaxis:GetAccessPointList", "AccessPoint"),
+    "list_authentication_profiles": ("pacsaxis:GetAuthenticationProfileList", "AuthenticationProfile"),
+    "list_door_configurations": ("axtdc:GetDoorConfigurationList", "DoorConfiguration"),
+    "list_idpoint_configurations": ("axtid:GetIdPointConfigurationList", "IdPointConfiguration"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(STRICT_LISTS))
+async def test_strict_list_without_its_key_is_not_an_empty_list(name):
+    method, key = STRICT_LISTS[name]
+
+    def without_key(request):
+        assert method in json.loads(request.content)
+        return httpx.Response(200, json={})
+
+    # Come oggi senza strict: vuoto
+    assert await getattr(client_with(without_key), name)() == []
+    with pytest.raises(VapixError, match="risposta del controller non riconosciuta"):
+        await getattr(client_with(without_key), name)(strict=True)
+
+    def empty(request):
+        return httpx.Response(200, json={key: []})
+
+    assert await getattr(client_with(empty), name)(strict=True) == []
+
+    def second_page_without_key(request):
+        body = json.loads(request.content)[method]
+        if "StartReference" not in body:
+            return httpx.Response(200, json={key: [{"token": "a"}], "NextStartReference": "1"})
+        return httpx.Response(200, json={})
+
+    assert await getattr(client_with(second_page_without_key), name)() == [{"token": "a"}]
+    with pytest.raises(VapixError, match="risposta del controller non riconosciuta"):
+        await getattr(client_with(second_page_without_key), name)(strict=True)
+
+    def null(request):
+        return httpx.Response(200, content=b"null", headers={"Content-Type": "application/json"})
+
+    # Non un errore di Python: chi legge gestisce solo gli errori del controller
+    with pytest.raises(VapixError, match="risposta del controller non riconosciuta"):
+        await getattr(client_with(null), name)(strict=True)
