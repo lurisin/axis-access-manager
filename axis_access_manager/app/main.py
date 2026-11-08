@@ -24,9 +24,11 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
 from .backup_copy import RESTORED, STARTED_EMPTY, error_reason, ha_copy_error, ha_copy_path, update_copies
+from .compare import KIND_TITLES, KINDS, compare, lists_for, merge_readings, read_strict
 from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .controller_state import POLL_LIVE, POLL_WITHOUT_EVENTS, StateKeeper
 from .db import DB_PATH, Database, local_day_start
+from .desired import PROGRAMMING, build, load_conf
 from .direct import (
     BUSY,
     COOKIE,
@@ -81,6 +83,7 @@ from .notifications import (
     recovery_hint,
     recovery_title,
 )
+from .presa_in_carico import confronto
 from .programming import (
     CONTACTS,
     CONTROLLER_INPUTS,
@@ -104,6 +107,7 @@ from .service import (
     mass_missing,
     plural,
 )
+from .shadow import CARDS_ROUND, PROGRAMMING_ROUND, Shadow, group_of, would
 from .transfer import events_csv, import_persons, persons_csv, read_import
 from .users import ADMIN, PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
 from .vapix import A1210Client, ControllerGuard, ControllerUnreachable, VapixError
@@ -136,6 +140,13 @@ RECOVER_OVERLAP = 10
 RECOVER_LIMIT = timedelta(days=7)
 
 SYNC_INTERVAL = 15 * 60
+# Confronto in ombra, in sola lettura: utenti e tessere con la lettura di ogni sincronizzazione; la programmazione con
+# una lettura completa al massimo ogni SHADOW_INTERVAL, la prima SHADOW_DELAY dopo l'avvio (non insieme a
+# sincronizzazione, recupero degli eventi e backup). Ogni SHADOW_TICK si guarda se è ora
+SHADOW_CARDS = ("utente", "tessera")
+SHADOW_INTERVAL = 3600
+SHADOW_DELAY = 10 * 60
+SHADOW_TICK = 60
 # Senza broker MQTT all'avvio: ogni quanto chiederlo di nuovo al Supervisor
 MQTT_RETRY = 60
 SYNC_RETRY = 60
@@ -700,6 +711,10 @@ def create_app(
         app.state.state_wake = asyncio.Event()
         # Rete di sicurezza della serratura: resta la stessa anche con una nuova configurazione
         app.state.lock_guard = LockGuard()
+        # Confronto in ombra: resta lo stesso con una nuova configurazione; una lettura completa per volta
+        app.state.shadow = Shadow()
+        app.state.shadow.next_full = asyncio.get_running_loop().time() + SHADOW_DELAY
+        app.state.comparison_lock = asyncio.Lock()
         await _start_runtime(app)
         # Aperture estese dall'app appena prima di un riavvio dell'add-on: la rete di sicurezza non le accorcia
         for door, ago in _extended_openings(app.state).items():
@@ -712,6 +727,7 @@ def create_app(
             health,
             asyncio.create_task(_state_loop(app)),
             asyncio.create_task(_lock_guard_loop(app)),
+            asyncio.create_task(_shadow_loop(app)),
         ]
         if scheduled_backups:
             tasks.append(asyncio.create_task(_backup_loop(app)))
@@ -1725,6 +1741,21 @@ def create_app(
         doors = await state.controller.door_info_list()
         return [{"token": d.get("token", ""), "name": d.get("Name") or d.get("token", "")} for d in doors]
 
+    @app.get("/api/controllers/{controller_id}/comparison")
+    async def comparison(controller_id: int, request: Request, user: Annotated[AppUser, need("impianti")]) -> dict:
+        """Confronto (prova): cosa farebbero presa in carico e allineatore, per tipo di oggetto. Legge il controller
+        e calcola in memoria: non scrive niente, né sul controller né nel database."""
+        state = request.app.state
+        if state.db.get_controller(controller_id) is None:
+            raise HTTPException(404, "controller non trovato")
+        primary = state.installation.primary
+        if not primary or primary["id"] != controller_id:
+            raise ServiceError("il confronto si fa solo con il controller in uso")
+        if not state.settings.a1210_host:
+            raise ServiceError("indirizzo del controller non configurato")
+        letto, result = await _compare_programming(state, controller_id, KINDS)
+        return _comparison_view(state, letto, result, user)
+
     @app.post("/api/controllers/{controller_id}/doors", dependencies=[need("impianti")])
     async def create_door(controller_id: int, body: DoorConfigIn, request: Request) -> dict:
         result = request.app.state.installation.save_door(None, controller_id, body.model_dump(), request_user(request))
@@ -2399,6 +2430,7 @@ async def _start_runtime(app: FastAPI) -> None:
         state.points_task = asyncio.create_task(_load_access_points(state.service))
     state.service.clock_offset = lambda: _controller_clock_offset(state)
     state.service.measured_clock_offset = lambda: _controller_clock_offset(state, synced_only=False)
+    state.service.after_sync = functools.partial(_shadow_cards, state)
     state.service.lock_guard = getattr(state, "lock_guard", None)
     if state.service.lock_guard is not None:
         # Nuova configurazione (controller cambiato, ripristino): i tempi delle porte si rileggono
@@ -3339,6 +3371,8 @@ def _controllers_health(state) -> list[dict]:
                 # Lo stato (porte, ingressi, coperchio) si legge solo dal controller principale. Coperchio None: non
                 # si sa ancora, il controller non risponde (anche prima che lo stato si svuoti) o non è il principale
                 "primary": controller_id == primary_id,
+                # Riepilogo del confronto in ombra, solo per il controller in uso
+                "shadow": state.shadow.as_dict() if controller_id == state.shadow.controller_id else None,
                 **(
                     {
                         "casing_open": state.monitor.casing_open,
@@ -3590,6 +3624,136 @@ async def _sync(state) -> tuple[bool, int]:
     state.last_sync = {"ok": True, "error": "", "result": result, "at": _now()}
     _LOGGER.debug("Tessere sincronizzate dal controller: %s", result)
     return True, SYNC_INTERVAL
+
+
+async def _read_controller(state, kinds) -> dict:
+    """Lettura strict del controller in uso per i tipi kinds (compare.read_strict), un elenco per blocco _reading con
+    il client preso dentro: una nuova configurazione aspetta al massimo un elenco (RELOAD_GRACE). Dopo il primo «non
+    risponde», o se intanto cambiano il client (nuova configurazione) o il controller che risponde (numero di serie),
+    gli elenchi rimasti non si chiedono e restano non letti, con il motivo anche in "offline"."""
+    keys = lists_for(kinds)
+    readings: list[dict] = []
+    client, serial, stop = None, "", ""
+    for n, key in enumerate(keys):
+        async with _reading(state):
+            if client is not None and state.controller is not client:
+                stop = "configurazione del controller cambiata durante la lettura"
+            else:
+                client = state.controller
+                reading = await read_strict(client, [key])
+        if not stop and serial and reading["serial"] and reading["serial"] != serial:
+            stop = "il controller che risponde è cambiato durante la lettura"
+        if stop:
+            readings.append({"unread": dict.fromkeys(keys[n:], stop)})
+            break
+        readings.append(reading)
+        serial = serial or reading["serial"]
+        if reading["offline"]:
+            stop = reading["offline"]
+            readings.append({"unread": dict.fromkeys(keys[n + 1 :], stop)})
+            break
+    merged = merge_readings(*readings)
+    merged["offline"] = stop
+    return merged
+
+
+async def _compare_programming(state, controller_id: int, kinds) -> tuple[dict, dict]:
+    """Lettura del controller per i tipi kinds, presa in carico in memoria e confronto: niente si scrive. Il confronto
+    in ombra prende i tipi della programmazione, se intanto la configurazione dell'app non è cambiata (il risultato
+    mescolerebbe il prima e il dopo) e se all'indirizzo risponde il controller conosciuto. Una lettura completa per
+    volta, e la prossima del giro orario fra un'ora."""
+    async with state.comparison_lock:
+        # Prima di leggere: anche una lettura o un calcolo che non riescono contano come il giro dell'ora
+        state.shadow.next_full = asyncio.get_running_loop().time() + SHADOW_INTERVAL
+        before = load_conf(state.db, state.settings.access_profile)
+        letto = await _read_controller(state, kinds)
+        conf = load_conf(state.db, state.settings.access_profile)
+        result = await asyncio.to_thread(confronto, conf, letto, controller_id, kinds)
+        result["changed"] = conf != before
+        if not result["changed"] and not state.controller.paused:
+            state.shadow.record(
+                controller_id, [k for k in kinds if k in PROGRAMMING], result, _now(), PROGRAMMING_ROUND
+            )
+    return letto, result
+
+
+def _comparison_view(state, letto: dict, result: dict, user: AppUser) -> dict:
+    """Le righe del confronto per tipo, con le azioni al condizionale: la scheda Confronto non fa niente. Senza il
+    permesso di vedere le persone, tessere e utenti restano solo contati. Controller che non risponde: niente righe."""
+    error = "" if letto["lists"] else letto["offline"] or next(iter(letto["unread"].values()), "")
+    groups = {
+        kind: {"kind": kind, "title": KIND_TITLES[kind], "counts": {}, "rows": [], "unread": "", "hidden": ""}
+        for kind in KINDS
+    }
+    for row in result["rows"]:
+        group = groups[group_of(row)]
+        group["counts"][row["action"]] = group["counts"].get(row["action"], 0) + 1
+        group["rows"].append({**row, "text": would(row["text"])})
+    for row in result["unread"]:
+        groups[row["kind"]]["unread"] = row["blocked"]
+    persons = user.can("persone")
+    if not persons:
+        for kind in SHADOW_CARDS:
+            groups[kind].update(rows=[], hidden=f"serve il permesso «{PERMISSIONS['persone']}»")
+    # Note della presa in carico che non sono di una riga (persone, gruppi, presa non fatta): in cima alla scheda
+    shown = {(row["kind"], row["token"]) for row in result["rows"]}
+    notes = [
+        note
+        for note in result.get("notes") or []
+        if (note["kind"], note["key"]) not in shown and (persons or note["kind"] not in ("persona", *SHADOW_CARDS))
+    ]
+    return {
+        "ok": not error,
+        "error": error,
+        "at": _now(),
+        "serial": letto["serial"],
+        "changed": result["changed"],
+        "paused": state.controller.paused,
+        "kinds": [] if error else list(groups.values()),
+        "notes": [] if error else notes,
+        "shadow": state.shadow.as_dict(),
+    }
+
+
+async def _shadow_cards(state, reading: dict) -> None:
+    """Confronto in ombra di utenti e tessere con la lettura della sincronizzazione appena fatta (nessuna lettura in
+    più), senza la presa in carico: il database come è adesso. La configurazione si legge subito, prima di cedere il
+    passo, quindi è quella appena aggiornata dalla sincronizzazione."""
+    primary = state.installation.primary
+    if not primary or state.controller.paused:
+        return
+    conf = load_conf(state.db, state.settings.access_profile)
+    result = await asyncio.to_thread(lambda: compare(build(conf, primary["id"], SHADOW_CARDS), reading))
+    state.shadow.record(primary["id"], SHADOW_CARDS, result, _now(), CARDS_ROUND)
+
+
+async def _shadow_programming(state) -> bool:
+    """Confronto in ombra della programmazione, se è ora (al massimo ogni SHADOW_INTERVAL, anche quando non riesce),
+    del controller in uso, se risponde e non è cambiato. True se ha letto il controller."""
+    if asyncio.get_running_loop().time() < state.shadow.next_full or state.comparison_lock.locked():
+        # Non è ora, o la scheda Confronto sta leggendo: il suo confronto vale come giro dell'ora
+        return False
+    primary = state.installation.primary
+    if not primary or not primary["host"] or not state.settings.a1210_host or state.controller.paused:
+        return False
+    if _offline_controllers(state).get(primary["id"]):
+        # Non risponde: si riprova quando torna, senza aspettare un'altra ora
+        return False
+    await _compare_programming(state, primary["id"], sorted(PROGRAMMING, key=KINDS.index))
+    return True
+
+
+async def _shadow_loop(app: FastAPI) -> None:
+    """Confronto in ombra della programmazione ogni ora: solo letture e calcoli, mai scritture né notifiche."""
+    while True:
+        try:
+            await _shadow_programming(app.state)
+        except ServiceError as err:
+            # Per esempio un profilo esterno con un nome o una descrizione che l'app non accetta
+            _LOGGER.warning("Confronto in ombra della programmazione non riuscito: %s", err)
+        except Exception:  # noqa: BLE001 - si riprova al giro dopo
+            _LOGGER.exception("Confronto in ombra della programmazione non riuscito")
+        await asyncio.sleep(SHADOW_TICK)
 
 
 async def _startup_repairs(state, done: set[str]) -> None:

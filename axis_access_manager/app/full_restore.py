@@ -16,8 +16,20 @@ from __future__ import annotations
 import copy
 import json
 
-from .backup import COMMON, FIELD_LABELS, READ_LABELS, context_of
-from .programming import CONTROLLER_INPUTS, DOOR_TIMES, format_duration, link_access_points, parse_duration
+from .backup import COMMON, context_of
+from .compare import (
+    READ_LABELS,
+    _differences,
+    _io_name,
+    _io_users,
+    _named,
+    _norm,
+    _plan_managed,
+    _plan_pair,
+    _row,
+)
+from .desired import door_within_limits
+from .programming import link_access_points
 from .rules import describe_rules, holidays_ical
 from .service import ServiceError, plural
 from .vapix import VapixError
@@ -27,7 +39,6 @@ FULL_SECTIONS = {
     "controller": "Programmazione del Controller",
     "tessere": "Tessere sul Controller",
 }
-UUID_FIELDS = ("DeviceUUID", "DoorDeviceUUID")
 # Le voci degli errori di lettura del backup (READ_LABELS) come titolo delle righe che non si possono ripristinare
 READ_TITLES = {
     "schedules": "Fasce Orarie",
@@ -44,46 +55,6 @@ NOT_READ = "dati non letti nel backup o adesso: restano come sono"
 # Token rifiutati da un controller, con quello nuovo che ha dato (JSON vecchio → nuovo): i backup di prima hanno
 # ancora i vecchi, e senza questa mappa un secondo ripristino ricreerebbe gli stessi oggetti una seconda volta
 SETTING_TOKENS = "restore_tokens"
-FIELD_NAMES = {
-    **FIELD_LABELS,
-    "Name": "Nome",
-    "ScheduleDefinition": "Orari",
-    "AccessPolicy": "Regole",
-    "AuthenticationProfile": "Modo di Identificazione",
-    "IdPointDevice": "Lettori",
-    "Entity": "Porta",
-    "Attribute": "Attributi",
-    "IoMode": "Modo",
-    "IoUser": "Assegnato a",
-    "HeartbeatInterval": "Controllo Collegamento",
-    "Configuration": "Configurazione",
-    "staticServers": "Server",
-    "servers": "Server",
-    "enabled": "Attivo",
-    "source": "Origine",
-    "server": "Broker",
-    "username": "Utente",
-}
-
-
-def _row(key: str, section: str, action: str, label: str, text: str, default: bool = True, **extra) -> dict:
-    return {
-        "key": key,
-        "section": section,
-        "action": action,
-        "label": label,
-        "text": text,
-        "changes": [],
-        "warnings": [],
-        "blocked": "",
-        "default": default,
-        **extra,
-    }
-
-
-def _named(noun: str, name: str) -> str:
-    """ "Porta Scala", ma "Porta B" e non "Porta Porta B" se il nome comincia già così."""
-    return name if f"{name} ".lower().startswith(f"{noun} ".lower()) else f"{noun} {name}"
 
 
 def renamed_tokens(db) -> dict[str, str]:
@@ -93,70 +64,6 @@ def renamed_tokens(db) -> dict[str, str]:
     except ValueError:
         return {}
     return {str(k): str(v) for k, v in value.items()} if isinstance(value, dict) else {}
-
-
-def _norm(value):
-    """Forma da confrontare: senza campi vuoti né dispositivo, con le configurazioni Name/Value come dizionario."""
-    if isinstance(value, dict):
-        out = {}
-        for key, item in value.items():
-            if key in UUID_FIELDS:
-                continue
-            if key == "Configuration" and isinstance(item, list):
-                item = {str(c.get("Name")): str(c.get("Value")) for c in item if isinstance(c, dict)}
-            item = _norm(item)
-            if item in ("", None, [], {}):
-                continue
-            out[key] = item
-        return out
-    if isinstance(value, list):
-        return [_norm(v) for v in value]
-    return value
-
-
-def _show(value) -> str:
-    if value in ("", None, [], {}):
-        return "—"
-    if isinstance(value, bool):
-        return "sì" if value else "no"
-    if isinstance(value, str):
-        seconds = parse_duration(value) if value.startswith("P") else None
-        text = f"{seconds:g} s" if seconds is not None else value
-    else:
-        text = json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
-    return text if len(text) <= 80 else text[:79] + "…"
-
-
-def _differences(current: dict | None, saved: dict) -> list[dict]:
-    """Campi diversi, com'è adesso → come tornerà; le voci di configurazione una per riga."""
-    now, then = _norm(current or {}), _norm(saved)
-    changes = []
-    for key in dict.fromkeys([*then, *now]):
-        if key == "token" or now.get(key) == then.get(key):
-            continue
-        if key == "Configuration":
-            old, new = now.get(key) or {}, then.get(key) or {}
-            for name in dict.fromkeys([*new, *old]):
-                if old.get(name) != new.get(name):
-                    changes.append({"label": name, "old": old.get(name) or "—", "new": new.get(name) or "—"})
-            continue
-        changes.append({"label": FIELD_NAMES.get(key, key), "old": _show(now.get(key)), "new": _show(then.get(key))})
-    return changes
-
-
-def _door_payload(door: dict) -> tuple[dict, list[str]]:
-    """La porta del backup con i tempi riportati entro i limiti della serratura."""
-    payload, warnings = copy.deepcopy(door), []
-    for field, (_, label, low, high) in DOOR_TIMES.items():
-        seconds = parse_duration(payload.get(field))
-        if seconds is None or low <= seconds <= high:
-            continue
-        fixed = min(max(seconds, low), high)
-        payload[field] = format_duration(fixed)
-        warnings.append(
-            f"{label}: {seconds:g} s è fuori dai limiti della serratura ({low}-{high} s), si scrive {fixed} s"
-        )
-    return payload, warnings
 
 
 def _hex(value: str) -> str:
@@ -379,7 +286,7 @@ def _plan_programming(saved: dict, current: dict, ctx: dict, saved_common: dict,
     configs = objects("door_configurations") or ({}, {})
     if doors:
         for token, door in doors[0].items():
-            payload, warnings = _door_payload(door)
+            payload, warnings = door_within_limits(door)
             config = configs[0].get(token)
             item = _plan_pair(
                 "porta",
@@ -494,83 +401,6 @@ def _plan_programming(saved: dict, current: dict, ctx: dict, saved_common: dict,
             )
         )
     return items
-
-
-def _own_points(part: dict) -> list[str] | None:
-    """Punti di accesso che il controller gestisce, dal suo AccessController (in una rete di controller ci sono
-    anche quelli degli altri: il suo ha il numero di serie nel token). None se non è nel backup."""
-    controllers = part.get("access_controllers")
-    if controllers is None:
-        return None
-    serial = str((part.get("device") or {}).get("serial") or "").lower()
-    if len(controllers) > 1:
-        controllers = [c for c in controllers if serial and serial in str(c.get("token") or "").lower()]
-    return [t for c in controllers for t in c.get("AccessPoint") or []]
-
-
-def _plan_managed(saved: dict, current: dict, saved_points: dict) -> dict | None:
-    """Punti di accesso da far gestire al controller. Il reset svuota l'elenco: i punti ci sono, il controller legge
-    le tessere ma non decide niente. Dai backup che non lo hanno (fino alla 0.21.0) si fanno gestire tutti."""
-    wanted = _own_points(saved)
-    wanted = [t for t in dict.fromkeys(list(saved_points) if wanted is None else wanted) if t in saved_points]
-    linked = [t for c in current.get("access_controllers") or [] for t in c.get("AccessPoint") or []]
-    missing = [t for t in wanted if t not in linked]
-    if not missing:
-        return None
-    current_names = {p.get("token"): p.get("Name") or p.get("token") for p in current.get("access_points") or []}
-
-    def shown(tokens: list[str], names: dict) -> str:
-        return ", ".join(str(names.get(t) or t) for t in tokens) or "nessuno"
-
-    item = _row(
-        "prog-gestiti",
-        "controller",
-        "ricrea" if not linked else "riporta",
-        "Punti di Accesso Gestiti",
-        f"Fa gestire al controller {plural(len(missing), 'punto di accesso', 'punti di accesso')}: "
-        "senza, le tessere vengono lette ma non aprono",
-        _kind="gestiti",
-        _token="",
-        _points=missing,
-    )
-    names = {t: p.get("Name") or t for t, p in saved_points.items()}
-    item["changes"] = [{"label": "Gestiti", "old": shown(linked, current_names), "new": shown(wanted, names)}]
-    return item
-
-
-def _plan_pair(prefix, token, label, saved_obj, current_obj, saved_config, current_config, add) -> dict | None:
-    """Porta o lettore insieme alla sua configurazione: si scrivono in fila, nella stessa riga."""
-    config_changes = []
-    if saved_config is not None:
-        config_changes = (
-            _differences(current_config, saved_config)
-            if current_config is not None
-            else [
-                {"label": "Configurazione", "old": "—", "new": f"{len(saved_config.get('Configuration') or [])} voci"}
-            ]
-        )
-    item = add(prefix, token, label, saved_obj, current_obj, force=bool(config_changes), _config=saved_config)
-    if item is not None and current_obj is not None:
-        item["changes"] = _differences(current_obj, saved_obj) + config_changes
-    return item
-
-
-# Morsetti che non sono ingressi: il bus dei lettori e il relè della serratura
-IO_NAMES = {"Ser0hd": "Lettori RS-485", "relay": "Relè Serratura", "Wiegand1": "Lettore Wiegand"}
-
-
-def _io_name(name: str) -> str:
-    return IO_NAMES.get(name) or CONTROLLER_INPUTS.get(name, (name,))[0]
-
-
-def _io_users(assignment: dict | None, names: dict) -> str:
-    users = (assignment or {}).get("IoUser") or []
-    return (
-        ", ".join(
-            f"{names.get(str(u.get('token')), u.get('token'))} ({u.get('Usage') or u.get('Type')})" for u in users
-        )
-        or "—"
-    )
 
 
 # Tessere
