@@ -396,6 +396,46 @@ def test_adopt_groups_after_a_restart_like_0_27(settings, controller, tmp_path, 
     assert controller.profiles["profilo_sempre"]["Schedule"] == ["standard_office_hours"]
 
 
+async def test_profile_the_app_would_not_accept_is_shortened_in_the_presa(plant, controller, db):
+    """Nella presa in carico in memoria un profilo esterno con un nome o una descrizione che l'app non accetta non
+    ferma niente: la tipologia nuova li accorcia (un nome fatto solo di spazi diventa il token) e la riga del suo
+    profilo lo dice. Sia per l'Accesso Personalizzato (Carla) sia per chi non ha tipologia (Dario, Elio)."""
+    await app_made(plant)
+    external_profile(controller, "lungo")
+    external_profile(controller, "spazi", Name="   ", Description="")
+    external_profile(controller, "nome", Name="N" * 150, Description="Fatto a mano")
+    carla = await plant.access.create_person("Carla", "04cc", "admin", group="lungo")
+    dario = await plant.access.create_person("Dario", "04dd", "admin", group="spazi")
+    elio = await plant.access.create_person("Elio", "04ee", "admin", group="nome")
+    for person in (dario, elio):
+        db.set_person_category(person["id"], 0)
+
+    result, adopted, notes = await compared(plant, notes=True)
+
+    categories = {c["group_token"]: c for c in adopted["categories"]}
+    lungo, spazi, nome = categories["lungo"], categories["spazi"], categories["nome"]
+    assert (lungo["name"], lungo["description"]) == ("Manutenzione", "x" * 200)
+    assert (spazi["name"], nome["name"], nome["description"]) == ("spazi", "N" * 40, "Fatto a mano")
+    persons = {p["id"]: p["category_id"] for p in adopted["persons"]}
+    assert [persons[p["id"]] for p in (carla, dario, elio)] == [lungo["id"], spazi["id"], nome["id"]]
+    rows = {r["token"]: r for r in result["rows"] if r["kind"] == "tipologia"}
+    assert rows["lungo"]["warnings"] == ["descrizione accorciata a 200 caratteri (sul controller ne ha 250)"]
+    assert rows["spazi"]["warnings"] == [
+        "nome fatto solo di spazi sul controller: la tipologia prende il nome dal token del profilo"
+    ]
+    assert rows["nome"]["warnings"] == ["nome accorciato a 40 caratteri (ne ha 150)"]
+    # Riscriverebbe il profilo con nome e descrizione della tipologia: chi entra dove resta com'è
+    assert {t: [c["label"] for c in rows[t]["changes"]] for t in ("lungo", "spazi", "nome")} == {
+        "lungo": ["Descrizione"],
+        "spazi": ["Nome", "Descrizione"],
+        "nome": ["Nome"],
+    }
+    external = ["profilo esterno usato da tessere dell'app"]
+    assert all(rows[t]["surprises"] == external for t in ("lungo", "spazi", "nome"))
+    # Nella 0.28 la presa in carico non si salva
+    assert [c["name"] for c in plant.rules.list_categories()] == ["Personale"]
+
+
 async def test_card_made_by_a_script_is_extra(plant, controller):
     await app_made(plant)
     token = controller.add_existing("utente_script_250101120000", "Ospite Script", "04ff")

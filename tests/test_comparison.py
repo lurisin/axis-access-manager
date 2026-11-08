@@ -6,6 +6,7 @@ import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
+from test_full_restore import bench_like
 
 from app import main
 from app.compare import KIND_TITLES, KINDS, LISTS
@@ -322,4 +323,63 @@ def test_hourly_comparison_waits_for_the_controller(client, controller):
     controller.offline = False
     client.portal.call(state.health.check_all)
     assert client.portal.call(main._shadow_programming, state) is True
+    assert writes(controller) == []
+
+
+def test_comparison_with_a_profile_the_app_would_not_accept(client, controller, monkeypatch, caplog):
+    """Anna ha come Accesso Personalizzato un profilo fatto a mano con una descrizione di 230 caratteri, che l'app non
+    accetta: il confronto non si ferma per questo. Le righe ci sono, quella del profilo dice che la descrizione si
+    accorcia, e il confronto in ombra di ogni ora non fallisce."""
+    state = client.app.state
+    bench_like(controller)
+    anna = client.post("/api/persons", json={"name": "Anna", "card": "04aa"}, headers=ADMIN).json()
+    policy = {"AccessPoint": "ap-in", "AuthorizationProfile": [], "Attribute": [], "Schedule": ["standard_always"]}
+    controller.profiles["esterno"] = {
+        "token": "esterno",
+        "Name": "Impresa",
+        "Description": "x" * 230,
+        "Enabled": True,
+        "Schedule": ["standard_always"],
+        "AccessPolicy": [policy],
+    }
+    token = anna["cards"][0]["axis_credential_token"]
+    controller.credentials[token]["CredentialAccessProfile"][0]["AccessProfile"] = "esterno"
+    client.post("/api/sync", headers=ADMIN)
+    controller.attempts.clear()
+
+    response = client.get(f"/api/controllers/{controller_id(client)}/comparison", headers=ADMIN)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is True and data["error"] == ""
+    groups = by_kind(data)
+    assert groups["porta"]["rows"] and groups["tessera"]["rows"] and groups["config_lettore"]["unread"] == ""
+    [row] = [r for r in groups["tipologia"]["rows"] if r["token"] == "esterno"]
+    assert row["warnings"] == ["descrizione accorciata a 200 caratteri (sul controller ne ha 230)"]
+    assert row["surprises"] == ["profilo esterno usato da tessere dell'app"]
+    assert [c["label"] for c in row["changes"]] == ["Descrizione"]
+    assert any(n["text"].startswith("Accesso Personalizzato: passa alla tipologia Impresa") for n in data["notes"])
+
+    # Un giro del confronto in ombra, come nel ciclo di ogni ora: senza l'avviso «non riuscito»
+    done = asyncio.Event()
+    hourly = main._shadow_programming
+
+    async def once(state):
+        try:
+            return await hourly(state)
+        finally:
+            done.set()
+
+    async def one_round():
+        task = asyncio.create_task(main._shadow_loop(client.app))
+        await done.wait()
+        task.cancel()
+
+    monkeypatch.setattr(main, "_shadow_programming", once)
+    state.shadow.next_full = 0
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        client.portal.call(one_round)
+    assert "Confronto in ombra della programmazione non riuscito" not in caplog.text
+    assert state.shadow.as_dict()["rounds"]["programmazione"]["error"] == ""
+    assert state.shadow.next_full - loop_time(client) > 3590
     assert writes(controller) == []
