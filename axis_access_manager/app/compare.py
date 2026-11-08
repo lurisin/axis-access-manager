@@ -18,11 +18,11 @@ import copy
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from .hardware import ALWAYS, CONTROLLER_INPUTS, READER_BUSES, RELAYS, is_factory
 from .programming import DOOR_TIMES, _own_rex_profile, format_duration, is_rex_profile, parse_duration
-from .rules import DAYS, describe_rules, parse_schedule_ical
+from .rules import DAYS, describe_rules
 from .service import card_of_credential, plural
 from .vapix import ControllerUnreachable, VapixError
 
@@ -640,24 +640,208 @@ def _utc(value: str) -> str:
     return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _lines(value) -> list[str]:
+    """Righe di un calendario: fine riga CRLF, LF o CR, righe piegate (che continuano con uno spazio o un tab)
+    riunite, senza spazi in cima e in fondo e senza righe vuote."""
+    text = re.sub(r"\n[ \t]", "", str(value or "").replace("\r\n", "\n").replace("\r", "\n"))
+    return [line.strip() for line in text.split("\n") if line.strip()]
+
+
 def _text(value) -> str:
     """Testo di un calendario senza differenze di righe e spazi."""
-    lines = str(value or "").replace("\r\n ", "").replace("\r\n", "\n").split("\n")
-    return "\n".join(line.strip() for line in lines if line.strip())
+    return "\n".join(_lines(value))
+
+
+def _verbatim(value) -> str:
+    """Calendario che il confronto non sa interpretare: si confronta il testo (_text), quindi è uguale solo a un testo
+    uguale. Un testo che non comincia come un calendario prende «testo: » davanti, così non si confonde mai con un
+    significato («lun-ven 08:00–18:00»)."""
+    text = _text(value)
+    return text if text.upper().startswith("BEGIN:VCALENDAR") else f"testo: {text}"
+
+
+# Proprietà del calendario (fuori dagli eventi) che non cambiano quando vale una fascia, con il valore se conta
+CALENDAR_PROPERTIES = {"PRODID": None, "VERSION": "2.0", "CALSCALE": "GREGORIAN"}
+# Data di partenza delle ricorrenze negli orari scritti dall'app (rules.schedule_ical)
+BASE_DATE = date(1970, 1, 1)
+_ICAL_NAME = re.compile(r"[A-Za-z0-9-]+")
+_ICAL_DATE = (re.compile(r"\d{8}"), "%Y%m%d")
+_ICAL_DATETIME = (re.compile(r"\d{8}T\d{6}"), "%Y%m%dT%H%M%S")
+# Un evento di un giorno intero: DTSTART, DTEND ed EXDATE con VALUE=DATE
+WHOLE_DAY = {"VALUE": "DATE"}
+
+
+def _ical_property(line: str) -> tuple[str, dict[str, str], str] | None:
+    """Riga «NOME;PARAMETRO=VALORE:valore» → (NOME, {PARAMETRO: VALORE}, valore); None se non si legge (parametri
+    tra virgolette, ripetuti o senza =)."""
+    head, sep, value = line.partition(":")
+    if not sep or '"' in head:
+        return None
+    name, *parts = head.split(";")
+    if not _ICAL_NAME.fullmatch(name):
+        return None
+    params: dict[str, str] = {}
+    for part in parts:
+        key, eq, item = part.partition("=")
+        if not eq or key.upper() in params:
+            return None
+        params[key.upper()] = item.upper()
+    return name.upper(), params, value
+
+
+def _ical_events(text) -> list[dict[str, list[tuple[dict, str]]]] | None:
+    """Eventi di un calendario: per ogni VEVENT, proprietà → [(parametri, valore)]. None se nel calendario c'è
+    qualcosa che il confronto non sa interpretare: righe prima o dopo il calendario, altri componenti (VTIMEZONE,
+    VALARM...), proprietà del calendario diverse da CALENDAR_PROPERTIES, righe che non si leggono."""
+    lines = _lines(text)
+    if len(lines) < 2 or lines[0].upper() != "BEGIN:VCALENDAR" or lines[-1].upper() != "END:VCALENDAR":
+        return None
+    events: list[dict] = []
+    event: dict | None = None
+    for line in lines[1:-1]:
+        parsed = _ical_property(line)
+        if parsed is None:
+            return None
+        name, params, value = parsed
+        component = value.upper() if name in ("BEGIN", "END") and not params else ""
+        if event is None:
+            if name == "BEGIN" and component == "VEVENT":
+                event = {}
+            elif name not in CALENDAR_PROPERTIES or params:
+                return None
+            elif CALENDAR_PROPERTIES[name] is not None and value.upper() != CALENDAR_PROPERTIES[name]:
+                return None
+        elif name == "END" and component == "VEVENT":
+            events.append(event)
+            event = None
+        elif name in ("BEGIN", "END"):
+            return None
+        else:
+            event.setdefault(name, []).append((params, value))
+    return events if event is None else None
+
+
+def _one(event: dict, name: str, params: dict | None = None, required: bool = True) -> str | None:
+    """Valore della proprietà name, che deve esserci una volta sola (o mancare, se non è required) e con proprio quei
+    parametri: "" se manca, None se è ripetuta, se manca e non può mancare o se ha altri parametri."""
+    found = event.get(name) or []
+    if not found:
+        return None if required else ""
+    if len(found) > 1 or found[0][0] != (params or {}):
+        return None
+    return found[0][1]
+
+
+def _rrule(value: str) -> dict[str, str] | None:
+    """Parti di una RRULE («FREQ=WEEKLY;BYDAY=MO»); None se una parte è ripetuta o senza =."""
+    parts: dict[str, str] = {}
+    for part in value.split(";"):
+        key, eq, item = part.partition("=")
+        if not eq or key in parts:
+            return None
+        parts[key] = item
+    return parts
+
+
+def _when(value: str, form: tuple[re.Pattern, str]) -> datetime | None:
+    """Data (_ICAL_DATE) o data e ora locale senza fuso (_ICAL_DATETIME) di un calendario; None se non è così."""
+    pattern, layout = form
+    if not pattern.fullmatch(value):
+        return None
+    try:
+        return datetime.strptime(value, layout)
+    except ValueError:
+        return None
+
+
+def _day(value: datetime) -> str:
+    return value.strftime("%d/%m/%Y")
+
+
+def _moment(value: datetime) -> str:
+    return value.strftime("%d/%m/%Y %H:%M:%S" if value.second else "%d/%m/%Y %H:%M")
+
+
+def _limits(event: dict, rrule: dict[str, str], form: tuple[re.Pattern, str], params: dict, show) -> str | None:
+    """Il resto del significato di una ricorrenza: « per 3 volte» (COUNT) o « fino al 31/12/2027» (UNTIL), poi
+    « tranne il …» (EXDATE). UNTIL ed EXDATE nella forma form di DTSTART, EXDATE con i parametri params; show le
+    mostra. "" se non c'è niente, None se COUNT e UNTIL ci sono insieme o qualcosa non si legge."""
+    count, until = rrule.get("COUNT"), rrule.get("UNTIL")
+    text = ""
+    if count is not None and until is not None:
+        return None
+    if count is not None:
+        if not count.isdigit() or int(count) < 1:
+            return None
+        text = f" per {plural(int(count), 'volta', 'volte')}"
+    elif until is not None:
+        if (last := _when(until, form)) is None:
+            return None
+        text = f" fino al {show(last)}"
+    excluded: set[datetime] = set()
+    for found, value in event.get("EXDATE") or []:
+        items = [_when(item, form) for item in value.split(",")]
+        if found != params or None in items:
+            return None
+        excluded.update(items)
+    if excluded:
+        text += " tranne il " + ", ".join(show(item) for item in sorted(excluded))
+    return text
+
+
+def _weekly(event: dict) -> tuple[dict, str] | None:
+    """Un evento degli orari: (intervallo {days, start, end}, il resto del significato: la data di partenza se non è
+    quella dell'app, poi COUNT, UNTIL ed EXDATE). None se l'evento ha qualcosa che il confronto non sa interpretare."""
+    if set(event) - {"DTSTART", "DTEND", "RRULE", "EXDATE"}:
+        return None
+    start = _when(_one(event, "DTSTART") or "", _ICAL_DATETIME)
+    end = _when(_one(event, "DTEND") or "", _ICAL_DATETIME)
+    rrule = _rrule(_one(event, "RRULE") or "")
+    if start is None or end is None or rrule is None or start.second or end.second:
+        return None
+    if end <= start or end - start > timedelta(days=1):
+        return None
+    if end.date() != start.date() and end.time() != datetime.min.time():
+        return None
+    if set(rrule) - {"FREQ", "BYDAY", "INTERVAL", "WKST", "COUNT", "UNTIL"} or rrule.get("INTERVAL", "1") != "1":
+        return None
+    if rrule.get("FREQ") not in ("WEEKLY", "DAILY") or rrule.get("WKST", "MO") not in DAYS:
+        return None
+    if "BYDAY" in rrule:
+        listed = rrule["BYDAY"].split(",")
+        if not set(listed) <= set(DAYS):
+            return None
+        days = [d for d in DAYS if d in listed]
+    else:
+        days = list(DAYS) if rrule["FREQ"] == "DAILY" else [DAYS[start.weekday()]]
+    rest = _limits(event, rrule, _ICAL_DATETIME, {}, _moment)
+    if rest is None:
+        return None
+    if start.date() != BASE_DATE:
+        rest = f" dal {_day(start)}{rest}"
+    end_text = "24:00" if end.date() != start.date() else end.strftime("%H:%M")
+    return {"days": days, "start": start.strftime("%H:%M"), "end": end_text}, rest
 
 
 def schedule_meaning(text: str | None) -> str:
     """Orari di un calendario Axis per significato: «lun-ven 08:00–18:00». Due calendari scritti in modo diverso con
-    gli stessi orari danno lo stesso testo. Un calendario che l'editor non sa leggere resta com'è."""
+    gli stessi orari danno lo stesso testo: gli intervalli che partono dalla data dell'app (BASE_DATE), senza fine e
+    senza esclusioni si uniscono per giorno. Gli altri restano uno per uno, con quello che li cambia: «lun-ven
+    08:00–18:00 dal 01/01/2027», «… per 10 volte», «… fino al 31/12/2027 18:00», «… tranne il 09/11/2026 08:00». Un
+    calendario con qualcosa che il confronto non sa interpretare si confronta come testo (_verbatim)."""
     if not text:
         return ""
-    rules = parse_schedule_ical(text)
-    if rules is None:
-        return _text(text)
+    parsed = [_weekly(event) for event in _ical_events(text) or ()]
+    if not parsed or None in parsed:
+        return _verbatim(text)
     per_day: dict[str, list[list[str]]] = {}
-    for rule in rules:
-        for day in rule["days"]:
-            per_day.setdefault(day, []).append([rule["start"], rule["end"]])
+    others = set()
+    for interval, rest in parsed:
+        if rest:
+            others.add(describe_rules([interval]) + rest)
+            continue
+        for day in interval["days"]:
+            per_day.setdefault(day, []).append([interval["start"], interval["end"]])
     by_interval: dict[tuple[str, str], list[str]] = {}
     for day in DAYS:
         merged: list[list[str]] = []
@@ -672,28 +856,48 @@ def schedule_meaning(text: str | None) -> str:
         {"days": days, "start": start, "end": end}
         for (start, end), days in sorted(by_interval.items(), key=lambda i: (DAYS.index(i[1][0]), i[0]))
     ]
-    return describe_rules(canonical)
+    return "; ".join(filter(None, [describe_rules(canonical), *sorted(others)]))
+
+
+def _holiday(event: dict) -> tuple[datetime, str] | None:
+    """Un'eccezione (giornate intere in cui la fascia non vale): (primo giorno, significato), con l'ultimo giorno se
+    sono più giorni, la ricorrenza ogni anno come la scrive l'app (rules.holidays_ical: FREQ=YEARLY con BYMONTH il
+    mese del primo giorno), COUNT, UNTIL ed EXDATE. None se ha qualcosa che il confronto non sa interpretare."""
+    if set(event) - {"DTSTART", "DTEND", "RRULE", "EXDATE"}:
+        return None
+    start = _when(_one(event, "DTSTART", WHOLE_DAY) or "", _ICAL_DATE)
+    end_text = _one(event, "DTEND", WHOLE_DAY, required=False)
+    rrule_text = _one(event, "RRULE", required=False)
+    if start is None or end_text is None or rrule_text is None:
+        return None
+    # Senza DTEND un evento di un giorno intero dura un giorno (RFC 5545)
+    end = _when(end_text, _ICAL_DATE) if end_text else start + timedelta(days=1)
+    if end is None or end <= start:
+        return None
+    last = end - timedelta(days=1)
+    text = _day(start) if last == start else f"dal {_day(start)} al {_day(last)}"
+    rrule: dict[str, str] | None = {}
+    if rrule_text:
+        rrule = _rrule(rrule_text)
+        if rrule is None or set(rrule) - {"FREQ", "BYMONTH", "COUNT", "UNTIL"}:
+            return None
+        if rrule.get("FREQ") != "YEARLY" or rrule.get("BYMONTH") != str(start.month):
+            return None
+        text += " ogni anno"
+    rest = _limits(event, rrule, _ICAL_DATE, WHOLE_DAY, _day)
+    return None if rest is None else (start, text + rest)
 
 
 def exceptions_meaning(text: str | None) -> str:
-    """Giornate escluse da una fascia (festività) per significato: «25/12/2026 ogni anno; 06/04/2026»."""
+    """Giornate escluse da una fascia (festività) per significato, in ordine di data: «06/04/2026; 25/12/2026 ogni
+    anno; dal 24/12/2026 al 06/01/2027». Un calendario con qualcosa che il confronto non sa interpretare si confronta
+    come testo (_verbatim)."""
     if not text:
         return ""
-    days = set()
-    for block in re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", str(text).replace("\r\n ", ""), re.S):
-        props: dict[str, str] = {}
-        for line in block.strip().splitlines():
-            key, _, value = line.strip().partition(":")
-            props[key.split(";")[0].upper()] = value.strip()
-        start = props.get("DTSTART", "")
-        if not re.fullmatch(r"\d{8}", start):
-            return _text(text)
-        rrule = props.get("RRULE", "")
-        yearly = "FREQ=YEARLY" in rrule.upper()
-        if rrule and not yearly:
-            return _text(text)
-        days.add(f"{start[6:8]}/{start[4:6]}/{start[:4]}" + (" ogni anno" if yearly else ""))
-    return "; ".join(sorted(days)) if days else _text(text)
+    parsed = [_holiday(event) for event in _ical_events(text) or ()]
+    if not parsed or None in parsed:
+        return _verbatim(text)
+    return "; ".join(meaning for _, meaning in sorted(set(parsed)))
 
 
 def _canon(key: str, value):
