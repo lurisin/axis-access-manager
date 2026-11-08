@@ -6,6 +6,7 @@ import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
+from test_full_restore import bench_like
 
 from app import main
 from app.compare import KIND_TITLES, KINDS, LISTS
@@ -271,6 +272,14 @@ def test_shadow_failure_does_not_change_the_sync(client, controller, monkeypatch
 def test_hourly_comparison_at_most_once_an_hour(client, controller, caplog):
     state = client.app.state
     client.post("/api/persons", json={"name": "Anna", "card": "04aa"}, headers=ADMIN)
+
+    async def configurations(*, strict=False):
+        return []
+
+    # Come l'A1210 del banco, che le configurazioni dei lettori le restituisce: la presa in carico si calcola. Una
+    # differenza vera, la porta con 90 s
+    controller.list_idpoint_configurations = configurations
+    controller.doors["porta"]["AccessTime"] = "PT90S"
     controller.reads.clear()
     controller.attempts.clear()
     controller.calls.clear()
@@ -305,6 +314,60 @@ def test_hourly_comparison_at_most_once_an_hour(client, controller, caplog):
     client.get(f"/api/controllers/{controller_id(client)}/comparison", headers=ADMIN)
     assert state.shadow.next_full - loop_time(client) > 3590
     assert client.portal.call(main._shadow_programming, state) is False
+
+
+def test_shadow_round_without_the_presa_changes_nothing_in_the_log(client, controller, caplog):
+    """Giro normale, giro con le configurazioni delle porte rifiutate una volta (la presa in carico non si calcola),
+    giro normale: le differenze vanno nel log una volta sola, e il profilo della tipologia dell'app non diventa mai
+    «esterno». Il giro senza presa dice perché non ha confrontato."""
+    state = client.app.state
+    bench_like(controller)
+    client.post("/api/persons", json={"name": "Anna", "card": "04aa"}, headers=ADMIN)
+    controller.doors["porta"]["AccessTime"] = "PT90S"
+    controller.attempts.clear()
+
+    def run():
+        state.shadow.next_full = 0
+        assert client.portal.call(main._shadow_programming, state) is True
+        return [r.getMessage() for r in caplog.records if r.name == "app.shadow"]
+
+    with caplog.at_level(logging.WARNING, logger="app.shadow"):
+        first = run()
+        assert any(m.startswith("Confronto in ombra: Porta Ingresso scala: Riporterebbe") for m in first)
+        assert any(m.startswith("Confronto in ombra: Profilo di Accesso Sempre: Riporterebbe") for m in first)
+        assert run() == first
+        controller.refuse("list_door_configurations", "ter:Busy", times=1)
+        assert run() == first
+        shadow = state.shadow.as_dict()
+        error = shadow["rounds"]["programmazione"]["error"]
+        assert error.startswith("non confrontato: presa in carico non calcolata: configurazione delle porte: ")
+        kinds = {k["kind"]: k for k in shadow["kinds"]}
+        assert kinds["config_porta"]["non_letto"].startswith("configurazione delle porte: ")
+        assert kinds["porta"]["non_letto"] == kinds["tipologia"]["non_letto"] == error
+        assert kinds["porta"]["differenze"] == kinds["porta"]["sorprese"] == 0
+        assert run() == first
+    assert "profilo esterno" not in " ".join(first)
+    shadow = state.shadow.as_dict()
+    assert shadow["rounds"]["programmazione"]["error"] == ""
+    kinds = {k["kind"]: k for k in shadow["kinds"]}
+    assert kinds["porta"]["differenze"] == 1 and kinds["porta"]["non_letto"] == ""
+    assert writes(controller) == []
+
+
+def test_comparison_without_the_presa_keeps_the_profiles_of_the_app(client, controller):
+    """Senza la presa in carico (il finto non dà le configurazioni dei lettori) la scheda mostra i profili come sono,
+    e il profilo della tipologia dell'app non è «esterno»; un profilo che nessuna tipologia usa sì."""
+    client.post("/api/persons", json={"name": "Anna", "card": "04aa"}, headers=ADMIN)
+    controller.profiles["esterno"] = {**controller.profiles["profilo_sempre"], "token": "esterno", "Name": "Esterno"}
+    controller.attempts.clear()
+
+    data = client.get(f"/api/controllers/{controller_id(client)}/comparison", headers=ADMIN).json()
+
+    assert data["notes"][0]["text"].startswith("Non si fa: elenchi non letti")
+    rows = {row["token"]: row for row in by_kind(data)["tipologia"]["rows"]}
+    assert (rows["profilo_sempre"]["action"], rows["profilo_sempre"]["surprises"]) == ("prende", [])
+    assert rows["esterno"]["surprises"] == ["profilo esterno: non è di una tipologia dell'app"]
+    assert writes(controller) == []
 
 
 def test_hourly_comparison_waits_for_the_controller(client, controller):

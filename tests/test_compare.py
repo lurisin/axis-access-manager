@@ -319,7 +319,7 @@ async def test_only_the_kinds_of_the_desired_state_are_compared(plant, controlle
     await app_made(plant)
     reading = await read_strict(controller)
 
-    assert compare(build(load_conf(db), plant.controller_id, []), reading) == {"rows": [], "unread": []}
+    assert compare(build(load_conf(db), plant.controller_id, []), reading) == {"rows": [], "unread": [], "pending": []}
     result = compare(build(load_conf(db), plant.controller_id, ["tessera"]), reading)
     assert {r["kind"] for r in result["rows"]} == {"tessera"}
     assert {r["action"] for r in result["rows"]} == {"uguale"}

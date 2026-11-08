@@ -410,8 +410,9 @@ def _programming(conf: dict, controller_id: int) -> dict[str, dict[str, dict]]:
 
 def build(conf: dict, controller_id: int, kinds=None) -> dict:
     """Stato voluto per un controller: {"kinds": tipi calcolati, "objects": {tipo: {chiave: payload}}, "pending":
-    tipi da prendere in carico, "known": {"utente": token di tutte le persone}}. kinds: i tipi da calcolare
-    (compare.KINDS), None tutti. Senza la presa in carico del controller i tipi della programmazione sono pending."""
+    tipi da prendere in carico, "known": {"utente": token di tutte le persone, "tipologia": profili delle tipologie}}.
+    kinds: i tipi da calcolare (compare.KINDS), None tutti. Senza la presa in carico del controller i tipi della
+    programmazione sono pending: known dice lo stesso quali profili sono dell'app."""
     kinds = [k for k in KINDS if kinds is None or k in kinds]
     objects: dict[str, dict[str, dict]] = {}
     pending = []
@@ -431,5 +432,8 @@ def build(conf: dict, controller_id: int, kinds=None) -> dict:
             for card in person.get("cards") or []
             if card.get("axis_credential_token")
         }
-    known = sorted({_user_token(p) for p in persons if _user_token(p)})
-    return {"kinds": kinds, "objects": objects, "pending": pending, "known": {"utente": known}}
+    known = {
+        "utente": sorted({_user_token(p) for p in persons if _user_token(p)}),
+        "tipologia": sorted({c["group_token"] for c in conf.get("categories") or [] if c.get("group_token")}),
+    }
+    return {"kinds": kinds, "objects": objects, "pending": pending, "known": known}

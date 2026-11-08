@@ -1086,12 +1086,14 @@ def _duplicates(credentials: dict[str, dict], cards: dict[str, dict]) -> dict[st
 def compare(voluto: dict, letto: dict, notes: list[dict] | None = None) -> dict:
     """Confronta lo stato voluto (desired.build) con la lettura del controller (read_strict).
 
-    Restituisce {"rows": [...], "unread": [...]}. rows: una riga per oggetto dei tipi del voluto, nell'ordine di KINDS,
-    con action tra "prende" (lo prende in carico com'è), "riporta" (sul controller è diverso: lo riporta com'è
-    nell'app), "ricrea" (manca sul controller), "togli" (c'è solo sul controller), "uguale"; changes: le differenze
-    campo per campo, old com'è sul controller e new com'è nell'app; surprises: perché va guardato (vuoto se niente).
-    Gli oggetti di fabbrica (hardware.is_factory) non sono mai tra le righe "togli". unread: una riga "non_letto" per
-    ogni tipo con un elenco non letto, e per quel tipo nessuna riga di oggetti.
+    Restituisce {"rows": [...], "unread": [...], "pending": [...]}. rows: una riga per oggetto dei tipi del voluto,
+    nell'ordine di KINDS, con action tra "prende" (lo prende in carico com'è), "riporta" (sul controller è diverso:
+    lo riporta com'è nell'app), "ricrea" (manca sul controller), "togli" (c'è solo sul controller), "uguale";
+    changes: le differenze campo per campo, old com'è sul controller e new com'è nell'app; surprises: perché va
+    guardato (vuoto se niente). Gli oggetti di fabbrica (hardware.is_factory) non sono mai tra le righe "togli".
+    unread: una riga "non_letto" per ogni tipo con un elenco non letto, e per quel tipo nessuna riga di oggetti.
+    pending: i tipi letti ma non confrontati, perché il voluto non è calcolato (presa in carico non fatta): le loro
+    righe sono tutte "prende".
     notes: le note della presa in carico; un oggetto preso in carico e uguale dopo la presa è "prende", e le sue
     sorprese e i suoi avvisi passano nella riga."""
     lists = letto.get("lists") or {}
@@ -1099,11 +1101,12 @@ def compare(voluto: dict, letto: dict, notes: list[dict] | None = None) -> dict:
     serial = str(letto.get("serial") or "")
     objects = voluto.get("objects") or {}
     pending = set(voluto.get("pending") or ())
-    known_users = set((voluto.get("known") or {}).get("utente") or ())
+    known = {kind: set(tokens or ()) for kind, tokens in (voluto.get("known") or {}).items()}
     noted = {(n.get("kind"), n.get("key")): n for n in notes or () if n.get("key")}
     names = _names(lists, objects)
     rows: list[dict] = []
     unread: list[dict] = []
+    compared_pending: list[str] = []
     # Solo i tipi per cui il voluto è stato calcolato: per gli altri ogni oggetto letto risulterebbe da togliere
     for kind in voluto.get("kinds", ()):
         missing = [key for key in KIND_LISTS[kind] if key not in lists]
@@ -1116,8 +1119,10 @@ def compare(voluto: dict, letto: dict, notes: list[dict] | None = None) -> dict:
             item.update(token="", surprises=[], blocked="; ".join(dict.fromkeys(reasons)))
             unread.append(item)
             continue
+        if kind in pending:
+            compared_pending.append(kind)
         wanted = objects.get(kind) or {}
-        extra = _surprises(kind, current, objects, known_users)
+        extra = _surprises(kind, current, objects, known)
         for key in dict.fromkeys([*wanted, *current]):
             want, have = wanted.get(key), current.get(key)
             if want is None and kind in ("fascia", "morsetto") and is_factory(kind, key, serial):
@@ -1163,7 +1168,7 @@ def compare(voluto: dict, letto: dict, notes: list[dict] | None = None) -> dict:
                     item["changes"] = [{"label": name, "old": value, "new": "—"} for name, value in found]
                     item["surprises"].append(SURPRISE_SCHEDULE)
                     rows.append(item)
-    return {"rows": rows, "unread": unread}
+    return {"rows": rows, "unread": unread, "pending": compared_pending}
 
 
 def _without_pin(data: dict) -> dict:
@@ -1184,9 +1189,11 @@ def _make(kind: str, key: str, action: str, wanted: dict | None, current: dict |
     return item
 
 
-def _surprises(kind: str, current: dict, objects: dict, known_users: set[str]) -> dict[str, list[str]]:
-    """Sorprese degli oggetti letti di un tipo, per chiave."""
+def _surprises(kind: str, current: dict, objects: dict, known: dict[str, set[str]]) -> dict[str, list[str]]:
+    """Sorprese degli oggetti letti di un tipo, per chiave. known: i token che sono dell'app anche quando il voluto di
+    quel tipo non è calcolato (utenti delle persone, profili delle tipologie)."""
     wanted = objects.get(kind) or {}
+    known_users, known_profiles = known.get("utente") or set(), known.get("tipologia") or set()
     found: dict[str, list[str]] = {}
 
     def add(key: str, text: str) -> None:
@@ -1204,7 +1211,8 @@ def _surprises(kind: str, current: dict, objects: dict, known_users: set[str]) -
                 add(token, SURPRISE_USER_OUTSIDE)
     elif kind == "tipologia":
         for token in current:
-            if token not in wanted:
+            # Il profilo di una tipologia dell'app non è mai esterno, anche senza la presa in carico
+            if token not in wanted and token not in known_profiles:
                 add(token, SURPRISE_EXTERNAL)
     elif kind == "pulsanti":
         for token, profile in current.items():
