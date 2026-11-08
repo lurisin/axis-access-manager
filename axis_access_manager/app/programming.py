@@ -11,6 +11,7 @@ import logging
 import re
 
 from .db import Database
+from .hardware import ALLOWED_ROLES, ALWAYS, CONTROLLER_INPUTS, _plain_mode
 from .service import ServiceError, normalize_name, normalize_text
 from .vapix import A1210Client, ControllerUnreachable, VapixError
 
@@ -29,16 +30,6 @@ DOOR_TIMES = {
 }
 # Lato della porta del lettore ("Ingresso" è il morsetto del controller)
 DIRECTIONS = {"in": "Entrata", "out": "Uscita"}
-# Ingressi fisici dell'A1210 (nomi del servizio axisio) → nome di serie e porta I/O degli eventi, se c'è.
-# Contatto porta e REX sono il connettore Door (pin 1-2 e 3-4); gli altri danno anche gli eventi Device/IO/Port.
-CONTROLLER_INPUTS = {
-    "DPS": ("Ingresso Contatto Porta", None),
-    "REX": ("Ingresso REX", None),
-    "IO1": ("Ingresso AUX 1", "0"),
-    "IO2": ("Ingresso AUX 2", "1"),
-    "EXTERNAL_TAMPER": ("Ingresso Manomissione", "2"),
-    "ALARM": ("Ingresso Allarme", "3"),
-}
 INPUT_ROLES = {
     "": "Non Usato",
     "rex": "Pulsante Uscita",
@@ -53,16 +44,6 @@ DOOR_ROLES = {"rex", "intercom", "door_monitor", "door_contact"}
 # DoorMonitor il controller tiene la porta Aperta a Tempo finché non si richiude (in loco il 3/11 un contatto scollegato
 # l'ha tenuta così 5 minuti); con il Contatto Porta la serratura si riblocca sempre a fine tempo (vedi lock_guard)
 CONTACT_ROLES = {"door_monitor", "door_contact"}
-# Ruoli possibili per ogni ingresso: il contatto porta e il REX sono del connettore Door, gli AUX sono liberi. Il
-# Contatto Porta solo sugli ingressi che mandano gli eventi Device/IO/Port
-ALLOWED_ROLES = {
-    "DPS": {"", "door_monitor"},
-    "REX": {"", "rex", "intercom"},
-    "IO1": {"", "rex", "intercom", "door_contact", "alarm"},
-    "IO2": {"", "rex", "intercom", "door_contact", "alarm"},
-    "EXTERNAL_TAMPER": {"", "alarm"},
-    "ALARM": {"", "door_contact", "alarm"},
-}
 CONTACTS = {"no": "Normalmente Aperto (NO)", "nc": "Normalmente Chiuso (NC)"}
 # Ingresso Generico salvato prima della 0.26.0, senza modalità scelta: acceso come lo dice il controller (attivo, cioè
 # fuori dallo stato normale impostato sul controller), finché non si sceglie NO o NC
@@ -88,12 +69,6 @@ INPUT_SETTINGS = ("name", "role", "door_token", "contact", "supervised", "schedu
 REX_AUTHENTICATION = "REXOnly"
 REX_PROFILE_NAME = "Uscite e Citofono"
 REX_PROFILE_DESCRIPTION = "Pulsanti di uscita e relè del citofono (Axis Access Manager)"
-ALWAYS = "standard_always"
-
-
-def _plain_mode(io: str) -> str:
-    """Modo dell'ingresso senza linea supervisionata: gli AUX sono I/O configurabili, gli altri solo ingressi."""
-    return "inout:pu/gnd" if io.startswith("IO") else "in:pu/gnd"
 
 
 def parse_duration(value: str | None) -> float | None:
@@ -338,6 +313,85 @@ def _rex_sig(profile: dict) -> tuple:
     )
 
 
+def rex_profile(wanted: dict[str, str], kept: list[dict] | None = None, base: dict | None = None) -> dict:
+    """Profilo dei pulsanti con una regola per ogni punto di accesso in wanted (punto → fascia), dopo le regole kept.
+    base: il profilo da cui partire, con i campi che restano (token, validità); senza, un profilo nuovo."""
+    profile = copy.deepcopy(base) if base else {"token": "", "ValidFrom": "", "ValidTo": "", "Attribute": []}
+    profile.update(
+        {
+            "Name": REX_PROFILE_NAME,
+            "Description": REX_PROFILE_DESCRIPTION,
+            "Enabled": True,
+            # L'A1210 valuta la fascia del profilo insieme a quella della regola: decide quella di ogni ingresso
+            "Schedule": [ALWAYS],
+            "AuthenticationProfile": [REX_AUTHENTICATION],
+            "AccessPolicy": list(kept or [])
+            + [
+                {"AccessPoint": point, "AuthorizationProfile": [], "Attribute": [], "Schedule": [schedule]}
+                for point, schedule in wanted.items()
+            ],
+        }
+    )
+    return profile
+
+
+def rex_description(io: str) -> str:
+    """Descrizione del punto di identificazione e del punto di accesso che l'app scrive per un ingresso."""
+    return f"Ingresso {io} (Axis Access Manager)"
+
+
+def rex_idpoint(io: str, values: dict, token: str = "") -> dict:
+    """Punto di identificazione senza lettore di un pulsante o di un relè (values: impostazioni dell'ingresso)."""
+    return {
+        **({"token": token} if token else {}),
+        "Name": values["name"][:64],
+        "Description": rex_description(io),
+        "Location": "",
+        "Action": "Access",
+        "Timeout": "PT10S",
+        "MinPINSize": 4,
+        "MaxPINSize": 4,
+        "EndOfPIN": "#",
+    }
+
+
+def rex_configuration(values: dict) -> dict[str, str]:
+    """Configurazione del punto di identificazione di un ingresso: REX attivo basso (NO) o alto (NC)."""
+    level = "High" if values["contact"] == "nc" else "Low"
+    return {
+        "IdPoint.Reader.Type": "None",
+        "IdPoint.REX.Type": f"{'Supervised' if values['supervised'] else ''}Active{level}",
+        "IdPoint.Keypress.Type": "Auto",
+    }
+
+
+def rex_assignment(io: str, values: dict, idpoint: str) -> tuple[str, list[dict]]:
+    """Modo e utenti del morsetto di un pulsante o di un relè."""
+    supervised = values["supervised"]
+    users = [{"Type": "idpoint", "token": idpoint, "Usage": "REXSupervised" if supervised else "REX", "MultiIo": False}]
+    return ("supervised" if supervised else _plain_mode(io)), users
+
+
+def rex_point_fields(io: str, values: dict, idpoint: str, device: str = "", attributes=()) -> dict:
+    """Campi del punto di accesso in uscita di un ingresso, con il modo REXOnly di fabbrica; attributes: gli altri
+    attributi del punto (Direction lo aggiunge questa funzione)."""
+    return {
+        "Name": values["name"][:64],
+        "Description": rex_description(io),
+        "Entity": values["door_token"],
+        "EntityType": "axtdc:Door",
+        "Enabled": True,
+        "IdPointDevice": [{"IdPoint": idpoint, "DeviceUUID": device}],
+        "AuthenticationProfile": [REX_AUTHENTICATION],
+        "Attribute": [*attributes, {"Name": "Direction", "Value": "out"}],
+    }
+
+
+def door_monitor_users(door: str) -> list[dict]:
+    """Utenti del morsetto del Sensore Porta: i due controlli della porta, come al banco."""
+    return [{"Type": "doorcontrol", "token": door, "Usage": usage, "MultiIo": False} for usage in DOOR_MONITOR_USAGES]
+
+
 async def sync_rex_profile(controller, wanted: dict[str, str], drop: set[str] | frozenset[str] = frozenset()) -> str:
     """Porta il profilo dei pulsanti alle regole volute (punto di accesso → fascia), solo sui punti che ci sono.
 
@@ -357,22 +411,7 @@ async def sync_rex_profile(controller, wanted: dict[str, str], drop: set[str] | 
             return ""
         await controller.remove_access_profile(mine["token"])
         return "tolto"
-    profile = copy.deepcopy(mine) if mine else {"token": "", "ValidFrom": "", "ValidTo": "", "Attribute": []}
-    profile.update(
-        {
-            "Name": REX_PROFILE_NAME,
-            "Description": REX_PROFILE_DESCRIPTION,
-            "Enabled": True,
-            # L'A1210 valuta la fascia del profilo insieme a quella della regola: decide quella di ogni ingresso
-            "Schedule": [ALWAYS],
-            "AuthenticationProfile": [REX_AUTHENTICATION],
-            "AccessPolicy": kept
-            + [
-                {"AccessPoint": point, "AuthorizationProfile": [], "Attribute": [], "Schedule": [schedule]}
-                for point, schedule in wanted.items()
-            ],
-        }
-    )
+    profile = rex_profile(wanted, kept, mine)
     if mine is not None and _rex_sig(mine) == _rex_sig(profile):
         return ""
     await controller.set_access_profile(profile)
@@ -844,10 +883,7 @@ class ProgrammingService:
         """Contatto porta come al banco: DoorMonitor Standard sulla porta e l'ingresso ai due controlli della porta."""
         door = values["door_token"]
         await self._set_door_monitor(door, {"DoorMonitor.Type": "Standard", **DOOR_MONITOR_VALUES[values["contact"]]})
-        users = [
-            {"Type": "doorcontrol", "token": door, "Usage": usage, "MultiIo": False} for usage in DOOR_MONITOR_USAGES
-        ]
-        await self.controller.set_io_assignment(io, _plain_mode(io), users)
+        await self.controller.set_io_assignment(io, _plain_mode(io), door_monitor_users(door))
 
     async def _monitor_elsewhere(self, io: str, door: str) -> str:
         """Ingresso che sul controller fa da contatto porta (DoorMonitor) per la porta, se non è questo; "" se non
@@ -898,8 +934,7 @@ class ProgrammingService:
         await self.controller.set_io_assignment(io, _plain_mode(io), [])
 
     async def _write_rex(self, io: str, values: dict, tokens: dict) -> None:
-        supervised = values["supervised"]
-        description = f"Ingresso {io} (Axis Access Manager)"
+        description = rex_description(io)
         idpoints = await self.controller.list_idpoints()
         if tokens["idpoint_token"] not in {i.get("token") for i in idpoints}:
             # Token che sul controller non c'è più (reset, ripristino): si crea un punto nuovo. Senza token si
@@ -907,45 +942,13 @@ class ProgrammingService:
             tokens["idpoint_token"] = next(
                 (i.get("token") or "" for i in idpoints if i.get("Description") == description), ""
             )
-        idpoint = await self.controller.create_idpoint(
-            {
-                **({"token": tokens["idpoint_token"]} if tokens["idpoint_token"] else {}),
-                "Name": values["name"][:64],
-                "Description": description,
-                "Location": "",
-                "Action": "Access",
-                "Timeout": "PT10S",
-                "MinPINSize": 4,
-                "MaxPINSize": 4,
-                "EndOfPIN": "#",
-            }
-        )
+        idpoint = await self.controller.create_idpoint(rex_idpoint(io, values, tokens["idpoint_token"]))
         tokens["idpoint_token"] = idpoint
         points = await self.controller.list_access_points()
         _, device = await self._device_uuids(points)
-        level = "High" if values["contact"] == "nc" else "Low"
         # Senza dispositivo: il controller ci mette il suo e lega la configurazione a sé (come dice VAPIX)
-        await self.controller.set_idpoint_configuration(
-            idpoint,
-            "",
-            {
-                "IdPoint.Reader.Type": "None",
-                "IdPoint.REX.Type": f"{'Supervised' if supervised else ''}Active{level}",
-                "IdPoint.Keypress.Type": "Auto",
-            },
-        )
-        await self.controller.set_io_assignment(
-            io,
-            "supervised" if supervised else _plain_mode(io),
-            [
-                {
-                    "Type": "idpoint",
-                    "token": idpoint,
-                    "Usage": "REXSupervised" if supervised else "REX",
-                    "MultiIo": False,
-                }
-            ],
-        )
+        await self.controller.set_idpoint_configuration(idpoint, "", rex_configuration(values))
+        await self.controller.set_io_assignment(io, *rex_assignment(io, values, idpoint))
         door = values["door_token"]
         existing = next((p for p in points if p.get("token") == tokens["access_point_token"]), None) or next(
             (p for p in points if p.get("Description") == description), None
@@ -956,18 +959,7 @@ class ProgrammingService:
         if existing is None:
             point.pop("token", None)
         attributes = [a for a in point.get("Attribute") or [] if a.get("Name") != "Direction"]
-        point.update(
-            {
-                "Name": values["name"][:64],
-                "Description": description,
-                "Entity": door,
-                "EntityType": "axtdc:Door",
-                "Enabled": True,
-                "IdPointDevice": [{"IdPoint": idpoint, "DeviceUUID": device}],
-                "AuthenticationProfile": ["REXOnly"],
-                "Attribute": [*attributes, {"Name": "Direction", "Value": "out"}],
-            }
-        )
+        point.update(rex_point_fields(io, values, idpoint, device, attributes))
         if not point.get("DoorDeviceUUID"):
             point["DoorDeviceUUID"] = device
         tokens["access_point_token"] = await self.controller.create_access_point(point)

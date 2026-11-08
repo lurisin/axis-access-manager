@@ -32,6 +32,7 @@ import zlib
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
+from .compare import FIELD_LABELS, READ_LABELS, _device, _optional, snapshot_lists
 from .db import Database, now_iso
 from .programming import CONTACTS, DIRECTIONS, DOOR_TIMES, INPUT_ROLES, parse_duration
 from .rules import describe_rules
@@ -141,76 +142,6 @@ SECTION_TITLES = {
     "punti": "Punti di Accesso",
     "profili": "Profili di Accesso",
     "ingressi": "Ingressi",
-}
-FIELD_LABELS = {
-    "name": "Nome",
-    "Name": "Nome sul Controller",
-    "description": "Descrizione",
-    "Description": "Descrizione",
-    "company": "Ditta o Reparto",
-    "notes": "Note",
-    "category_id": "Tipologia",
-    "person_id": "Persona",
-    "enabled": "Stato",
-    "access_profile": "Accesso",
-    "valid_from": "Valida dal",
-    "valid_to": "Valida fino al",
-    "color": "Colore",
-    "valid_days": "Durata",
-    "rules": "Regole",
-    "holidays": "Non Valida nei Giorni Festivi",
-    "yearly": "Ogni Anno",
-    "areas": "Aree",
-    "perms": "Permessi",
-    "value": "Valore",
-    "host": "Indirizzo",
-    "username": "Utente",
-    "verify_ssl": "Verifica Certificato HTTPS",
-    "area_id": "Struttura e Area",
-    "snapshot_camera": "Telecamera",
-    "snapshot_on_granted": "Foto Anche sugli Accessi Concessi",
-    "ha_buttons": "Pulsanti in Home Assistant",
-    "intercom_name": "Nome del Videocitofono",
-    "intercom_open_door": '"Apri" dal Videocitofono Apre Questa Porta',
-    "intercom_relay": "Relè del Tasto Apri",
-    "intercom_mqtt_prefix": "Prefisso MQTT del Videocitofono",
-    "mqtt_topic_prefix": "Prefisso MQTT",
-    "model": "Modello",
-    "serial": "Numero di Serie",
-    "firmware": "Firmware",
-    "time_zone": "Fuso Orario",
-    "ntp": "Server NTP",
-    "mqtt": "MQTT",
-    "mqtt_events": "Eventi MQTT",
-    "Location": "Posizione",
-    "Timeout": "Attesa PIN",
-    "configuration": "Configurazione",
-    "door": "Porta",
-    "readers": "Lettori",
-    "direction": "Direzione",
-    "Enabled": "Stato",
-    "Schedule": "Fascia del Profilo",
-    "policies": "Regole",
-    "role": "Ruolo",
-    "door_token": "Porta",
-    "contact": "Modalità Ingresso",
-    "supervised": "Linea Supervisionata",
-    "schedule": "Fascia",
-    "assigned": "Assegnato a",
-    "managed": "Gestito dal Controller",
-    **{field: label for field, (_, label, *_) in DOOR_TIMES.items()},
-}
-# Elenchi della parte di un controller letti uno per uno, con l'etichetta dei loro errori di lettura
-READ_LABELS = {
-    "schedules": "fasce orarie",
-    "doors": "porte",
-    "door_configurations": "configurazione delle porte",
-    "idpoints": "lettori",
-    "idpoint_configurations": "configurazione dei lettori",
-    "io_assignments": "ingressi e uscite",
-    "access_points": "punti di accesso",
-    "access_profiles": "profili di accesso",
-    "credentials": "tessere",
 }
 COLOR_NAMES = {
     "blue": "Blu",
@@ -467,43 +398,6 @@ def common_snapshot(db: Database, schedules: list[dict]) -> dict:
     }
 
 
-async def _optional(client, method: str):
-    """Letture che non tutti i firmware hanno: assenti, non sono un errore del backup."""
-    reader = getattr(client, method, None)
-    if reader is None:
-        return None
-    try:
-        return await reader()
-    except VapixError as err:
-        _LOGGER.debug("%s non letto: %s", method, err)
-        return None
-
-
-def _device(info: dict, time_info: dict | None, ntp: dict | None, mqtt: dict | None, events: dict | None) -> dict:
-    client = (ntp or {}).get("client") if isinstance((ntp or {}).get("client"), dict) else (ntp or {})
-    mqtt_config = dict((mqtt or {}).get("config") or {})
-    # La password del broker non si salva (e il controller di solito non la restituisce)
-    mqtt_config.pop("password", None)
-    for key in ("server", "ssl"):
-        if isinstance(mqtt_config.get(key), dict):
-            mqtt_config[key] = {k: v for k, v in mqtt_config[key].items() if k != "password"}
-    return {
-        "model": str(info.get("ProdNbr") or info.get("ProdShortName") or ""),
-        "serial": str(info.get("SerialNumber") or ""),
-        "firmware": str(info.get("Version") or ""),
-        "time_zone": str((time_info or {}).get("timeZone") or (time_info or {}).get("posixTimeZone") or ""),
-        "ntp": {
-            "enabled": client.get("enabled"),
-            "source": client.get("serversSource") or client.get("timeServersSource") or "",
-            "servers": client.get("staticServers") or client.get("timeServers") or [],
-        }
-        if client
-        else {},
-        "mqtt": mqtt_config,
-        "mqtt_events": (events or {}).get("eventPublicationConfig") or events or {},
-    }
-
-
 def _credential_ref(credential: dict) -> dict:
     """Quale tessera c'è sul controller, come riferimento ai Dati Comuni (non una copia della persona)."""
     return {
@@ -520,25 +414,8 @@ def _credential_ref(credential: dict) -> dict:
 async def controller_snapshot(db: Database, row: dict, client) -> dict:
     """Configurazione di un controller come la legge l'app, più le impostazioni dell'app su quel controller.
     Se il controller non risponde solleva VapixError; una parte non leggibile finisce negli errori."""
-    errors: list[str] = []
-
-    async def read(label: str, call, default):
-        try:
-            return await call()
-        except VapixError as err:
-            errors.append(f"{label}: {err}")
-            return default
-
     info = await client.device_info()
-    doors = await read("porte", client.list_doors, [])
-    door_configs = await read("configurazione delle porte", client.list_door_configurations, [])
-    idpoints = await read("lettori", client.list_idpoints, [])
-    idpoint_configs = await read("configurazione dei lettori", client.list_idpoint_configurations, [])
-    points = await read("punti di accesso", client.list_access_points, [])
-    profiles = await read("profili di accesso", client.list_access_profiles, [])
-    schedules = await read("fasce orarie", client.list_schedules, [])
-    _, io_assigned = await read("ingressi e uscite", client.list_io, ([], []))
-    credentials = await read("tessere", client.list_credentials, [])
+    lists, errors = await snapshot_lists(client)
     # Modi di identificazione (CardOnly, REXOnly... e quelli fatti a mano): servono a ricreare i punti di accesso
     authentication = await _optional(client, "list_authentication_profiles")
     # Quali punti di accesso il controller gestisce: il reset svuota l'elenco e senza le tessere non aprono
@@ -567,17 +444,17 @@ async def controller_snapshot(db: Database, row: dict, client) -> dict:
             )
         },
         "device": device,
-        "doors": _by(doors),
-        "door_configurations": _by(door_configs),
-        "idpoints": _by(idpoints),
-        "idpoint_configurations": _by(idpoint_configs),
-        "access_points": _by(points),
-        "access_profiles": _by(profiles),
+        "doors": _by(lists["doors"]),
+        "door_configurations": _by(lists["door_configurations"]),
+        "idpoints": _by(lists["idpoints"]),
+        "idpoint_configurations": _by(lists["idpoint_configurations"]),
+        "access_points": _by(lists["access_points"]),
+        "access_profiles": _by(lists["access_profiles"]),
         **({"authentication_profiles": _by(authentication)} if authentication is not None else {}),
         **({"access_controllers": _by(access_controllers)} if access_controllers is not None else {}),
-        "schedules": _by(schedules),
-        "io_assignments": _by(io_assigned, "IoName"),
-        "credentials": _by([_credential_ref(c) for c in credentials], "card"),
+        "schedules": _by(lists["schedules"]),
+        "io_assignments": _by(lists["io_assignments"], "IoName"),
+        "credentials": _by([_credential_ref(c) for c in lists["credentials"]], "card"),
         "app_doors": _by([{"id": d["id"], **{k: d[k] for k in Database.DOOR_FIELDS}} for d in row["doors"]], "id"),
         "app_inputs": _by(
             [{k: v for k, v in r.items() if k != "controller_id"} for r in db.controller_inputs(row["id"]).values()],

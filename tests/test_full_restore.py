@@ -60,7 +60,7 @@ def bench_like(controller):
     }
     controller.mqtt, controller.mqtt_events = dict(MQTT), dict(EVENTS)
 
-    async def reader_configurations():
+    async def reader_configurations(*, strict=False):
         return [
             {
                 "token": token,

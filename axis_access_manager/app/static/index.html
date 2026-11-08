@@ -620,6 +620,10 @@
   .rs-item:hover { background: var(--surface-2); }
   .rs-item input { margin-top: 9px; flex: none; }
   .rs-item.blocked { cursor: default; opacity: .75; }
+  .rs-item.readonly { cursor: default; }
+  .rs-item.readonly:hover { background: none; }
+  .cmp-counts { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; }
+  .cmp-kind > summary { cursor: pointer; font-size: 13px; color: var(--muted); margin: 6px 0; }
   .rs-item .grow { flex: 1; min-width: 0; }
   .rs-item .title { font-weight: 600; overflow-wrap: anywhere; }
   .rs-note { display: flex; gap: 6px; align-items: flex-start; font-size: 13px; color: var(--warn); margin-top: 4px; }
@@ -2491,6 +2495,8 @@ const KIND_DOT = {"k-ok": "ok", "k-warn": "warn", "k-err": "err", "k-info": "inf
 const LOG_ROW_WHAT = {concesso: "accesso concesso", negato: "accesso negato", lettura: "tessera letta"};
 // Origine dell'evento come la scrive l'app (db.SOURCE_LABELS); gli altri valori sono già nomi
 const LOG_SOURCES = {lettore: "Lettore", controller: "Controller", porta: "Porta"};
+// Dettagli da spiegare nel Dettaglio Evento (service.NOT_ENABLED)
+const DETAIL_HINTS = {"non abilitato": "la tipologia della persona non comprende questa porta"};
 // Riga compatta: ora, colore dell'esito, chi, cosa, dove (place false: elenco di una porta sola, il dove è già nel titolo)
 function logRow(e, {place = true} = {}) {
   const [label, cls] = KINDS[e.kind] || [e.kind, "k-muted"];
@@ -2511,7 +2517,7 @@ function eventDetail(e) {
     door ? ["Porta", `${can("stato") ? `<a href="#porte/${door.id}">${esc(door.name)}</a>` : esc(door.name)}${placeOf(door) ? ` <span class="muted">· ${esc(placeOf(door))}</span>` : ""}`] : e.door ? ["Porta", `<code>${esc(e.door)}</code>`] : null,
     e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
-    e.detail ? ["Dettaglio", esc(e.detail)] : null,
+    e.detail ? ["Dettaglio", `${esc(e.detail)}${DETAIL_HINTS[e.detail] ? ` <span class="muted">· ${esc(DETAIL_HINTS[e.detail])}</span>` : ""}`] : null,
     e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
     e.recovered ? ["Recuperato", "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(LOG_SOURCES[e.source] || e.source)] : null,
@@ -3469,7 +3475,7 @@ async function controllerEditor() {
 }
 
 function controllerHeader(ctrl, tab) {
-  const tabs = [["", "Schema"], ["porte", "Porte"], ["lettori", "Lettori"], ["telecamere", "Telecamere"], ["citofoni", "Videocitofoni"], ["stato", "Stato"], ["storico", "Storico Modifiche"], ...(can("backup") ? [["backup", "Backup"]] : [])];
+  const tabs = [["", "Schema"], ["porte", "Porte"], ["lettori", "Lettori"], ["telecamere", "Telecamere"], ["citofoni", "Videocitofoni"], ["stato", "Stato"], ["confronto", "Confronto (prova)"], ["storico", "Storico Modifiche"], ...(can("backup") ? [["backup", "Backup"]] : [])];
   const place = placeOf(ctrl.place);
   return `<div class="ctl-head">
       <div class="small-text muted"><a href="#impianti">Impianti</a>${place ? ` › ${esc(place)}` : ""}</div>
@@ -3533,7 +3539,7 @@ async function viewConnection(el, ctrl) {
 
 // Pagina del controller: schema lettori ↔ porte, porte, lettori e storico delle modifiche
 async function viewController(el, ctrl, tab) {
-  tab = ["porte", "lettori", "telecamere", "citofoni", "stato", "storico", "backup"].includes(tab) ? tab : "";
+  tab = ["porte", "lettori", "telecamere", "citofoni", "stato", "confronto", "storico", "backup"].includes(tab) ? tab : "";
   el.innerHTML = `${controllerHeader(ctrl, tab)}<div id="c-body">${loadingBox()}</div>`;
   paintIcons(el);
   showActiveTab(el);
@@ -3549,6 +3555,8 @@ async function viewController(el, ctrl, tab) {
   if (!primary || primary.id !== ctrl.id) { body.innerHTML = '<div class="card"><div class="empty">La programmazione è disponibile per il controller in uso.</div></div>'; return; }
   // Lo stato non legge la programmazione: deve funzionare anche quando il controller non risponde
   if (tab === "stato") return controllerStatus(body, ctrl);
+  // Il confronto legge il controller solo con Confronta Ora
+  if (tab === "confronto") return controllerComparison(body, ctrl, primary);
   // Telecamere e videocitofoni sono impostazioni dell'app sulle porte: non serve leggere il controller
   if (tab === "telecamere") return controllerCameras(body, ctrl);
   if (tab === "citofoni") return controllerIntercoms(body, ctrl);
@@ -4125,6 +4133,82 @@ async function controllerStatus(body, ctrl) {
   };
 }
 
+// Confronto (prova): cosa farebbero presa in carico e allineamento automatico, senza cambiare niente sul controller
+const COMPARE_COUNTS = [["prende", "da prendere in carico", "da prendere in carico"], ["riporta", "da riportare", "da riportare"], ["ricrea", "da ricreare", "da ricreare"], ["togli", "da togliere", "da togliere"], ["uguale", "uguale", "uguali"]];
+const compareCounts = (counts) => COMPARE_COUNTS.filter(([k]) => counts[k]).map(([k, one, many]) => plural(counts[k], one, many)).join(" · ");
+function cappedRows(rows) {
+  const rest = rows.length - 40;
+  return rows.slice(0, 40).map((i) => restoreItemHtml(i, true)).join("") + (rest > 0 ? `<p class="muted small-text" style="margin:4px 0 0">${rest === 1 ? "E un'altra riga." : `E altre ${rest} righe.`}</p>` : "");
+}
+function shadowHtml(sh) {
+  const rounds = sh?.rounds || {};
+  const when = (key, label) => `${label}: ${rounds[key] ? `${esc(relTime(rounds[key].at))}${rounds[key].error ? ` <span style="color:var(--warn)">· ${esc(rounds[key].error)}</span>` : ""}` : "non ancora fatto"}`;
+  const head = `<p class="muted small-text" style="margin:0 0 8px">${when("utenti_tessere", "Utenti e tessere, dopo ogni sincronizzazione")}<br>${when("programmazione", "Programmazione, ogni ora")}</p>`;
+  // Giro senza niente letto (controller che non rispondeva): il motivo è già nella sua riga
+  const failed = new Set(Object.values(rounds).filter((r) => r.error).flatMap((r) => r.kinds));
+  const kinds = (sh?.kinds || []).filter((k) => !failed.has(k.kind));
+  if (!kinds.length) return head;
+  const line = (k) => {
+    if (k.non_letto) return `${statusDot("warn")} Non letto <span class="muted">· ${esc(k.non_letto)}</span>`;
+    const parts = [k.uguali && plural(k.uguali, "uguale", "uguali"), k.prese && `${k.prese} da prendere in carico`, k.differenze && plural(k.differenze, "differenza", "differenze"), k.sorprese && plural(k.sorprese, "sorpresa", "sorprese")].filter(Boolean);
+    return `${statusDot(k.differenze || k.sorprese ? "warn" : "ok")} ${parts.join(" · ") || "Nessun oggetto"}`;
+  };
+  return head + props(kinds.map((k) => [k.title, line(k)]));
+}
+function comparisonHtml(r) {
+  if (!r.ok) return `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(cap(r.error))}. Senza gli elenchi del controller il confronto non mostra niente: un elenco non letto non vuol dire vuoto.</div></div>`;
+  const rows = r.kinds.flatMap((g) => g.rows);
+  const look = rows.filter((i) => i.surprises.length || i.warnings.length);
+  const top = new Set(look.map((i) => i.key));
+  const taken = r.kinds.filter((g) => g.counts.prende).map((g) => `<span class="chip">${esc(g.title)}: ${g.counts.prende}</span>`);
+  const alerts = (r.paused ? `<div class="alert err">${icon("alert")}<div class="grow"><b>Scritture Sospese</b>${esc(cap(r.paused))}. Il confronto mostra il controller che risponde adesso all'indirizzo.</div></div>` : "")
+    + (r.changed ? `<div class="alert info">${icon("alert")}<div class="grow"><b>Configurazione Cambiata Durante il Confronto</b>Qualcuno ha modificato l'app mentre si leggeva il controller: premi di nuovo Confronta Ora per un confronto coerente.</div></div>` : "");
+  const lookHtml = `<h3 class="diff-part">Da Guardare${look.length ? ` (${look.length})` : ""}</h3>${look.length ? `<div class="rs-list">${cappedRows(look)}</div>` : '<p class="muted" style="margin:0">Nessuna sorpresa.</p>'}`;
+  const notes = r.notes.length ? `<ul class="diff" style="margin-top:6px">${capped(r.notes, (n) => `<li class="${n.surprise || n.warnings.length ? "del" : "chg"}"><b>${n.surprise || n.warnings.length ? "!" : "~"}</b><span>${esc(n.label)} <span class="muted">· ${esc(n.text)}</span>${n.surprise ? `<span class="diff-fields"><span>Da guardare: ${esc(n.surprise)}</span></span>` : ""}${n.warnings.map((w) => `<span class="diff-fields"><span>${esc(cap(w))}</span></span>`).join("")}</span></li>`)}</ul>` : "";
+  const takenHtml = `<h3 class="diff-part">Presa in Carico</h3>${taken.length ? `<p class="muted" style="margin:0">L'app prenderebbe com'è sul controller:</p><div class="cmp-counts">${taken.join("")}</div>` : '<p class="muted" style="margin:0">Niente da prendere in carico.</p>'}${notes}`;
+  // Le righe che cambierebbero qualcosa sono aperte; quelle prese in carico com'erano e quelle uguali si aprono a richiesta
+  const folded = (rows, text, mark) => rows.length ? `<details class="cmp-kind"><summary>${esc(text)}</summary><ul class="diff">${capped(rows, (i) => `<li class="add"><b>${mark}</b>${esc(i.label)}</li>`)}</ul></details>` : "";
+  const kinds = r.kinds.map((g) => {
+    const rest = g.rows.filter((i) => !top.has(i.key));
+    const open = rest.filter((i) => !["prende", "uguale"].includes(i.action));
+    const takenRows = rest.filter((i) => i.action === "prende");
+    const same = rest.filter((i) => i.action === "uguale");
+    const counts = compareCounts(g.counts);
+    const body = g.unread ? `<div class="rs-note">${icon("question")}<span>Non letto: ${esc(g.unread)}. Per questo tipo il confronto non toglierebbe, non ricreerebbe e non confermerebbe niente.</span></div>`
+      : g.hidden ? `<p class="muted small-text" style="margin:0">Solo il conteggio: ${esc(g.hidden)}.</p>`
+      : !g.rows.length ? '<p class="muted small-text" style="margin:0">Nessun oggetto.</p>'
+      : `${open.length ? `<div class="rs-list">${cappedRows(open)}</div>` : ""}${folded(takenRows, `${takenRows.length} da prendere in carico com'è sul controller`, "↓")}${folded(same, `${plural(same.length, "uguale", "uguali")} nell'app e sul controller`, "=")}`;
+    return `<h3 class="diff-part">${esc(g.title)}${counts ? ` <span class="muted small-text">· ${esc(counts)}</span>` : ""}</h3>${body}`;
+  }).join("");
+  return `${alerts}<p class="muted small-text" style="margin:0">Letto ${esc(relTime(r.at))}${r.serial ? ` dal controller ${esc(r.serial)}` : ""}. Nelle differenze, barrato com'è sul controller e dopo la freccia com'è nell'app.</p>${lookHtml}${takenHtml}${kinds}`;
+}
+async function controllerComparison(body, ctrl, primary) {
+  body.innerHTML = `<div class="card"><h2>${icon("shield")}Confronto (prova)<span class="spacer"></span><button type="button" class="small primary" id="cmp-run">Confronta Ora</button></h2>
+      <p style="margin-top:0"><b>Questa scheda non cambia niente sul controller.</b> Legge il controller e calcola cosa farebbero la presa in carico e l'allineamento automatico delle prossime versioni: cosa l'app prenderebbe in carico com'è sul controller, cosa riporterebbe com'è nell'app, cosa ricreerebbe perché manca e cosa toglierebbe perché c'è solo sul controller. Un elenco che il controller non manda è «non letto»: per quel tipo non toglierebbe e non ricreerebbe niente.</p>
+      <h3 class="section-title">Confronto in Ombra</h3><div id="cmp-shadow">${shadowHtml(primary.health?.shadow)}</div></div>
+    <div class="card" id="cmp-card" hidden><h2>${icon("list")}Risultato</h2><div id="cmp-result"></div></div>`;
+  paintIcons(body);
+  const button = $("#cmp-run", body);
+  button.onclick = async () => {
+    const card = $("#cmp-card", body), box = $("#cmp-result", body);
+    button.disabled = true;
+    button.textContent = "Sto Leggendo…";
+    card.hidden = false;
+    box.innerHTML = loadingBox();
+    let html;
+    try {
+      const r = await api(`api/controllers/${ctrl.id}/comparison`);
+      html = comparisonHtml(r);
+      if (body.isConnected) $("#cmp-shadow", body).innerHTML = shadowHtml(r.shadow);
+    } catch (err) { html = errorBox("Confronto Non Riuscito", err); }
+    if (!body.isConnected) return;
+    box.innerHTML = html;
+    paintIcons(box);
+    button.disabled = false;
+    button.textContent = "Confronta Ora";
+  };
+}
+
 function controllerHistory(body, p) {
   // Annullare riscrive l'oggetto intero com'era: per ogni oggetto si parte dalla modifica più recente non annullata
   // (le modifiche sono dalla più recente)
@@ -4432,7 +4516,8 @@ const RESTORE_HINTS = {
   persone: "Dati della persona, tipologia e tessere con accesso e stato.",
   porte: "Nomi e tempi delle porte, impostazioni dell'app sulle porte, nomi dei lettori.",
 };
-const RESTORE_ACTIONS = {ricrea: ["k-ok", "plus"], riporta: ["k-info", "refresh"], togli: ["k-err", "trash"]};
+// Le ultime tre solo nel Confronto del controller
+const RESTORE_ACTIONS = {ricrea: ["k-ok", "plus"], riporta: ["k-info", "refresh"], togli: ["k-err", "trash"], prende: ["k-accent", "download"], uguale: ["k-muted", "check"], non_letto: ["k-warn", "question"]};
 function backupContents(b) {
   const common = b.parts?.comuni?.counts;
   const controllers = Object.keys(b.parts || {}).filter((k) => k !== "comuni").length;
@@ -4629,17 +4714,20 @@ function compareBackup(b, backups, part = "") {
       load();
     }});
 }
-function restoreItemHtml(i) {
+// readonly: riga del Confronto, senza casella e con le sorprese in evidenza
+function restoreItemHtml(i, readonly = false) {
   const [cls, ic] = RESTORE_ACTIONS[i.action] || ["k-muted", "refresh"];
-  return `<label class="rs-item${i.blocked ? " blocked" : ""}">
-    <input type="checkbox" name="rs" value="${esc(i.key)}" ${i.default && !i.blocked ? "checked" : ""} ${i.blocked ? "disabled" : ""}>
+  const tag = readonly ? "div" : "label";
+  return `<${tag} class="rs-item${i.blocked ? " blocked" : ""}${readonly ? " readonly" : ""}">
+    ${readonly ? "" : `<input type="checkbox" name="rs" value="${esc(i.key)}" ${i.default && !i.blocked ? "checked" : ""} ${i.blocked ? "disabled" : ""}>`}
     <div class="ev-icon ${cls}">${icon(ic)}</div>
     <div class="grow"><div class="title">${esc(i.label)} <span class="muted small-text">· ${esc(i.text)}</span></div>
       ${i.changes.length ? `<div class="diff-fields">${i.changes.slice(0, 8).map((c) => `<span><span class="muted">${esc(c.label)}:</span> ${c.old === "—" ? "" : `<s>${esc(c.old)}</s> → `}${esc(c.new)}</span>`).join("")}${i.changes.length > 8 ? `<span class="muted">${i.changes.length === 9 ? "e un'altra" : `e altre ${i.changes.length - 8}`}</span>` : ""}</div>` : ""}
+      ${(i.surprises || []).map((s) => `<div class="rs-note err">${icon("alert")}<span>Da guardare: ${esc(s)}</span></div>`).join("")}
       ${i.warnings.map((w) => `<div class="rs-note">${icon("alert")}<span>${esc(w[0].toUpperCase() + w.slice(1))}</span></div>`).join("")}
       ${i.blocked ? `<div class="rs-note err">${icon("block")}<span>Non si può: ${esc(i.blocked)}</span></div>` : ""}
       ${i.password ? `<div class="rs-pass"><input type="password" name="mqtt_password" autocomplete="new-password" placeholder="Password di ${esc(i.username)}"><small class="muted">Nei backup le password non ci sono: scrivila qui, non viene salvata.</small></div>` : ""}
-    </div></label>`;
+    </div></${tag}>`;
 }
 const RESTORE_MODES = {
   porte: {sections: ["porte"], title: "Porte e Lettori", text: "Riporta nomi e tempi delle porte, le impostazioni dell'app sulle porte e i nomi dei lettori, per un controller che funziona."},

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.28.0
+
+Secondo passo verso l'app unica fonte di verità: l'app calcola come dovrebbe essere programmato il controller e lo confronta con quello che legge, senza scrivere niente. Le settimane di confronto sull'impianto dicono se il calcolo è esatto prima che l'app scriva da sola. Sul controller non cambia niente rispetto alla 0.27.
+
+**Confronto (prova)**
+
+- **Nuova scheda nella pagina del controller**, per chi ha il permesso Impianti. Con **Confronta Ora** legge il controller e mostra, tipo per tipo, cosa farebbero la presa in carico e l'allineamento automatico delle prossime versioni: cosa l'app prenderebbe in carico com'è sul controller, cosa riporterebbe com'è nell'app (con le differenze campo per campo), cosa ricreerebbe e cosa toglierebbe. In cima ci sono le cose da guardare: tessere create fuori dall'app, pulsanti fatti a mano, profili esterni, fascia Sempre cambiata, sblocchi programmati, tempi della porta oltre i limiti, numeri di tessera doppi. La scheda non scrive niente, né sul controller né nell'app. Un elenco che il controller non manda è «non letto», mai vuoto. Con il controller spento la scheda dice «il controller non risponde». Il valore dei PIN non compare mai; senza il permesso Persone tessere e utenti sono solo contati.
+- **Confronto in ombra.** Dopo ogni sincronizzazione l'app confronta utenti e tessere con la stessa lettura, senza leggere niente in più. Una volta all'ora (la prima dieci minuti dopo l'avvio) confronta tutta la programmazione. La scheda mostra quando e con quali conteggi; ogni differenza va una volta nel log dell'add-on come avviso, e non si ripete finché resta la stessa. Niente notifiche e niente scritture.
+- **Fasce confrontate per quello che valgono**: due fasce scritte in modo diverso ma con gli stessi orari risultano uguali; una festività allungata, una data di inizio, un'esclusione o un numero di ripetizioni diversi no, e quello che l'app non sa interpretare si confronta come testo.
+- **Un profilo fatto a mano con un nome o una descrizione troppo lunghi** non ferma il confronto: nella presa in carico nome e descrizione si accorciano, e la riga lo dice. Lo stesso per un nome già usato da un'altra tipologia.
+- **Se un elenco del controller non si legge**, anche una volta sola, i profili delle tipologie dell'app non risultano «esterni» per errore e il log non ripete le differenze già scritte. La scheda dice perché quel giro non ha confrontato la programmazione.
+
+**Registro**
+
+- **«Non abilitato».** Una tessera registrata, attiva e valida, letta o rifiutata su una porta che la sua tipologia non comprende, compare con il nome della persona e il dettaglio «non abilitato», anche negli eventi recuperati dal registro del controller. Nel Dettaglio Evento una riga spiega che la tipologia della persona non comprende quella porta. Un accesso concesso dal controller resta concesso. Tessera sospesa, scaduta o non ancora valida hanno la precedenza; per chi non ha una tipologia o ha un accesso personalizzato resta il motivo del controller. In Home Assistant il tipo di evento non cambia (`accesso_negato`, `tessera_letta`): cambia solo il dettaglio, quindi un'automazione che confronta il testo del dettaglio trova «non abilitato» al posto di «non autorizzata su questa porta o in questo orario». Le notifiche lo mostrano come Accesso Negato con il nome.
+- **Lettura di una tessera scaduta.** La lettura di una tessera scaduta o non ancora valida dice «tessera scaduta» o «tessera non ancora valida», come già faceva la tessera sospesa.
+- **Recupero dal registro del controller** veloce come nella 0.27, anche con il «non abilitato».
+
+**Interno**
+
+- **Stato voluto e catalogo dell'A1210.** Tessere, profili, fasce e ingressi si scrivono con gli stessi costruttori che calcolano lo stato voluto: per gli stessi dati l'app scrive esattamente quello che scriveva prima (controllato su tutte le scritture dei test della 0.27). Ingressi, bus dei lettori, oggetti di fabbrica, limiti e tipi che accettano il token dell'app stanno in un solo posto, con la variante prudente finché le prove al banco non dicono altro.
+- **Porte di una tipologia calcolate in un posto solo**: il profilo scritto sul controller, il confronto e il «non abilitato» del registro non possono dare porte diverse.
+- **Gruppi passati alle tipologie all'avvio**: se un profilo fatto a mano ferma il passaggio, quello che è stato sistemato prima resta salvato, come nella 0.27.
+
 ## 0.27.0
 
 Primo passo verso l'app unica fonte di verità: nessuna persona sparisce più dall'anagrafica, e arrivano gli strumenti per provare il nuovo funzionamento sul controller di banco. Sul controller dell'impianto non cambia niente, a parte l'utente di chi resta senza tessere, che si toglie come prima.

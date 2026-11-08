@@ -1064,6 +1064,339 @@ async def test_recovery_does_not_duplicate_events_of_a_card_removed_meanwhile(se
     assert db.list_unknown_cards()[0]["count"] == 1
 
 
+DOOR = {
+    "snapshot_camera": "",
+    "snapshot_on_granted": 0,
+    "ha_buttons": 1,
+    "intercom_name": "",
+    "intercom_open_door": 0,
+    "intercom_relay": 1,
+    "intercom_mqtt_prefix": "hmd",
+}
+MORNING = datetime(2026, 10, 25, 9, 0, tzinfo=UTC)
+
+
+async def _cleaning(service, controller, db) -> dict:
+    """Varco Scala (lettore 1) e Cantina (lettore 2), porte dell'app. La tipologia Pulizie apre solo il Varco Scala,
+    e Anna Neri ha una tessera di Pulizie."""
+    from app.rules_service import RulesService
+
+    controller.access_points.append(
+        {"token": "ap-cantina", "Entity": "porta2", "IdPointDevice": [{"IdPoint": "lettore-2", "DeviceUUID": ""}]}
+    )
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    scala = db.save_door(None, controller_id, DOOR | {"door_token": "porta", "name": "Varco Scala"})
+    db.save_door(None, controller_id, DOOR | {"door_token": "porta2", "name": "Cantina"})
+    rules = RulesService(service)
+    rows = [{"target": "door", "target_id": scala, "schedule": "standard_always"}]
+    category = await rules.save_category(None, {"name": "Pulizie", "rules": rows}, "admin")
+    person = await service.create_person("Anna Neri", "04aa", "admin", category_id=category["id"])
+    await service.load_access_points()
+    return {"category": category, "person": person, "token": person["cards"][0]["axis_credential_token"]}
+
+
+def _read(reader: str, at: datetime, card: str = "04aa") -> Event:
+    """Lettura come la danno MQTT, WebSocket e registro interno: il lettore anche nei dati."""
+    topic = f"IdPoint/Request/IdData/$source/IdPointToken/{reader}"
+    return Event("IdPoint", topic, at, {"IdPointToken": reader, "Card": card})
+
+
+def _denied(point: str, at: datetime, reason: str, **data) -> Event:
+    topic = f"AccessControl/Denied/Credential/$source/AccessPointToken/{point}"
+    return Event("AccessControl", topic, at, {"AccessPointToken": point, "Reason": reason, **data})
+
+
+def _granted(point: str, at: datetime, token: str) -> Event:
+    topic = f"AccessControl/AccessGranted/Credential/$source/AccessPointToken/{point}"
+    return Event("AccessControl", topic, at, {"AccessPointToken": point, "CredentialToken": token})
+
+
+async def test_card_on_a_door_outside_its_category_is_not_enabled_live(service, controller, db, settings):
+    from app.events import event_from_ws
+    from app.ha_mqtt import HaBridge
+
+    plant = await _cleaning(service, controller, db)
+    sent = []
+
+    async def publish(topic, payload, retain=False):
+        sent.append(json.loads(payload))
+        return True
+
+    bridge = HaBridge(settings, EventMonitor(prefix="accessi/x"), db)
+    bridge.monitor.publish = publish
+    service.after_event = bridge.publish_event
+    service.monitor.on_event = service.record_event
+    # Calcolato solo dall'app: il controller spento non conta, e niente gli viene chiesto né scritto
+    controller.down = True
+    attempts = len(controller.attempts)
+
+    def mqtt(event: Event) -> None:
+        message = {"timestamp": event.timestamp.timestamp() * 1000, "message": {"data": event.data}}
+        service.monitor.handle(f"accessi/x/eventi/{event.topic}", json.dumps(message).encode())
+
+    def websocket(event: Event, point: dict) -> None:
+        path = event.topic.split("/$source/")[0]
+        message = {"source": point, "key": {}, "data": event.data}
+        notification = {"topic": f"tns1:{path}", "timestamp": event.timestamp.timestamp() * 1000, "message": message}
+        service.monitor.apply_event(event_from_ws(notification))
+
+    mqtt(_read("lettore-2", MORNING))
+    mqtt(_denied("ap-cantina", MORNING, "Unauthorized", CredentialToken=plant["token"]))
+    later = MORNING + timedelta(minutes=1)
+    websocket(_read("lettore-2", later), {"IdPointToken": "lettore-2"})
+    websocket(_denied("ap-cantina", later, "Unauthorized", Card="04aa"), {"AccessPointToken": "ap-cantina"})
+    # Sulla sua porta resta il motivo del controller
+    mqtt(_read("lettore-1", MORNING + timedelta(minutes=2)))
+    mqtt(_denied("ap-in", MORNING + timedelta(minutes=2), "NotPermittedAtThisTime", CredentialToken=plant["token"]))
+    # Un consenso del controller resta un consenso, anche fuori dalla tipologia
+    mqtt(_read("lettore-2", MORNING + timedelta(minutes=3)))
+    mqtt(_granted("ap-cantina", MORNING + timedelta(minutes=3), plant["token"]))
+    await asyncio.sleep(0)
+
+    rows = [(e["kind"], e["door"], e["person_name"], e["detail"]) for e in reversed(db.list_events())]
+    assert rows == [
+        ("lettura", "porta2", "Anna Neri", "non abilitato"),
+        ("negato", "porta2", "Anna Neri", "non abilitato"),
+        ("lettura", "porta2", "Anna Neri", "non abilitato"),
+        ("negato", "porta2", "Anna Neri", "non abilitato"),
+        ("lettura", "porta", "Anna Neri", ""),
+        ("negato", "porta", "Anna Neri", "fuori fascia oraria"),
+        ("lettura", "porta2", "Anna Neri", "non abilitato"),
+        ("concesso", "porta2", "Anna Neri", ""),
+    ]
+    assert controller.attempts[attempts:] == []
+    # Home Assistant riceve gli stessi tipi di evento di prima: cambia solo il dettaglio
+    events = [(m["event_type"], m["persona"], m["dettaglio"]) for m in sent if "event_type" in m]
+    assert events[:2] == [
+        ("tessera_letta", "Anna Neri", "non abilitato"),
+        ("accesso_negato", "Anna Neri", "non abilitato"),
+    ]
+    assert events[-1] == ("accesso_concesso", "Anna Neri", "")
+    assert sent[-1] == {
+        "persona": "Anna Neri",
+        "tessera": "04aa",
+        "esito": "accesso_concesso",
+        "dettaglio": "",
+        "ora": (MORNING + timedelta(minutes=3)).isoformat(timespec="seconds"),
+    }
+    assert db.list_unknown_cards() == []
+
+
+async def test_not_enabled_from_the_controller_log(service, controller, db):
+    plant = await _cleaning(service, controller, db)
+    # Dopo un riavvio dell'add-on: la mappa dei punti di accesso si rilegge prima del recupero
+    service.access_point_doors, service.idpoint_doors = {}, {}
+
+    def entry(rowid, values):
+        pairs = [{"Key": k, "Value": v} for k, v in values.items()]
+        return {"rowid": rowid, "UtcTime": "2026-10-25T09:00:00.100000Z", "KeyValues": pairs}
+
+    read = {"topic0": "IdPoint", "topic1": "Request", "topic2": "IdData", "IdPointToken": "lettore-2", "Card": "04aa"}
+    denied = {
+        "topic0": "AccessControl",
+        "topic1": "Denied",
+        "topic2": "Credential",
+        "AccessPointToken": "ap-cantina",
+        "CredentialToken": plant["token"],
+        "Reason": "Unauthorized",
+    }
+    controller.log_events = [entry(1, read), entry(2, denied)]
+
+    assert await service.recover_events(datetime(2026, 10, 25, 8, 0, tzinfo=UTC)) == 2
+
+    rows = [(e["kind"], e["door"], e["person_name"], e["detail"], e["recovered"]) for e in db.list_events()]
+    assert sorted(rows) == [
+        ("lettura", "porta2", "Anna Neri", "non abilitato", 1),
+        ("negato", "porta2", "Anna Neri", "non abilitato", 1),
+    ]
+
+
+async def test_not_enabled_in_the_recovery_reads_the_database_once_a_page(service, controller, db, monkeypatch):
+    """Recupero di molti eventi: porte, aree e strutture, persone e porte della tipologia si leggono una volta per
+    pagina, non per ogni lettura o negato (il recupero della 0.27 non le leggeva affatto). Fra una pagina e l'altra
+    l'app può cambiare il database: la pagina dopo lo vede, e dopo il recupero si torna a leggere tutto ogni volta."""
+    from app import coverage
+    from app import service as service_module
+
+    plant = await _cleaning(service, controller, db)
+    scala = next(d["id"] for d in db.list_doors() if d["door_token"] == "porta")
+    cantina = next(d["id"] for d in db.list_doors() if d["door_token"] == "porta2")
+    category = plant["category"]["id"]
+    monkeypatch.setattr(service_module, "RECOVER_PAGE", 4)
+    counted = {"places": 0, "get_person": 0, "category_rules": 0}
+
+    def counting(name, real):
+        def call(*args, **kwargs):
+            counted[name] += 1
+            return real(*args, **kwargs)
+
+        return call
+
+    monkeypatch.setattr(coverage, "places", counting("places", coverage.places))
+    monkeypatch.setattr(db, "get_person", counting("get_person", db.get_person))
+    monkeypatch.setattr(db, "category_rules", counting("category_rules", db.category_rules))
+
+    def entry(rowid, values):
+        at = (MORNING + timedelta(seconds=rowid)).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+        return {"rowid": rowid, "UtcTime": at, "KeyValues": [{"Key": k, "Value": v} for k, v in values.items()]}
+
+    def read(reader):
+        return {"topic0": "IdPoint", "topic1": "Request", "topic2": "IdData", "IdPointToken": reader, "Card": "04aa"}
+
+    def denied(point):
+        values = {"topic0": "AccessControl", "topic1": "Denied", "topic2": "Credential", "AccessPointToken": point}
+        return {**values, "CredentialToken": plant["token"], "Reason": "NotPermittedAtThisTime"}
+
+    page = [read("lettore-2"), denied("ap-cantina"), read("lettore-1"), denied("ap-in")]
+    controller.log_events = [entry(n + 1, values) for n, values in enumerate(page * 3)]
+    fetch = controller.fetch_events
+    pages = []
+
+    async def fetched(*args, **kwargs):
+        pages.append(len(pages))
+        if len(pages) == 2:
+            # Dopo la prima pagina la tipologia apre anche la Cantina
+            rules = [{"target": "door", "target_id": door, "schedule": "standard_always"} for door in (scala, cantina)]
+            db.set_category_rules(category, rules)
+        return await fetch(*args, **kwargs)
+
+    controller.fetch_events = fetched
+
+    assert await service.recover_events(MORNING - timedelta(hours=1)) == 12
+
+    assert len(pages) == 3
+    assert counted == {"places": 3, "get_person": 0, "category_rules": 3}
+    rows = [(e["kind"], e["door"], e["detail"]) for e in reversed(db.list_events())]
+    outside = [("lettura", "porta2", "non abilitato"), ("negato", "porta2", "non abilitato")]
+    inside = [("lettura", "porta2", ""), ("negato", "porta2", "fuori fascia oraria")]
+    own = [("lettura", "porta", ""), ("negato", "porta", "fuori fascia oraria")]
+    assert rows == outside + own + (inside + own) * 2
+    # Fuori dal recupero, un evento alla volta: si legge tutto ogni volta
+    db.set_category_rules(category, [{"target": "door", "target_id": scala, "schedule": "standard_always"}])
+    service.record_event(_read("lettore-2", MORNING + timedelta(minutes=5)))
+    assert db.list_events()[0]["detail"] == "non abilitato"
+    assert counted["places"] == 4 and counted["get_person"] == 1
+
+
+async def test_suspended_expired_and_not_yet_valid_win_over_not_enabled(service, controller, db):
+    plant = await _cleaning(service, controller, db)
+    card = plant["person"]["cards"][0]
+    moments = (MORNING + timedelta(minutes=n) for n in range(100))
+
+    def read(reader: str = "lettore-2") -> str:
+        service.record_event(_read(reader, next(moments)))
+        return db.list_events()[0]["detail"]
+
+    def denied(reason: str = "Unauthorized") -> str:
+        service.record_event(_denied("ap-cantina", next(moments), reason, CredentialToken=plant["token"]))
+        return db.list_events()[0]["detail"]
+
+    # Valida all'ora del passaggio, scaduta adesso: nel recupero vale l'ora dell'evento
+    db.set_card_access(card["id"], {**card, "valid_to": "2026-10-25T12:00:00Z"})
+    assert (read(), denied()) == ("non abilitato", "non abilitato")
+    db.set_card_access(card["id"], {**card, "valid_to": "2026-10-01T00:00:00Z"})
+    assert (read(), denied()) == ("tessera scaduta", "tessera scaduta")
+    db.set_card_access(card["id"], {**card, "valid_from": "2026-11-01T00:00:00Z"})
+    assert (read(), denied()) == ("tessera non ancora valida", "tessera non ancora valida")
+
+    # Anche quando lo dice solo il controller
+    db.set_card_access(card["id"], card)
+    assert (denied("CredentialExpired"), denied("CredentialNotEnabled")) == ("tessera scaduta", "tessera sospesa")
+
+    await service.set_card_enabled(card["id"], False, "admin")
+    assert (read(), denied()) == ("tessera sospesa", "tessera sospesa")
+    db.set_card_access(card["id"], {**card, "valid_to": "2026-10-01T00:00:00Z"})
+    assert (read("lettore-1"), denied("CredentialExpired")) == ("tessera sospesa", "tessera sospesa")
+    assert {e["person_name"] for e in db.list_events()} == {"Anna Neri"}
+
+
+async def test_not_enabled_only_where_the_category_decides(service, controller, db):
+    plant = await _cleaning(service, controller, db)
+    token = plant["token"]
+    controller.access_points.append({"token": "ap-garage", "Entity": "porta3"})
+    await service.load_access_points()
+    moments = (MORNING + timedelta(minutes=n) for n in range(100))
+
+    def detail(event: Event) -> str:
+        service.record_event(event)
+        return db.list_events()[0]["detail"]
+
+    unauthorized = "non autorizzata su questa porta o in questo orario"
+    # Porta non certa (punto di accesso sconosciuto: l'evento va sulla porta principale) o che l'app non gestisce
+    assert detail(_denied("ap-nuovo", next(moments), "Unauthorized", CredentialToken=token)) == unauthorized
+    assert detail(_denied("ap-garage", next(moments), "Unauthorized", CredentialToken=token)) == unauthorized
+
+    # Accesso personalizzato: le porte le decide il profilo scelto a mano sulla tessera
+    await service.set_person_access(plant["person"]["id"], "profilo_sempre", "", "", "admin")
+    assert detail(_denied("ap-cantina", next(moments), "Unauthorized", CredentialToken=token)) == unauthorized
+    assert detail(_read("lettore-2", next(moments))) == ""
+
+    # Senza tipologia: la tessera ha un gruppo scelto a mano, come sopra
+    other = await service.create_person("Bruno Verdi", "04bb", "admin", group="profilo_sempre")
+    assert other["category_id"] == 0
+    other_token = other["cards"][0]["axis_credential_token"]
+    assert detail(_denied("ap-cantina", next(moments), "Unauthorized", CredentialToken=other_token)) == unauthorized
+    assert detail(_read("lettore-2", next(moments), card="04bb")) == ""
+
+    # Tipologia senza righe (rimasta dai gruppi delle versioni precedenti): non apre niente
+    db.set_category_rules(plant["category"]["id"], [])
+    await service.set_person_access(plant["person"]["id"], plant["category"]["token"], "", "", "admin")
+    assert detail(_denied("ap-in", next(moments), "NotPermittedAtThisTime", CredentialToken=token)) == "non abilitato"
+
+    # Tessera sconosciuta: invariata
+    service.record_event(_read("lettore-2", next(moments), card="05ff"))
+    service.record_event(_denied("ap-cantina", next(moments), "CredentialNotFound", Card="05ff"))
+    denied, read = db.list_events()[:2]
+    assert (read["kind"], read["person_name"], read["detail"]) == ("sconosciuta", "", "")
+    assert (denied["kind"], denied["person_name"], denied["detail"]) == ("negato", "", "tessera non registrata")
+    assert db.list_unknown_cards()[0]["number"] == "05ff"
+
+
+async def test_not_enabled_in_notifications_search_and_csv(service, controller, db):
+    from app.notifications import NotificationService
+    from app.transfer import events_csv
+
+    plant = await _cleaning(service, controller, db)
+    now = datetime.now(tz=UTC).replace(microsecond=0)
+    service.record_event(_denied("ap-cantina", now, "Unauthorized", CredentialToken=plant["token"]))
+
+    items = NotificationService(db).collect(
+        mqtt_configured=True,
+        mqtt_connected=True,
+        controller_configured=True,
+        controller_online=True,
+        sync={"ok": True},
+        door_names={"porta2": "Cantina"},
+    )
+    [denied] = [i for i in items if i["type"] == "denied"]
+    assert (denied["title"], denied["text"]) == ("Accesso Negato", "Anna Neri · non abilitato")
+    assert denied["severity"] == "low"
+    assert not [i for i in items if i["type"] == "unknown_card"]
+    [found] = db.list_events(search="non abilitato")
+    assert found["person_name"] == "Anna Neri"
+    assert ";non abilitato;" in events_csv(db.list_events(), {"porta2": "Cantina"})
+
+
+async def test_not_enabled_reaches_home_assistant_with_the_disk_full(service, controller, db, monkeypatch):
+    plant = await _cleaning(service, controller, db)
+    rows = []
+
+    async def after(row):
+        rows.append(row)
+
+    def full(**fields):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    service.after_event = after
+    monkeypatch.setattr(db, "add_event", full)
+    service.record_event(_denied("ap-cantina", MORNING, "Unauthorized", CredentialToken=plant["token"]))
+    await asyncio.sleep(0)
+
+    assert [(r["kind"], r["person_name"], r["detail"], r["id"]) for r in rows] == [
+        ("negato", "Anna Neri", "non abilitato", None)
+    ]
+
+
 def test_migration_fills_event_refs(tmp_path):
     import sqlite3
 

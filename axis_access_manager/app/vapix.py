@@ -525,10 +525,15 @@ class A1210Client:
     async def remove_access_point(self, token: str) -> None:
         await self._remove_if_present("/vapix/pacs", "pacsaxis:RemoveAccessPoint", token)
 
-    async def list_io(self) -> tuple[list[dict], list[dict]]:
-        """I/O fisici del controller e a chi sono assegnati. Il servizio axisio sull'A1210 risponde su /vapix/pin."""
+    async def list_io(self, *, strict: bool = False) -> tuple[list[dict], list[dict]]:
+        """I/O fisici del controller e a chi sono assegnati. Il servizio axisio sull'A1210 risponde su /vapix/pin.
+        strict: una risposta senza la chiave dell'elenco è un errore e non un elenco vuoto (come _list_all)."""
         info = await self._post("/vapix/pin", {"axisio:GetIoInfoList": {}})
         assigned = await self._post("/vapix/pin", {"axisio:GetIoAssignmentList": {}})
+        if strict and not (
+            isinstance(info, dict) and "IoInfo" in info and isinstance(assigned, dict) and "IoAssignment" in assigned
+        ):
+            raise VapixError("risposta del controller non riconosciuta")
         return info.get("IoInfo", []), assigned.get("IoAssignment", [])
 
     async def list_idpoint_configurations(self, *, strict: bool = False) -> list[dict]:

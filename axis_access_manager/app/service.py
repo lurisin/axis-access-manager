@@ -15,7 +15,7 @@ from .backup_copy import error_reason
 from .config import Settings
 from .db import Database, now_iso
 from .events import Event, EventMonitor, door_of_topic, event_from_log
-from .rules import RuleError, check_validity, normalize_validity
+from .rules import RuleError, check_validity, normalize_validity, validity_state
 from .vapix import A1210Client, ControllerUnreachable, VapixError
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,6 +25,10 @@ MAX_CLOCK_CORRECTION = 24 * 3600
 GRANT_LOG_TAIL = 30
 
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
+# Descrizione degli utenti che l'app crea sul controller
+USER_DESCRIPTION = "Registrato da Axis Access Manager"
+# Elenco degli utenti letto vuoto dalla sincronizzazione (senza strict): per il confronto in ombra non è letto
+USERS_UNSURE = "utenti: elenco vuoto, che senza la lettura strict non si distingue da un elenco non mandato"
 
 # Ruoli degli ingressi del controller che aprono la porta: tipo di apertura per il registro
 INPUT_SOURCES = {"rex": "Pulsante Uscita", "intercom": "Relè Citofono"}
@@ -52,6 +56,9 @@ DENIED_REASONS = {
     "AntipassbackViolation": "passaggio ripetuto (antipassback)",
     "Other": "negato dal controller",
 }
+VALIDITY_DETAILS = {"scaduta": DENIED_REASONS["CredentialExpired"], "futura": DENIED_REASONS["CredentialNotActive"]}
+# Tessera dell'app, attiva e valida, su una porta che la sua tipologia non apre
+NOT_ENABLED = "non abilitato"
 
 DOOR_ALARMS = {
     "DoorForcedOpen": "porta forzata",
@@ -196,6 +203,33 @@ def card_of_credential(credential: dict) -> str:
     return ""
 
 
+def apply_access(credential: dict, access: dict) -> dict:
+    """Gruppo e validità ({access_profile, valid_from, valid_to}) nella tessera Axis."""
+    credential["ValidFrom"] = access["valid_from"]
+    credential["ValidTo"] = access["valid_to"]
+    credential["CredentialAccessProfile"] = [
+        {"AccessProfile": access["access_profile"], "ValidFrom": "", "ValidTo": ""}
+    ]
+    return credential
+
+
+def new_credential(user_token: str, name: str, number: str, access: dict, enabled: bool = True) -> dict:
+    """Tessera Axis completa, senza token: utente, nome della persona, stato, numero, gruppo e validità."""
+    return apply_access(
+        {
+            "token": "",
+            "UserToken": user_token,
+            "Description": name,
+            "Enabled": bool(enabled),
+            "Status": "Enabled" if enabled else "Disabled",
+            "IdData": [{"Name": "Card", "Value": number}],
+            "Attribute": [],
+            "AuthenticationProfile": [],
+        },
+        access,
+    )
+
+
 class AccessService:
     def __init__(
         self, db: Database, controller: A1210Client, settings: Settings, monitor: EventMonitor | None = None
@@ -212,6 +246,8 @@ class AccessService:
         self.after_event: Callable[[dict], Awaitable[None]] | None = None
         # Chiamata quando cambia qualcosa che Home Assistant mostra (porta, contatori)
         self.on_change: Callable[[], Awaitable[None]] | None = None
+        # Chiamata dopo ogni sincronizzazione riuscita, con la sua lettura di tessere e utenti (confronto in ombra)
+        self.after_sync: Callable[[dict], Awaitable[None]] | None = None
         self._tasks: set[asyncio.Task] = set()
         # Ultimi esiti del controller: lo stesso diniego arriva su più topic e va registrato una volta
         self._recent_decisions: deque[tuple] = deque(maxlen=20)
@@ -239,6 +275,9 @@ class AccessService:
         # Durante il recupero dal registro del controller: eventi segnati come recuperati, e quanti
         self._recovering = False
         self._recovered = 0
+        # Durante una pagina del recupero: quello che serve al «non abilitato» (porte, aree e strutture, tipologie
+        # delle persone e porte di ogni tipologia), letto una volta per pagina. Fuori dal recupero None
+        self._coverage: dict | None = None
         # Ora (del controller) dell'evento più recente letto dall'ultimo recupero, None se non ne ha letti
         self.recover_newest: datetime | None = None
         # L'ultimo recupero si è fermato a RECOVER_MAX righe con altre ancora da leggere: si continua al giro dopo
@@ -391,12 +430,20 @@ class AccessService:
             raise ServiceError(f"sincronizzazione sospesa: {paused}")
         async with self.lock:
             credentials = await self.controller.list_credentials()
+            # La stessa lettura per il confronto in ombra. Gli utenti si leggono senza strict: un elenco vuoto non si
+            # distingue da una risposta senza l'elenco, quindi non vale come letto
+            reading = {"lists": {"credentials": credentials}, "unread": {}, "serial": ""}
             try:
                 users = await self.controller.list_users()
             except VapixError as err:
                 # Senza elenco utenti i nomi si prendono dalla descrizione delle tessere
                 _LOGGER.warning("Elenco utenti non leggibile: %s", err)
                 users = []
+                reading["unread"]["users"] = f"utenti: {err}"
+            if users:
+                reading["lists"]["users"] = users
+            else:
+                reading["unread"].setdefault("users", USERS_UNSURE)
             names = {u.get("token"): (u.get("Name") or "").strip() for u in users}
             seen_cards: set[str] = set()
             added = 0
@@ -459,7 +506,7 @@ class AccessService:
             except VapixError as err:
                 _LOGGER.debug("Punti di accesso non leggibili: %s", err)
             self._changed()
-            return {
+            result = {
                 "cards": len(seen_cards),
                 "added": added,
                 "removed": 0,
@@ -467,6 +514,13 @@ class AccessService:
                 "new_missing": len(new_missing),
                 "mass_missing": mass_missing(len(cards), len(missing)),
             }
+        if self.after_sync is not None:
+            # Fuori dal lock: le operazioni sulle tessere non aspettano il confronto
+            try:
+                await self.after_sync(reading)
+            except Exception:  # noqa: BLE001 - il confronto in ombra non cambia l'esito della sincronizzazione
+                _LOGGER.exception("Confronto in ombra di utenti e tessere non riuscito")
+        return result
 
     @staticmethod
     def _card_changed(card: dict, person_id: int, number: str, enabled: bool, access: dict) -> bool:
@@ -580,27 +634,10 @@ class AccessService:
 
     @staticmethod
     def _apply_access(credential: dict, access: dict) -> dict:
-        credential["ValidFrom"] = access["valid_from"]
-        credential["ValidTo"] = access["valid_to"]
-        credential["CredentialAccessProfile"] = [
-            {"AccessProfile": access["access_profile"], "ValidFrom": "", "ValidTo": ""}
-        ]
-        return credential
+        return apply_access(credential, access)
 
     def _credential(self, user_token: str, name: str, number: str, access: dict, enabled: bool = True) -> dict:
-        return self._apply_access(
-            {
-                "token": "",
-                "UserToken": user_token,
-                "Description": name,
-                "Enabled": bool(enabled),
-                "Status": "Enabled" if enabled else "Disabled",
-                "IdData": [{"Name": "Card", "Value": number}],
-                "Attribute": [],
-                "AuthenticationProfile": [],
-            },
-            access,
-        )
+        return new_credential(user_token, name, number, access, enabled)
 
     def _category_access(
         self, category: dict | None, group: str = "", valid_from: str = "", valid_to: str = ""
@@ -650,7 +687,7 @@ class AccessService:
             self._check_card_free(number)
             user_token = await self._new_user_token(name)
             await self.controller.set_user(
-                {"token": user_token, "Name": name, "Description": "Registrato da Axis Access Manager", "Attribute": []}
+                {"token": user_token, "Name": name, "Description": USER_DESCRIPTION, "Attribute": []}
             )
             try:
                 credential_token = await self.controller.set_credential(
@@ -1087,7 +1124,7 @@ class AccessService:
             {
                 "token": token,
                 "Name": person["name"],
-                "Description": "Registrato da Axis Access Manager",
+                "Description": USER_DESCRIPTION,
                 "Attribute": [],
             }
         )
@@ -1139,7 +1176,7 @@ class AccessService:
                 self._check_card_free(card["number"])
             user_token = await self._new_user_token(name)
             await self.controller.set_user(
-                {"token": user_token, "Name": name, "Description": "Registrato da Axis Access Manager", "Attribute": []}
+                {"token": user_token, "Name": name, "Description": USER_DESCRIPTION, "Attribute": []}
             )
             written: list[tuple[dict, str, dict]] = []
             try:
@@ -1364,7 +1401,7 @@ class AccessService:
                     card=card["number"],
                     person_id=card["person_id"],
                     person_name=card["person_name"],
-                    detail="" if card["enabled"] else "tessera sospesa",
+                    detail=self._card_detail(card, event),
                     source="lettore",
                     raw=data,
                     door=door,
@@ -1399,13 +1436,20 @@ class AccessService:
                     )
                     self._unsaved_decision(key, row)
                 return
+            # Un consenso del controller resta un consenso, anche se la porta non è della tipologia
+            if granted:
+                detail = ""
+            elif card:
+                detail = self._card_detail(card, event, reason)
+            else:
+                detail = DENIED_REASONS.get(reason, reason)
             row = self.log_event(
                 ts=ts,
                 kind=kind,
                 card=card["number"] if card else number,
                 person_id=card["person_id"] if card else None,
                 person_name=card["person_name"] if card else self._holder_name(data),
-                detail="" if granted else DENIED_REASONS.get(reason, reason),
+                detail=detail,
                 source="controller",
                 raw=data,
                 door=door,
@@ -1467,6 +1511,56 @@ class AccessService:
             self._changed()
         return True
 
+    def _card_detail(self, card: dict, event: Event, reason: str = "") -> str:
+        """Dettaglio di una lettura o di un negato con una tessera dell'app, in quest'ordine: tessera sospesa, scaduta
+        o non ancora valida (all'ora dell'evento), porta che la sua tipologia non apre, poi il motivo del controller."""
+        if not card["enabled"] or reason == "CredentialNotEnabled":
+            return DENIED_REASONS["CredentialNotEnabled"]
+        if reason in ("CredentialExpired", "CredentialNotActive"):
+            return DENIED_REASONS[reason]
+        moment = event.timestamp if event.timestamp.tzinfo else event.timestamp.replace(tzinfo=UTC)
+        if validity := validity_state(card["valid_from"], card["valid_to"], moment):
+            return VALIDITY_DETAILS[validity]
+        if self._not_enabled(card, self._event_door(event)):
+            return NOT_ENABLED
+        return DENIED_REASONS.get(reason, reason)
+
+    def _not_enabled(self, card: dict, door: str) -> bool:
+        """Porta dell'app che la tipologia della persona non apre, secondo le sue righe nel database. Mai per una porta
+        non certa (evento senza punto di accesso o lettore conosciuto) o che l'app non gestisce, per chi non ha
+        tipologia né per un accesso personalizzato: lì le porte le decide il profilo scelto a mano sulla tessera."""
+        if not door:
+            return False
+        # Nella pagina del recupero ogni cosa si legge una volta: la pagina gira senza await, quindi niente cambia il
+        # database a metà (vedi recover_events). Fuori, per un evento solo, si legge solo quello che serve
+        page = self._coverage
+        cache = page if page is not None else {}
+        if page is None:
+            person = self.db.get_person(card["person_id"])
+            category_id = person["category_id"] if person else None
+        else:
+            if "persone" not in page:
+                page["persone"] = {p["id"]: p["category_id"] for p in self.db.all_persons()}
+            category_id = page["persone"].get(card["person_id"])
+        category_key = ("tipologia", category_id)
+        if category_key not in cache:
+            cache[category_key] = self.db.get_category(category_id) if category_id else None
+        category = cache[category_key]
+        if category is None or card["access_profile"] != category["group_token"]:
+            return False
+        # Import qui: coverage importa installation, che importa questo modulo
+        from .coverage import category_doors, places
+
+        if "porte" not in cache:
+            cache["porte"] = places(self.db)
+            cache["porte dell'app"] = {d["door_token"] for d in cache["porte"][0]}
+        if door not in cache["porte dell'app"]:
+            return False
+        doors_key = ("porte della tipologia", category["id"])
+        if doors_key not in cache:
+            cache[doors_key] = category_doors(self.db, category["id"], cache["porte"])
+        return door not in cache[doors_key]
+
     def _holder_name(self, data: dict) -> str:
         """Chi ha usato una tessera che l'app non ha più: l'A1210 manda il token dell'utente, non il nome.
         Se la persona c'è ancora si usa il suo nome, altrimenti il nome ricavato dal token."""
@@ -1502,6 +1596,9 @@ class AccessService:
             # Prima, con il disco ancora pieno, il recupero dopo li saltava e si perdevano per sempre
             decisions = list(self._recent_decisions)
             self._recovering = True
+            # Per il «non abilitato»: letto una volta per pagina. La pagina gira tutta senza await, quindi nessun'altra
+            # operazione dell'app cambia porte, aree, tipologie o persone a metà; alla pagina dopo si rilegge
+            self._coverage = {}
             try:
                 # Una pagina, un commit
                 with self.db.batch():
@@ -1516,6 +1613,7 @@ class AccessService:
                 raise
             finally:
                 self._recovering = False
+                self._coverage = None
             if self._recovered > before:
                 self.writable_again()
                 self._changed()
@@ -1547,14 +1645,18 @@ class AccessService:
         return None
 
     def _door_of(self, event: Event) -> str:
-        """Porta dell'evento: dal topic, dai dati, dal punto di accesso o dal lettore; se no la porta principale."""
+        """Porta dell'evento: quella che indica l'evento, se no la porta principale."""
+        return self._event_door(event) or self.settings.door_token
+
+    def _event_door(self, event: Event) -> str:
+        """Porta indicata dall'evento: dal topic, dai dati, dal punto di accesso o dal lettore; vuota se non si sa."""
         token = door_of_topic(event.topic) or str(event.data.get("DoorToken") or "")
         if not token and event.data.get("AccessPointToken"):
             token = self.access_point_doors.get(str(event.data["AccessPointToken"]), "")
         if not token and event.data.get("IdPointToken"):
             # Le letture delle tessere portano solo il lettore
             token = self.idpoint_doors.get(str(event.data["IdPointToken"]), "")
-        return token or self.settings.door_token
+        return token
 
     def record_intercom(self, entity_id: str, name: str) -> dict:
         """Chiamata dal citofono (entità di Home Assistant)."""
