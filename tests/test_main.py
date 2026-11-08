@@ -10,7 +10,7 @@ from app.config import parse_options
 from app.db import Database
 from app.ha import HomeAssistant
 from app.main import create_app
-from app.vapix import VapixError
+from app.vapix import ControllerUnreachable, VapixError
 
 
 @pytest.fixture
@@ -102,9 +102,9 @@ def test_sheet_opened_without_cards_does_not_change_a_card_added_meanwhile(clien
     response = client.put(f"/api/persons/{person['id']}/access", json={"category_id": guest})
     assert response.status_code == 409
     assert response.json()["detail"] == (
-        "Gina ha ora 1 tessera: salva di nuovo l'accesso dalla scheda aggiornata, con la validità"
+        "Gina ha ora 1 tessera: la modifica era stata preparata quando non ne aveva, rileggi e riprova"
     )
-    response = client.delete(f"/api/persons/{person['id']}", params={"cards": 0})
+    response = client.delete(f"/api/persons/{person['id']}", params={"cards": ""})
     assert response.status_code == 409
     assert response.json()["detail"] == "Gina ha ora 1 tessera: conferma l'eliminazione dalla scheda aggiornata"
     [card] = client.get(f"/api/persons/{person['id']}").json()["cards"]
@@ -116,8 +116,32 @@ def test_sheet_opened_without_cards_does_not_change_a_card_added_meanwhile(clien
     body = {"category_id": guest, "valid_from": "", "valid_to": ""}
     assert client.put(f"/api/persons/{person['id']}/access", json=body).status_code == 200
     assert controller.credentials[card["axis_credential_token"]]["ValidTo"] == ""
-    assert client.delete(f"/api/persons/{person['id']}", params={"cards": 1}).json() == {"ok": True}
+    assert client.delete(f"/api/persons/{person['id']}", params={"cards": "1,x"}).status_code == 422
+    assert client.delete(f"/api/persons/{person['id']}", params={"cards": str(card["id"])}).json() == {"ok": True}
     assert controller.credentials == {}
+
+
+def test_retry_of_a_deletion_left_halfway_finishes_it(client, controller):
+    """Elimina Persona con il controller che smette di rispondere dopo la prima tessera: Riprova manda la stessa
+    conferma (le tessere elencate), e la tessera rimasta va tolta, non rifiutata come «scheda vecchia»."""
+    person = client.post("/api/persons", json={"name": "Gina", "card": "04aa55"}).json()
+    cards = client.post(f"/api/persons/{person['id']}/cards", json={"card": "04bb66"}).json()["cards"]
+    seen = ",".join(str(card["id"]) for card in cards)
+    remove = controller.remove_credential
+    removed = []
+
+    async def stops_answering(token):
+        if removed:
+            raise ControllerUnreachable("il controller non risponde")
+        removed.append(token)
+        await remove(token)
+
+    controller.remove_credential = stops_answering
+    assert client.delete(f"/api/persons/{person['id']}", params={"cards": seen}).status_code == 502
+    assert len(client.get(f"/api/persons/{person['id']}").json()["cards"]) == 1
+    controller.remove_credential = remove
+    assert client.delete(f"/api/persons/{person['id']}", params={"cards": seen}).json() == {"ok": True}
+    assert controller.credentials == {} and client.get("/api/persons").json() == []
 
 
 def test_controller_test_reports_serial_and_certificate(client, controller):

@@ -470,19 +470,18 @@ async def test_request_prepared_without_cards_does_not_touch_a_card_added_meanwh
     [card] = (await service.add_card(person["id"], "04aa", "admin"))["cards"]
     controller.calls.clear()
 
-    with pytest.raises(PersonChanged, match="Gina ha ora 1 tessera: salva di nuovo l'accesso"):
+    with pytest.raises(PersonChanged, match="Gina ha ora 1 tessera: la modifica era stata preparata"):
         await service.set_person_access(person["id"], "", "", "", "admin", category_id=guest, with_validity=False)
     with pytest.raises(PersonChanged, match="Gina ha ora 1 tessera: conferma l'eliminazione"):
-        await service.delete_person(person["id"], "admin", cards=0)
+        await service.delete_person(person["id"], "admin", cards=set())
 
     [after] = db.get_person(person["id"])["cards"]
     assert (after["valid_from"], after["valid_to"]) == (card["valid_from"], card["valid_to"]) != ("", "")
     assert controller.calls == [] and controller.credentials[card["axis_credential_token"]]["ValidTo"]
-    # Tessera tolta nel frattempo da un'altra scheda: la conferma ne contava una
+    # Tessera tolta nel frattempo (da un'altra scheda, o da un'eliminazione rimasta a metà): la conferma la elencava,
+    # quindi non c'è niente di nuovo e la persona si elimina
     await service.delete_card(card["id"], "admin")
-    with pytest.raises(PersonChanged, match="Gina non ha più tessere"):
-        await service.delete_person(person["id"], "admin", cards=1)
-    await service.delete_person(person["id"], "admin", cards=0)
+    await service.delete_person(person["id"], "admin", cards={card["id"]})
     assert db.list_persons() == []
 
 

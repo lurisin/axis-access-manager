@@ -844,8 +844,8 @@ class AccessService:
             if person["cards"] and not with_validity:
                 # Scheda aperta quando non ne aveva: la tessera arrivata nel frattempo resterebbe senza scadenza
                 raise PersonChanged(
-                    f"{person['name']} ha ora {plural(len(person['cards']), 'tessera', 'tessere')}: salva di nuovo "
-                    "l'accesso dalla scheda aggiornata, con la validità"
+                    f"{person['name']} ha ora {plural(len(person['cards']), 'tessera', 'tessere')}: la modifica era "
+                    "stata preparata quando non ne aveva, rileggi e riprova"
                 )
             if not person["cards"] and (access["valid_from"] or access["valid_to"]):
                 # La validità sta sulle tessere: la prima prende la durata della tipologia
@@ -970,16 +970,19 @@ class AccessService:
             self._changed()
             return self.db.get_person(person["id"])
 
-    async def delete_person(self, person_id: int, user: str, cards: int | None = None) -> None:
-        """cards: quante tessere ha la persona per chi chiede di eliminarla (la conferma le conta); se ne ha un altro
-        numero non si elimina niente. None: tutte quelle che ha."""
+    async def delete_person(self, person_id: int, user: str, cards: set[int] | None = None) -> None:
+        """cards: le tessere (id) che ha visto chi chiede di eliminarla, cioè quelle elencate nella conferma; se intanto
+        ne ha avuta una nuova non si elimina niente. Una tessera già tolta (un'eliminazione rimasta a metà da
+        riprovare) non blocca. None: tutte quelle che ha."""
         async with self.lock:
             person = self._person(person_id)
-            if cards is not None and len(person["cards"]) != cards:
+            new = [card for card in person["cards"] if cards is not None and card["id"] not in cards]
+            if new:
                 # Per esempio «Non ha tessere» su una scheda vecchia, e intanto una tessera assegnata
-                have = len(person["cards"])
-                now = f"ha ora {plural(have, 'tessera', 'tessere')}" if have else "non ha più tessere"
-                raise PersonChanged(f"{person['name']} {now}: conferma l'eliminazione dalla scheda aggiornata")
+                raise PersonChanged(
+                    f"{person['name']} ha ora {plural(len(person['cards']), 'tessera', 'tessere')}: conferma "
+                    "l'eliminazione dalla scheda aggiornata"
+                )
             for card in person["cards"]:
                 if not card["missing_since"]:
                     await self.controller.remove_credential(card["axis_credential_token"])

@@ -1121,9 +1121,13 @@ def create_app(
         )
 
     @app.delete("/api/persons/{person_id}", dependencies=[need("persone_modifica")])
-    async def delete_person(person_id: int, request: Request, cards: Annotated[int | None, Query(ge=0)] = None) -> dict:
-        # cards: le tessere contate nella conferma; con un altro numero (scheda vecchia) non si elimina niente
-        await request.app.state.service.delete_person(person_id, request_user(request), cards)
+    async def delete_person(
+        person_id: int, request: Request, cards: Annotated[str | None, Query(pattern=r"^(\d+(,\d+)*)?$")] = None
+    ) -> dict:
+        # cards: le tessere (id, separati da virgole) elencate nella conferma; con una tessera nuova (scheda vecchia)
+        # non si elimina niente. Vuoto: la conferma diceva che non ne aveva
+        seen = None if cards is None else {int(card) for card in cards.split(",") if card}
+        await request.app.state.service.delete_person(person_id, request_user(request), seen)
         return {"ok": True}
 
     @app.post("/api/persons/{person_id}/cards", dependencies=[need("persone_modifica")])

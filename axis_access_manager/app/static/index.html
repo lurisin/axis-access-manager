@@ -2393,7 +2393,7 @@ async function openPerson(id) {
     if (!await confirmBox("Elimina Persona", `Eliminare ${what} Il registro dei passaggi resta.`, "Elimina", true)) return;
     // Con le tessere contate nella conferma: se intanto sono cambiate (per esempio «Non ha tessere» e una appena
     // assegnata) il server non elimina niente
-    const result = await runPerson(() => api(`api/persons/${id}?cards=${p.cards.length}`, {method: "DELETE"}), "Persona eliminata");
+    const result = await runPerson(() => api(`api/persons/${id}?cards=${p.cards.map(c => c.id).join(",")}`, {method: "DELETE"}), "Persona eliminata");
     if (result?.stale) reloadStale(result.stale);
     else if (result) { close(); await loadPersons(); renderPersonList(); }
   };
