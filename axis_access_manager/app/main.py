@@ -62,7 +62,7 @@ from .direct import load_settings as load_direct_settings
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS, renamed_tokens
 from .ha import LOW_SPACE, HomeAssistant, default_snapshot_dir, delete_old_snapshots, disk_space, low_space
-from .ha_mqtt import DOOR_PHYSICAL, HaBridge, parse_command, topic_base
+from .ha_mqtt import DOOR_PHYSICAL, OFFLINE_TIMEOUT, HaBridge, parse_command, topic_base
 from .health import (
     HEALTH_INTERVAL,
     HealthMonitor,
@@ -2511,6 +2511,11 @@ async def _stop_listening(app: FastAPI, offline: bool = True, remove: bool = Fal
         # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
         # ordinata il broker scarta il messaggio di addio)
         await bridge.stop(offline, remove)
+    monitor = getattr(state, "monitor", None)
+    if monitor:
+        # Anche con una nuova configurazione (offline=False) lo stato è appena partito: la sua conferma arriva
+        # all'ascolto MQTT, che quindi si ferma dopo
+        await monitor.drain(OFFLINE_TIMEOUT)
     await cancel("monitor_task")
     return state.raw_controller, state.service.lock, [state.monitor, *state.intercoms], state.readers
 

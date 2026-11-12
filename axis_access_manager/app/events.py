@@ -280,6 +280,8 @@ class EventMonitor:
     # Interruzioni (broker perso o controller offline): dopo ognuna si recuperano gli eventi persi
     outages: int = 0
     _tasks: set = field(default_factory=set, repr=False)
+    # Pubblicazioni partite e non ancora confermate (vedi drain)
+    _publishing: int = field(default=0, repr=False)
 
     @property
     def door_mode(self) -> str | None:
@@ -298,12 +300,26 @@ class EventMonitor:
         client = self.client
         if client is None or not self.connected:
             return False
+        self._publishing += 1
         try:
             await client.publish(topic, payload, qos=1, retain=retain)
         except aiomqtt.MqttError as err:
             _LOGGER.warning("Pubblicazione su %s non riuscita: %s", topic, err)
             return False
+        finally:
+            self._publishing -= 1
         return True
+
+    async def drain(self, timeout: float) -> None:
+        """Aspetta le pubblicazioni in corso, al più timeout secondi, prima di scollegarsi dal broker: con qos 1 la
+        conferma la riceve l'ascolto MQTT, e fermato a metà la pubblicazione finiva in un errore dopo il timeout di
+        aiomqtt (collaudo 0.28.0: «Pubblicazione su …/stato non riuscita» a ogni nuova configurazione)."""
+        # Lascia partire quelle appena chieste (lo stato cambiato dal WebSocket fermato)
+        await asyncio.sleep(0)
+        loop = asyncio.get_running_loop()
+        end = loop.time() + timeout
+        while self._publishing and loop.time() < end:
+            await asyncio.sleep(0.02)
 
     def _dispatch_extra(self, topic: aiomqtt.Topic, payload: bytes, retained: bool = False) -> bool:
         handled = False
