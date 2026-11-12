@@ -107,7 +107,7 @@ from .service import (
     mass_missing,
     plural,
 )
-from .shadow import CARDS_ROUND, MANUAL_ROUND, PROGRAMMING_ROUND, Shadow, group_of, would
+from .shadow import CARDS_ROUND, HISTORY_DAYS, MANUAL_ROUND, PROGRAMMING_ROUND, ROUND_TITLES, Shadow, group_of, would
 from .transfer import events_csv, import_persons, persons_csv, read_import
 from .users import ADMIN, PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
 from .vapix import A1210Client, ControllerGuard, ControllerUnreachable, VapixError
@@ -711,8 +711,9 @@ def create_app(
         app.state.state_wake = asyncio.Event()
         # Rete di sicurezza della serratura: resta la stessa anche con una nuova configurazione
         app.state.lock_guard = LockGuard()
-        # Confronto in ombra: resta lo stesso con una nuova configurazione; una lettura completa per volta
-        app.state.shadow = Shadow()
+        # Confronto in ombra: resta lo stesso con una nuova configurazione; una lettura completa per volta. Lo storico
+        # dei giri sta nel database
+        app.state.shadow = Shadow(app.state.db)
         app.state.shadow.next_full = asyncio.get_running_loop().time() + SHADOW_DELAY
         app.state.comparison_lock = asyncio.Lock()
         await _start_runtime(app)
@@ -1744,7 +1745,8 @@ def create_app(
     @app.get("/api/controllers/{controller_id}/comparison")
     async def comparison(controller_id: int, request: Request, user: Annotated[AppUser, need("impianti")]) -> dict:
         """Confronto (prova): cosa farebbero presa in carico e allineatore, per tipo di oggetto. Legge il controller
-        e calcola in memoria: non scrive niente, né sul controller né nel database."""
+        e calcola in memoria: non scrive niente sul controller, e nel database solo il giro nello storico del
+        confronto in ombra."""
         state = request.app.state
         if state.db.get_controller(controller_id) is None:
             raise HTTPException(404, "controller non trovato")
@@ -1755,6 +1757,19 @@ def create_app(
             raise ServiceError("indirizzo del controller non configurato")
         letto, result = await _compare_programming(state, controller_id, KINDS, MANUAL_ROUND)
         return _comparison_view(state, letto, result, user)
+
+    @app.get("/api/shadow")
+    async def shadow_history(
+        request: Request,
+        user: Annotated[AppUser, need("impianti")],
+        days: Annotated[int, Query(ge=1, le=HISTORY_DAYS)] = HISTORY_DAYS,
+    ) -> dict:
+        """Storico del confronto in ombra per giorno dell'impianto (dal più recente) e conteggi dell'ultimo giro: per
+        la scheda Confronto e per chi fa il collaudo. Senza il permesso di vedere le persone l'ultima differenza di
+        utenti e tessere (nomi, numeri di tessera) non si mostra, come nella scheda."""
+        state = request.app.state
+        hidden = "" if user.can("persone") else f"serve il permesso «{PERMISSIONS['persone']}»"
+        return {**state.shadow.history(days, hidden), "current": state.shadow.as_dict()}
 
     @app.post("/api/controllers/{controller_id}/doors", dependencies=[need("impianti")])
     async def create_door(controller_id: int, body: DoorConfigIn, request: Request) -> dict:
@@ -3680,12 +3695,24 @@ async def _compare_programming(state, controller_id: int, kinds, round_name: str
         if round_name == PROGRAMMING_ROUND:
             # Prima di leggere: anche una lettura o un calcolo che non riescono contano come il giro dell'ora
             state.shadow.next_full = asyncio.get_running_loop().time() + SHADOW_INTERVAL
-        before = load_conf(state.db, state.settings.access_profile)
-        letto = await _read_controller(state, kinds)
-        conf = load_conf(state.db, state.settings.access_profile)
-        result = await asyncio.to_thread(confronto, conf, letto, controller_id, kinds)
+        try:
+            before = load_conf(state.db, state.settings.access_profile)
+            letto = await _read_controller(state, kinds)
+            conf = load_conf(state.db, state.settings.access_profile)
+            result = await asyncio.to_thread(confronto, conf, letto, controller_id, kinds)
+        except Exception as err:
+            # Il giro non riuscito nella scheda, nello storico e nel log (la riga del giro); l'errore con i dettagli lo
+            # scrive il ciclo di ogni ora, Confronta Ora lo risponde. Solo se il giro era del controller conosciuto
+            if not state.controller.paused:
+                state.shadow.fail(controller_id, round_name, _now(), err)
+            raise
         result["changed"] = conf != before
-        if not result["changed"] and not state.controller.paused:
+        if state.controller.paused or result["changed"]:
+            # Il giro non conta: all'indirizzo risponde un altro controller, o il risultato mescolerebbe la
+            # configurazione di prima e quella di dopo. Nel log comunque una riga, come per ogni giro
+            why = "scritture sospese" if state.controller.paused else "la configurazione è cambiata durante la lettura"
+            _LOGGER.info("Confronto in ombra, giro %s: non registrato, %s", ROUND_TITLES[round_name], why)
+        else:
             state.shadow.record(controller_id, [k for k in kinds if k in PROGRAMMING], result, _now(), round_name)
     return letto, result
 
@@ -3735,8 +3762,14 @@ async def _shadow_cards(state, reading: dict) -> None:
     primary = state.installation.primary
     if not primary or state.controller.paused:
         return
-    conf = load_conf(state.db, state.settings.access_profile)
-    result = await asyncio.to_thread(lambda: compare(build(conf, primary["id"], SHADOW_CARDS), reading))
+    try:
+        conf = load_conf(state.db, state.settings.access_profile)
+        result = await asyncio.to_thread(lambda: compare(build(conf, primary["id"], SHADOW_CARDS), reading))
+    except Exception as err:
+        # Il giro non riuscito nella scheda, nello storico e nel log; l'errore con i dettagli lo scrive la
+        # sincronizzazione
+        state.shadow.fail(primary["id"], CARDS_ROUND, _now(), err)
+        raise
     state.shadow.record(primary["id"], SHADOW_CARDS, result, _now(), CARDS_ROUND)
 
 

@@ -624,6 +624,10 @@
   .rs-item.readonly:hover { background: none; }
   .cmp-counts { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 0; }
   .cmp-kind > summary { cursor: pointer; font-size: 13px; color: var(--muted); margin: 6px 0; }
+  .cmp-source { font-size: 13px; font-weight: 600; margin: 12px 0 6px; }
+  .shadow-days dt { white-space: nowrap; }
+  .shadow-days dt.warn { color: var(--warn); font-weight: 600; }
+  .shadow-days dt.err { color: var(--err); font-weight: 600; }
   .rs-item .grow { flex: 1; min-width: 0; }
   .rs-item .title { font-weight: 600; overflow-wrap: anywhere; }
   .rs-note { display: flex; gap: 6px; align-items: flex-start; font-size: 13px; color: var(--warn); margin-top: 4px; }
@@ -4203,7 +4207,47 @@ function shadowHtml(sh) {
     const parts = [k.uguali && plural(k.uguali, "uguale", "uguali"), k.prese && `${k.prese} da prendere in carico`, k.differenze && plural(k.differenze, "differenza", "differenze"), k.sorprese && plural(k.sorprese, "sorpresa", "sorprese")].filter(Boolean);
     return `${statusDot(k.differenze || k.sorprese ? "warn" : "ok")} ${parts.join(" · ") || "Nessun oggetto"}`;
   };
-  return head + props(kinds.map((k) => [k.title, line(k)]));
+  // Da quale giro vengono i conteggi, con l'ora: la programmazione dall'ultimo giro fra quello di ogni ora e Confronta
+  // Ora (al collaudo della 0.28.1 un risultato di Confronta Ora si poteva scambiare per quello del giro orario)
+  const groups = [];
+  for (const k of kinds) {
+    const last = groups[groups.length - 1];
+    if (last && last.round === k.round && last.at === k.at) last.kinds.push(k);
+    else groups.push({round: k.round, at: k.at, kinds: [k]});
+  }
+  const source = (g) => ({
+    programmazione: `Programmazione · conteggi del giro di ogni ora, ${dayTime(g.at)}`,
+    confronta_ora: `Programmazione · conteggi di Confronta Ora, ${dayTime(g.at)}`,
+    utenti_tessere: `Utenti e tessere · conteggi della sincronizzazione, ${dayTime(g.at)}`,
+  })[g.round] || "";
+  return head + groups.map((g) => `${source(g) ? `<p class="cmp-source">${esc(source(g))}</p>` : ""}${props(g.kinds.map((k) => [k.title, line(k)]))}`).join("");
+}
+// Storico del confronto in ombra (api/shadow), per giorno dell'impianto: i giri fatti e quanti senza differenze. In
+// evidenza i giorni con differenze o sorprese e quelli con giri non riusciti. Senza giri: l'app era spenta o il
+// controller non rispondeva
+const SHADOW_DAY_ROUNDS = [["programmazione", "Ogni ora"], ["utenti_tessere", "Utenti e tessere"], ["confronta_ora", "Confronta Ora"]];
+function shadowRoundText(r, label) {
+  if (!r) return `${label}: nessun giro`;
+  const extra = [r.con_differenze && `${r.con_differenze} con differenze`, r.con_sorprese && `${r.con_sorprese} con sorprese`, r.con_non_letti && `${r.con_non_letti} con elenchi non letti`, r.non_riusciti && `${r.non_riusciti} non ${r.non_riusciti === 1 ? "riuscito" : "riusciti"}`].filter(Boolean);
+  return `${label}: ${plural(r.giri, "giro", "giri")}, ${r.senza_differenze} senza differenze${extra.length ? ` · ${extra.join(" · ")}` : ""}`;
+}
+function shadowHistoryHtml(h) {
+  const latest = (list, key) => list.filter((r) => r[key]).sort((a, b) => new Date(b[key]) - new Date(a[key]))[0];
+  const days = h.days.map((d) => {
+    const done = SHADOW_DAY_ROUNDS.map(([k]) => d.giri[k]).filter(Boolean);
+    const failed = done.some((r) => r.non_riusciti), diff = done.some((r) => r.con_differenze || r.con_sorprese);
+    const clean = done.length && done.every((r) => r.senza_differenze === r.giri);
+    const cls = failed ? "err" : diff ? "warn" : "";
+    const lines = SHADOW_DAY_ROUNDS.filter(([k]) => k !== "confronta_ora" || d.giri[k]).map(([k, label]) => esc(shadowRoundText(d.giri[k], label)));
+    const last = latest(done, "ultima_differenza_at");
+    if (last) lines.push(`<span style="color:var(--warn)">Ultima differenza alle ${esc(fmtTime(last.ultima_differenza_at))}: ${esc(last.ultima_differenza || cap(last.ultima_differenza_nascosta))}</span>`);
+    const error = latest(done.filter((r) => r.non_riusciti && r.ultimo_errore), "ultimo");
+    if (error) lines.push(`<span style="color:var(--err)">Ultimo giro non riuscito alle ${esc(fmtTime(error.ultimo))}: ${esc(error.ultimo_errore)}</span>`);
+    const day = `${d.day === h.today ? "oggi, " : ""}${fmtDay(d.day, {weekday: "short", day: "2-digit", month: "2-digit"})}`;
+    return `<dt class="${cls}">${statusDot(failed ? "err" : diff ? "warn" : clean ? "ok" : "")} ${esc(day)}</dt><dd>${lines.join("<br>")}</dd>`;
+  }).join("");
+  const unsaved = h.unsaved ? `<p class="small-text" style="color:var(--warn);margin:0 0 8px">${esc(plural(h.unsaved, "giro non ancora salvato", "giri non ancora salvati"))} nel database (spazio su disco esaurito?): si salvano al prossimo giro, con un riavvio si perdono.</p>` : "";
+  return `<h3 class="section-title" style="margin:16px 0 4px">Ultimi ${h.days.length} Giorni</h3><p class="muted small-text" style="margin:0 0 8px">Giorni dell'impianto. Un giro è senza differenze quando ha letto tutto e non ha trovato differenze né sorprese.</p>${unsaved}<dl class="props shadow-days">${days}</dl>`;
 }
 function comparisonHtml(r) {
   if (!r.ok) return `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(cap(r.error))}. Senza gli elenchi del controller il confronto non mostra niente: un elenco non letto non vuol dire vuoto.</div></div>`;
@@ -4240,9 +4284,25 @@ function comparisonHtml(r) {
 async function controllerComparison(body, ctrl, primary) {
   body.innerHTML = `<div class="card"><h2>${icon("shield")}Confronto (prova)<span class="spacer"></span><button type="button" class="small primary" id="cmp-run">Confronta Ora</button></h2>
       <p style="margin-top:0"><b>Questa scheda non cambia niente sul controller.</b> Legge il controller e calcola cosa farebbero la presa in carico e l'allineamento automatico delle prossime versioni: cosa l'app prenderebbe in carico com'è sul controller, cosa riporterebbe com'è nell'app, cosa ricreerebbe perché manca e cosa toglierebbe perché c'è solo sul controller. Un elenco che il controller non manda è «non letto»: per quel tipo non toglierebbe e non ricreerebbe niente.</p>
-      <h3 class="section-title">Confronto in Ombra</h3><div id="cmp-shadow">${shadowHtml(primary.health?.shadow)}</div></div>
+      <h3 class="section-title">Confronto in Ombra</h3><div id="cmp-shadow">${shadowHtml(primary.health?.shadow)}</div><div id="cmp-history">${loadingBox()}</div></div>
     <div class="card" id="cmp-card" hidden><h2>${icon("list")}Risultato</h2><div id="cmp-result"></div></div>`;
   paintIcons(body);
+  // Storico degli ultimi 7 giorni, con i conteggi dell'ultimo giro: lo stato del controller può essere di qualche
+  // secondo prima. Conta solo la risposta all'ultima richiesta: una più lenta, arrivata dopo, avrebbe i conteggi di prima
+  let asked = 0;
+  const history = async () => {
+    const mine = ++asked;
+    let html, current;
+    try {
+      const h = await api("api/shadow?days=7");
+      current = h.current;
+      html = shadowHistoryHtml(h);
+    } catch (err) { html = `<p class="muted small-text" style="margin:12px 0 0">Storico non leggibile: ${esc(err.message || err)}</p>`; }
+    if (!body.isConnected || mine !== asked) return;
+    if (current) $("#cmp-shadow", body).innerHTML = shadowHtml(current);
+    $("#cmp-history", body).innerHTML = html;
+  };
+  history();
   const button = $("#cmp-run", body);
   button.onclick = async () => {
     const card = $("#cmp-card", body), box = $("#cmp-result", body);
@@ -4257,6 +4317,8 @@ async function controllerComparison(body, ctrl, primary) {
       if (body.isConnected) $("#cmp-shadow", body).innerHTML = shadowHtml(r.shadow);
     } catch (err) { html = errorBox("Confronto Non Riuscito", err); }
     if (!body.isConnected) return;
+    // Anche Confronta Ora è un giro dello storico, riuscito o no
+    history();
     box.innerHTML = html;
     paintIcons(box);
     button.disabled = false;

@@ -491,6 +491,9 @@ PAGE_NAMES = (
     "statusDot",
     "shadowHtml",
     "comparisonHtml",
+    "SHADOW_DAY_ROUNDS",
+    "shadowRoundText",
+    "shadowHistoryHtml",
 )
 
 

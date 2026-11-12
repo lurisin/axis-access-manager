@@ -596,12 +596,14 @@ def h24_wanted(**fields):
         ("2000-01-01T00:00:00Z", "2038-01-19T03:14:07Z"),
         ("2000-01-01T01:00:00+01:00", "2037-12-31T23:00:00-01:00"),
         ("1970-01-01T00:00:00Z", ""),
-        ("", "2099-12-31T23:59:59Z"),
+        ("", "2038-01-10T12:00:00Z"),
+        ("", "2038-01-19T04:14:07+01:00"),
     ],
 )
 def test_validity_without_limits_is_like_empty(valid_from, valid_to):
-    """Collaudo 0.28.0, punto B: una validità «senza limite» (dal 2000 o prima, fino al 2038 o dopo) è uguale alla
-    validità vuota dell'app, e la firma lo dice come il confronto."""
+    """Collaudo 0.28.0, punto B: una validità «senza limite» (dal 2000 o prima, fino a una data fra il 1° gennaio 2038
+    e il limite dei 32 bit, il 19/01/2038 03:14:07 UTC) è uguale alla validità vuota dell'app, e la firma lo dice come
+    il confronto."""
     read = {**H24_READ, "ValidFrom": valid_from, "ValidTo": valid_to}
     wanted = h24_wanted()
 
@@ -616,6 +618,11 @@ def test_validity_without_limits_is_like_empty(valid_from, valid_to):
     [
         ("ValidTo", "2027-12-31T00:00:00Z", "2027-12-31T00:00:00Z"),
         ("ValidTo", "2037-12-31T23:59:59Z", "2037-12-31T23:59:59Z"),
+        # Collaudo 0.28.1, punto 5: dopo il limite dei 32 bit una scadenza è una data vera, non «per sempre»
+        ("ValidTo", "2038-01-19T03:14:08Z", "2038-01-19T03:14:08Z"),
+        ("ValidTo", "2040-12-31T00:00:00Z", "2040-12-31T00:00:00Z"),
+        ("ValidTo", "2041-01-01T00:00:00+01:00", "2040-12-31T23:00:00Z"),
+        ("ValidTo", "2099-12-31T23:59:59Z", "2099-12-31T23:59:59Z"),
         ("ValidFrom", "2000-01-01T00:00:01Z", "2000-01-01T00:00:01Z"),
         ("ValidFrom", "2026-11-08T08:00:00+01:00", "2026-11-08T07:00:00Z"),
     ],
@@ -662,3 +669,28 @@ async def test_report_case_profiles_and_cards_1997_2038_are_equal(plant, control
         "riporta",
         [{"label": "Valida fino al", "old": "—", "new": "2029-12-31T22:00:00Z"}],
     )
+
+
+async def test_report_case_a_real_end_after_2038_is_a_difference(plant, controller, db):  # noqa: F811
+    """Collaudo 0.28.1, punto 5: con la regola «dal 2038 in poi» una scadenza vera nel 2040 risultava uguale a nessuna
+    scadenza. Ora 1997–2038 resta uguale, una fine il 31/12/2040 (o il 31/12/2027) è una differenza, per i profili e
+    per le tessere."""
+    await app_made(plant)
+    for profile in controller.profiles.values():
+        profile.update(ValidFrom="1997-01-01T00:00:00Z", ValidTo="2038-01-01T00:00:00Z")
+    anna = db.card_by_number("04aa")["axis_credential_token"]
+    controller.credentials[anna].update(ValidFrom="1997-01-01T00:00:00Z", ValidTo="2038-01-01T00:00:00Z")
+    result = confronto(load_conf(db), await read_strict(controller), plant.controller_id)
+    assert [r["key"] for r in result["rows"] if r["action"] not in ("uguale", "prende")] == []
+
+    for end in ("2040-12-31T00:00:00Z", "2027-12-31T00:00:00Z"):
+        profile = next(iter(controller.profiles.values()))
+        profile["ValidTo"] = end
+        controller.credentials[anna]["ValidTo"] = end
+        result = confronto(load_conf(db), await read_strict(controller), plant.controller_id)
+        rows = {r["key"]: r for r in result["rows"] if r["action"] not in ("uguale", "prende")}
+        assert rows[f"tessera:{anna}"]["action"] == "riporta"
+        assert rows[f"tessera:{anna}"]["changes"] == [{"label": "Valida fino al", "old": end, "new": "—"}]
+        assert [r["kind"] for r in rows.values()] == ["tipologia", "tessera"], end
+        [row] = [r for r in rows.values() if r["kind"] == "tipologia"]
+        assert row["changes"] == [{"label": "Valida fino al", "old": end, "new": "—"}]
