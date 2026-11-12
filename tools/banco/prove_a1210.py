@@ -287,6 +287,22 @@ VOLATILI = {
 INVARIATO = "IMPIANTO INVARIATO"
 CAMBIATO = "ATTENZIONE: IMPIANTO CAMBIATO"
 NON_VERIFICATO = "ATTENZIONE: IMPIANTO NON VERIFICATO"
+# Elenchi che il client legge senza strict se non glielo si chiede: nella fotografia dell'impianto (e negli elenchi
+# letti sull'impianto) una risposta senza la chiave dell'elenco è «non letto», non «vuoto», come in compare.read_strict
+LETTURE_STRETTE = {
+    "list_users",
+    "list_access_points",
+    "list_authentication_profiles",
+    "list_door_configurations",
+    "list_idpoint_configurations",
+    "list_io",
+}
+# Metodi del client che scrivono o tolgono un oggetto di un tipo: per sapere cosa il kit ha lasciato sul controller
+# quando non risponde più
+TIPO_SCRITTO = {t.scrivi: tipo for tipo, t in TIPI.items()}
+TIPO_TOLTO = {t.togli: tipo for tipo, t in TIPI.items()}
+# Attesa che il controller torni dopo il cavo staccato (T2) e prima della pulizia finale sull'impianto, in secondi
+ATTESA_IN_SERVIZIO = 600
 
 
 class Vietata(Exception):
@@ -505,6 +521,88 @@ def righe_differenze(diverse: list[dict]) -> list[str]:
         else:
             for campo, valori in d["campi"].items():
                 righe.append(f"{dove}: {campo} prima {mostra(valori['prima'])}, dopo {mostra(valori['dopo'])}")
+    return righe
+
+
+def partenza_da_rapporto(dati, serie: str, nome: str = "") -> dict:
+    """--fotografia-di-partenza: dal rapporto di un giro precedente sull'impianto in servizio, la fotografia con cui
+    quel giro confrontava l'impianto (la sua, o quella che a sua volta aveva preso da un giro prima). Rifiuto se il
+    rapporto non è di un giro con --impianto-in-servizio su questo controller o se non ha una fotografia di partenza
+    completa."""
+    nome = nome or "il rapporto"
+    if not isinstance(dati, dict) or not isinstance(dati.get("impianto_in_servizio"), dict):
+        raise Rifiuto(f"{nome} non è il rapporto di un giro con --impianto-in-servizio")
+    if serie_pulita(dati.get("serie_attesa") or "") != serie_pulita(serie):
+        raise Rifiuto(f"{nome} è del controller {dati.get('serie_attesa')!r}, non di {serie_pulita(serie)!r}")
+    fotografie = dati.get("fotografie") if isinstance(dati.get("fotografie"), dict) else {}
+    foto = fotografie.get("partenza") or fotografie.get("prima")
+    if not isinstance(foto, dict) or not isinstance(foto.get("letti"), dict) or not foto["letti"]:
+        raise Rifiuto(f"in {nome} non c'è la fotografia di partenza: quel giro non ha scritto niente sul controller")
+    if foto.get("non_letti"):
+        raise Rifiuto(f"la fotografia di partenza di {nome} non è completa: quel giro non ha scritto niente")
+    testa = dati["impianto_in_servizio"]
+    precedente = testa.get("partenza") if isinstance(testa.get("partenza"), dict) else {}
+    return {
+        "file": nome,
+        "foto": foto,
+        "ora": foto.get("ora"),
+        "incerta": str(precedente.get("incerta") or ""),
+        "verdetto": testa.get("verdetto"),
+    }
+
+
+def partenza_da_file(percorso: Path, serie: str) -> dict:
+    try:
+        dati = json.loads(percorso.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        raise Rifiuto(f"--fotografia-di-partenza: non riesco a leggere {percorso}: {err}") from err
+    return partenza_da_rapporto(dati, serie, str(percorso))
+
+
+def eventi_della_tessera(eventi: list[dict], numero: str, tessere: set[str], punto: str) -> tuple[list, list]:
+    """Passaggi di una finestra di attesa divisi in quelli della tessera numero e gli altri (sull'impianto in servizio
+    intanto può passare chiunque). Della tessera: gli IdData con Card uguale al numero (maiuscole e minuscole non
+    contano); i consensi e i rifiuti con il CredentialToken di una tessera con quel numero (o del kit: le altre
+    tessere del kit hanno numeri che nessuno ha in mano) e, senza CredentialToken, quelli dello stesso punto di
+    accesso subito dopo un IdData di quel numero, prima dell'IdData di un'altra tessera. Gli altri eventi della
+    finestra (porte, ingressi...) non sono passaggi e non sono in nessuno dei due."""
+    della: list[dict] = []
+    altri: list[dict] = []
+    ultimo_suo: bool | None = None
+    for evento in eventi:
+        argomento = evento["argomento"]
+        if argomento.startswith("IdPoint/Request/IdData"):
+            ultimo_suo = str(evento.get("Card") or "").lower() == numero.lower()
+            suo = ultimo_suo
+        elif argomento.startswith("AccessControl/Denied") or "Granted" in argomento:
+            token = str(evento.get("CredentialToken") or "")
+            if token:
+                suo = token in tessere or token.startswith(PREFISSO)
+            else:
+                suo = ultimo_suo is True and str(evento.get("AccessPointToken") or punto) == punto
+        else:
+            continue
+        (della if suo else altri).append(evento)
+    return della, altri
+
+
+def descrivi_evento(evento: dict) -> str:
+    dati = [f"{k}={evento[k]}" for k in ("Card", "Reason", "CredentialToken", "AccessPointToken") if evento.get(k)]
+    return " ".join([evento["argomento"], *dati])
+
+
+def righe_finali(verdetto: dict) -> list[str]:
+    """Le ultime righe a schermo sull'impianto in servizio: se l'add-on si può riavviare, poi il verdetto con le
+    differenze, con cui il rapporto finisce."""
+    righe = ["", *verdetto.get("addon", []), f"\n{verdetto['verdetto']}"]
+    righe += [f"  {riga}" for riga in verdetto["righe"]]
+    if verdetto["verdetto"] == NON_VERIFICATO and verdetto["non_riletti"]:
+        righe.append(f"  non riletti: {'; '.join(verdetto['non_riletti'])}")
+    if verdetto["verdetto"] == NON_VERIFICATO and verdetto.get("partenza_incerta"):
+        righe.append(
+            "  rispetto alla partenza di questo giro nessuna differenza, ma il giro precedente non è verificato: "
+            f"{verdetto['partenza_incerta']}"
+        )
     return righe
 
 
@@ -785,6 +883,7 @@ class Kit:
         limiti: bool = False,
         tetti: dict[str, int] | None = None,
         servizio: bool = False,
+        partenza: dict | None = None,
     ) -> None:
         self.client = client
         self.registro = registro
@@ -794,6 +893,17 @@ class Kit:
         self.permessi.servizio = servizio
         self.tipi = TIPI_IN_SERVIZIO if servizio else list(TIPI)
         self.foto_prima: dict | None = None
+        # Fotografia con cui si confronta l'impianto alla fine: quella di questo giro, oppure (--fotografia-di-partenza,
+        # partenza_da_rapporto) quella di un giro precedente non chiuso. partenza_incerta: perché quella di questo giro
+        # potrebbe non essere l'impianto com'era prima delle prove (oggetti del kit rimasti da un giro precedente)
+        self.partenza = partenza
+        self.foto_partenza: dict | None = None
+        self.partenza_incerta = ""
+        # Oggetti che il kit ha scritto e non ancora tolto (tipo, token), anche quelli con la risposta persa: se il
+        # controller non risponde più, il rapporto dice quali sono probabilmente rimasti
+        self.scritti: dict[tuple[str, str], None] = {}
+        # Sull'impianto: attesa massima del controller dopo il cavo staccato e prima della pulizia finale, in secondi
+        self.attesa = ATTESA_IN_SERVIZIO
         # Prova dopo la quale un oggetto dell'impianto è risultato cambiato (il kit si ferma)
         self.cambiato = ""
         # Partita almeno una richiesta che non è una lettura: alla fine si pulisce
@@ -822,6 +932,12 @@ class Kit:
                 "non_chieste": [],
                 "escluse": dict(ESCLUSE_IN_SERVIZIO),
                 "conferme": {},
+                "partenza": {
+                    "fotografia": "di questo giro"
+                    if partenza is None
+                    else f"di partenza di {partenza['file']} ({partenza['ora']})",
+                    "incerta": "",
+                },
                 "verdetto": "non ancora verificato",
             }
         self.dati.update(
@@ -878,12 +994,15 @@ class Kit:
             }
         )
 
-    async def tenta(self, metodo: str, *args) -> Esito:
+    async def tenta(self, metodo: str, *args, strict: bool = False) -> Esito:
+        """Chiamata del client, registrata. strict: per gli elenchi di LETTURE_STRETTE una risposta senza la chiave
+        dell'elenco è un errore e non un elenco vuoto."""
         self._controlla(metodo, args)
+        opzioni = {"strict": True} if strict and metodo in LETTURE_STRETTE else {}
         self.registro.prendi()
         inizio = time.monotonic()
         try:
-            esito = Esito(ok=True, valore=await getattr(self.client, metodo)(*args))
+            esito = Esito(ok=True, valore=await getattr(self.client, metodo)(*args, **opzioni))
         except vapix.VapixError as err:
             esito = Esito(
                 ok=False,
@@ -893,8 +1012,21 @@ class Kit:
             )
         esito.durata = round(time.monotonic() - inizio, 3)
         esito.http = self.registro.prendi()
-        self._registra(metodo, list(args), esito)
+        self._registra(metodo, list(args) + ([opzioni] if opzioni else []), esito)
+        self._segna(metodo, args, esito)
         return esito
+
+    def _segna(self, metodo: str, args: tuple, esito: Esito) -> None:
+        """Tiene il conto degli oggetti del kit sul controller: scritti (anche con la risposta persa, che potrebbe
+        averli scritti) e tolti."""
+        if metodo in TIPO_SCRITTO and isinstance(args[0], dict) and (esito.ok or esito.irraggiungibile):
+            tipo = TIPO_SCRITTO[metodo]
+            self.scritti[(tipo, str(args[0].get("token")))] = None
+            if esito.ok and isinstance(esito.valore, str) and esito.valore:
+                # Token dato dal controller
+                self.scritti[(tipo, esito.valore)] = None
+        elif metodo in TIPO_TOLTO and (esito.ok or "NotFound" in esito.fault):
+            self.scritti.pop((TIPO_TOLTO[metodo], str(args[0])), None)
 
     async def grezza(self, percorso: str, metodo: str, argomenti: dict) -> Esito:
         """Richiesta VAPIX così com'è, per vedere la risposta senza le correzioni del client (passa dal
@@ -921,7 +1053,9 @@ class Kit:
         return await self.tenta(TIPI[tipo].scrivi, oggetto)
 
     async def elenco(self, tipo: str) -> list[dict] | None:
-        esito = await self.tenta(TIPI[tipo].elenco)
+        """Elenco di un tipo, None se non si legge. Sull'impianto in servizio una risposta senza la chiave
+        dell'elenco è «non letto», come nella fotografia."""
+        esito = await self.tenta(TIPI[tipo].elenco, strict=self.servizio)
         return esito.valore if esito.ok else None
 
     async def leggi(self, tipo: str, token: str) -> dict | None:
@@ -1082,6 +1216,10 @@ class Kit:
         risultato: dict = {"tolti": [], "non_tolti": []}
         if not await self.identita():
             risultato["non_tolti"].append("controller non raggiungibile: non ho tolto niente")
+            if self.scritti:
+                # Senza leggere gli elenchi: quelli che il kit ha scritto (o forse scritto) e non ha ancora tolto
+                probabili = ", ".join(f"{tipo} {token}" for tipo, token in self.scritti)
+                risultato["non_tolti"].append(f"probabilmente ancora sul controller: {probabili}")
             return risultato
         errori: dict[str, str] = {}
         # Più giri: un oggetto ancora citato si toglie dopo chi lo cita. Sull'impianto in servizio porte, lettori e
@@ -1151,13 +1289,15 @@ class Kit:
         letture, con le password nascoste. {"letti": nome → valore, "non_letti": nome → perché}."""
         letti: dict = {}
         non_letti: dict[str, str] = {}
+        # Tutte strict: una risposta senza la chiave dell'elenco è «non letto», non «vuoto» (niente partenza prima,
+        # NON VERIFICATO dopo)
         for nome, metodo in ELENCHI_IMPIANTO.items():
-            esito = await self.tenta(metodo)
+            esito = await self.tenta(metodo, strict=True)
             if esito.ok and isinstance(esito.valore, list | tuple):
                 letti[nome] = senza_password(list(esito.valore))
             else:
                 non_letti[nome] = esito.spiegazione() if not esito.ok else "risposta non riconosciuta"
-        esito = await self.tenta("list_io")
+        esito = await self.tenta("list_io", strict=True)
         if esito.ok and isinstance(esito.valore, list | tuple) and len(esito.valore) == 2:
             letti["morsetti"], letti["assegnazioni_io"] = (senza_password(list(v or [])) for v in esito.valore)
         else:
@@ -1220,20 +1360,26 @@ class Kit:
         righe = [r for r in (esito.valore or []) if int(r.get("rowid") or 0) > riga] if esito.ok else []
         return [riassunto_evento(r) for r in sorted(righe, key=lambda r: int(r.get("rowid") or 0))]
 
-    async def passaggio(self, caso: str, testo: str, numero: str, punto: str) -> list[dict] | None:
-        """L'operatore passa la tessera numero sul lettore del punto; restituisce gli eventi arrivati dopo, None se il
-        passaggio non c'è stato. Prima rilegge tessere e profili e non lo chiede se una tessera con quel numero
-        potrebbe aprire."""
+    async def passaggio(self, caso: str, testo: str, numero: str, punto: str) -> dict | None:
+        """L'operatore passa la tessera numero sul lettore del punto; restituisce gli eventi arrivati dopo, divisi in
+        quelli della tessera e gli altri passaggi della stessa finestra (eventi_della_tessera), None se il passaggio
+        non c'è stato. Prima rilegge tessere e profili e non lo chiede se una tessera con quel numero potrebbe
+        aprire."""
         if not await self.non_apre(caso, numero, punto):
             return None
+        # Le tessere con quel numero, per riconoscere i loro consensi e rifiuti dal CredentialToken
+        tessere = set(await self.tessere_con_numero(numero) or [])
         riga = await self.ultimo_evento()
         risposta = self.operatore.chiedi(caso, f"{testo} Poi premi Invio (scrivi salta per non farlo).")
         if risposta.lower() == "salta":
             return None
         await self.pausa(3)
         eventi = await self.eventi_dopo(riga)
-        self.sezione.setdefault("eventi", []).append({"caso": caso, "eventi": eventi})
-        return eventi
+        della, altri = eventi_della_tessera(eventi, numero, tessere, punto)
+        voce = {"caso": caso, "numero": numero, "eventi": eventi}
+        voce |= {"della_tessera": [e["riga"] for e in della], "altri_passaggi": [e["riga"] for e in altri]}
+        self.sezione.setdefault("eventi", []).append(voce)
+        return {"numero": numero, "della_tessera": della, "altri": altri}
 
     async def tessere_che_aprono(self, numero: str, punto: str) -> list[dict] | None:
         """Tessere con quel numero che potrebbero aprire il punto: non sospese (Enabled non false) e con un profilo che
@@ -1327,21 +1473,34 @@ class Kit:
             )
         return True, ""
 
-    def descrivi_passaggio(self, caso: str, eventi: list[dict] | None) -> None:
-        if eventi is None:
+    def descrivi_passaggio(self, caso: str, passaggio: dict | None) -> None:
+        """Cosa ha fatto il controller con la tessera passata: solo i suoi eventi (eventi_della_tessera). I passaggi
+        di altre tessere nella stessa finestra si elencano a parte e non contano."""
+        if passaggio is None:
             self.nota(f"{caso}: tessera non passata")
             return
+        eventi, altri = passaggio["della_tessera"], passaggio["altri"]
         richieste = [e for e in eventi if e["argomento"].startswith("IdPoint/Request/IdData")]
         negati = [e for e in eventi if e["argomento"].startswith("AccessControl/Denied")]
         concessi = [e for e in eventi if "Granted" in e["argomento"]]
         motivi = ", ".join(e["argomento"] + (f" Reason={e['Reason']}" if e.get("Reason") else "") for e in negati)
-        self.nota(
-            f"{caso}: IdData {'arrivato' if richieste else 'non arrivato'}; negato: {motivi or 'nessuno'}; "
-            f"CredentialToken {'sì' if any('CredentialToken' in e for e in negati) else 'no'}; "
-            f"CredentialHolderName {'sì' if any('CredentialHolderName' in e for e in negati) else 'no'}"
-        )
+        if not eventi:
+            self.nota(
+                f"{caso}: {self.nome_tessera} non letta: nessun IdData con il numero {passaggio['numero']} e nessun "
+                "consenso o rifiuto per lei"
+            )
+        else:
+            self.nota(
+                f"{caso}: IdData {'arrivato' if richieste else 'non arrivato'}; negato: {motivi or 'nessuno'}; "
+                f"CredentialToken {'sì' if any('CredentialToken' in e for e in negati) else 'no'}; "
+                f"CredentialHolderName {'sì' if any('CredentialHolderName' in e for e in negati) else 'no'}"
+            )
         if concessi:
             self.nota(f"{caso}: ATTENZIONE, accesso concesso ({concessi[0]['argomento']})")
+        if altri:
+            self.nota(
+                f"{caso}: altri passaggi nella stessa attesa, ignorati: {'; '.join(descrivi_evento(e) for e in altri)}"
+            )
 
     async def lettore_vero(self, testo: str = "") -> dict | None:
         """Punto di accesso con un lettore, gestito dal controller e non del kit, per i passaggi di tessera e per il
@@ -1491,7 +1650,49 @@ class Kit:
                 )
             self.permessi.scorta = self.tessera.lower()
             self.nota(f"tessera di scorta {self.tessera}: non è sul controller")
+        self.imposta_partenza(foto)
         await self.pulizia_iniziale()
+
+    def imposta_partenza(self, foto: dict) -> None:
+        """Fotografia con cui si confronta l'impianto alla fine. Senza --fotografia-di-partenza è quella di questo giro:
+        se però ci sono già oggetti aam_prova_, un giro precedente non si è chiuso e quello che ha cambiato è già nella
+        fotografia, quindi alla fine il verdetto non può essere INVARIATO (partenza_incerta). Con
+        --fotografia-di-partenza è quella del giro precedente: il confronto finale vede anche quello che è cambiato
+        allora."""
+        resti = rimasti_del_kit(foto)
+        testa = self.dati["impianto_in_servizio"]["partenza"]
+        if self.partenza is None:
+            self.foto_partenza = foto
+            if resti:
+                self.partenza_incerta = (
+                    f"alla partenza c'erano {len(resti)} oggetti aam_prova_ di un giro precedente non chiuso "
+                    f"({', '.join(resti[:5])}{' e altri' if len(resti) > 5 else ''}): quello che quel giro ha cambiato "
+                    "è già nella fotografia di questo giro. Rilancia con --fotografia-di-partenza e il rapporto di "
+                    "quel giro"
+                )
+        else:
+            self.foto_partenza = self.partenza["foto"]
+            self.dati["fotografie"]["partenza"] = self.foto_partenza
+            self.partenza_incerta = self.partenza["incerta"]
+            if resti and not self.partenza_incerta and self.partenza["verdetto"] == INVARIATO:
+                self.partenza_incerta = (
+                    f"{self.partenza['file']} finisce con IMPIANTO INVARIATO, quindi i {len(resti)} oggetti aam_prova_ "
+                    "trovati alla partenza vengono da un altro giro: rilancia con il rapporto di quel giro"
+                )
+            self.nota(f"confronto finale con la fotografia {testa['fotografia']}")
+            diverse, non_riletti = differenze(self.foto_partenza, foto)
+            if diverse or non_riletti:
+                self.nota(
+                    f"già prima di questo giro, rispetto a quella fotografia: {len(diverse)} oggetti dell'impianto "
+                    "diversi (il confronto finale li riporta)"
+                )
+                for riga in righe_differenze(diverse):
+                    self.nota(riga)
+        testa["incerta"] = self.partenza_incerta
+        if self.partenza_incerta:
+            self.nota(f"ATTENZIONE: {self.partenza_incerta}")
+        # Prima di togliere i resti: se il PC si spegne adesso, il rapporto dice già con cosa confrontare
+        self.salva()
 
     async def pulizia_iniziale(self) -> None:
         pulizia = await self.pulisci()
@@ -1610,10 +1811,12 @@ class Kit:
 
     async def verifica_impianto(self) -> None:
         """Impianto in servizio, alla fine e dopo la pulizia: rilegge tutto e confronta ogni oggetto che non è del kit
-        con la fotografia di partenza, e controlla che non sia rimasto nessun oggetto aam_prova_. Il verdetto chiude
-        il rapporto; un elenco che non si rilegge non vale come invariato."""
-        self.scrivi("\n== Impianto in servizio: confronto con la fotografia di partenza ==")
-        prima = self.foto_prima or {"letti": {}}
+        con la fotografia di partenza (foto_partenza), e controlla che non sia rimasto nessun oggetto aam_prova_. Il
+        verdetto chiude il rapporto; un elenco che non si rilegge non vale come invariato, e nemmeno una partenza dopo
+        un giro precedente non chiuso (partenza_incerta). Prima del verdetto dice se l'add-on si può riavviare."""
+        quale = f" del giro precedente ({self.partenza['file']})" if self.partenza else ""
+        self.scrivi(f"\n== Impianto in servizio: confronto con la fotografia di partenza{quale} ==")
+        prima = self.foto_partenza or self.foto_prima or {"letti": {}}
         try:
             raggiungibile, perche = await self.identita(), "il controller non risponde"
         except Rifiuto as err:
@@ -1628,7 +1831,7 @@ class Kit:
         rimasti = rimasti_del_kit(dopo)
         if diverse or rimasti:
             verdetto = CAMBIATO
-        elif non_riletti:
+        elif non_riletti or self.partenza_incerta:
             verdetto = NON_VERIFICATO
         else:
             verdetto = INVARIATO
@@ -1640,6 +1843,10 @@ class Kit:
         )
         for voce in non_riletti:
             self.nota(f"NON RILETTO dopo le prove: {voce}: non vale come invariato")
+        if self.partenza_incerta:
+            self.nota(f"giro precedente non verificato: {self.partenza_incerta}")
+        non_tolti = (self.dati["fine"].get("pulizia") or {}).get("non_tolti") or []
+        addon = self.consiglio_addon(verdetto, bool(diverse), bool(rimasti or non_tolti or non_riletti))
         self.dati["impianto_in_servizio"]["verdetto"] = verdetto
         self.dati["verdetto_impianto"] = {
             "verdetto": verdetto,
@@ -1647,16 +1854,77 @@ class Kit:
             "righe": righe,
             "non_riletti": non_riletti,
             "rimasti_del_kit": rimasti,
+            "partenza_incerta": self.partenza_incerta,
+            "addon": addon,
         }
-        self.scrivi(f"\n{verdetto}")
-        for riga in righe:
-            self.scrivi(f"  {riga}")
-        if verdetto == NON_VERIFICATO:
-            self.scrivi(f"  non riletti: {'; '.join(non_riletti)}")
+        for riga in righe_finali(self.dati["verdetto_impianto"]):
+            self.scrivi(riga)
+
+    def consiglio_addon(self, verdetto: str, cambiati: bool, resti: bool) -> list[str]:
+        """Se l'add-on si può riavviare: solo con IMPIANTO INVARIATO. Acceso con oggetti aam_prova_ sul controller li
+        importerebbe (anche la tessera di scorta) e un «Riscrivi» li rimetterebbe con il gruppo di serie."""
+        if verdetto == INVARIATO:
+            return ["Add-on: puoi riavviarlo (LEGGIMI.md, «Dopo le prove»)."]
+        if self.partenza:
+            rapporto = self.partenza["file"]
+        elif self.partenza_incerta:
+            # Questo giro è partito dopo un giro non chiuso: la fotografia giusta è quella di quel giro
+            rapporto = "<rapporto JSON del primo giro non chiuso>"
+        else:
+            rapporto = str(self.file or "<rapporto JSON di questo giro>")
+        opzioni = "con --impianto-in-servizio, --host, --serie e --utente di prima e con --prova T7"
+        solo = "Riavvia l'add-on solo quando l'ultima riga è IMPIANTO INVARIATO (LEGGIMI.md, «Dopo le prove»)."
+        if resti:
+            righe = [
+                "NON RIAVVIARE L'ADD-ON: sul controller possono essere rimasti oggetti di prova aam_prova_ (anche la "
+                "tessera di scorta) e l'add-on li importerebbe.",
+                f"Quando il controller risponde (cavo attaccato) rilancia il kit {opzioni} --fotografia-di-partenza "
+                f"{rapporto}: alla partenza toglie gli oggetti di prova rimasti.",
+                solo,
+            ]
+            if cambiati:
+                righe.append(
+                    "È cambiato anche un oggetto dell'impianto: manda subito il rapporto a chi sviluppa l'add-on."
+                )
+            return righe
+        if cambiati:
+            return [
+                "NON RIAVVIARE L'ADD-ON: è cambiato un oggetto dell'impianto (le differenze sono qui sotto).",
+                "Manda subito il rapporto e la schermata a chi sviluppa l'add-on e aspetta indicazioni.",
+            ]
+        return [
+            "NON RIAVVIARE ANCORA L'ADD-ON: il giro precedente non si è chiuso e non è verificato.",
+            f"Rilancia il kit {opzioni} --fotografia-di-partenza e il rapporto JSON del primo giro non chiuso; se "
+            "non lo trovi manda i rapporti a chi sviluppa l'add-on.",
+            solo,
+        ]
+
+    async def riprendi_controller(self) -> None:
+        """Impianto in servizio, prima della pulizia finale: se il controller non risponde (per esempio il kit è stato
+        interrotto in T2 con il cavo staccato) chiede di riattaccare il cavo e aspetta che torni, invece di rinunciare
+        subito a togliere gli oggetti di prova."""
+        try:
+            if await self.identita():
+                return
+            risposta = self.operatore.chiedi(
+                "riattacca_cavo_pulizia",
+                "Il controller non risponde e sul controller possono essere rimasti oggetti di prova. Se il cavo di "
+                "rete del controller è staccato riattaccalo, poi premi Invio: il kit aspetta fino a "
+                f"{self.attesa // 60} minuti che risponda, per toglierli. Scrivi salta per non aspettare.",
+            )
+            if risposta.lower() == "salta":
+                self.nota("pulizia finale senza aspettare il controller (salta)")
+            elif not await self.aspetta_controller(self.attesa):
+                self.nota(f"il controller non risponde dopo {self.attesa // 60} minuti")
+        except Rifiuto:
+            # Un altro controller: la pulizia lo ritrova e non tocca niente
+            return
 
     async def chiusura(self) -> None:
         self.sezione = self.dati["fine"]
         self.scrivi("\n== Pulizia finale ==")
+        if self.servizio and self.scritture and self.operatore.interattivo:
+            await self.riprendi_controller()
         try:
             self.sezione["pulizia"] = pulizia = await self.pulisci()
         except Rifiuto as err:
@@ -1792,9 +2060,9 @@ class Kit:
         self.operatore.chiedi(
             "riattacca_cavo", "Riattacca il cavo e premi Invio: il kit aspetta che il controller risponda di nuovo."
         )
-        minuti = 10 if self.servizio else 3
-        if not await self.aspetta_controller(60 * minuti):
-            raise RuntimeError(f"il controller non risponde {minuti} minuti dopo aver riattaccato il cavo")
+        secondi = self.attesa if self.servizio else 180
+        if not await self.aspetta_controller(secondi):
+            raise RuntimeError(f"il controller non risponde {secondi // 60} minuti dopo aver riattaccato il cavo")
         for tipo, oggetto in oggetti.items():
             esito = await self.crea(tipo, oggetto)
             elenco = await self.elenco(tipo) or []
@@ -2864,6 +3132,12 @@ def argomenti(argv: list[str] | None = None) -> argparse.Namespace:
         help="tetto di una ricerca dei limiti, si può ripetere; di serie "
         + ", ".join(f"{k}={v}" for k, v in TETTI.items()),
     )
+    parser.add_argument(
+        "--fotografia-di-partenza",
+        metavar="RAPPORTO.json",
+        help="con --impianto-in-servizio: il rapporto JSON di un giro precedente non chiuso (interrotto, NON "
+        "VERIFICATO o con oggetti di prova rimasti); il confronto finale si fa con la sua fotografia di partenza",
+    )
     parser.add_argument("--uscita", help="file JSON del rapporto (di serie prove_a1210_<serie>_<ora>.json)")
     parser.add_argument("--non-interattivo", action="store_true", help="salta le parti che chiedono all'operatore")
     parser.add_argument("--verifica-certificato", action="store_true", help="verifica il certificato HTTPS")
@@ -2877,10 +3151,16 @@ def main(argv: list[str] | None = None) -> int:
     servizio = scelte.impianto_in_servizio
     quante = scelte.quante if scelte.quante is not None else (QUANTE_IN_SERVIZIO if servizio else 500)
     prove = scelte.prova or (PROVE_IN_SERVIZIO if servizio else ORDINE)
+    partenza = None
+    if scelte.fotografia_di_partenza and not servizio:
+        print("\nNON PARTO: --fotografia-di-partenza vale solo con --impianto-in-servizio")
+        return 2
     if servizio:
         # Prima della password e di qualsiasi richiesta al controller
         try:
             scelte_in_servizio(prove, scelte.limiti, dict(scelte.tetto), quante, not scelte.non_interattivo)
+            if scelte.fotografia_di_partenza:
+                partenza = partenza_da_file(Path(scelte.fotografia_di_partenza), scelte.serie)
         except Rifiuto as err:
             print(f"\nNON PARTO: {err}")
             return 2
@@ -2897,6 +3177,7 @@ def main(argv: list[str] | None = None) -> int:
         limiti=scelte.limiti,
         tetti=dict(scelte.tetto),
         servizio=servizio,
+        partenza=partenza,
     )
     ora = datetime.now().strftime("%Y%m%d_%H%M%S")
     kit.file = Path(scelte.uscita or f"prove_a1210_{serie_pulita(scelte.serie)}_{ora}.json")
@@ -2916,9 +3197,17 @@ def main(argv: list[str] | None = None) -> int:
     verdetto = kit.dati.get("verdetto_impianto")
     if verdetto and codice in (2, 130):
         # Anche così il rapporto a schermo finisce con il verdetto sull'impianto
-        print(f"\n{verdetto['verdetto']}")
-        for riga in verdetto["righe"]:
-            print(f"  {riga}")
+        for riga in righe_finali(verdetto):
+            print(riga)
+    elif servizio and kit.scritture and not verdetto:
+        # Fermato (secondo Ctrl+C) prima del confronto finale: non si sa cosa è rimasto sul controller
+        print(
+            "\nNON RIAVVIARE L'ADD-ON: il kit si è fermato prima del confronto finale e sul controller possono essere "
+            "rimasti oggetti di prova aam_prova_. Quando il controller risponde rilancia il kit con "
+            "--impianto-in-servizio, --host, --serie e --utente di prima e con --prova T7 --fotografia-di-partenza "
+            f"{partenza['file'] if partenza else kit.file}; riavvia l'add-on solo quando l'ultima riga è IMPIANTO "
+            "INVARIATO (LEGGIMI.md, «Dopo le prove»)."
+        )
     return codice_di_uscita(kit.dati, codice)
 
 

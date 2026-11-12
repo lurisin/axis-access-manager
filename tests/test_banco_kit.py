@@ -232,7 +232,7 @@ class BenchOperator(kit.Operatore):
         c = self.controller
         if chiave == "stacca_cavo":
             c.down = True
-        elif chiave == "riattacca_cavo":
+        elif chiave in ("riattacca_cavo", "riattacca_cavo_pulizia"):
             c.down = False
         elif chiave == "reset":
             c.factory_reset()
@@ -299,6 +299,7 @@ def make_kit(
     tetti=None,
     servizio=False,
     tessera=CARD,
+    partenza=None,
 ):
     server = VapixServer(controller)
     client, recorder = kit.cliente("banco.invalid", "root", "segreta", trasporto=httpx.MockTransport(server))
@@ -317,6 +318,7 @@ def make_kit(
         limiti=limiti,
         tetti=tetti,
         servizio=servizio,
+        partenza=partenza,
     )
     if tmp_path is not None:
         bench.file = tmp_path / "rapporto.json"
@@ -1591,6 +1593,299 @@ async def test_service_mode_cleans_up_when_interrupted():
     assert lines[-1] == "\nIMPIANTO INVARIATO"
 
 
+async def yielding(seconds):
+    """Pausa del kit che passa dal ciclo di eventi, come le richieste vere: lì arriva un Ctrl+C."""
+    await asyncio.sleep(0)
+
+
+class InterruptedWithTheCableOut(Technician):
+    """Ctrl+C mentre il kit chiede di riattaccare il cavo in T2, poi Invio: il cavo resta staccato e l'interruzione
+    arriva alla prima attesa. Alla pulizia finale il tecnico fa quello che il kit chiede (answers)."""
+
+    def chiedi(self, chiave: str, testo: str) -> str:
+        if chiave == "riattacca_cavo":
+            self.asked.append(chiave)
+            asyncio.current_task().cancel()
+            return ""
+        return super().chiedi(chiave, testo)
+
+
+T2_OBJECTS = [f"utente {PREFIX}t2_utente", f"fascia {PREFIX}t2_fascia", f"tessera {PREFIX}t2_tessera"]
+T2_OBJECTS.append(f"profilo {PREFIX}t2_profilo")
+
+
+async def test_interrupted_with_the_cable_out_the_kit_asks_to_reattach_it_and_cleans_up():
+    controller = EliseoController.bench()
+    before = state(controller)
+    operator = InterruptedWithTheCableOut(controller)
+    bench, server, lines, _ = service_kit(controller, operator)
+    bench.pausa = yielding
+
+    with pytest.raises(asyncio.CancelledError):
+        await kit.esegui(bench, ["T2", "T16"])
+
+    # Prima della pulizia finale il kit ha chiesto di riattaccare il cavo e ha aspettato: tolto tutto, verificato
+    assert operator.asked[-1] == "riattacca_cavo_pulizia"
+    assert bench.dati["prove"]["T2"]["esito"] == "interrotta" and "T16" not in bench.dati["prove"]
+    assert leftovers(controller) == [] and state(controller) == before
+    assert bench.dati["fine"]["pulizia"]["non_tolti"] == []
+    assert bench.dati["impianto_in_servizio"]["verdetto"] == "IMPIANTO INVARIATO"
+    assert lines[-3:] == ["", "Add-on: puoi riavviarlo (LEGGIMI.md, «Dopo le prove»).", "\nIMPIANTO INVARIATO"]
+    assert_nothing_forbidden_in_service(controller, server)
+
+
+async def test_with_kit_objects_possibly_left_the_screen_says_not_to_restart_the_addon(tmp_path):
+    controller = EliseoController.bench()
+    operator = InterruptedWithTheCableOut(controller, riattacca_cavo_pulizia="salta")
+    bench, server, lines, _ = service_kit(controller, operator, tmp_path=tmp_path)
+    bench.pausa = yielding
+
+    with pytest.raises(asyncio.CancelledError):
+        await kit.esegui(bench, ["T2"])
+
+    # Il controller non risponde: il rapporto dice quali oggetti del kit sono probabilmente rimasti, e sono quelli
+    assert sorted(leftovers(controller)) == sorted(
+        [f"users {PREFIX}t2_utente", f"credentials {PREFIX}t2_tessera", f"schedules {PREFIX}t2_fascia"]
+        + [f"profiles {PREFIX}t2_profilo"]
+    )
+    non_tolti = bench.dati["fine"]["pulizia"]["non_tolti"]
+    assert non_tolti == [
+        "controller non raggiungibile: non ho tolto niente",
+        f"probabilmente ancora sul controller: {', '.join(T2_OBJECTS)}",
+    ]
+    verdict = bench.dati["verdetto_impianto"]
+    assert verdict["verdetto"] == "ATTENZIONE: IMPIANTO NON VERIFICATO"
+    assert kit.codice_di_uscita(bench.dati, 130) == 4
+    # Prima del verdetto, che resta in fondo: non riavviare l'add-on e come togliere gli oggetti rimasti
+    advice = verdict["addon"]
+    assert advice[0].startswith("NON RIAVVIARE L'ADD-ON: sul controller possono essere rimasti oggetti di prova")
+    assert f"--prova T7 --fotografia-di-partenza {tmp_path / 'rapporto.json'}" in advice[1]
+    assert "solo quando l'ultima riga è IMPIANTO INVARIATO" in advice[2]
+    end = lines.index("\nATTENZIONE: IMPIANTO NON VERIFICATO")
+    assert lines[end - len(advice) : end] == advice and lines[end + 1].startswith("  non riletti: ")
+    assert lines[-1] == lines[end + 1]
+
+
+class BreaksAnnaInT2(EliseoController):
+    """Firmware con un difetto: scrivendo l'utente di T2 cambia il nome di un utente vero."""
+
+    async def set_user(self, user):
+        await super().set_user(user)
+        if user["token"] == f"{PREFIX}t2_utente":
+            self.users["utente_anna"]["Name"] = "Anna B."
+
+
+async def run_in_service(controller, path, prove, attesa=None, **options):
+    """Un giro sull'impianto in servizio con il rapporto in path; attesa: secondi di attesa del controller."""
+    bench, _, lines, _ = service_kit(controller, **options)
+    bench.file = path
+    bench.attesa = bench.attesa if attesa is None else attesa
+    try:
+        data = await kit.esegui(bench, prove)
+    except kit.Rifiuto:
+        data = bench.dati
+    return data, lines
+
+
+async def test_a_run_after_one_not_verified_is_not_unchanged_and_the_first_photo_shows_the_change(tmp_path):
+    controller = BreaksAnnaInT2.bench()
+    first = tmp_path / "giro1.json"
+    # Giro 1: in T2 Anna cambia, il controller non torna e alla fine il tecnico non può riattaccare il cavo
+    operator = Technician(controller, riattacca_cavo="", riattacca_cavo_pulizia="salta")
+    data, _ = await run_in_service(controller, first, ["T2"], operator=operator, attesa=0)
+    assert data["impianto_in_servizio"]["verdetto"] == "ATTENZIONE: IMPIANTO NON VERIFICATO"
+    assert len(leftovers(controller)) == 4
+
+    # Il controller torna. Giro 2 per togliere i resti, senza la fotografia del giro 1: non può dire INVARIATO
+    controller.down = False
+    second = tmp_path / "giro2.json"
+    data, lines = await run_in_service(controller, second, ["T7"])
+    assert leftovers(controller) == []
+    assert data["verdetto_impianto"]["differenze"] == []
+    assert data["impianto_in_servizio"]["verdetto"] == "ATTENZIONE: IMPIANTO NON VERIFICATO"
+    assert "4 oggetti aam_prova_ di un giro precedente" in data["impianto_in_servizio"]["partenza"]["incerta"]
+    assert kit.codice_di_uscita(data, 0) == 4
+    assert lines[-1].startswith("  rispetto alla partenza di questo giro nessuna differenza, ma il giro precedente")
+    assert data["verdetto_impianto"]["addon"][0].startswith("NON RIAVVIARE ANCORA L'ADD-ON")
+
+    # Giro 3 con la fotografia del giro 1: il confronto finale vede Anna cambiata nel giro 1
+    third = tmp_path / "giro3.json"
+    data, lines = await run_in_service(controller, third, ["T7"], partenza=kit.partenza_da_file(first, SERIAL))
+    assert data["impianto_in_servizio"]["verdetto"] == "ATTENZIONE: IMPIANTO CAMBIATO"
+    assert data["verdetto_impianto"]["righe"] == [ANNA_CHANGED]
+    assert lines[-2:] == ["\nATTENZIONE: IMPIANTO CAMBIATO", f"  {ANNA_CHANGED}"]
+    assert kit.codice_di_uscita(data, 0) == 3
+    assert ANNA_CHANGED in "\n".join(data["avvio"]["osservazioni"])
+    # Il rapporto del giro 3 tiene la fotografia del giro 1: un giro con quel rapporto confronta ancora con quella
+    data, _ = await run_in_service(
+        controller, tmp_path / "giro4.json", ["T7"], partenza=kit.partenza_da_file(third, SERIAL)
+    )
+    assert data["verdetto_impianto"]["righe"] == [ANNA_CHANGED]
+    # Con il rapporto del giro 2, partito dopo il giro 1 non chiuso, il giro precedente resta non verificato
+    data, _ = await run_in_service(
+        controller, tmp_path / "giro5.json", ["T7"], partenza=kit.partenza_da_file(second, SERIAL)
+    )
+    assert data["impianto_in_servizio"]["verdetto"] == "ATTENZIONE: IMPIANTO NON VERIFICATO"
+    assert data["verdetto_impianto"]["partenza_incerta"]
+
+
+async def test_the_photo_of_a_previous_run_must_be_of_this_controller_and_complete(tmp_path):
+    controller = EliseoController.bench()
+    data, _ = await run_in_service(controller, tmp_path / "giro.json", ["T7"])
+    assert data["impianto_in_servizio"]["verdetto"] == "IMPIANTO INVARIATO"
+    assert kit.partenza_da_rapporto(data, SERIAL)["foto"] == data["fotografie"]["prima"]
+    with pytest.raises(kit.Rifiuto, match="del controller"):
+        kit.partenza_da_rapporto(data, "ALTRA")
+    with pytest.raises(kit.Rifiuto, match="non è il rapporto di un giro con --impianto-in-servizio"):
+        kit.partenza_da_rapporto({**data, "impianto_in_servizio": None}, SERIAL)
+    with pytest.raises(kit.Rifiuto, match="non c'è la fotografia di partenza"):
+        kit.partenza_da_rapporto({**data, "fotografie": {}}, SERIAL)
+    incomplete = {**data["fotografie"]["prima"], "non_letti": {"porte": "tempo scaduto"}}
+    with pytest.raises(kit.Rifiuto, match="non è completa"):
+        kit.partenza_da_rapporto({**data, "fotografie": {"prima": incomplete}}, SERIAL)
+    with pytest.raises(kit.Rifiuto, match="non riesco a leggere"):
+        kit.partenza_da_file(tmp_path / "manca.json", SERIAL)
+    # Un rapporto che finisce con INVARIATO non lascia oggetti di prova: se ce ne sono vengono da un altro giro
+    controller.users[f"{PREFIX}resto"] = {"token": f"{PREFIX}resto", "Name": f"{PREFIX}resto"}
+    partenza = kit.partenza_da_rapporto(data, SERIAL)
+    data, _ = await run_in_service(controller, tmp_path / "dopo.json", ["T7"], partenza=partenza)
+    assert data["impianto_in_servizio"]["verdetto"] == "ATTENZIONE: IMPIANTO NON VERIFICATO"
+    assert "vengono da un altro giro" in data["verdetto_impianto"]["partenza_incerta"]
+    assert leftovers(controller) == []
+
+
+def log_entry(rowid: int, topics: list[str], **values) -> dict:
+    keys = [{"Key": f"topic{i}", "Value": t} for i, t in enumerate(topics)]
+    return {
+        "rowid": rowid,
+        "UtcTime": "2026-11-13T07:30:00Z",
+        "KeyValues": keys + [{"Key": k, "Value": v} for k, v in values.items()],
+    }
+
+
+class OthersSwipeToo(Technician):
+    """Mentre il kit aspetta il passaggio della tessera di scorta passa anche Anna, con la sua tessera vera che apre,
+    e poi qualcuno a cui il controller nega l'accesso senza dire la credenziale. La tessera di scorta la passa il
+    tecnico solo con spare."""
+
+    def __init__(self, controller: FakeController, spare: bool) -> None:
+        super().__init__(controller)
+        self.spare = spare
+
+    def swipe(self) -> None:
+        c = self.controller
+        row = max((e["rowid"] for e in c.log_events), default=0)
+        c.log_events += [
+            log_entry(row + 1, ["IdPoint", "Request", "IdData"], Card="04A1B2C3", IdPointToken="lettore-1"),
+            log_entry(
+                row + 2,
+                ["AccessControl", "AccessGranted", "Credential"],
+                CredentialToken="cred-1",
+                CredentialHolderName="Anna Bianchi",
+                AccessPointToken="ap-in",
+            ),
+        ]
+        if self.spare:
+            super().swipe()
+        else:
+            self.swipes += 1
+        row = max(e["rowid"] for e in c.log_events)
+        c.log_events += [
+            log_entry(row + 1, ["IdPoint", "Request", "IdData"], Card="0400aa11", IdPointToken="lettore-1"),
+            log_entry(row + 2, ["AccessControl", "Denied", "Schedule"], AccessPointToken="ap-in"),
+        ]
+
+
+@pytest.mark.parametrize("spare", [False, True], ids=["scorta_non_letta", "scorta_letta"])
+async def test_swipes_of_other_cards_while_waiting_are_not_the_spare_card(spare):
+    controller = EliseoController.bench()
+    operator = OthersSwipeToo(controller, spare)
+    bench, server, _, _ = service_kit(controller, operator)
+
+    data = await kit.esegui(bench, ["T4", "T8"])
+
+    assert operator.swipes >= 3 and operator.opening == []
+    notes = "\n".join(data["prove"]["T4"]["osservazioni"] + data["prove"]["T8"]["osservazioni"])
+    # Il consenso di Anna non è della tessera di scorta: niente «accesso concesso», e Anna è tra gli altri passaggi
+    assert "ATTENZIONE, accesso concesso" not in notes
+    others = (
+        "altri passaggi nella stessa attesa, ignorati: IdPoint/Request/IdData Card=04A1B2C3; "
+        "AccessControl/AccessGranted/Credential CredentialToken=cred-1 AccessPointToken=ap-in; "
+        "IdPoint/Request/IdData Card=0400aa11; AccessControl/Denied/Schedule AccessPointToken=ap-in"
+    )
+    assert notes.count(others) == operator.swipes
+    if spare:
+        assert "credenziale disabilitata: IdData arrivato; negato: AccessControl/Denied/Credential " in notes
+        assert "Reason=CredentialNotEnabled; CredentialToken sì" in notes
+        assert "non letta" not in notes
+    else:
+        assert "IdData arrivato" not in notes
+        assert notes.count(f"tessera di scorta non letta: nessun IdData con il numero {CARD}") == operator.swipes
+    assert data["impianto_in_servizio"]["verdetto"] == "IMPIANTO INVARIATO"
+
+
+def test_events_of_the_spare_card():
+    def event(row, topic, **values):
+        return {"riga": row, "ora": "", "argomento": topic, **values}
+
+    events = [
+        event(1, "IdPoint/Request/IdData", Card="C0110B18"),
+        event(2, "AccessControl/Denied/Credential", Reason="CredentialNotEnabled"),
+        event(3, "Door/State/DoorMode", State="Locked"),
+        event(4, "IdPoint/Request/IdData", Card="04a1b2c3"),
+        event(5, "AccessControl/AccessGranted/Credential", CredentialToken="cred-1", AccessPointToken="ap-in"),
+        event(6, "AccessControl/Denied/Credential", AccessPointToken="ap-in"),
+        event(7, "AccessControl/Denied/Credential", CredentialToken="scorta-del-controller"),
+        event(8, "IdPoint/Request/IdData", Card=CARD),
+        event(9, "AccessControl/Denied/Credential", AccessPointToken="altro-punto"),
+        event(10, "AccessControl/AccessGranted/Anonymous", AccessPointToken="ap-in"),
+    ]
+    spare, others = kit.eventi_della_tessera(events, CARD, {"scorta-del-controller"}, "ap-in")
+    assert [e["riga"] for e in spare] == [1, 2, 7, 8, 10]
+    assert [e["riga"] for e in others] == [4, 5, 6, 9]
+
+
+async def test_a_list_answered_without_its_key_is_not_read_in_the_photo():
+    # Alla partenza: non letto, il kit non parte
+    controller = EliseoController.bench()
+    bench, server, _, _ = service_kit(controller)
+    answer = server.answer
+    keyless = {"on": True}
+
+    async def without_key(method, args):
+        data = await answer(method, args)
+        if keyless["on"] and method == "axtdc:GetDoorConfigurationList":
+            data.pop("DoorConfiguration", None)
+        return data
+
+    server.answer = without_key
+    with pytest.raises(kit.Rifiuto, match="non si leggono configurazioni_porte: risposta del controller non"):
+        await kit.esegui(bench, ["T9"])
+    assert controller.calls == [] and not [m for m in server.methods if "Set" in m or "Remove" in m]
+
+    # Alla fine: non riletto, quindi non verificato (e non una configurazione «tolta»)
+    controller = EliseoController.bench()
+    bench, server, lines, _ = service_kit(controller)
+    answer = server.answer
+    server.answer = without_key
+    keyless["on"] = False
+    closing = bench.chiusura
+
+    async def keyless_at_the_end():
+        keyless["on"] = True
+        await closing()
+
+    bench.chiusura = keyless_at_the_end
+    data = await kit.esegui(bench, ["T9"])
+    assert data["impianto_in_servizio"]["verdetto"] == "ATTENZIONE: IMPIANTO NON VERIFICATO"
+    assert data["verdetto_impianto"]["differenze"] == []
+    assert data["verdetto_impianto"]["non_riletti"] == [
+        "configurazioni_porte (risposta del controller non riconosciuta)"
+    ]
+    assert kit.codice_di_uscita(data, 0) == 4
+    assert leftovers(controller) == []
+
+
 KIT_CLIENT = kit.cliente
 
 
@@ -1616,6 +1911,7 @@ def test_main_in_service_ends_with_the_verdict_and_its_exit_code(monkeypatch, tm
     code, server = run_main(monkeypatch, tmp_path, controller, Technician(controller), ["--prova", "T16"])
     out = capsys.readouterr().out.strip().splitlines()
     assert code == 0 and out[-1] == "IMPIANTO INVARIATO"
+    assert out[-3] == "Add-on: puoi riavviarlo (LEGGIMI.md, «Dopo le prove»)."
     assert leftovers(controller) == []
 
     controller = BreaksARealUser.bench()
@@ -1624,6 +1920,7 @@ def test_main_in_service_ends_with_the_verdict_and_its_exit_code(monkeypatch, tm
     assert code == 3
     assert "MI SONO FERMATO: dopo T16" in "\n".join(out)
     assert out[-2:] == ["ATTENZIONE: IMPIANTO CAMBIATO", f"  {ANNA_CHANGED}"]
+    assert out[-5].startswith("NON RIAVVIARE L'ADD-ON: è cambiato un oggetto dell'impianto")
     saved = json.loads((tmp_path / "rapporto.json").read_text())
     assert saved["impianto_in_servizio"]["verdetto"] == "ATTENZIONE: IMPIANTO CAMBIATO"
 
@@ -1650,6 +1947,41 @@ def test_main_in_service_refuses_before_asking_the_password(monkeypatch, capsys,
     code = kit.main(["--host", "10.103.200.10", "--serie", SERIAL, "--impianto-in-servizio", *argv])
     assert code == 2
     assert "NON PARTO" in capsys.readouterr().out
+
+
+def test_main_with_the_photo_of_a_previous_run(monkeypatch, tmp_path, capsys):
+    def never(*args, **kwargs):
+        raise AssertionError("non doveva arrivare fin qui")
+
+    monkeypatch.delenv("AAM_BANCO_PASSWORD", raising=False)
+    monkeypatch.setattr(kit.getpass, "getpass", never)
+    monkeypatch.setattr(kit, "cliente", never)
+    base = ["--host", "10.103.200.10", "--serie", SERIAL]
+    # Solo sull'impianto in servizio, e con un rapporto che si legge: prima della password
+    assert kit.main([*base, "--fotografia-di-partenza", "giro1.json"]) == 2
+    assert "NON PARTO: --fotografia-di-partenza vale solo con --impianto-in-servizio" in capsys.readouterr().out
+    missing = tmp_path / "manca.json"
+    assert kit.main([*base, "--impianto-in-servizio", "--fotografia-di-partenza", str(missing)]) == 2
+    assert "NON PARTO: --fotografia-di-partenza: non riesco a leggere" in capsys.readouterr().out
+    other = tmp_path / "altro.json"
+    other.write_text(json.dumps({"impianto_in_servizio": {}, "serie_attesa": "ALTRA"}))
+    assert kit.main([*base, "--impianto-in-servizio", "--fotografia-di-partenza", str(other)]) == 2
+    assert "è del controller 'ALTRA'" in capsys.readouterr().out
+
+
+def test_main_stopped_before_the_verdict_says_not_to_restart_the_addon(monkeypatch, tmp_path, capsys):
+    async def stopped(bench, prove):
+        # Secondo Ctrl+C durante la pulizia: scritto qualcosa, nessun verdetto
+        await bench.tenta("set_user", bench.modello("utente", f"{PREFIX}u"))
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(kit, "esegui", stopped)
+    controller = EliseoController.bench()
+    code, _ = run_main(monkeypatch, tmp_path, controller, Technician(controller), ["--prova", "T16"])
+    out = capsys.readouterr().out.strip().splitlines()
+    assert code == 130
+    assert out[-1].startswith("NON RIAVVIARE L'ADD-ON: il kit si è fermato prima del confronto finale")
+    assert f"--prova T7 --fotografia-di-partenza {tmp_path / 'rapporto.json'}" in out[-1]
 
 
 def test_service_mode_options_and_comparison_details():
