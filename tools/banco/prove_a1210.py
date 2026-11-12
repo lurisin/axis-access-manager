@@ -5,7 +5,11 @@ Usa il client VAPIX dell'add-on (axis_access_manager/app/vapix.py). Crea solo og
 li toglie tutti alla fine, anche dopo un errore. Non manda mai comandi alle porte e non scrive porte o lettori che
 non ha creato, configurazioni di porte e lettori, morsetti, controllo accessi, fuso, NTP, MQTT, rete o account: lo
 impedisce il trasporto HTTP stesso (Registratore), che lascia partire solo i metodi elencati qui sotto.
-Istruzioni in LEGGIMI.md.
+
+Con --impianto-in-servizio fa solo le prove che non toccano niente di quello che c'è su un A1210 in servizio: scrive
+e toglie soltanto utenti, tessere, profili e fasce aam_prova_, mai porte, lettori, punti di accesso, configurazioni,
+controllo accessi, morsetti o impostazioni, nemmeno del kit; fotografa tutto prima di scrivere e alla fine dice se
+l'impianto è rimasto identico. Istruzioni in LEGGIMI.md.
 """
 
 from __future__ import annotations
@@ -63,7 +67,24 @@ BLOCCHI = {"utenti": 100, "tessere": 100, "profili": 20, "fasce": 20, "eccezioni
 # Metodi VAPIX che possono partire. Tutto il resto lo ferma il Registratore prima che esca: comandi alle porte
 # (AccessDoor, UnlockDoor, LockDoor, DoorSchedule...), SetDoorConfiguration, SetIdPointConfiguration, SetIoAssignment,
 # SetAccessController, SetAuthenticationProfile, fuso, NTP, MQTT, rete e account
-CGI = {("/axis-cgi/basicdeviceinfo.cgi", "getAllProperties"), ("/axis-cgi/time.cgi", "getDateTimeInfo")}
+CGI = {
+    ("/axis-cgi/basicdeviceinfo.cgi", "getAllProperties"),
+    ("/axis-cgi/time.cgi", "getDateTimeInfo"),
+    # Solo letture, per la fotografia dell'impianto in servizio
+    ("/axis-cgi/ntp.cgi", "getNTPInfo"),
+    ("/axis-cgi/mqtt/client.cgi", "getClientStatus"),
+    ("/axis-cgi/mqtt/event.cgi", "getEventPublicationConfig"),
+}
+# Percorso di ogni servizio VAPIX: un metodo mandato a un altro percorso non parte
+PERCORSI = {
+    "axudb": "/vapix/pacs",
+    "pacsaxis": "/vapix/pacs",
+    "axsch": "/vapix/schedule",
+    "axtdc": "/vapix/doorcontrol",
+    "axtid": "/vapix/idpoint",
+    "axisio": "/vapix/pin",
+    "axlog": "/vapix/eventlogger",
+}
 LETTURE_HTTP = set(
     """axudb:GetUserList axudb:GetUser pacsaxis:GetCredentialList pacsaxis:GetCredential pacsaxis:GetAccessPointList
     pacsaxis:GetAccessPoint pacsaxis:GetAccessProfileList pacsaxis:GetAccessProfile
@@ -92,7 +113,7 @@ LETTURE = set(
     """device_info date_time_info certificate_fingerprint list_users get_users list_credentials get_credentials
     list_access_points get_access_points list_access_profiles get_access_profiles list_authentication_profiles
     list_access_controllers list_schedules list_doors get_doors list_door_configurations list_idpoints get_idpoints
-    list_idpoint_configurations list_io latest_events""".split()
+    list_idpoint_configurations list_io latest_events ntp_info mqtt_client_config mqtt_event_config""".split()
 )
 SCRITTURE_OGGETTO = set(
     "set_user set_credential set_schedule set_access_profile set_door create_idpoint create_access_point".split()
@@ -188,6 +209,85 @@ SETTIMANA = schedule_ical([{"days": DAYS[:5], "start": "08:00", "end": "18:00"}]
 SEMPRE = schedule_ical([{"days": DAYS, "start": "00:00", "end": "24:00"}])
 FESTE = holidays_ical([{"day": "2026-12-25", "yearly": True}, {"day": "2027-04-05", "yearly": False}])
 
+# Impianto in servizio (--impianto-in-servizio): solo le prove che non toccano niente di quello che c'è
+PROVE_IN_SERVIZIO = [c for c in ORDINE if c != "T12"]
+# T18: tessere di serie e al massimo; mai la ricerca dei limiti
+QUANTE_IN_SERVIZIO = 100
+QUANTE_MASSIME_IN_SERVIZIO = 500
+# Gli unici tipi di oggetto che il kit scrive e toglie sull'impianto, sempre e solo aam_prova_
+TIPI_IN_SERVIZIO = ["utente", "fascia", "tessera", "profilo"]
+TIPI_T3_IN_SERVIZIO = ["utente", "tessera", "profilo"]
+ESCLUSE_IN_SERVIZIO = {
+    "T12": "reset di fabbrica: mai sull'impianto in servizio",
+    "T18 con --limiti": "ricerca dei limiti (migliaia di oggetti) e pulsante di uscita durante la scrittura",
+    "porte, lettori e punti di accesso in T1, T2, T6, T7 e T10": "il kit non li scrive e non li toglie, nemmeno i suoi",
+    "T3 su fasce, porte, lettori, punti, DoorConfiguration e IdPointConfiguration": "T3 solo su utenti, tessere e "
+    "profili del kit",
+    "T11 sugli elenchi che sull'impianto non sono vuoti": "«non fattibile in servizio», la prova vuole l'elenco vuoto",
+    "T13, T14, T15, T17 e T19": "non fanno parte del kit",
+}
+VIETATI_IN_SERVIZIO = (
+    "porte, configurazioni delle porte, lettori, configurazioni dei lettori, punti di accesso, controllo accessi "
+    "(AccessController), modi di identificazione, morsetti e IO, impostazioni del dispositivo (fuso, NTP, MQTT, rete, "
+    "account) e comandi alle porte"
+)
+# Metodi VAPIX che sull'impianto possono partire oltre alle letture, sempre su oggetti del kit
+SCRITTURE_IN_SERVIZIO = {"axudb:SetUser", "pacsaxis:SetCredential", "pacsaxis:SetAccessProfile", "axsch:SetSchedule"}
+RIMOZIONI_IN_SERVIZIO = {
+    "axudb:RemoveUser",
+    "pacsaxis:RemoveCredential",
+    "pacsaxis:RemoveAccessProfile",
+    "axsch:RemoveSchedule",
+    "pacsaxis:EnableCredential",
+    "pacsaxis:DisableCredential",
+}
+SCRITTURE_OGGETTO_IN_SERVIZIO = {"set_user", "set_credential", "set_schedule", "set_access_profile"}
+SCRITTURE_TOKEN_IN_SERVIZIO = {
+    "remove_user",
+    "remove_credential",
+    "remove_schedule",
+    "remove_access_profile",
+    "enable_credential",
+    "disable_credential",
+}
+# Fotografia dell'impianto: tutti gli elenchi che il kit sa leggere (list_io dà morsetti e assegnazioni_io) e le
+# impostazioni del dispositivo
+ELENCHI_IMPIANTO = {
+    "utenti": "list_users",
+    "tessere": "list_credentials",
+    "profili": "list_access_profiles",
+    "fasce": "list_schedules",
+    "porte": "list_doors",
+    "configurazioni_porte": "list_door_configurations",
+    "lettori": "list_idpoints",
+    "configurazioni_lettori": "list_idpoint_configurations",
+    "punti": "list_access_points",
+    "controllo_accessi": "list_access_controllers",
+    "modi_di_identificazione": "list_authentication_profiles",
+}
+DISPOSITIVO_IMPIANTO = {
+    "dispositivo": "device_info",
+    "orologio": "date_time_info",
+    "ntp": "ntp_info",
+    "mqtt": "mqtt_client_config",
+    "mqtt_eventi": "mqtt_event_config",
+}
+# Nelle impostazioni del dispositivo cambiano da sole e non contano nel confronto: ora, sincronizzazione NTP, server
+# NTP dati dalla rete (DHCP), stato del collegamento MQTT (con il cavo staccato in T2 cade e torna)
+VOLATILI = {
+    "dateTime",
+    "utcDateTime",
+    "localDateTime",
+    "synced",
+    "timeOffset",
+    "timeToNextSync",
+    "advertisedServers",
+    "connectionStatus",
+}
+INVARIATO = "IMPIANTO INVARIATO"
+CAMBIATO = "ATTENZIONE: IMPIANTO CAMBIATO"
+NON_VERIFICATO = "ATTENZIONE: IMPIANTO NON VERIFICATO"
+
 
 class Vietata(Exception):
     """Richiesta che il kit non deve mai mandare: si ferma tutto, prima che parta."""
@@ -195,6 +295,10 @@ class Vietata(Exception):
 
 class Rifiuto(Exception):
     """Il kit non parte (o si ferma): controller sbagliato o che sembra in servizio."""
+
+
+class ImpiantoCambiato(Rifiuto):
+    """Sull'impianto in servizio un oggetto che non è del kit è cambiato durante una prova: il kit si ferma."""
 
 
 def nostro(tipo: str, oggetto: dict) -> bool:
@@ -278,19 +382,241 @@ def _json(contenuto: bytes):
         return contenuto.decode("utf-8", "replace")[:4000]
 
 
+def senza_password(valore):
+    """Copia con le password nascoste (il broker MQTT potrebbe restituirla): il rapporto si manda a chi sviluppa
+    l'add-on."""
+    if isinstance(valore, dict):
+        return {
+            k: ("<nascosta>" if "password" in str(k).lower() and v else senza_password(v)) for k, v in valore.items()
+        }
+    if isinstance(valore, list | tuple):
+        return [senza_password(v) for v in valore]
+    return valore
+
+
+def numeri_di(tessera: dict) -> set[str]:
+    """Numeri (IdData) di una tessera, in minuscolo."""
+    return {str(d.get("Value")).lower() for d in tessera.get("IdData") or [] if isinstance(d, dict) and d.get("Value")}
+
+
+# Fotografia dell'impianto in servizio e confronto
+
+ASSENTE = "<assente>"
+
+
+def senza_volatili(valore):
+    """Le impostazioni del dispositivo senza i campi che cambiano da soli (VOLATILI)."""
+    if isinstance(valore, dict):
+        return {k: senza_volatili(v) for k, v in valore.items() if k not in VOLATILI}
+    if isinstance(valore, list):
+        return [senza_volatili(v) for v in valore]
+    return valore
+
+
+def del_kit(nome: str, oggetto) -> bool:
+    """Oggetto di un elenco della fotografia creato dal kit (aam_prova_)."""
+    if not isinstance(oggetto, dict):
+        return False
+    tipo = TIPO_DELLA_FOTO.get(nome)
+    return nostro(tipo, oggetto) if tipo else str(oggetto.get("token") or "").startswith(PREFISSO)
+
+
+def per_oggetto(nome: str, valore) -> dict:
+    """Elenco della fotografia come chiave → oggetto, senza gli oggetti del kit. La chiave è il token (IoName per
+    morsetti e assegnazioni): l'ordine in cui il controller restituisce gli oggetti non conta."""
+    oggetti: dict = {}
+    for i, oggetto in enumerate(valore if isinstance(valore, list) else [valore]):
+        if del_kit(nome, oggetto):
+            continue
+        chiave = str(oggetto.get("token") or oggetto.get("IoName") or "") if isinstance(oggetto, dict) else ""
+        chiave = chiave or f"#{i + 1}"
+        while chiave in oggetti:
+            chiave += " (doppio)"
+        oggetti[chiave] = oggetto
+    return oggetti
+
+
+def campi_diversi(prima, dopo) -> dict:
+    """Campi con valori diversi: campo → prima e dopo (ASSENTE se il campo manca)."""
+    if not (isinstance(prima, dict) and isinstance(dopo, dict)):
+        return {"valore": {"prima": prima, "dopo": dopo}}
+    return {
+        k: {"prima": prima.get(k, ASSENTE), "dopo": dopo.get(k, ASSENTE)}
+        for k in sorted(prima.keys() | dopo.keys())
+        if k not in prima or k not in dopo or prima[k] != dopo[k]
+    }
+
+
+def differenze(prima: dict, dopo: dict) -> tuple[list[dict], list[str]]:
+    """Differenze fra due fotografie negli oggetti che non sono del kit, ed elenchi letti prima e non dopo (con il
+    motivo): un elenco non riletto non conta come invariato."""
+    diverse: list[dict] = []
+    non_riletti: list[str] = []
+    for nome, valore in prima.get("letti", {}).items():
+        if nome not in dopo.get("letti", {}):
+            non_riletti.append(f"{nome} ({dopo.get('non_letti', {}).get(nome) or 'non letto'})")
+            continue
+        nuovo = dopo["letti"][nome]
+        if nome in DISPOSITIVO_IMPIANTO:
+            a, b = senza_volatili(valore), senza_volatili(nuovo)
+            if a != b:
+                voce = {"elenco": nome, "oggetto": "", "come": "cambiato", "prima": a, "dopo": b}
+                diverse.append(voce | {"campi": campi_diversi(a, b)})
+            continue
+        a, b = per_oggetto(nome, valore), per_oggetto(nome, nuovo)
+        for chiave in list(a) + [k for k in b if k not in a]:
+            voce = {"elenco": nome, "oggetto": chiave}
+            if chiave not in b:
+                diverse.append(voce | {"come": "tolto", "prima": a[chiave], "dopo": None})
+            elif chiave not in a:
+                diverse.append(voce | {"come": "aggiunto", "prima": None, "dopo": b[chiave]})
+            elif a[chiave] != b[chiave]:
+                voce |= {"come": "cambiato", "prima": a[chiave], "dopo": b[chiave]}
+                diverse.append(voce | {"campi": campi_diversi(a[chiave], b[chiave])})
+    return diverse, non_riletti
+
+
+def rimasti_del_kit(foto: dict) -> list[str]:
+    """Oggetti aam_prova_ in una fotografia: elenco e token."""
+    return [
+        f"{nome} {o.get('token')}"
+        for nome, valore in foto.get("letti", {}).items()
+        if nome not in DISPOSITIVO_IMPIANTO and isinstance(valore, list)
+        for o in valore
+        if del_kit(nome, o)
+    ]
+
+
+def mostra(valore) -> str:
+    if valore == ASSENTE:
+        return "assente"
+    return json.dumps(valore, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def righe_differenze(diverse: list[dict]) -> list[str]:
+    """Le differenze da stampare, una riga per oggetto aggiunto o tolto e per campo cambiato, con prima e dopo."""
+    righe = []
+    for d in diverse:
+        dove = d["elenco"] + (f" · {d['oggetto']}" if d["oggetto"] else "")
+        if d["come"] == "aggiunto":
+            righe.append(f"{dove}: AGGIUNTO; prima: assente; dopo: {mostra(d['dopo'])}")
+        elif d["come"] == "tolto":
+            righe.append(f"{dove}: TOLTO; prima: {mostra(d['prima'])}; dopo: assente")
+        else:
+            for campo, valori in d["campi"].items():
+                righe.append(f"{dove}: {campo} prima {mostra(valori['prima'])}, dopo {mostra(valori['dopo'])}")
+    return righe
+
+
+def scelte_in_servizio(prove: list[str], limiti: bool, tetti: dict, quante: int, interattivo: bool) -> None:
+    """Rifiuto per quello che sull'impianto in servizio non si fa: prove fuori da PROVE_IN_SERVIZIO (T12 o altre),
+    --limiti, --tetto, troppe tessere in T18, nessuno che conferma."""
+    vietate = [p for p in prove if p not in PROVE_IN_SERVIZIO]
+    if vietate:
+        raise Rifiuto(
+            f"sull'impianto in servizio non si fa {', '.join(vietate)}: si fanno solo {', '.join(PROVE_IN_SERVIZIO)} "
+            "(T12 è il reset di fabbrica)"
+        )
+    if limiti:
+        raise Rifiuto("sull'impianto in servizio T18 non si fa con --limiti (migliaia di oggetti e pulsante di uscita)")
+    if tetti:
+        raise Rifiuto("--tetto vale solo con --limiti, che sull'impianto in servizio non si fa")
+    if not 1 <= quante <= QUANTE_MASSIME_IN_SERVIZIO:
+        raise Rifiuto(f"sull'impianto in servizio --quante va da 1 a {QUANTE_MASSIME_IN_SERVIZIO}, non {quante}")
+    if not interattivo:
+        raise Rifiuto(
+            "con --non-interattivo nessuno conferma che l'add-on è fermo e che il tecnico è sul posto: sull'impianto "
+            "in servizio servono le conferme"
+        )
+
+
 class Permessi:
     """Token che il kit può scrivere o togliere: i suoi (aam_prova_) e quelli che il controller ha dato a oggetti
-    del kit (trovati con il nome aam_prova_)."""
+    del kit (trovati con il nome aam_prova_). Sull'impianto in servizio anche cosa possono contenere le scritture."""
 
-    def __init__(self) -> None:
+    def __init__(self, servizio: bool = False) -> None:
         self.extra: set[str] = set()
+        self.servizio = servizio
+        # Impianto in servizio: numeri delle tessere vere (dalla fotografia), numero della tessera di scorta (in
+        # minuscolo) e punti di accesso veri che i profili del kit possono citare (quello del lettore delle prove)
+        self.numeri_veri: set[str] = set()
+        self.scorta = ""
+        self.punti_citabili: set[str] = set()
+        # Profili del kit che citano un punto di accesso vero, e tessere scritte con il numero di scorta: token →
+        # profili e se è stata scritta abilitata (una sospesa con DisableCredential resta abilitata, per prudenza)
+        self.profili_che_aprono: set[str] = set()
+        self.tessere_di_scorta: dict[str, dict] = {}
 
     def ammesso(self, token) -> bool:
         return isinstance(token, str) and (token.startswith(PREFISSO) or token in self.extra)
 
+    def scrittura_in_servizio(self, metodo: str, oggetti: list[dict]) -> None:
+        """Contenuto di una scrittura sull'impianto in servizio. Vietata se cita utenti, profili o punti di accesso
+        veri che non può citare, se dà a una tessera del kit il numero di una tessera vera, o se la tessera di scorta
+        potrebbe aprire una porta dell'impianto."""
+        if metodo == "pacsaxis:SetAccessProfile":
+            aprono = {}
+            for profilo in oggetti:
+                token = str(profilo.get("token"))
+                regole = [r.get("AccessPoint") if isinstance(r, dict) else r for r in profilo.get("AccessPolicy") or []]
+                veri = {str(p) for p in regole if not str(p).startswith(PREFISSO)}
+                if veri - self.punti_citabili:
+                    altri = ", ".join(sorted(veri - self.punti_citabili))
+                    raise Vietata(f"profilo {token}: cita punti di accesso dell'impianto non del lettore ({altri})")
+                legate = [t for t, s in self.tessere_di_scorta.items() if s["abilitata"] and token in s["profili"]]
+                if veri and legate:
+                    raise Vietata(
+                        f"profilo {token}: aprirebbe {', '.join(sorted(veri))} alla tessera di scorta abilitata "
+                        f"{', '.join(legate)}"
+                    )
+                aprono[token] = bool(veri)
+            for token, apre in aprono.items():
+                (self.profili_che_aprono.add if apre else self.profili_che_aprono.discard)(token)
+        elif metodo == "pacsaxis:SetCredential":
+            for tessera in oggetti:
+                token = str(tessera.get("token"))
+                utente = str(tessera.get("UserToken") or "")
+                if utente and not utente.startswith(PREFISSO):
+                    raise Vietata(f"tessera {token}: cita l'utente {utente} dell'impianto")
+                profili = set(profili_legati(tessera))
+                if any(not p.startswith(PREFISSO) for p in profili):
+                    raise Vietata(f"tessera {token}: cita profili dell'impianto ({', '.join(sorted(profili))})")
+                numeri = numeri_di(tessera)
+                if numeri & self.numeri_veri:
+                    raise Vietata(f"tessera {token}: ha il numero di una tessera dell'impianto")
+                scorta = bool(self.scorta) and self.scorta in numeri
+                if scorta and tessera.get("Enabled") is not False and profili & self.profili_che_aprono:
+                    raise Vietata(
+                        f"tessera {token}: la tessera di scorta non si scrive mai abilitata con un profilo che apre "
+                        "una porta dell'impianto"
+                    )
+            for tessera in oggetti:
+                token = str(tessera.get("token"))
+                self.tessere_di_scorta.pop(token, None)
+                if self.scorta and self.scorta in numeri_di(tessera):
+                    abilitata = tessera.get("Enabled") is not False
+                    self.tessere_di_scorta[token] = {"profili": set(profili_legati(tessera)), "abilitata": abilitata}
+
+    def rimozione_in_servizio(self, metodo: str, tokens: list) -> None:
+        """Rimozioni, EnableCredential e DisableCredential sull'impianto in servizio: EnableCredential non riattiva
+        mai la tessera di scorta scritta sospesa con un profilo che apre."""
+        for token in map(str, tokens):
+            scorta = self.tessere_di_scorta.get(token)
+            if metodo == "pacsaxis:EnableCredential" and scorta is not None:
+                if scorta["profili"] & self.profili_che_aprono:
+                    raise Vietata(
+                        f"EnableCredential di {token}: la tessera di scorta aprirebbe una porta dell'impianto"
+                    )
+                scorta["abilitata"] = True
+            elif metodo == "pacsaxis:RemoveCredential":
+                self.tessere_di_scorta.pop(token, None)
+            elif metodo == "pacsaxis:RemoveAccessProfile":
+                self.profili_che_aprono.discard(token)
+
 
 def controlla(request: httpx.Request, permessi: Permessi) -> str:
-    """Metodo VAPIX della richiesta se il kit lo può mandare, altrimenti Vietata."""
+    """Metodo VAPIX della richiesta se il kit lo può mandare, altrimenti Vietata. Sull'impianto in servizio partono
+    solo le letture e le scritture e rimozioni di utenti, tessere, profili e fasce del kit."""
     try:
         corpo = json.loads(request.content or b"null")
     except ValueError as err:
@@ -307,6 +633,11 @@ def controlla(request: httpx.Request, permessi: Permessi) -> str:
         raise Vietata(f"{percorso}: più metodi in una richiesta")
     metodo, argomenti = next(iter(corpo.items()))
     argomenti = argomenti if isinstance(argomenti, dict) else {}
+    atteso = PERCORSI.get(str(metodo).partition(":")[0])
+    if atteso is not None and atteso != percorso:
+        raise Vietata(f"{metodo} mandato a {percorso}")
+    if permessi.servizio and metodo not in LETTURE_HTTP | SCRITTURE_IN_SERVIZIO | RIMOZIONI_IN_SERVIZIO:
+        raise Vietata(f"{metodo}: sull'impianto in servizio il kit non manda mai richieste su {VIETATI_IN_SERVIZIO}")
     if metodo in LETTURE_HTTP:
         return metodo
     if metodo in SCRITTURE_HTTP:
@@ -316,18 +647,22 @@ def controlla(request: httpx.Request, permessi: Permessi) -> str:
             if all(permessi.ammesso(o.get("token")) for o in oggetti) and all(
                 str(n).startswith(PREFISSO) for n in nomi
             ):
+                if permessi.servizio:
+                    permessi.scrittura_in_servizio(metodo, oggetti)
                 return metodo
     elif metodo in RIMOZIONI_HTTP:
         token = argomenti.get("Token")
         tokens = token if isinstance(token, list) else [token]
         if tokens and all(permessi.ammesso(t) for t in tokens):
+            if permessi.servizio:
+                permessi.rimozione_in_servizio(metodo, tokens)
             return metodo
     raise Vietata(f"{metodo} non permesso al kit: {json.dumps(argomenti, ensure_ascii=False)[:300]}")
 
 
 class Registratore(httpx.AsyncBaseTransport):
     """Trasporto del client: ferma le richieste vietate prima che partano e tiene richieste e risposte grezze, senza
-    intestazioni (quindi senza credenziali)."""
+    intestazioni (quindi senza credenziali) e con le password nascoste."""
 
     def __init__(self, interno: httpx.AsyncBaseTransport, permessi: Permessi | None = None) -> None:
         self.interno = interno
@@ -343,7 +678,11 @@ class Registratore(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         metodo = controlla(request, self.permessi)
         self.metodi.append(metodo)
-        voce: dict = {"metodo": metodo, "percorso": request.url.path, "richiesta": _json(request.content)}
+        voce: dict = {
+            "metodo": metodo,
+            "percorso": request.url.path,
+            "richiesta": senza_password(_json(request.content)),
+        }
         self.scambi.append(voce)
         inizio = time.monotonic()
         try:
@@ -353,7 +692,11 @@ class Registratore(httpx.AsyncBaseTransport):
         except Exception as err:
             voce.update(errore=repr(err), durata_s=round(time.monotonic() - inizio, 3))
             raise
-        voce.update(stato=risposta.status_code, risposta=_json(contenuto), durata_s=round(time.monotonic() - inizio, 3))
+        voce.update(
+            stato=risposta.status_code,
+            risposta=senza_password(_json(contenuto)),
+            durata_s=round(time.monotonic() - inizio, 3),
+        )
         return risposta
 
     async def aclose(self) -> None:
@@ -441,10 +784,20 @@ class Kit:
         pausa=asyncio.sleep,
         limiti: bool = False,
         tetti: dict[str, int] | None = None,
+        servizio: bool = False,
     ) -> None:
         self.client = client
         self.registro = registro
         self.permessi = registro.permessi
+        # --impianto-in-servizio: solo utenti, tessere, profili e fasce del kit, fotografia prima e dopo
+        self.servizio = servizio
+        self.permessi.servizio = servizio
+        self.tipi = TIPI_IN_SERVIZIO if servizio else list(TIPI)
+        self.foto_prima: dict | None = None
+        # Prova dopo la quale un oggetto dell'impianto è risultato cambiato (il kit si ferma)
+        self.cambiato = ""
+        # Partita almeno una richiesta che non è una lettura: alla fine si pulisce
+        self.scritture = False
         self.serie = serie_pulita(serie)
         self.operatore = operatore
         self.scrivi = scrivi
@@ -453,20 +806,34 @@ class Kit:
         self.pausa = pausa
         # T18: ricerca dei limiti, con i tetti di TETTI cambiati da --tetto
         self.limiti = limiti
-        self.tetti = {**TETTI, **(tetti or {})}
+        self.tetti_chiesti = dict(tetti or {})
+        self.tetti = {**TETTI, **self.tetti_chiesti}
         # Migliaia di scritture (ricerca dei limiti): delle operazioni riuscite il rapporto tiene solo metodo e durata
         self.leggero = False
         self.file: Path | None = None
         self._numeri = itertools.count(1)
-        self.dati: dict = {
-            "kit": "prove_a1210",
-            "inizio": datetime.now(tz=UTC).isoformat(timespec="seconds"),
-            "serie_attesa": self.serie,
-            "controller": {},
-            "avvio": {"operazioni": [], "osservazioni": []},
-            "prove": {},
-            "fine": {"operazioni": [], "osservazioni": []},
-        }
+        self.dati: dict = {"kit": "prove_a1210"}
+        if servizio:
+            # In testa al rapporto: dove sono state fatte le prove, quali e quali no; il verdetto arriva alla fine
+            self.dati["impianto_in_servizio"] = {
+                "avviso": "prove fatte su un IMPIANTO IN SERVIZIO, non su un A1210 di banco: solo utenti, tessere, "
+                "profili e fasce aam_prova_, nessun reset, add-on fermo",
+                "prove": [],
+                "non_chieste": [],
+                "escluse": dict(ESCLUSE_IN_SERVIZIO),
+                "conferme": {},
+                "verdetto": "non ancora verificato",
+            }
+        self.dati.update(
+            {
+                "inizio": datetime.now(tz=UTC).isoformat(timespec="seconds"),
+                "serie_attesa": self.serie,
+                "controller": {},
+                "avvio": {"operazioni": [], "osservazioni": []},
+                "prove": {},
+                "fine": {"operazioni": [], "osservazioni": []},
+            }
+        )
         self.sezione = self.dati["avvio"]
 
     # Chiamate al controller, tutte registrate
@@ -474,18 +841,23 @@ class Kit:
     def _controlla(self, metodo: str, args: tuple) -> None:
         if metodo in LETTURE:
             return
-        if metodo in SCRITTURE_OGGETTO:
+        oggetto_ok = SCRITTURE_OGGETTO_IN_SERVIZIO if self.servizio else SCRITTURE_OGGETTO
+        token_ok = SCRITTURE_TOKEN_IN_SERVIZIO if self.servizio else SCRITTURE_TOKEN
+        if metodo in oggetto_ok:
             oggetto = args[0]
             token, nome = oggetto.get("token"), oggetto.get("Name", PREFISSO)
-        elif metodo in SCRITTURE_TOKEN:
+        elif metodo in token_ok:
             token, nome = args[0], PREFISSO
+        elif self.servizio:
+            raise Vietata(f"{metodo}: sull'impianto in servizio il kit non lo usa mai ({VIETATI_IN_SERVIZIO})")
         else:
             raise Vietata(f"{metodo}: il kit non usa questo metodo")
         if not self.permessi.ammesso(token) or not str(nome).startswith(PREFISSO):
             raise Vietata(f"{metodo} su {token!r}: non è un oggetto del kit")
+        self.scritture = True
 
     def _registra(self, metodo: str, args: list, esito: Esito) -> None:
-        valore = esito.valore
+        valore = senza_password(esito.valore)
         if metodo.startswith("list_") and isinstance(valore, list):
             valore = {"quanti": len(valore)}
         if self.leggero and esito.ok:
@@ -527,8 +899,11 @@ class Kit:
     async def grezza(self, percorso: str, metodo: str, argomenti: dict) -> Esito:
         """Richiesta VAPIX così com'è, per vedere la risposta senza le correzioni del client (passa dal
         Registratore come tutte le altre)."""
-        if metodo not in LETTURE_HTTP | RIMOZIONI_HTTP:
-            raise Vietata(f"{metodo}: il kit non lo manda grezzo")
+        rimozioni = RIMOZIONI_HTTP & RIMOZIONI_IN_SERVIZIO if self.servizio else RIMOZIONI_HTTP
+        if metodo not in LETTURE_HTTP | rimozioni:
+            raise Vietata(f"{metodo}: il kit non lo manda grezzo" + (" sull'impianto in servizio" * self.servizio))
+        if metodo not in LETTURE_HTTP:
+            self.scritture = True
         self.registro.prendi()
         inizio = time.monotonic()
         try:
@@ -669,10 +1044,11 @@ class Kit:
         return oggetto
 
     async def catena(self, sigla: str) -> dict[str, str]:
-        """Un oggetto per tipo, ognuno che cita i precedenti: tipo → token di quelli creati."""
+        """Un oggetto per tipo, ognuno che cita i precedenti: tipo → token di quelli creati. Sull'impianto in servizio
+        solo utente, fascia, profilo e tessera."""
         rif: dict = {}
         for tipo in ORDINE_CREAZIONE:
-            if tipo == "tessera":
+            if tipo == "tessera" or tipo not in self.tipi:
                 continue
             token = f"{PREFISSO}{sigla}_{tipo}"
             if tipo == "profilo":
@@ -708,10 +1084,13 @@ class Kit:
             risultato["non_tolti"].append("controller non raggiungibile: non ho tolto niente")
             return risultato
         errori: dict[str, str] = {}
-        # Più giri: un oggetto ancora citato si toglie dopo chi lo cita
+        # Più giri: un oggetto ancora citato si toglie dopo chi lo cita. Sull'impianto in servizio porte, lettori e
+        # punti di accesso non si toccano nemmeno se sono del kit
         for _ in range(3):
             trovati, illeggibili = await self.nostri_sul_controller()
-            da_togliere = [(tipo, token) for tipo in ORDINE_RIMOZIONE for token in trovati.get(tipo, [])]
+            da_togliere = [
+                (tipo, token) for tipo in ORDINE_RIMOZIONE if tipo in self.tipi for token in trovati.get(tipo, [])
+            ]
             if not da_togliere:
                 break
             spento = False
@@ -734,7 +1113,11 @@ class Kit:
         for tipo, tokens in trovati.items():
             for token in tokens:
                 chiave = f"{tipo} {token}"
-                risultato["non_tolti"].append(f"{chiave}: {errori.get(chiave, 'ancora presente')}")
+                if tipo not in self.tipi:
+                    perche = "sull'impianto in servizio il kit non toglie porte, lettori e punti di accesso"
+                else:
+                    perche = errori.get(chiave, "ancora presente")
+                risultato["non_tolti"].append(f"{chiave}: {perche}")
         risultato["non_tolti"] += [f"elenco {t} non leggibile: non so se è rimasto qualcosa" for t in illeggibili]
         return risultato
 
@@ -763,6 +1146,32 @@ class Kit:
             rimasti[nome] = valore
         return rimasti
 
+    async def fotografia_impianto(self) -> dict:
+        """Impianto in servizio: tutti gli elenchi che il kit sa leggere e le impostazioni del dispositivo, solo
+        letture, con le password nascoste. {"letti": nome → valore, "non_letti": nome → perché}."""
+        letti: dict = {}
+        non_letti: dict[str, str] = {}
+        for nome, metodo in ELENCHI_IMPIANTO.items():
+            esito = await self.tenta(metodo)
+            if esito.ok and isinstance(esito.valore, list | tuple):
+                letti[nome] = senza_password(list(esito.valore))
+            else:
+                non_letti[nome] = esito.spiegazione() if not esito.ok else "risposta non riconosciuta"
+        esito = await self.tenta("list_io")
+        if esito.ok and isinstance(esito.valore, list | tuple) and len(esito.valore) == 2:
+            letti["morsetti"], letti["assegnazioni_io"] = (senza_password(list(v or [])) for v in esito.valore)
+        else:
+            non_letti["morsetti"] = non_letti["assegnazioni_io"] = (
+                esito.spiegazione() if not esito.ok else "risposta non riconosciuta"
+            )
+        for nome, metodo in DISPOSITIVO_IMPIANTO.items():
+            esito = await self.tenta(metodo)
+            if esito.ok and isinstance(esito.valore, dict):
+                letti[nome] = senza_password(esito.valore)
+            else:
+                non_letti[nome] = esito.spiegazione() if not esito.ok else "risposta non riconosciuta"
+        return {"ora": datetime.now(tz=UTC).isoformat(timespec="seconds"), "letti": letti, "non_letti": non_letti}
+
     async def identita(self) -> bool:
         """Il controller risponde ed è quello di banco. Uno diverso ferma tutto."""
         esito = await self.tenta("device_info")
@@ -771,6 +1180,21 @@ class Kit:
         serie = serie_pulita((esito.valore or {}).get("SerialNumber", ""))
         if serie != self.serie:
             raise Rifiuto(f"il controller ha il numero di serie {serie or '(nessuno)'}, non {self.serie}")
+        return True
+
+    async def scorta_libera(self, numero: str) -> bool:
+        """Impianto in servizio: la tessera di scorta numero non è sul controller (né tra le tessere della fotografia
+        né tra quelle lette adesso); se è libera i controlli del Registratore la conoscono."""
+        tessere = await self.elenco("tessera")
+        if tessere is None:
+            self.nota(f"tessere non lette: non so se la tessera {numero} è già sul controller, non la uso")
+            return False
+        presenti = [t for t in tessere if not nostro("tessera", t) and con_numero(t, numero)]
+        if numero.lower() in self.permessi.numeri_veri or presenti:
+            dove = ", ".join(f"{t.get('token')} (utente {t.get('UserToken')})" for t in presenti) or "nella fotografia"
+            self.nota(f"la tessera {numero} è già sul controller ({dove}): serve una tessera di scorta mai registrata")
+            return False
+        self.permessi.scorta = numero.lower()
         return True
 
     async def aspetta_controller(self, secondi: float) -> bool:
@@ -921,7 +1345,8 @@ class Kit:
 
     async def lettore_vero(self, testo: str = "") -> dict | None:
         """Punto di accesso con un lettore, gestito dal controller e non del kit, per i passaggi di tessera e per il
-        pulsante di uscita della sua porta; testo: la richiesta all'operatore se non c'è."""
+        pulsante di uscita della sua porta; testo: la richiesta all'operatore se non c'è. Sull'impianto in servizio
+        non chiede mai di configurarne uno: i profili del kit potranno citare solo questo punto."""
         for tentativo in range(2):
             punti = await self.elenco("punto") or []
             controllori = (await self.tenta("list_access_controllers")).valore or []
@@ -931,7 +1356,12 @@ class Kit:
             ]
             adatti.sort(key=lambda p: {"Name": "Direction", "Value": "in"} not in (p.get("Attribute") or []))
             if adatti:
+                if self.servizio:
+                    self.permessi.punti_citabili.add(str(adatti[0]["token"]))
                 return adatti[0]
+            if self.servizio:
+                self.nota("nessun punto di accesso con un lettore gestito dal controller (sull'impianto non si crea)")
+                return None
             if tentativo or not self.operatore.interattivo:
                 return None
             risposta = self.operatore.chiedi(
@@ -945,20 +1375,41 @@ class Kit:
             self.sezione["lettore_configurato"] = True
         return None
 
-    def numero_tessera(self) -> str:
+    @property
+    def nome_tessera(self) -> str:
+        return "tessera di scorta" if self.servizio else "tessera"
+
+    async def numero_tessera(self) -> str:
+        """Numero della tessera da passare. Sull'impianto in servizio è la tessera di scorta: mai una che è già sul
+        controller."""
         if not self.tessera and self.operatore.interattivo:
+            di_scorta = " DI SCORTA (mai registrata sull'impianto)" if self.servizio else ""
             self.tessera = self.operatore.chiedi(
                 "numero_tessera",
-                "Scrivi il numero della tessera che passerai sul lettore, come lo legge il controller (per esempio "
-                "c0110b18); Invio per non passare tessere.",
+                f"Scrivi il numero della tessera{di_scorta} che passerai sul lettore, come lo legge il controller (per "
+                "esempio c0110b18); Invio per non passare tessere.",
             )
+        if self.tessera and self.servizio and self.permessi.scorta != self.tessera.lower():
+            if not await self.scorta_libera(self.tessera):
+                self.tessera = ""
         return self.tessera
 
     # Svolgimento
 
-    async def avvio(self) -> None:
-        """Controlli prima di scrivere qualsiasi cosa: controller giusto e non in servizio."""
-        self.scrivi("== Controlli prima di partire ==")
+    def prove_da_fare(self, prove: list[str]) -> list[str]:
+        """Le prove chieste, nell'ordine giusto. Sull'impianto in servizio prima di qualsiasi richiesta: Rifiuto per
+        quello che lì non si fa (T12, --limiti...), e in testa al rapporto le prove fatte, quelle non chieste e quelle
+        escluse."""
+        if self.servizio:
+            scelte_in_servizio(prove, self.limiti, self.tetti_chiesti, self.quante, self.operatore.interattivo)
+            testa = self.dati["impianto_in_servizio"]
+            testa["prove"] = [c for c in ORDINE if c in prove]
+            testa["non_chieste"] = [c for c in PROVE_IN_SERVIZIO if c not in prove]
+        return [c for c in ORDINE if c in prove]
+
+    async def controller_giusto(self, quale: str) -> None:
+        """Modello, firmware, serie e impronta del certificato nel rapporto; Rifiuto se il controller non risponde o
+        se il numero di serie non è quello di --serie."""
         esito = await self.tenta("device_info")
         if not esito.ok:
             raise Rifiuto(esito.spiegazione())
@@ -976,8 +1427,87 @@ class Kit:
         if serie_pulita(info.get("SerialNumber", "")) != self.serie:
             raise Rifiuto(
                 f"il numero di serie del controller è {info.get('SerialNumber')!r}, non {self.serie!r}: "
-                "non è il controller di banco indicato"
+                f"non è il controller {quale} indicato"
             )
+
+    def conferma(self, chiave: str, domanda: str) -> None:
+        """Conferma esplicita dell'operatore, con sì: senza, sull'impianto in servizio il kit non parte."""
+        risposta = self.operatore.chiedi(chiave, f"{domanda} Scrivi sì per confermare.")
+        self.dati["impianto_in_servizio"]["conferme"][chiave] = risposta
+        if risposta.strip().lower() not in ("sì", "si"):
+            raise Rifiuto(f"manca la conferma «{domanda}»: sull'impianto in servizio il kit non parte")
+
+    async def avvio_in_servizio(self) -> None:
+        """Impianto in servizio, prima di scrivere qualsiasi cosa: conferme dell'operatore (prima di qualsiasi
+        richiesta), controller giusto, fotografia completa dell'impianto (se un elenco non si legge il kit non parte),
+        tessera di scorta che non è sul controller, oggetti del kit rimasti da una volta precedente tolti."""
+        testa = self.dati["impianto_in_servizio"]
+        self.scrivi("== IMPIANTO IN SERVIZIO ==")
+        self.scrivi(f"  prove: {', '.join(testa['prove']) or 'nessuna'}")
+        if testa["non_chieste"]:
+            self.scrivi(f"  non chieste questa volta: {', '.join(testa['non_chieste'])}")
+        self.scrivi("  escluse:")
+        for cosa, perche in testa["escluse"].items():
+            self.scrivi(f"    {cosa}: {perche}")
+        if not self.operatore.interattivo:
+            raise Rifiuto("sull'impianto in servizio servono le conferme dell'operatore: niente --non-interattivo")
+        self.conferma(
+            "addon_fermo",
+            "L'add-on Axis Access Manager è FERMO in Home Assistant (altrimenti la sincronizzazione importerebbe le "
+            "tessere di prova)?",
+        )
+        self.conferma(
+            "tecnico_sul_posto",
+            "Il tecnico è sul posto, con la porta aperta per la manutenzione, pronto a staccare e riattaccare il cavo "
+            "di rete del controller e a passare la tessera di scorta, e durante le prove nessuno cambia la "
+            "configurazione del controller dalla sua pagina web?",
+        )
+        self.scrivi("\n== Controlli prima di partire ==")
+        await self.controller_giusto("dell'impianto")
+        self.scrivi("  fotografia dell'impianto, prima di scrivere qualsiasi cosa")
+        foto = self.foto_prima = await self.fotografia_impianto()
+        self.dati["fotografie"] = {"prima": foto}
+        self.salva()
+        if foto["non_letti"]:
+            illeggibili = "; ".join(f"{nome}: {perche}" for nome, perche in foto["non_letti"].items())
+            raise Rifiuto(
+                f"prima di partire non si leggono {illeggibili}. Senza la fotografia completa dell'impianto il kit non "
+                "scrive niente"
+            )
+        conteggi = ", ".join(
+            f"{nome} {len(per_oggetto(nome, valore))}"
+            for nome, valore in foto["letti"].items()
+            if nome not in DISPOSITIVO_IMPIANTO
+        )
+        self.nota(f"fotografia dell'impianto: {conteggi}; impostazioni: {', '.join(DISPOSITIVO_IMPIANTO)}")
+        vere = [t for t in foto["letti"]["tessere"] if isinstance(t, dict) and not nostro("tessera", t)]
+        self.permessi.numeri_veri = {n for t in vere for n in numeri_di(t)}
+        if self.tessera:
+            gia = [f"{t.get('token')} (utente {t.get('UserToken')})" for t in vere if con_numero(t, self.tessera)]
+            if gia:
+                raise Rifiuto(
+                    f"la tessera {self.tessera} di --tessera è già sul controller: {', '.join(gia)}. Per T4 e T8 serve "
+                    "una tessera di scorta mai registrata sull'impianto"
+                )
+            self.permessi.scorta = self.tessera.lower()
+            self.nota(f"tessera di scorta {self.tessera}: non è sul controller")
+        await self.pulizia_iniziale()
+
+    async def pulizia_iniziale(self) -> None:
+        pulizia = await self.pulisci()
+        self.sezione["pulizia"] = pulizia
+        if pulizia["tolti"]:
+            self.nota(f"tolti {len(pulizia['tolti'])} oggetti aam_prova_ rimasti da una volta precedente")
+        if pulizia["non_tolti"]:
+            raise Rifiuto(f"restano oggetti del kit da una volta precedente: {', '.join(pulizia['non_tolti'])}")
+
+    async def avvio(self) -> None:
+        """Controlli prima di scrivere qualsiasi cosa: controller giusto e non in servizio (con
+        --impianto-in-servizio quelli dell'impianto in servizio)."""
+        if self.servizio:
+            return await self.avvio_in_servizio()
+        self.scrivi("== Controlli prima di partire ==")
+        await self.controller_giusto("di banco")
         estranei = []
         for tipo in ("utente", "tessera"):
             oggetti = await self.elenco(tipo)
@@ -992,15 +1522,10 @@ class Kit:
             raise Rifiuto(
                 f"sul controller ci sono {len(estranei)} utenti o tessere che non sono del kit, come in un "
                 f"controller in servizio: {', '.join(estranei[:10])}. Il kit va usato solo su un controller di "
-                "banco resettato"
+                "banco resettato (su un impianto in servizio solo con --impianto-in-servizio: vedi LEGGIMI.md)"
             )
         self.nota("nessun utente e nessuna tessera estranei: si può partire")
-        pulizia = await self.pulisci()
-        self.sezione["pulizia"] = pulizia
-        if pulizia["tolti"]:
-            self.nota(f"tolti {len(pulizia['tolti'])} oggetti aam_prova_ rimasti da una volta precedente")
-        if pulizia["non_tolti"]:
-            raise Rifiuto(f"restano oggetti del kit da una volta precedente: {', '.join(pulizia['non_tolti'])}")
+        await self.pulizia_iniziale()
 
     async def esegui_prova(self, codice: str) -> None:
         self.sezione = self.dati["prove"][codice] = {
@@ -1017,7 +1542,9 @@ class Kit:
                 self.sezione["esito"] = "saltata"
                 self.nota("saltata: il controller non risponde")
                 return
-            if codice != "T12":
+            if self.servizio:
+                prima = await self.fotografia_impianto()
+            elif codice != "T12":
                 prima = self.estranei(await self.fotografia())
             await getattr(self, codice.lower())()
         except (Vietata, Rifiuto, asyncio.CancelledError, KeyboardInterrupt):
@@ -1045,6 +1572,8 @@ class Kit:
             self.nota(f"NON TOLTI: {'; '.join(pulizia['non_tolti'])}")
         if prima is None or not await self.identita():
             return
+        if self.servizio:
+            return await self.impianto_dopo_la_prova(prima)
         dopo = self.estranei(await self.fotografia())
         cambiati = [k for k in prima if json.dumps(prima[k], default=str) != json.dumps(dopo.get(k), default=str)]
         self.sezione["estranei_cambiati"] = {k: {"prima": prima[k], "dopo": dopo.get(k)} for k in cambiati}
@@ -1054,6 +1583,76 @@ class Kit:
                 f"ATTENZIONE: cambiati oggetti che non sono del kit: {', '.join(cambiati)}"
                 + (perche if self.sezione.get("lettore_configurato") else "")
             )
+
+    async def impianto_dopo_la_prova(self, prima: dict) -> None:
+        """Impianto in servizio: dopo la pulizia di ogni prova rilegge tutto e lo confronta con la fotografia di prima
+        della prova. Se un oggetto che non è del kit è cambiato il kit si ferma (esegui): niente prove successive.
+        Impostazioni del dispositivo e morsetti il kit non li scrive mai: se risultano cambiati (un campo che cambia
+        da solo?) lo scrive e va avanti; il confronto finale li riporta comunque."""
+        dopo = await self.fotografia_impianto()
+        diverse, non_riletti = differenze(prima, dopo)
+        self.sezione["impianto"] = {"differenze": diverse, "non_riletti": non_riletti}
+        if non_riletti:
+            self.nota(f"dopo la prova non riletti: {'; '.join(non_riletti)} (il confronto finale li rilegge)")
+        if not diverse:
+            self.nota("impianto riletto dopo la prova: nessun oggetto che non è del kit è cambiato")
+            return
+        oggetti = [d for d in diverse if d["elenco"] not in DISPOSITIVO_IMPIANTO and d["elenco"] != "morsetti"]
+        if oggetti:
+            self.nota("ATTENZIONE: dopo questa prova è CAMBIATO un oggetto dell'impianto:")
+        else:
+            self.nota("ATTENZIONE: cambiate impostazioni del dispositivo o morsetti, che il kit non scrive mai:")
+        for riga in righe_differenze(diverse):
+            self.nota(riga)
+        if oggetti:
+            righe = righe_differenze(oggetti)
+            self.cambiato = "; ".join(righe[:3]) + (f" e altre {len(righe) - 3}" if len(righe) > 3 else "")
+
+    async def verifica_impianto(self) -> None:
+        """Impianto in servizio, alla fine e dopo la pulizia: rilegge tutto e confronta ogni oggetto che non è del kit
+        con la fotografia di partenza, e controlla che non sia rimasto nessun oggetto aam_prova_. Il verdetto chiude
+        il rapporto; un elenco che non si rilegge non vale come invariato."""
+        self.scrivi("\n== Impianto in servizio: confronto con la fotografia di partenza ==")
+        prima = self.foto_prima or {"letti": {}}
+        try:
+            raggiungibile, perche = await self.identita(), "il controller non risponde"
+        except Rifiuto as err:
+            raggiungibile, perche = False, str(err)
+        if raggiungibile:
+            dopo = await self.fotografia_impianto()
+        else:
+            ora = datetime.now(tz=UTC).isoformat(timespec="seconds")
+            dopo = {"ora": ora, "letti": {}, "non_letti": dict.fromkeys(prima["letti"], perche)}
+        self.dati.setdefault("fotografie", {})["dopo"] = dopo
+        diverse, non_riletti = differenze(prima, dopo)
+        rimasti = rimasti_del_kit(dopo)
+        if diverse or rimasti:
+            verdetto = CAMBIATO
+        elif non_riletti:
+            verdetto = NON_VERIFICATO
+        else:
+            verdetto = INVARIATO
+        righe = righe_differenze(diverse) + [f"{r}: oggetto del kit NON TOLTO" for r in rimasti]
+        self.nota(
+            f"riletti {len(prima['letti']) - len(non_riletti)} elenchi e impostazioni su {len(prima['letti'])}; "
+            f"oggetti dell'impianto cambiati, aggiunti o tolti: {len(diverse)}; oggetti aam_prova_ rimasti: "
+            f"{len(rimasti)}"
+        )
+        for voce in non_riletti:
+            self.nota(f"NON RILETTO dopo le prove: {voce}: non vale come invariato")
+        self.dati["impianto_in_servizio"]["verdetto"] = verdetto
+        self.dati["verdetto_impianto"] = {
+            "verdetto": verdetto,
+            "differenze": diverse,
+            "righe": righe,
+            "non_riletti": non_riletti,
+            "rimasti_del_kit": rimasti,
+        }
+        self.scrivi(f"\n{verdetto}")
+        for riga in righe:
+            self.scrivi(f"  {riga}")
+        if verdetto == NON_VERIFICATO:
+            self.scrivi(f"  non riletti: {'; '.join(non_riletti)}")
 
     async def chiusura(self) -> None:
         self.sezione = self.dati["fine"]
@@ -1074,16 +1673,28 @@ class Kit:
             self.scrivi(f"{codice:<4} {prova['esito']:<10} {prova['titolo']}")
         if self.file:
             self.scrivi(f"\nRapporto completo: {self.file}")
+        if self.servizio and self.foto_prima is not None:
+            # Per ultimo: il rapporto finisce con il verdetto sull'impianto
+            await self.verifica_impianto()
         self.dati["fine"]["ora"] = datetime.now(tz=UTC).isoformat(timespec="seconds")
         self.salva()
 
     # Le prove
 
+    def creabili(self, tipi: list[str] | None = None) -> list[str]:
+        """Tipi che la prova crea, nell'ordine di creazione: sull'impianto in servizio solo quelli di TIPI_IN_SERVIZIO
+        (o di tipi), e il rapporto dice quali sono rimasti fuori."""
+        ammessi = tipi or self.tipi
+        fuori = [t for t in ORDINE_CREAZIONE if t not in ammessi]
+        if self.servizio and fuori:
+            self.nota(f"non provati sull'impianto in servizio: {', '.join(fuori)} (il kit non li scrive)")
+        return [t for t in ORDINE_CREAZIONE if t in ammessi]
+
     async def t1(self) -> None:
         """Il token scelto dall'app: l'oggetto nasce con quello e gli elenchi lo restituiscono uguale."""
         rif: dict = {}
         tabella: dict = {}
-        for tipo in ORDINE_CREAZIONE:
+        for tipo in self.creabili():
             esiti = tabella[tipo] = {}
             for variante in ("corto", "40", "64"):
                 if variante == "corto":
@@ -1120,8 +1731,10 @@ class Kit:
         self.sezione["tabella"] = tabella
         buoni = [t for t, esiti in tabella.items() if all(e.startswith("accettato: ") for e in esiti.values())]
         self.nota(f"tipi che accettano il token dell'app fino a 64 caratteri: {', '.join(buoni) or 'nessuno'}")
-        # Una configurazione creata da sola legherebbe la porta o il lettore del kit a relè e morsetti
-        for tipo, metodo in (("porta", "list_door_configurations"), ("lettore", "list_idpoint_configurations")):
+        # Una configurazione creata da sola legherebbe la porta o il lettore del kit a relè e morsetti (sull'impianto
+        # in servizio il kit non crea né porte né lettori)
+        configurazioni = [("porta", "list_door_configurations"), ("lettore", "list_idpoint_configurations")]
+        for tipo, metodo in [] if self.servizio else configurazioni:
             esito = await self.tenta(metodo)
             if esito.ok:
                 proprie = [str(c.get("token")) for c in esito.valore or [] if str(c.get("token")).startswith(PREFISSO)]
@@ -1146,7 +1759,7 @@ class Kit:
             return self.salta("serve l'operatore per staccare e riattaccare il cavo")
         rif: dict = {}
         oggetti: dict[str, dict] = {}
-        for tipo in ORDINE_CREAZIONE:
+        for tipo in self.creabili():
             token = f"{PREFISSO}t2_{tipo}"
             oggetto = self.modello(tipo, token, {**rif, "punti": [rif["punto"]] if "punto" in rif else []})
             esito = await self.crea(tipo, oggetto)
@@ -1156,10 +1769,17 @@ class Kit:
                 self.nota(f"{tipo}: prima scrittura rifiutata ({esito.spiegazione()}), lo salto")
         if not oggetti:
             return self.salta("nessun oggetto creato")
+        # Sull'impianto un controller alimentato dal cavo di rete (PoE) si spegne e riparte: si aspetta di più
+        poe = (
+            " Sull'impianto: se il controller prende la corrente dal cavo di rete (PoE) staccandolo si spegne, e alla "
+            "riaccensione riparte con la configurazione di prima; il kit aspetta fino a 10 minuti."
+            if self.servizio
+            else ""
+        )
         risposta = self.operatore.chiedi(
             "stacca_cavo",
             "Stacca ora il cavo di rete dal controller (non dal PC) e premi Invio. Il kit rimanda le stesse scritture: "
-            "devono andare in tempo scaduto, fino a 10 secondi l'una. Scrivi salta per non farlo.",
+            f"devono andare in tempo scaduto, fino a 10 secondi l'una.{poe} Scrivi salta per non farlo.",
         )
         if risposta.lower() == "salta":
             return self.salta("cavo non staccato")
@@ -1172,8 +1792,9 @@ class Kit:
         self.operatore.chiedi(
             "riattacca_cavo", "Riattacca il cavo e premi Invio: il kit aspetta che il controller risponda di nuovo."
         )
-        if not await self.aspetta_controller(180):
-            raise RuntimeError("il controller non risponde 3 minuti dopo aver riattaccato il cavo")
+        minuti = 10 if self.servizio else 3
+        if not await self.aspetta_controller(60 * minuti):
+            raise RuntimeError(f"il controller non risponde {minuti} minuti dopo aver riattaccato il cavo")
         for tipo, oggetto in oggetti.items():
             esito = await self.crea(tipo, oggetto)
             elenco = await self.elenco(tipo) or []
@@ -1197,7 +1818,7 @@ class Kit:
             "lettore": {"Location": "aam_prova banco", "Timeout": "PT7S"},
             "punto": {"Attribute": [{"Name": "Direction", "Value": "in"}], "AuthenticationProfile": ["CardOnly"]},
         }
-        for tipo in ORDINE_CREAZIONE:
+        for tipo in self.creabili(TIPI_T3_IN_SERVIZIO if self.servizio else None):
             token = f"{PREFISSO}t3_{tipo}"
             completo = self.modello(tipo, token, {**rif, "punti": []}, **omessi[tipo])
             esito = await self.crea(tipo, completo)
@@ -1265,7 +1886,7 @@ class Kit:
         if not self.operatore.interattivo:
             return
         punto = await self.lettore_vero()
-        numero = self.numero_tessera() if punto else ""
+        numero = await self.numero_tessera() if punto else ""
         if not punto or not numero:
             self.nota("passaggi di tessera non fatti: servono un lettore configurato e il numero di una tessera")
             return
@@ -1319,7 +1940,7 @@ class Kit:
                 self.nota(f"{caso}: tessera vera non scritta ({esito.spiegazione()}): passaggio non fatto ({sicura})")
             return
         lettore = punto.get("Name") or punto["token"]
-        invito = f"Passa la tessera {numero} sul lettore di {lettore}."
+        invito = f"Passa la {self.nome_tessera} {numero} sul lettore di {lettore}."
         self.descrivi_passaggio(caso, await self.passaggio("t4_set_disabled", invito, numero, punto["token"]))
 
     async def t4_sospesa_con_disable(self, utente: str, punto: dict, numero: str) -> None:
@@ -1352,7 +1973,7 @@ class Kit:
             self.nota(f"{caso}: DisableCredential {perche}: passaggio non fatto")
             return
         lettore = punto.get("Name") or punto["token"]
-        invito = f"Passa di nuovo la tessera {numero} sul lettore di {lettore}."
+        invito = f"Passa di nuovo la {self.nome_tessera} {numero} sul lettore di {lettore}."
         self.descrivi_passaggio(caso, await self.passaggio("t4_disable", invito, numero, punto["token"]))
 
     async def tessere_con_numero(self, numero: str) -> list[str] | None:
@@ -1404,6 +2025,9 @@ class Kit:
             ("punto con un lettore che non c'è", "punto", {"porta": base.get("porta"), "lettore": assente}),
         ]
         for numero, (caso, tipo, rif) in enumerate(creazioni, 1):
+            if tipo not in self.tipi:
+                self.nota(f"{caso}: non provato sull'impianto in servizio (il kit non scrive punti di accesso)")
+                continue
             token = f"{PREFISSO}t6_rif_{numero}_{tipo}"
             esito = await self.crea(tipo, self.modello(tipo, token, rif))
             letto = await self.leggi(tipo, token) if esito.ok else None
@@ -1420,6 +2044,9 @@ class Kit:
             ("utente in uso da una tessera", "utente", "tessera"),
         ]
         for numero, (caso, tipo, chi_cita) in enumerate(rimozioni, 1):
+            if tipo not in self.tipi or chi_cita not in self.tipi:
+                self.nota(f"{caso}: non provato sull'impianto in servizio (porte, lettori e punti non si toccano)")
+                continue
             rif = await self.catena(f"t6_rim_{numero}")
             if tipo not in rif or chi_cita not in rif:
                 self.nota(f"{caso}: non provato, la catena di oggetti non si è creata")
@@ -1448,6 +2075,9 @@ class Kit:
             ("lettore", "una configurazione di lettore", "/vapix/idpoint", "axtid:RemoveIdPointConfiguration"),
         ]
         for tipo, nome, percorso, metodo in richieste:
+            if tipo not in self.tipi:
+                self.nota(f"{metodo} di {nome} che non c'è: non provato sull'impianto in servizio")
+                continue
             esito = await self.grezza(percorso, metodo, {"Token": [f"{PREFISSO}t7_assente_{tipo}"]})
             stato = next((s.get("stato") for s in esito.http if s.get("stato") != 401), None)
             self.nota(f"{metodo} di {nome} che non c'è: {esito.spiegazione()} (HTTP {stato})")
@@ -1462,7 +2092,7 @@ class Kit:
         punto = await self.lettore_vero()
         if punto is None:
             return self.salta("nessun lettore configurato")
-        numero = self.numero_tessera()
+        numero = await self.numero_tessera()
         if not numero:
             return self.salta("nessun numero di tessera")
         lettore = punto.get("Name") or punto["token"]
@@ -1483,10 +2113,16 @@ class Kit:
             await self.crea("profilo", profilo)
         token = f"{PREFISSO}t8_tessera"
         dati = {"IdData": [{"Name": "Card", "Value": numero}]}
-        invito = f"Passa la tessera {numero} sul lettore di {lettore}."
+        invito = f"Passa la {self.nome_tessera} {numero} sul lettore di {lettore}."
+        # Sull'impianto il kit non crea un altro punto di accesso: il profilo acceso resta senza regole
+        senza_regola = (
+            "profilo acceso senza regole (sull'impianto in servizio il kit non crea un altro punto di accesso)"
+            if not altro.get("punto")
+            else "profilo senza regola per quel punto"
+        )
         casi = [
             ("profilo spento senza regole", profili["spento"]["token"], True),
-            ("profilo senza regola per quel punto", profili["altro_punto"]["token"], True),
+            (senza_regola, profili["altro_punto"]["token"], True),
             ("CredentialAccessProfile vuoto", "", True),
             ("credenziale disabilitata", profili["giusto"]["token"], False),
         ]
@@ -1607,14 +2243,18 @@ class Kit:
             "OpenTooLongTime": "PT1M",
             "PreAlarmTime": "PT0.5S",
         }
-        porta = f"{PREFISSO}t10_porta"
-        mandata = self.modello("porta", porta, **durate)
-        esito = await self.crea("porta", mandata)
-        letta = await self.leggi("porta", porta) if esito.ok else None
-        for chiave, valore in durate.items():
-            self.nota(f"durata {chiave} scritta {valore}, letta {(letta or {}).get(chiave)!r}")
-        self.nota(f"porta: {json.dumps(confronta(mandata, letta), ensure_ascii=False)}")
-        rif = {"porta": porta} if letta else {}
+        rif: dict = {}
+        if "porta" in self.tipi:
+            porta = f"{PREFISSO}t10_porta"
+            mandata = self.modello("porta", porta, **durate)
+            esito = await self.crea("porta", mandata)
+            letta = await self.leggi("porta", porta) if esito.ok else None
+            for chiave, valore in durate.items():
+                self.nota(f"durata {chiave} scritta {valore}, letta {(letta or {}).get(chiave)!r}")
+            self.nota(f"porta: {json.dumps(confronta(mandata, letta), ensure_ascii=False)}")
+            rif = {"porta": porta} if letta else {}
+        else:
+            self.nota("durate della porta non provate sull'impianto in servizio (il kit non scrive porte)")
         altri = [
             ("lettore", {"Timeout": "PT3.000S"}),
             ("fascia", {}),
@@ -1622,6 +2262,9 @@ class Kit:
             ("punto", {"Attribute": [{"Name": "Direction", "Value": "in"}, {"Name": "a_aam", "Value": "1"}]}),
         ]
         for tipo, campi in altri:
+            if tipo not in self.tipi:
+                self.nota(f"{tipo}: non provato sull'impianto in servizio")
+                continue
             if tipo == "punto" and not ("porta" in rif and "lettore" in rif):
                 self.nota("punto: non provato, mancano porta o lettore")
                 continue
@@ -1636,14 +2279,26 @@ class Kit:
         self.nota("non provato l'ordine di Configuration: il kit non scrive le configurazioni di porte e lettori")
 
     async def t11(self) -> None:
-        """Elenchi senza oggetti: la chiave c'è vuota o manca?"""
+        """Elenchi senza oggetti: la chiave c'è vuota o manca? Sull'impianto in servizio solo gli elenchi che sono
+        vuoti anche lì: per gli altri la prova non è fattibile e il rapporto lo dice."""
         for nome, percorso, metodo, chiave in ELENCHI_T11:
-            letture = [await self.grezza(percorso, metodo, {"Limit": vapix.CREDENTIAL_PAGE_SIZE}) for _ in range(2)]
+            richiesta = {"Limit": vapix.CREDENTIAL_PAGE_SIZE}
+            letture = [await self.grezza(percorso, metodo, richiesta) for _ in range(1 if self.servizio else 2)]
             prima = letture[0]
             if not prima.ok:
                 self.nota(f"{nome} ({metodo}): {prima.spiegazione()}")
                 continue
             risposta = prima.valore if isinstance(prima.valore, dict) else {}
+            if self.servizio:
+                presenti = risposta.get(chiave)
+                if isinstance(presenti, list) and presenti:
+                    self.sezione.setdefault("non_fattibili_in_servizio", []).append(nome)
+                    self.nota(
+                        f"{nome}: «non fattibile in servizio»: sull'impianto l'elenco non è vuoto (oggetti: "
+                        f"{len(presenti)}), la prova lo vuole vuoto"
+                    )
+                    continue
+                letture.append(await self.grezza(percorso, metodo, richiesta))
             uguali = json.dumps(prima.valore, sort_keys=True) == json.dumps(letture[1].valore, sort_keys=True)
             if chiave not in risposta:
                 come = "chiave ASSENTE"
@@ -1797,10 +2452,11 @@ class Kit:
             await self.t18_limiti()
         else:
             self.sezione["limiti"] = {"provati": False}
+            dove = "sull'A1210 di banco" if self.servizio else ""
             self.nota(
                 "T18 parziale: solo i tempi. NON provati i limiti con CapabilityViolated (tessere, utenti, profili, "
                 "fasce, eccezioni per fascia, regole per profilo) né le aperture con il pulsante durante la "
-                "scrittura: si provano con --limiti"
+                f"scrittura: si provano con --limiti{' ' + dove if dove else ''}"
             )
         lente = [o for o in self.sezione["operazioni"] if o["durata_s"] > 5]
         if lente:
@@ -2125,22 +2781,35 @@ class Kit:
 
 
 async def esegui(kit: Kit, prove: list[str]) -> dict:
-    """Controlli, prove scelte nell'ordine giusto, pulizia finale. Rifiuto se il kit non deve partire."""
+    """Controlli, prove scelte nell'ordine giusto, pulizia finale. Rifiuto se il kit non deve partire; sull'impianto
+    in servizio anche per le prove che lì non si fanno e, dopo la pulizia e il confronto finale, se una prova ha
+    cambiato un oggetto dell'impianto (ImpiantoCambiato: le prove successive non si fanno)."""
     try:
+        da_fare = kit.prove_da_fare(prove)
         await kit.avvio()
-        for codice in ORDINE:
-            if codice in prove:
-                await kit.esegui_prova(codice)
+        for codice in da_fare:
+            await kit.esegui_prova(codice)
+            if kit.cambiato:
+                raise ImpiantoCambiato(
+                    f"dopo {codice} è cambiato un oggetto dell'impianto ({kit.cambiato}): le prove successive non si "
+                    "fanno"
+                )
     except Vietata as err:
         kit.dati["vietata"] = str(err)
         kit.scrivi(f"\nFERMO: il kit stava per mandare una richiesta vietata, non è partita: {err}")
     finally:
-        if kit.dati["prove"] or kit.dati["avvio"].get("pulizia"):
+        if kit.dati["prove"] or kit.dati["avvio"].get("pulizia") or kit.scritture:
             await kit.chiusura()
         else:
             kit.salva()
         await kit.client.aclose()
     return kit.dati
+
+
+def codice_di_uscita(dati: dict, codice: int) -> int:
+    """Sull'impianto in servizio il verdetto conta più di tutto il resto: 3 impianto cambiato, 4 non verificato."""
+    verdetto = (dati.get("verdetto_impianto") or {}).get("verdetto")
+    return {CAMBIATO: 3, NON_VERIFICATO: 4}.get(verdetto, codice)
 
 
 def tetto(valore: str) -> tuple[str, int]:
@@ -2153,14 +2822,33 @@ def tetto(valore: str) -> tuple[str, int]:
 
 def argomenti(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Prove al banco sull'A1210 (T1-T12, T16, T18). Solo su un controller di banco resettato."
+        description="Prove al banco sull'A1210 (T1-T12, T16, T18). Solo su un controller di banco resettato, oppure "
+        "con --impianto-in-servizio sul controller di un impianto in servizio (solo le prove che non toccano niente "
+        "di quello che c'è)."
     )
     parser.add_argument("--host", required=True, help="indirizzo del controller, anche con :porta")
     parser.add_argument("--utente", default="root", help="utente del controller (la password la chiede il kit)")
-    parser.add_argument("--serie", required=True, help="numero di serie dall'etichetta del controller di banco")
+    parser.add_argument("--serie", required=True, help="numero di serie dall'etichetta del controller")
+    parser.add_argument(
+        "--impianto-in-servizio",
+        action="store_true",
+        help="controller di un impianto in servizio: solo T1-T11, T16 e T18 senza --limiti, solo su utenti, tessere, "
+        "profili e fasce del kit, fotografia dell'impianto prima e dopo (vedi LEGGIMI.md)",
+    )
     parser.add_argument("--prova", action="append", choices=ORDINE, help="solo questa prova; si può ripetere")
-    parser.add_argument("--tessera", default="", help="numero della tessera da passare sul lettore (T4 e T8)")
-    parser.add_argument("--quante", type=int, default=500, help="tessere da scrivere in T18 (di serie 500)")
+    parser.add_argument(
+        "--tessera",
+        default="",
+        help="numero della tessera da passare sul lettore (T4 e T8); sull'impianto una tessera di scorta mai "
+        "registrata",
+    )
+    parser.add_argument(
+        "--quante",
+        type=int,
+        default=None,
+        help=f"tessere da scrivere in T18 (di serie 500; sull'impianto in servizio {QUANTE_IN_SERVIZIO}, al massimo "
+        f"{QUANTE_MASSIME_IN_SERVIZIO})",
+    )
     parser.add_argument(
         "--limiti",
         action="store_true",
@@ -2186,6 +2874,16 @@ def main(argv: list[str] | None = None) -> int:
     scelte = argomenti(argv)
     # Console di Windows: un nome con un carattere che non sa scrivere non deve fermare il kit a metà
     sys.stdout.reconfigure(errors="replace")
+    servizio = scelte.impianto_in_servizio
+    quante = scelte.quante if scelte.quante is not None else (QUANTE_IN_SERVIZIO if servizio else 500)
+    prove = scelte.prova or (PROVE_IN_SERVIZIO if servizio else ORDINE)
+    if servizio:
+        # Prima della password e di qualsiasi richiesta al controller
+        try:
+            scelte_in_servizio(prove, scelte.limiti, dict(scelte.tetto), quante, not scelte.non_interattivo)
+        except Rifiuto as err:
+            print(f"\nNON PARTO: {err}")
+            return 2
     password = os.environ.get("AAM_BANCO_PASSWORD") or getpass.getpass(f"Password di {scelte.utente} sul controller: ")
     client, registro = cliente(scelte.host, scelte.utente, password, scelte.verifica_certificato)
     operatore = SenzaOperatore() if scelte.non_interattivo else Operatore()
@@ -2194,25 +2892,34 @@ def main(argv: list[str] | None = None) -> int:
         registro,
         scelte.serie,
         operatore,
-        quante=scelte.quante,
+        quante=quante,
         tessera=scelte.tessera,
         limiti=scelte.limiti,
         tetti=dict(scelte.tetto),
+        servizio=servizio,
     )
     ora = datetime.now().strftime("%Y%m%d_%H%M%S")
     kit.file = Path(scelte.uscita or f"prove_a1210_{serie_pulita(scelte.serie)}_{ora}.json")
     try:
-        dati = asyncio.run(esegui(kit, scelte.prova or ORDINE))
+        dati = asyncio.run(esegui(kit, prove))
     except Rifiuto as err:
         kit.dati["rifiuto"] = str(err)
         kit.salva()
         print(f"\n{'MI SONO FERMATO' if kit.dati['prove'] else 'NON PARTO'}: {err}")
-        return 2
+        codice = 2
     except KeyboardInterrupt:
         print(f"\nInterrotto. Quello che il kit ha potuto togliere è nel rapporto: {kit.file}")
-        return 130
-    rimasti = (dati.get("fine", {}).get("pulizia") or {}).get("non_tolti")
-    return 1 if rimasti or dati.get("vietata") else 0
+        codice = 130
+    else:
+        rimasti = (dati.get("fine", {}).get("pulizia") or {}).get("non_tolti")
+        codice = 1 if rimasti or dati.get("vietata") else 0
+    verdetto = kit.dati.get("verdetto_impianto")
+    if verdetto and codice in (2, 130):
+        # Anche così il rapporto a schermo finisce con il verdetto sull'impianto
+        print(f"\n{verdetto['verdetto']}")
+        for riga in verdetto["righe"]:
+            print(f"  {riga}")
+    return codice_di_uscita(kit.dati, codice)
 
 
 if __name__ == "__main__":
