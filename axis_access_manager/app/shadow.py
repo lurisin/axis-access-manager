@@ -25,9 +25,11 @@ WOULD = (
     ("Ricrea", "Ricreerebbe"),
     ("Togli", "Toglierebbe"),
 )
-# Giri del confronto in ombra
+# Giri del confronto in ombra: utenti e tessere dopo ogni sincronizzazione, la programmazione ogni ora e a richiesta
+# (Confronta Ora nella scheda Confronto), con l'ora di ognuno per conto suo
 CARDS_ROUND = "utenti_tessere"
 PROGRAMMING_ROUND = "programmazione"
+MANUAL_ROUND = "confronta_ora"
 # Tipo letto ma non confrontato: lo stato voluto non è calcolato (presa in carico che non si è potuta fare)
 NOT_COMPARED = "non confrontato: presa in carico non calcolata"
 

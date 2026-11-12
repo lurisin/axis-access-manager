@@ -38,13 +38,15 @@ NAMES = (
     "aheadTime",
 )
 
-pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="serve node")
+needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="serve node")
+pytestmark = needs_node
 
 
-def _declarations() -> str:
+def _declarations(names) -> str:
+    """Le dichiarazioni names della pagina com'è: funzioni (fino alla graffa in colonna zero) e costanti di una riga."""
     page = PAGE.read_text(encoding="utf-8")
     found = []
-    for name in NAMES:
+    for name in names:
         block = re.search(rf"^function {name}\(.*?^\}}$", page, re.M | re.S) or re.search(
             rf"^(?:const|let) {name} = .*$", page, re.M
         )
@@ -53,13 +55,16 @@ def _declarations() -> str:
     return "\n".join(found)
 
 
-def run_page(zone: str, calls: dict[str, str], browser: str = "Europe/Athens", now: str = "") -> dict:
-    """Valuta le espressioni calls con le funzioni della pagina: zone è il fuso di Home Assistant (api/me), browser
-    quello del computer, now l'ora di adesso (ISO)."""
+def run_page(
+    zone: str, calls: dict[str, str], browser: str = "Europe/Athens", now: str = "", names=NAMES, prelude: str = ""
+) -> dict:
+    """Valuta le espressioni calls con le dichiarazioni names della pagina: zone è il fuso di Home Assistant (api/me),
+    browser quello del computer, now l'ora di adesso (ISO), prelude codice che viene prima (dati, sostituti)."""
     lines = [
         f"const store = {{me: {{time_zone: {json.dumps(zone)}}}}};",
         f"if ({json.dumps(now)}) {{ const fixed = Date.parse({json.dumps(now)}); Date.now = () => fixed; }}",
-        _declarations(),
+        prelude,
+        _declarations(names),
         "const out = {};",
     ]
     for key, expression in calls.items():

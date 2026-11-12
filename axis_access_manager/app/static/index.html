@@ -4191,10 +4191,12 @@ function cappedRows(rows) {
 function shadowHtml(sh) {
   const rounds = sh?.rounds || {};
   const when = (key, label) => `${label}: ${rounds[key] ? `${esc(relTime(rounds[key].at))}${rounds[key].error ? ` <span style="color:var(--warn)">· ${esc(rounds[key].error)}</span>` : ""}` : "non ancora fatto"}`;
-  const head = `<p class="muted small-text" style="margin:0 0 8px">${when("utenti_tessere", "Utenti e tessere, dopo ogni sincronizzazione")}<br>${when("programmazione", "Programmazione, ogni ora")}</p>`;
-  // Giro senza niente letto (controller che non rispondeva): il motivo è già nella sua riga
-  const failed = new Set(Object.values(rounds).filter((r) => r.error).flatMap((r) => r.kinds));
-  const kinds = (sh?.kinds || []).filter((k) => !failed.has(k.kind));
+  // Il giro di ogni ora e Confronta Ora ognuno con la sua ora: Confronta Ora non sposta il giro orario
+  const head = `<p class="muted small-text" style="margin:0 0 8px">${when("utenti_tessere", "Utenti e tessere, dopo ogni sincronizzazione")}<br>${when("programmazione", "Programmazione, ogni ora")}<br>${when("confronta_ora", "Programmazione, con Confronta Ora")}</p>`;
+  // Tipi il cui ultimo confronto è un giro senza niente letto (controller che non rispondeva): il motivo è già nella
+  // riga del giro. Un giro dopo, riuscito, li rimette nella tabella
+  const failed = Object.values(rounds).filter((r) => r.error);
+  const kinds = (sh?.kinds || []).filter((k) => !failed.some((r) => r.at === k.at && r.kinds.includes(k.kind)));
   if (!kinds.length) return head;
   const line = (k) => {
     if (k.non_letto) return `${statusDot("warn")} Non letto <span class="muted">· ${esc(k.non_letto)}</span>`;
@@ -4214,18 +4216,23 @@ function comparisonHtml(r) {
   const lookHtml = `<h3 class="diff-part">Da Guardare${look.length ? ` (${look.length})` : ""}</h3>${look.length ? `<div class="rs-list">${cappedRows(look)}</div>` : '<p class="muted" style="margin:0">Nessuna sorpresa.</p>'}`;
   const notes = r.notes.length ? `<ul class="diff" style="margin-top:6px">${capped(r.notes, (n) => `<li class="${n.surprise || n.warnings.length ? "del" : "chg"}"><b>${n.surprise || n.warnings.length ? "!" : "~"}</b><span>${esc(n.label)} <span class="muted">· ${esc(n.text)}</span>${n.surprise ? `<span class="diff-fields"><span>Da guardare: ${esc(n.surprise)}</span></span>` : ""}${n.warnings.map((w) => `<span class="diff-fields"><span>${esc(cap(w))}</span></span>`).join("")}</span></li>`)}</ul>` : "";
   const takenHtml = `<h3 class="diff-part">Presa in Carico</h3>${taken.length ? `<p class="muted" style="margin:0">L'app prenderebbe com'è sul controller:</p><div class="cmp-counts">${taken.join("")}</div>` : '<p class="muted" style="margin:0">Niente da prendere in carico.</p>'}${notes}`;
-  // Le righe che cambierebbero qualcosa sono aperte; quelle prese in carico com'erano e quelle uguali si aprono a richiesta
-  const folded = (rows, text, mark) => rows.length ? `<details class="cmp-kind"><summary>${esc(text)}</summary><ul class="diff">${capped(rows, (i) => `<li class="add"><b>${mark}</b>${esc(i.label)}</li>`)}</ul></details>` : "";
+  // Le righe che cambierebbero qualcosa sono aperte; quelle prese in carico com'erano e quelle uguali si aprono a
+  // richiesta. Ogni tipo ha tutte le sue righe: una che è anche in Da Guardare (lì per intero) qui ha il nome e il
+  // rimando. Al collaudo della 0.28.0 la porta da prendere in carico c'era solo in Da Guardare, e Porte non aveva elenco
+  const seen = (i) => top.has(i.key) ? ' <span class="muted">· in Da Guardare</span>' : "";
+  const folded = (rows, text, mark) => rows.length ? `<details class="cmp-kind"><summary>${esc(text)}</summary><ul class="diff">${capped(rows, (i) => `<li class="add"><b>${mark}</b><span>${esc(i.label)}${seen(i)}</span></li>`)}</ul></details>` : "";
   const kinds = r.kinds.map((g) => {
-    const rest = g.rows.filter((i) => !top.has(i.key));
-    const open = rest.filter((i) => !["prende", "uguale"].includes(i.action));
-    const takenRows = rest.filter((i) => i.action === "prende");
-    const same = rest.filter((i) => i.action === "uguale");
+    const changing = g.rows.filter((i) => !["prende", "uguale"].includes(i.action));
+    const open = changing.filter((i) => !top.has(i.key));
+    const looked = changing.filter((i) => top.has(i.key));
+    const takenRows = g.rows.filter((i) => i.action === "prende");
+    const same = g.rows.filter((i) => i.action === "uguale");
     const counts = compareCounts(g.counts);
+    const lookedHtml = looked.length ? `<ul class="diff" style="margin-bottom:6px">${capped(looked, (i) => `<li class="chg"><b>!</b><span>${esc(i.label)} <span class="muted">· ${esc(i.text)}</span>${seen(i)}</span></li>`)}</ul>` : "";
     const body = g.unread ? `<div class="rs-note">${icon("question")}<span>Non letto: ${esc(g.unread)}. Per questo tipo il confronto non toglierebbe, non ricreerebbe e non confermerebbe niente.</span></div>`
       : g.hidden ? `<p class="muted small-text" style="margin:0">Solo il conteggio: ${esc(g.hidden)}.</p>`
       : !g.rows.length ? '<p class="muted small-text" style="margin:0">Nessun oggetto.</p>'
-      : `${open.length ? `<div class="rs-list">${cappedRows(open)}</div>` : ""}${folded(takenRows, `${takenRows.length} da prendere in carico com'è sul controller`, "↓")}${folded(same, `${plural(same.length, "uguale", "uguali")} nell'app e sul controller`, "=")}`;
+      : `${open.length ? `<div class="rs-list">${cappedRows(open)}</div>` : ""}${lookedHtml}${folded(takenRows, `${takenRows.length} da prendere in carico com'è sul controller`, "↓")}${folded(same, `${plural(same.length, "uguale", "uguali")} nell'app e sul controller`, "=")}`;
     return `<h3 class="diff-part">${esc(g.title)}${counts ? ` <span class="muted small-text">· ${esc(counts)}</span>` : ""}</h3>${body}`;
   }).join("");
   return `${alerts}<p class="muted small-text" style="margin:0">Letto ${esc(relTime(r.at))}${r.serial ? ` dal controller ${esc(r.serial)}` : ""}. Nelle differenze, barrato com'è sul controller e dopo la freccia com'è nell'app.</p>${lookHtml}${takenHtml}${kinds}`;
