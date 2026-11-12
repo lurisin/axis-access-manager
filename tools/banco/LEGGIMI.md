@@ -149,13 +149,15 @@ di fabbrica**: T12 non si fa.
 ### Da preparare prima, sul PC che porterai
 
 1. **Python 3.12 o più recente**: `python3 --version` (su Windows `py --version`).
-2. **Una copia del repository**, con questa versione del kit (ramo `f1/kit-impianto`, finché non è unito a `main`):
+2. **Una copia del repository** con questa versione del kit, che è in `main`:
 
    ```
    git clone https://github.com/lurisin/axis-access-manager.git
    cd axis-access-manager
-   git checkout f1/kit-impianto
    ```
+
+   Se hai già una copia, aggiornala con `git checkout main` e `git pull`. Per controllare di avere la versione
+   giusta: `python3 tools/banco/prove_a1210.py --help` deve elencare `--impianto-in-servizio`.
 
 3. **Un ambiente Python a parte con l'unica dipendenza del kit, `httpx` 0.28.1.** Il kit usa il client VAPIX
    dell'add-on, che importa solo `httpx`; pip installa da solo quello che serve a httpx (`httpcore`, `h11`, `anyio`,
