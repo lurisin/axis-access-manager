@@ -2494,17 +2494,24 @@ async def _stop_listening(app: FastAPI, offline: bool = True, remove: bool = Fal
     ripubblica subito le stesse entità di Home Assistant (vedi _stays_online); remove=True se non si collega più al
     broker (vedi _stops_listening): le entità si tolgono da Home Assistant."""
     state = app.state
-    bridge = getattr(state, "bridge", None)
-    if bridge:
-        # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
-        # ordinata il broker scarta il messaggio di addio)
-        await bridge.stop(offline, remove)
-    for name in ("monitor_task", "live_task"):
+
+    async def cancel(name: str) -> None:
         task = getattr(state, name, None)
         if task:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+    # Prima il WebSocket degli eventi: fermandosi cambia lo stato, che si pubblica con il broker ancora collegato.
+    # Fermato dopo l'ascolto MQTT, lo stato partiva con il client già scollegato (collaudo 0.28.0: WARNING
+    # «Pubblicazione su …/stato non riuscita: [code:4] The client is not currently connected» a ogni spegnimento)
+    await cancel("live_task")
+    bridge = getattr(state, "bridge", None)
+    if bridge:
+        # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
+        # ordinata il broker scarta il messaggio di addio)
+        await bridge.stop(offline, remove)
+    await cancel("monitor_task")
     return state.raw_controller, state.service.lock, [state.monitor, *state.intercoms], state.readers
 
 
