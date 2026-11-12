@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.28.1
+
+Correzioni dal collaudo in sola lettura della 0.28.0 sull'impianto: utenti e tessere risultavano uguali al controller, e l'unica differenza vera da sistemare era la validità dei profili. Sul controller non cambia niente rispetto alla 0.28.0.
+
+- **Validità 1997–2038 dei profili.** Sul controller i profili H24 e Manutentore hanno la validità «dal 1997 al 2038», scritta dal sito Axis, mentre nell'app non ne hanno nessuna: il confronto li segnava da riportare, con due avvisi nel log a ogni avvio. Ora una validità che comincia il 1° gennaio 2000 o prima, o che finisce il 1° gennaio 2038 o dopo, vale come nessun limite, per i profili e per le tessere. Tutte le altre date restano differenze. La regola va confermata con le prove al banco prima che l'app scriva da sola.
+- **Orari nel fuso dell'impianto.** La pagina mostra tutti gli orari (registro, notifiche, Stato, Confronto, persone, backup, Attività) nel fuso di Home Assistant, anche da un computer o da un telefono in un altro fuso: al collaudo un browser in Europe/Athens vedeva tutto un'ora avanti. Seguono il fuso dell'impianto anche «oggi» e «ieri», i giorni del registro e le date di validità scritte nella scheda della persona: «fino alle 18:00» vuol dire le 18:00 dell'impianto da qualunque computer. Se l'add-on non conosce il fuso di Home Assistant si usa quello del browser, come prima.
+- **Spegnimento e nuova configurazione senza avvisi.** A ogni spegnimento dell'add-on il log mostrava «Pubblicazione su axis_access_manager/stato non riuscita: … The client is not currently connected», perché lo stato partiva quando l'add-on si era già scollegato dal broker; dopo una modifica in Impianti lo stesso avviso poteva arrivare dieci secondi dopo come «Operation timed out». Ora lo stato parte e viene confermato prima di scollegarsi.
+- **Confronto (prova).** Ogni tipo ha il suo elenco: prima Porte ne restava senza quando la porta, da prendere in carico, compariva solo in Da Guardare; ora c'è, con il rimando «in Da Guardare». Confronta Ora non cambia più l'ora di «Programmazione, ogni ora» del confronto in ombra e non sposta il giro orario: la scheda mostra a parte l'ora dell'ultimo Confronta Ora.
+
 ## 0.28.0
 
 Secondo passo verso l'app unica fonte di verità: l'app calcola come dovrebbe essere programmato il controller e lo confronta con quello che legge, senza scrivere niente. Le settimane di confronto sull'impianto dicono se il calcolo è esatto prima che l'app scriva da sola. Sul controller non cambia niente rispetto alla 0.27.
