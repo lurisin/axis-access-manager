@@ -7,9 +7,9 @@ per campo. Qui nessuna funzione scrive sul controller: si chiamano solo i metodi
 
 Il letto si proietta sulle sole chiavi che l'app scrive (FIELDS), perché il controller completa da solo chiavi di
 IdPointConfiguration e DoorConfiguration, e si normalizza: date in UTC con la Z (una validità 1997–2038 vale come
-nessun limite, vedi OPEN_FROM), numero di tessera senza maiuscole, durate in secondi, fasce confrontate per significato,
-elenchi senza un ordine che conti messi in ordine. Le regole di normalizzazione vengono dalle prove al banco (T3, T9,
-T10, T11): finché non ci sono, il confronto può mostrare differenze false, ma non scrive niente.
+nessun limite, vedi OPEN_FROM e OPEN_TO), numero di tessera senza maiuscole, durate in secondi, fasce confrontate per
+significato, elenchi senza un ordine che conti messi in ordine. Le regole di normalizzazione vengono dalle prove al
+banco (T3, T9, T10, T11): finché non ci sono, il confronto può mostrare differenze false, ma non scrive niente.
 """
 
 from __future__ import annotations
@@ -632,25 +632,29 @@ SURPRISE_DUPLICATE = "doppione per numero di tessera"
 # Validità «senza limite». Sul controller vero (collaudo 0.28.0) i profili H24 e Manutentore hanno ValidFrom
 # 1997-01-01T00:00:00Z e ValidTo 2038-01-01T00:00:00Z: l'app non ha mai scritto queste date, vengono dal sito Axis, e
 # vogliono dire «sempre» come la validità vuota che scrive l'app. Il confronto tratta come vuota (nessun limite) una
-# ValidFrom uguale o precedente a OPEN_FROM e una ValidTo uguale o successiva a OPEN_TO, nei profili, nelle tessere e
-# nei loro CredentialAccessProfile (gli utenti Axis non hanno validità): altrimenti l'allineatore riscriverebbe il
-# profilo usato da tutte le tessere. Nessuna altra data cambia significato. REGOLA DA CONFERMARE con le prove al
+# ValidFrom uguale o precedente a OPEN_FROM e una ValidTo fra OPEN_TO e OPEN_TO_LAST compresi, nei profili, nelle
+# tessere e nei loro CredentialAccessProfile (gli utenti Axis non hanno validità): altrimenti l'allineatore
+# riscriverebbe il profilo usato da tutte le tessere. OPEN_TO_LAST è l'ultimo secondo dei 32 bit (19/01/2038 03:14:07
+# UTC): il «per sempre» del sito Axis sta fra il 1° e il 19 gennaio 2038. Una ValidTo dopo è una data vera (per esempio
+# una scadenza voluta il 31/12/2040) e resta una differenza: con la regola della 0.28.1 («dal 2038 in poi») sarebbe
+# risultata uguale a nessuna scadenza. Nessuna altra data cambia significato. REGOLA DA CONFERMARE con le prove al
 # banco: che un profilo (e una tessera) con la validità vuota apra sull'A1210 come uno con 1997–2038; finché non è
 # provato, questa regola decide solo il confronto.
 OPEN_FROM = datetime(2000, 1, 1, tzinfo=UTC)
 OPEN_TO = datetime(2038, 1, 1, tzinfo=UTC)
+OPEN_TO_LAST = datetime(2038, 1, 19, 3, 14, 7, tzinfo=UTC)
 
 
 def _utc(value: str, key: str = "") -> str:
     """Data e ora in UTC con la Z, come le scrive l'app; il testo com'è se non si legge. key "ValidFrom" o "ValidTo":
-    una data senza limite (OPEN_FROM, OPEN_TO) è vuota."""
+    una data senza limite (fino a OPEN_FROM, fra OPEN_TO e OPEN_TO_LAST) è vuota."""
     try:
         parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
     except ValueError:
         return value
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
-    if (key == "ValidFrom" and parsed <= OPEN_FROM) or (key == "ValidTo" and parsed >= OPEN_TO):
+    if (key == "ValidFrom" and parsed <= OPEN_FROM) or (key == "ValidTo" and OPEN_TO <= parsed <= OPEN_TO_LAST):
         return ""
     return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -916,7 +920,7 @@ def exceptions_meaning(text: str | None) -> str:
 
 
 def _canon(key: str, value):
-    """Valore nella forma del confronto: date in UTC (vuote se senza limite, OPEN_FROM e OPEN_TO), durate in secondi,
+    """Valore nella forma del confronto: date in UTC (vuote se senza limite, vedi _utc), durate in secondi,
     fasce per significato, numero di tessera senza maiuscole, elenchi senza ordine messi in ordine, nessuna password."""
     if key in DATE_FIELDS and isinstance(value, str):
         return _utc(value, key)
