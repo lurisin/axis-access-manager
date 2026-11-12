@@ -974,6 +974,164 @@ def test_removed_controller_takes_its_entities_out_of_home_assistant(controller,
         assert broker.retained["axis_access_manager/disponibile"] == b"offline"
 
 
+def test_shutdown_publishes_before_disconnecting_from_the_broker(settings, controller, tmp_path, monkeypatch, caplog):
+    """Collaudo 0.28.0, punto I: a ogni spegnimento il WebSocket degli eventi, fermandosi, cambiava lo stato e lo stato
+    si pubblicava con il client MQTT già scollegato: WARNING «Pubblicazione su axis_access_manager/stato non riuscita:
+    [code:4] The client is not currently connected». Ora prima si ferma il WebSocket e si pubblica, poi «offline»,
+    poi ci si scollega; dopo, niente prova più a pubblicare."""
+    import asyncio
+    import dataclasses
+    import logging
+    import time
+
+    from app import events, main
+    from app.config import MqttSettings
+    from app.live_events import LiveEvents
+
+    broker = FakeBroker()
+    # (topic, se il client era già scollegato) di ogni pubblicazione tentata
+    sent: list[tuple[str, bool]] = []
+
+    class Client:
+        """Il client del broker in memoria che, scollegato, rifiuta di pubblicare come paho-mqtt."""
+
+        def __init__(self, **options):
+            self._inner = broker.client(**options)
+            self.closed = False
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def __aenter__(self):
+            await self._inner.__aenter__()
+            return self
+
+        async def __aexit__(self, *exc):
+            self.closed = True
+            await self._inner.__aexit__(*exc)
+
+        async def publish(self, topic, payload=None, qos=0, retain=False):
+            sent.append((topic, self.closed))
+            if self.closed:
+                raise aiomqtt.MqttCodeError(4)
+            await self._inner.publish(topic, payload, qos, retain)
+
+    async def resolve(options, *args, **kwargs):
+        return MqttSettings(host="core-mosquitto", port=1883, username="addons", password="x")
+
+    monkeypatch.setattr(events.aiomqtt, "Client", Client)
+    monkeypatch.setattr(main, "resolve_mqtt", resolve)
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    caplog.set_level(logging.WARNING)
+    options = dataclasses.replace(settings, ha_integration=True)
+    app = create_app(options, allow_any_client=True, controller=controller, db_path=tmp_path / "m.db")
+    with TestClient(app) as test_client:
+        state = app.state
+        for _ in range(300):
+            if state.monitor.connected and "axis_access_manager/stato" in broker.retained:
+                break
+            time.sleep(0.01)
+        assert state.monitor.connected
+
+        # Esito di ogni pubblicazione dell'app: False se non è partita (broker non collegato)
+        results: list[tuple[str, bool]] = []
+        publish = state.monitor.publish
+
+        async def recorded(topic, payload, retain=False):
+            done = await publish(topic, payload, retain)
+            results.append((topic, done))
+            return done
+
+        async def websocket_connected():
+            # Il WebSocket degli eventi collegato, come sull'impianto: fermandosi passa a scollegato e lo stato cambia
+            live = LiveEvents(state.monitor, None, lambda: False)
+            state.monitor.ws_live = True
+            state.live_events, state.live_task = live, asyncio.create_task(live.run())
+
+        state.monitor.publish = recorded
+        test_client.portal.call(websocket_connected)
+        sent.clear()
+    assert "non riuscita" not in caplog.text
+    assert sent and not any(closed for _, closed in sent)
+    # Lo stato cambiato dal WebSocket fermato è partito, prima di «offline», e tutti e due prima di scollegarsi
+    assert results and all(done for _, done in results), results
+    topics = [topic for topic, _ in results]
+    assert topics.index("axis_access_manager/stato") < topics.index("axis_access_manager/disponibile")
+    assert broker.retained["axis_access_manager/disponibile"] == b"offline"
+    # Dopo, il monitor non prova più a pubblicare con il client scollegato
+    assert state.monitor.client is None and not state.monitor.connected
+
+
+def test_new_configuration_waits_for_the_state_being_published(settings, controller, tmp_path, monkeypatch, caplog):
+    """Verifica della 0.28.1: con una nuova configurazione (offline=False) lo stato cambiato dal WebSocket fermato
+    partiva e l'ascolto MQTT si fermava prima della conferma del broker (qos 1): dopo 10 s aiomqtt dava «Pubblicazione
+    su …/stato non riuscita: Operation timed out». Ora l'ascolto aspetta le pubblicazioni in corso."""
+    import asyncio
+    import dataclasses
+    import logging
+    import time
+
+    from app import events, main
+    from app.config import MqttSettings
+    from app.live_events import LiveEvents
+
+    broker = FakeBroker()
+
+    class Client:
+        """Client in memoria con la conferma che arriva solo finché l'ascolto MQTT è vivo, come aiomqtt."""
+
+        def __init__(self, **options):
+            self._inner = broker.client(**options)
+            self.closed = False
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def __aenter__(self):
+            await self._inner.__aenter__()
+            return self
+
+        async def __aexit__(self, *exc):
+            self.closed = True
+            await self._inner.__aexit__(*exc)
+
+        async def publish(self, topic, payload=None, qos=0, retain=False):
+            await asyncio.sleep(0.2)
+            if self.closed:
+                raise aiomqtt.MqttError("Operation timed out")
+            await self._inner.publish(topic, payload, qos, retain)
+
+    async def resolve(options, *args, **kwargs):
+        return MqttSettings(host="core-mosquitto", port=1883, username="addons", password="x")
+
+    monkeypatch.setattr(events.aiomqtt, "Client", Client)
+    monkeypatch.setattr(main, "resolve_mqtt", resolve)
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    caplog.set_level(logging.WARNING)
+    options = dataclasses.replace(settings, ha_integration=True)
+    app = create_app(options, allow_any_client=True, controller=controller, db_path=tmp_path / "r.db")
+    with TestClient(app) as test_client:
+        state = app.state
+        for _ in range(300):
+            if state.monitor.connected and "axis_access_manager/stato" in broker.retained:
+                break
+            time.sleep(0.01)
+        assert state.monitor.connected
+
+        async def reload_with_websocket():
+            live = LiveEvents(state.monitor, None, lambda: False)
+            state.monitor.ws_live = True
+            state.live_events, state.live_task = live, asyncio.create_task(live.run())
+            await asyncio.sleep(0)
+            broker.retained.pop("axis_access_manager/stato", None)
+            await main._stop_listening(app, offline=False)
+
+        caplog.clear()
+        test_client.portal.call(reload_with_websocket)
+        assert "non riuscita" not in caplog.text
+        assert "axis_access_manager/stato" in broker.retained
+
+
 def test_websocket_connecting_is_not_yet_a_problem(client):
     from datetime import timedelta
 

@@ -569,3 +569,96 @@ async def test_schedule_changed_by_hand_is_a_difference_after_the_presa(plant, c
     assert found["changes"] == [
         {"label": "Orari", "old": "lun-ven 08:00–18:00 dal 04/01/2027", "new": "lun-ven 08:00–18:00"}
     ]
+
+
+# Profilo H24 come sul controller del collaudo 0.28.0: validità 1997–2038 scritta dal sito Axis, mai dall'app
+H24_READ = {
+    "token": "h24",
+    "Name": "H24",
+    "Description": "Tipologia H24 (Axis Access Manager)",
+    "Enabled": True,
+    "ValidFrom": "1997-01-01T00:00:00Z",
+    "ValidTo": "2038-01-01T00:00:00Z",
+    "Schedule": ["standard_always"],
+    "AccessPolicy": [{"AccessPoint": "ap-in", "AuthorizationProfile": [], "Attribute": [], "Schedule": ["sempre"]}],
+}
+
+
+def h24_wanted(**fields):
+    wanted = {**H24_READ, "ValidFrom": "", "ValidTo": "", "AuthenticationProfile": [], "Attribute": []}
+    return {**wanted, **fields}
+
+
+@pytest.mark.parametrize(
+    ("valid_from", "valid_to"),
+    [
+        ("1997-01-01T00:00:00Z", "2038-01-01T00:00:00Z"),
+        ("2000-01-01T00:00:00Z", "2038-01-19T03:14:07Z"),
+        ("2000-01-01T01:00:00+01:00", "2037-12-31T23:00:00-01:00"),
+        ("1970-01-01T00:00:00Z", ""),
+        ("", "2099-12-31T23:59:59Z"),
+    ],
+)
+def test_validity_without_limits_is_like_empty(valid_from, valid_to):
+    """Collaudo 0.28.0, punto B: una validità «senza limite» (dal 2000 o prima, fino al 2038 o dopo) è uguale alla
+    validità vuota dell'app, e la firma lo dice come il confronto."""
+    read = {**H24_READ, "ValidFrom": valid_from, "ValidTo": valid_to}
+    wanted = h24_wanted()
+
+    result = compare(voluto({"tipologia": {"h24": wanted}}), letto(access_profiles=[read]))
+
+    assert [(r["key"], r["action"], r["changes"]) for r in result["rows"]] == [("tipologia:h24", "uguale", [])]
+    assert signature("tipologia", project("tipologia", read, wanted)) == signature("tipologia", wanted)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "shown"),
+    [
+        ("ValidTo", "2027-12-31T00:00:00Z", "2027-12-31T00:00:00Z"),
+        ("ValidTo", "2037-12-31T23:59:59Z", "2037-12-31T23:59:59Z"),
+        ("ValidFrom", "2000-01-01T00:00:01Z", "2000-01-01T00:00:01Z"),
+        ("ValidFrom", "2026-11-08T08:00:00+01:00", "2026-11-08T07:00:00Z"),
+    ],
+)
+def test_a_real_validity_stays_a_difference(field, value, shown):
+    """Una validità vera sul controller (non «senza limite») resta da riportare, e la firma cambia con lei."""
+    read = {**H24_READ, "ValidFrom": "", "ValidTo": "", field: value}
+    wanted = h24_wanted()
+
+    [row] = compare(voluto({"tipologia": {"h24": wanted}}), letto(access_profiles=[read]))["rows"]
+
+    label = {"ValidFrom": "Valida dal", "ValidTo": "Valida fino al"}[field]
+    assert (row["action"], row["changes"]) == ("riporta", [{"label": label, "old": shown, "new": "—"}])
+    assert signature("tipologia", project("tipologia", read, wanted)) != signature("tipologia", wanted)
+    # La stessa data voluta anche dall'app: uguale
+    same = h24_wanted(**{field: value})
+    assert signature("tipologia", project("tipologia", read, same)) == signature("tipologia", same)
+
+
+async def test_report_case_profiles_and_cards_1997_2038_are_equal(plant, controller, db):  # noqa: F811
+    """Il caso del collaudo: profili e tessere con 1997–2038 sul controller e senza validità nell'app. Dopo la presa
+    in carico niente da riportare; la scadenza vera di Bruno resta e torna una differenza se cambia."""
+    await app_made(plant)
+    for profile in controller.profiles.values():
+        profile.update(ValidFrom="1997-01-01T00:00:00Z", ValidTo="2038-01-01T00:00:00Z")
+    anna = db.card_by_number("04aa")["axis_credential_token"]
+    bruno = db.card_by_number("04bb")["axis_credential_token"]
+    controller.credentials[anna].update(ValidFrom="1997-01-01T00:00:00Z", ValidTo="2038-01-01T00:00:00Z")
+    for item in controller.credentials[anna].get("CredentialAccessProfile") or []:
+        item.update(ValidFrom="1997-01-01T00:00:00Z", ValidTo="2038-01-01T00:00:00Z")
+    controller.credentials[bruno]["ValidFrom"] = "1997-01-01T00:00:00Z"
+
+    result = confronto(load_conf(db), await read_strict(controller), plant.controller_id)
+
+    assert [r["key"] for r in result["rows"] if r["action"] not in ("uguale", "prende")] == []
+    rows = {r["key"]: r for r in result["rows"]}
+    assert rows[f"tessera:{anna}"]["action"] == rows[f"tessera:{bruno}"]["action"] == "uguale"
+    assert {r["action"] for r in result["rows"] if r["kind"] == "tipologia"} == {"uguale"}
+
+    controller.credentials[bruno]["ValidTo"] = "2038-01-01T00:00:00Z"
+    result = confronto(load_conf(db), await read_strict(controller), plant.controller_id)
+    row = next(r for r in result["rows"] if r["key"] == f"tessera:{bruno}")
+    assert (row["action"], row["changes"]) == (
+        "riporta",
+        [{"label": "Valida fino al", "old": "—", "new": "2029-12-31T22:00:00Z"}],
+    )
