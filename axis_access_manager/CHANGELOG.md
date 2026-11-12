@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.28.2
+
+Correzioni dal collaudo in sola lettura della 0.28.1: il confronto in ombra lascia una prova dei giri fatti, che resta dopo i riavvii, e la regola delle date «senza limite» non nasconde più una scadenza vera. Sul controller non cambia niente rispetto alla 0.28.1.
+
+- **Confronto in ombra, una riga nel log a ogni giro.** Ogni giro (dopo la sincronizzazione, ogni ora, Confronta Ora) scrive nel log dell'add-on una riga sola: il giro, l'esito (senza differenze, quante differenze e sorprese, elenchi non letti con il motivo, non riuscito) e i conteggi in breve di ogni tipo. Prima nel log c'erano solo le differenze nuove, e alla fine della settimana di osservazione non restava prova dei giri fatti.
+- **Storico del confronto in ombra.** Per ogni giorno dell'impianto, negli ultimi 30 giorni, l'app tiene nel database quanti giri ha fatto per tipo, quanti senza differenze, con differenze, sorprese o elenchi non letti, quanti non riusciti, e l'ultima differenza vista. Resta dopo i riavvii, costa una scrittura per giro e con il disco pieno non ferma niente. La scheda Confronto (prova) mostra gli ultimi 7 giorni, con in evidenza i giorni con differenze o giri non riusciti, e dice da quale giro vengono i conteggi (giro di ogni ora o Confronta Ora, con l'ora). Lo storico si legge anche da api/shadow (permesso Impianti).
+- **Date «senza limite» più strette.** Una validità che finisce fra il 1° e il 19 gennaio 2038 (il «per sempre» del sito Axis) vale ancora come nessun limite, ma una scadenza dopo, per esempio il 31/12/2040, ora è una differenza: con la 0.28.1 risultava uguale a nessuna scadenza. L'inizio fino al 1° gennaio 2000 resta senza limite.
+
 ## 0.28.1
 
 Correzioni dal collaudo in sola lettura della 0.28.0 sull'impianto: utenti e tessere risultavano uguali al controller, e l'unica differenza vera da sistemare era la validità dei profili. Sul controller non cambia niente rispetto alla 0.28.0.
