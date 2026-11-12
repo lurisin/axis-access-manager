@@ -182,6 +182,25 @@ CREATE TABLE IF NOT EXISTS sessions (
     agent TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS sessions_username ON sessions(username);
+-- Storico del confronto in ombra (vedi shadow.Shadow): per giorno dell'impianto e giro, quanti giri e come sono andati,
+-- con l'ultimo errore e l'ultima differenza. Gli ultimi 30 giorni, fuori dai backup dell'app (che non la toccano
+-- neanche nei ripristini). WITHOUT ROWID: un albero solo, un giro riscrive una pagina
+CREATE TABLE IF NOT EXISTS shadow_days (
+    day TEXT NOT NULL,
+    round TEXT NOT NULL,
+    rounds INTEGER NOT NULL DEFAULT 0,
+    clean INTEGER NOT NULL DEFAULT 0,
+    differences INTEGER NOT NULL DEFAULT 0,
+    surprises INTEGER NOT NULL DEFAULT 0,
+    unread INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    last_at TEXT NOT NULL DEFAULT '',
+    last_error TEXT NOT NULL DEFAULT '',
+    difference TEXT NOT NULL DEFAULT '',
+    difference_kind TEXT NOT NULL DEFAULT '',
+    difference_at TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (day, round)
+) WITHOUT ROWID;
 """
 
 # Fino alla 0.17 si aggiungevano solo colonne: (tabella, colonna, definizione). Sono la versione 1 dello schema.
@@ -328,6 +347,35 @@ SETTING_LAST_PERSON = "persons_last_id"
 # Identità di questa installazione (uuid4): sta nel database, quindi un ripristino di Home Assistant la riporta uguale
 # e un database ripartito vuoto ne ha una nuova. Fuori dai backup dell'app (vedi backup.SETTINGS_KEPT)
 SETTING_INSTALL_ID = "install_id"
+
+
+# Un giro del confronto in ombra nello storico del suo giorno: i contatori si sommano, l'ora è quella dell'ultimo giro,
+# errore e differenza restano gli ultimi visti (un giro senza non li cancella)
+SHADOW_ROUND = (
+    "INSERT INTO shadow_days (day, round, rounds, clean, differences, surprises, unread, errors, last_at, last_error, "
+    "difference, difference_kind, difference_at) VALUES (:day, :round, :rounds, :clean, :differences, :surprises, "
+    ":unread, :errors, :last_at, :last_error, :difference, :difference_kind, :difference_at) "
+    "ON CONFLICT(day, round) DO UPDATE SET rounds = rounds + excluded.rounds, clean = clean + excluded.clean, "
+    "differences = differences + excluded.differences, surprises = surprises + excluded.surprises, "
+    "unread = unread + excluded.unread, errors = errors + excluded.errors, last_at = excluded.last_at, "
+    "last_error = CASE WHEN excluded.last_error != '' THEN excluded.last_error ELSE last_error END, "
+    "difference = CASE WHEN excluded.difference != '' THEN excluded.difference ELSE difference END, "
+    "difference_kind = CASE WHEN excluded.difference != '' THEN excluded.difference_kind ELSE difference_kind END, "
+    "difference_at = CASE WHEN excluded.difference != '' THEN excluded.difference_at ELSE difference_at END"
+)
+SHADOW_FIELDS = (
+    "rounds",
+    "clean",
+    "differences",
+    "surprises",
+    "unread",
+    "errors",
+    "last_at",
+    "last_error",
+    "difference",
+    "difference_kind",
+    "difference_at",
+)
 
 
 # Campi degli eventi che servono alle pagine (il messaggio originale resta nel database)
@@ -1039,6 +1087,29 @@ class Database:
             "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value),
         )
+
+    # Storico del confronto in ombra
+
+    def add_shadow_rounds(self, rounds: list[tuple[str, str, dict]], keep_from: str = "") -> None:
+        """Giri del confronto in ombra nello storico: (giorno, giro, contatori e ultimi valori, vedi SHADOW_FIELDS).
+        keep_from: i giorni prima si cancellano. Una scrittura sola (un commit); con un errore (disco pieno) non resta
+        niente a metà e la transazione non resta aperta, se no la salverebbe la scrittura dopo."""
+        with self._lock:
+            try:
+                for day, round_name, values in rounds:
+                    row = {name: values[name] for name in SHADOW_FIELDS}
+                    self._conn.execute(SHADOW_ROUND, {**row, "day": day, "round": round_name})
+                if keep_from:
+                    self._conn.execute("DELETE FROM shadow_days WHERE day < ?", (keep_from,))
+                self._commit()
+            except sqlite3.Error:
+                if not self._batch:
+                    self._conn.rollback()
+                raise
+
+    def shadow_days(self, since: str) -> list[dict]:
+        """Righe dello storico del confronto in ombra dal giorno since (aaaa-mm-gg) in poi."""
+        return self._query("SELECT * FROM shadow_days WHERE day >= ? ORDER BY day DESC, round", (since,))
 
     # Impianti: controller e porte
 
