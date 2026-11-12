@@ -1,12 +1,15 @@
 """Confronto (prova) del controller e confronto in ombra: solo letture e calcoli, mai una scrittura sul controller."""
 
 import asyncio
+import json
 import logging
 import sqlite3
+from html import escape
 
 import pytest
 from fastapi.testclient import TestClient
 from test_full_restore import bench_like
+from test_page_time_zone import NAMES, needs_node, run_page
 
 from app import main
 from app.compare import KIND_TITLES, KINDS, LISTS
@@ -108,7 +111,9 @@ def test_comparison_with_the_controller_off(client, controller):
     # Nel confronto in ombra la programmazione resta non letta, non vuota
     shadow = {k["kind"]: k for k in data["shadow"]["kinds"]}
     assert shadow["porta"]["non_letto"] == "il controller non risponde (tempo scaduto)"
-    assert data["shadow"]["rounds"]["programmazione"]["error"] == "il controller non risponde (tempo scaduto)"
+    # Il giro di Confronta Ora, non quello di ogni ora
+    assert data["shadow"]["rounds"]["confronta_ora"]["error"] == "il controller non risponde (tempo scaduto)"
+    assert "programmazione" not in data["shadow"]["rounds"]
 
 
 def test_comparison_needs_the_plant_permission(client, controller):
@@ -309,11 +314,33 @@ def test_hourly_comparison_at_most_once_an_hour(client, controller, caplog):
     shadow = state.shadow.as_dict()
     assert shadow["rounds"]["programmazione"]["kinds"] == [k for k in KINDS if k not in ("utente", "tessera")]
 
-    # Il Confronto dalla scheda vale come giro dell'ora
+
+def test_compare_now_keeps_its_own_time_apart_from_the_hourly_round(client, controller):
+    """Collaudo 0.28.0, punto K: Confronta Ora spostava l'ora del giro «Programmazione, ogni ora» (da «6 min fa» ad
+    «adesso»). Ora ha la sua ora, e il giro di ogni ora resta com'era e si fa alla sua ora."""
+    state = client.app.state
+    bench_like(controller)
+    client.post("/api/persons", json={"name": "Anna", "card": "04aa"}, headers=ADMIN)
+    controller.attempts.clear()
     state.shadow.next_full = 0
-    client.get(f"/api/controllers/{controller_id(client)}/comparison", headers=ADMIN)
-    assert state.shadow.next_full - loop_time(client) > 3590
-    assert client.portal.call(main._shadow_programming, state) is False
+    assert client.portal.call(main._shadow_programming, state) is True
+    hourly = "2000-01-01T09:21:01+01:00"
+    state.shadow.rounds["programmazione"]["at"] = hourly
+    due = state.shadow.next_full
+    assert due - loop_time(client) > 3590
+
+    data = client.get(f"/api/controllers/{controller_id(client)}/comparison", headers=ADMIN).json()
+
+    rounds = data["shadow"]["rounds"]
+    assert rounds["programmazione"]["at"] == hourly
+    assert rounds["confronta_ora"]["at"] > hourly and rounds["confronta_ora"]["error"] == ""
+    assert rounds["confronta_ora"]["kinds"] == rounds["programmazione"]["kinds"]
+    # Non sposta il giro di ogni ora: quando è ora si fa, e ha la sua ora
+    assert state.shadow.next_full == due
+    state.shadow.next_full = 0
+    assert client.portal.call(main._shadow_programming, state) is True
+    assert state.shadow.rounds["programmazione"]["at"] != hourly
+    assert writes(controller) == []
 
 
 def test_shadow_round_without_the_presa_changes_nothing_in_the_log(client, controller, caplog):
@@ -445,3 +472,83 @@ def test_comparison_with_a_profile_the_app_would_not_accept(client, controller, 
     assert state.shadow.as_dict()["rounds"]["programmazione"]["error"] == ""
     assert state.shadow.next_full - loop_time(client) > 3590
     assert writes(controller) == []
+
+
+# La scheda Confronto della pagina, fatta girare con node sulle risposte vere dell'app (vedi test_page_time_zone)
+PAGE_NAMES = (
+    *NAMES,
+    "esc",
+    "plural",
+    "cap",
+    "icon",
+    "capped",
+    "cappedRows",
+    "restoreItemHtml",
+    "RESTORE_ACTIONS",
+    "COMPARE_COUNTS",
+    "compareCounts",
+    "props",
+    "statusDot",
+    "shadowHtml",
+    "comparisonHtml",
+)
+
+
+def page_html(expression: str, data) -> str:
+    out = run_page(
+        "Europe/Rome",
+        {"html": expression},
+        names=PAGE_NAMES,
+        prelude=f"const ICONS = {{}}; const DATA = {json.dumps(data)};",
+    )
+    assert not out["html"].startswith("ERRORE"), out["html"]
+    return out["html"]
+
+
+@needs_node
+def test_every_kind_has_its_list_in_the_comparison_tab(client, controller):
+    """Collaudo 0.28.0, punto K: «Porte · 1 da prendere in carico» non aveva l'elenco, perché la porta (rinominata dalla
+    presa in carico) c'era solo in Da Guardare. Ora ogni tipo ha tutte le sue righe; quelle anche in Da Guardare con il
+    rimando."""
+    bench_like(controller)
+    client.post("/api/persons", json={"name": "Anna", "card": "04aa"}, headers=ADMIN)
+    data = client.get(f"/api/controllers/{controller_id(client)}/comparison", headers=ADMIN).json()
+    groups = by_kind(data)
+    [door] = [r for r in groups["porta"]["rows"] if r["warnings"]]
+    assert door["warnings"] == ["nell'app si chiamava Porta: prende il nome del controller"]
+
+    html = page_html("comparisonHtml(DATA)", data)
+
+    look, *parts = html.split('<h3 class="diff-part">')[1:]
+    assert look.startswith("Da Guardare") and escape(door["label"]) in look
+    sections = {part.split("<", 1)[0].strip(): part for part in parts}
+    for group in data["kinds"]:
+        section = sections[escape(group["title"])]
+        for row in group["rows"]:
+            assert escape(row["label"]) in section, (group["kind"], row["label"])
+    porte = sections["Porte"]
+    assert "<details" in porte and "2 da prendere in carico com&#39;è sul controller" in porte
+    assert f"{escape(door['label'])} <span class=\"muted\">· in Da Guardare</span>" in porte
+
+
+@needs_node
+def test_shadow_shows_the_hourly_round_and_compare_now_apart(client, controller):
+    """Le due ore nella scheda: il giro di ogni ora e Confronta Ora. Un giro orario senza niente letto e poi Confronta
+    Ora riuscito: i tipi tornano nella tabella."""
+    state = client.app.state
+    bench_like(controller)
+    client.post("/api/persons", json={"name": "Anna", "card": "04aa"}, headers=ADMIN)
+    controller.down = True
+    state.shadow.next_full = 0
+    assert client.portal.call(main._shadow_programming, state) is True
+    state.shadow.rounds["programmazione"]["at"] = "2000-01-01T09:21:01+01:00"
+    for kind in state.shadow.kinds.values():
+        kind["at"] = "2000-01-01T09:21:01+01:00" if kind["non_letto"] else kind["at"]
+    controller.down = False
+    data = client.get(f"/api/controllers/{controller_id(client)}/comparison", headers=ADMIN).json()
+
+    html = page_html("shadowHtml(DATA)", data["shadow"])
+
+    assert "Programmazione, ogni ora: 01/01/2000 09:21 <span" in html and "tempo scaduto" in html
+    assert "Programmazione, con Confronta Ora: adesso</p>" in html
+    assert "<dt>Porte</dt>" in html and "<dt>Profili di Accesso</dt>" in html

@@ -107,7 +107,7 @@ from .service import (
     mass_missing,
     plural,
 )
-from .shadow import CARDS_ROUND, PROGRAMMING_ROUND, Shadow, group_of, would
+from .shadow import CARDS_ROUND, MANUAL_ROUND, PROGRAMMING_ROUND, Shadow, group_of, would
 from .transfer import events_csv, import_persons, persons_csv, read_import
 from .users import ADMIN, PERMISSIONS, ROLES, AppUser, UserDirectory, UserError, role_of
 from .vapix import A1210Client, ControllerGuard, ControllerUnreachable, VapixError
@@ -1753,7 +1753,7 @@ def create_app(
             raise ServiceError("il confronto si fa solo con il controller in uso")
         if not state.settings.a1210_host:
             raise ServiceError("indirizzo del controller non configurato")
-        letto, result = await _compare_programming(state, controller_id, KINDS)
+        letto, result = await _compare_programming(state, controller_id, KINDS, MANUAL_ROUND)
         return _comparison_view(state, letto, result, user)
 
     @app.post("/api/controllers/{controller_id}/doors", dependencies=[need("impianti")])
@@ -2494,17 +2494,24 @@ async def _stop_listening(app: FastAPI, offline: bool = True, remove: bool = Fal
     ripubblica subito le stesse entità di Home Assistant (vedi _stays_online); remove=True se non si collega più al
     broker (vedi _stops_listening): le entità si tolgono da Home Assistant."""
     state = app.state
-    bridge = getattr(state, "bridge", None)
-    if bridge:
-        # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
-        # ordinata il broker scarta il messaggio di addio)
-        await bridge.stop(offline, remove)
-    for name in ("monitor_task", "live_task"):
+
+    async def cancel(name: str) -> None:
         task = getattr(state, name, None)
         if task:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+
+    # Prima il WebSocket degli eventi: fermandosi cambia lo stato, che si pubblica con il broker ancora collegato.
+    # Fermato dopo l'ascolto MQTT, lo stato partiva con il client già scollegato (collaudo 0.28.0: WARNING
+    # «Pubblicazione su …/stato non riuscita: [code:4] The client is not currently connected» a ogni spegnimento)
+    await cancel("live_task")
+    bridge = getattr(state, "bridge", None)
+    if bridge:
+        # Prima di chiudere la connessione: le entità di Home Assistant diventano non disponibili (con una chiusura
+        # ordinata il broker scarta il messaggio di addio)
+        await bridge.stop(offline, remove)
+    await cancel("monitor_task")
     return state.raw_controller, state.service.lock, [state.monitor, *state.intercoms], state.readers
 
 
@@ -3657,23 +3664,24 @@ async def _read_controller(state, kinds) -> dict:
     return merged
 
 
-async def _compare_programming(state, controller_id: int, kinds) -> tuple[dict, dict]:
+async def _compare_programming(state, controller_id: int, kinds, round_name: str) -> tuple[dict, dict]:
     """Lettura del controller per i tipi kinds, presa in carico in memoria e confronto: niente si scrive. Il confronto
     in ombra prende i tipi della programmazione, se intanto la configurazione dell'app non è cambiata (il risultato
-    mescolerebbe il prima e il dopo) e se all'indirizzo risponde il controller conosciuto. Una lettura completa per
-    volta, e la prossima del giro orario fra un'ora."""
+    mescolerebbe il prima e il dopo) e se all'indirizzo risponde il controller conosciuto, come giro round_name:
+    PROGRAMMING_ROUND quello di ogni ora, MANUAL_ROUND Confronta Ora della scheda Confronto. Si tengono separati (al
+    collaudo della 0.28.0 Confronta Ora spostava l'ora del giro orario): Confronta Ora non sposta il giro orario. Una
+    lettura completa per volta."""
     async with state.comparison_lock:
-        # Prima di leggere: anche una lettura o un calcolo che non riescono contano come il giro dell'ora
-        state.shadow.next_full = asyncio.get_running_loop().time() + SHADOW_INTERVAL
+        if round_name == PROGRAMMING_ROUND:
+            # Prima di leggere: anche una lettura o un calcolo che non riescono contano come il giro dell'ora
+            state.shadow.next_full = asyncio.get_running_loop().time() + SHADOW_INTERVAL
         before = load_conf(state.db, state.settings.access_profile)
         letto = await _read_controller(state, kinds)
         conf = load_conf(state.db, state.settings.access_profile)
         result = await asyncio.to_thread(confronto, conf, letto, controller_id, kinds)
         result["changed"] = conf != before
         if not result["changed"] and not state.controller.paused:
-            state.shadow.record(
-                controller_id, [k for k in kinds if k in PROGRAMMING], result, _now(), PROGRAMMING_ROUND
-            )
+            state.shadow.record(controller_id, [k for k in kinds if k in PROGRAMMING], result, _now(), round_name)
     return letto, result
 
 
@@ -3731,7 +3739,7 @@ async def _shadow_programming(state) -> bool:
     """Confronto in ombra della programmazione, se è ora (al massimo ogni SHADOW_INTERVAL, anche quando non riesce),
     del controller in uso, se risponde e non è cambiato. True se ha letto il controller."""
     if asyncio.get_running_loop().time() < state.shadow.next_full or state.comparison_lock.locked():
-        # Non è ora, o la scheda Confronto sta leggendo: il suo confronto vale come giro dell'ora
+        # Non è ora, o la scheda Confronto sta leggendo: si riprova al giro dopo (SHADOW_TICK)
         return False
     primary = state.installation.primary
     if not primary or not primary["host"] or not state.settings.a1210_host or state.controller.paused:
@@ -3739,7 +3747,7 @@ async def _shadow_programming(state) -> bool:
     if _offline_controllers(state).get(primary["id"]):
         # Non risponde: si riprova quando torna, senza aspettare un'altra ora
         return False
-    await _compare_programming(state, primary["id"], sorted(PROGRAMMING, key=KINDS.index))
+    await _compare_programming(state, primary["id"], sorted(PROGRAMMING, key=KINDS.index), PROGRAMMING_ROUND)
     return True
 
 

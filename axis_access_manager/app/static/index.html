@@ -859,11 +859,50 @@ const KINDS = {
 const inputDenied = (e) => e.kind === "negato" && !e.card && !e.person_name && !!e.source && e.source !== "controller";
 const DAYS = [["MO", "L", "lun"], ["TU", "M", "mar"], ["WE", "M", "mer"], ["TH", "G", "gio"], ["FR", "V", "ven"], ["SA", "S", "sab"], ["SU", "D", "dom"]];
 
+// Fuso dell'impianto: quello di Home Assistant (api/me, per esempio Europe/Rome). Tutti gli orari si mostrano e si
+// scrivono in questo fuso, non in quello del browser: al collaudo della 0.28.0 un computer in Europe/Athens vedeva
+// tutto un'ora avanti. Fuso sconosciuto (o che il browser non conosce): quello del browser, come prima
+let zoneChecked = ["", ""];
+function plantZone() {
+  const zone = store.me?.time_zone || "";
+  if (zoneChecked[0] !== zone) {
+    let valid = "";
+    try {
+      if (zone) { new Intl.DateTimeFormat("it-IT", {timeZone: zone}); valid = zone; }
+    } catch { valid = ""; }
+    zoneChecked = [zone, valid];
+  }
+  return zoneChecked[1];
+}
+// Opzioni di toLocale*String con il fuso dell'impianto
+const zoned = (options = {}) => plantZone() ? {...options, timeZone: plantZone()} : options;
+// Anno, mese, giorno, ore, minuti e secondi (testi di due cifre, l'anno di quattro) di un istante nel fuso dell'impianto.
+// Il formato si prepara una volta per fuso: il registro lo chiede per ogni riga
+let partsFormat = [null, null];
+function zoneParts(when) {
+  const parts = {};
+  if (partsFormat[0] !== plantZone() || !partsFormat[1]) {
+    partsFormat = [plantZone(), new Intl.DateTimeFormat("en-US", zoned({year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"}))];
+  }
+  for (const p of partsFormat[1].formatToParts(new Date(when))) parts[p.type] = p.value;
+  if (parts.hour === "24") parts.hour = "00";
+  return parts;
+}
+// Giorno dell'impianto (aaaa-mm-gg) di un istante, adesso senza argomenti
+const plantDay = (when = Date.now()) => { const p = zoneParts(when); return `${p.year}-${p.month}-${p.day}`; };
+// Giorno di calendario aaaa-mm-gg spostato di n giorni: solo calendario, nessun fuso (un giorno non dura sempre 24 ore)
+function shiftDay(day, n) {
+  const d = new Date(day + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+// Giorno di calendario (aaaa-mm-gg, senza ora: festività, colonne della settimana) come testo: lo stesso in ogni fuso
+const fmtDay = (day, options) => day ? new Date(day + "T12:00:00Z").toLocaleDateString("it-IT", {...options, timeZone: "UTC"}) : "";
 // "24/10/2026 13:34", senza la virgola che toLocaleString mette tra data e ora
-const fmtDateTime = (iso) => iso ? `${new Date(iso).toLocaleDateString("it-IT", {day: "2-digit", month: "2-digit", year: "numeric"})} ${fmtTime(iso)}` : "";
-const fmtFull = (iso) => iso ? new Date(iso).toLocaleString("it-IT", {dateStyle: "medium", timeStyle: "medium"}) : "";
-const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", {day: "numeric", month: "short", year: "numeric"}) : "";
-const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("it-IT", {hour: "2-digit", minute: "2-digit"}) : "";
+const fmtDateTime = (iso) => iso ? `${new Date(iso).toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit", year: "numeric"}))} ${fmtTime(iso)}` : "";
+const fmtFull = (iso) => iso ? new Date(iso).toLocaleString("it-IT", zoned({dateStyle: "medium", timeStyle: "medium"})) : "";
+const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", zoned({day: "numeric", month: "short", year: "numeric"})) : "";
+const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("it-IT", zoned({hour: "2-digit", minute: "2-digit"})) : "";
 // "adesso", "5 min fa", poi come dayTime: "oggi 13:34", "ieri 13:34" (dal calendario) o "24/10/2026 13:34".
 // Più avanti di adesso (orologio del controller avanti): l'ora vera, non "adesso"
 function relTime(iso) {
@@ -873,14 +912,32 @@ function relTime(iso) {
   if (diff > 0 && diff < 3600) return `${Math.floor(diff / 60)} min fa`;
   return dayTime(iso);
 }
-// Valori per <input type=datetime-local> e ritorno in UTC
+// Valori per <input type=datetime-local> nel fuso dell'impianto, e ritorno in UTC: quello che si scrive vale nello
+// stesso fuso in cui si vede (una validità «fino alle 18:00» è alle 18:00 dell'impianto, da qualunque computer)
 function toLocalInput(iso) {
   if (!iso) return "";
   const d = new Date(iso);
   if (isNaN(d)) return "";
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const p = zoneParts(d);
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
 }
-const fromLocalInput = (v) => v ? new Date(v).toISOString() : "";
+// Ora del muro come se fosse UTC (millisecondi) di un istante nel fuso dell'impianto
+function wallOf(when) {
+  const p = zoneParts(when);
+  return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second));
+}
+function fromLocalInput(v) {
+  if (!v) return "";
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(v);
+  if (!plantZone() || !m) return new Date(v).toISOString();
+  const wall = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0));
+  // Lo scarto del fuso di un giorno prima e di un giorno dopo: diversi solo vicino al cambio dell'ora. Un'ora che c'è
+  // due volte (fine ottobre) è la prima, una che non c'è (fine marzo) quella dopo, come fa il browser
+  const before = wall - (wallOf(wall - 86400000) - (wall - 86400000));
+  const after = wall - (wallOf(wall + 86400000) - (wall + 86400000));
+  const fits = [before, after].filter((t) => wallOf(t) === wall);
+  return new Date(fits.length ? Math.min(...fits) : before).toISOString();
+}
 const initials = (name) => (name || "?").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 // Maiuscola iniziale: i messaggi del server arrivano in minuscolo perché altrove si compongono dopo un prefisso
@@ -1646,8 +1703,8 @@ const WIDGET_BODY = {
     const chart = d.week.map((w) => {
       const total = w.granted + w.denied;
       const h = (n) => `${(n / max) * 100}%`;
-      const label = new Date(w.day + "T12:00:00").toLocaleDateString("it-IT", {weekday: "short"});
-      return `<div class="col" title="${esc(fmtDate(w.day + "T12:00:00"))}: ${plural(w.granted, "accesso", "accessi")}, ${plural(w.denied, "negato", "negati")}${w.unknown ? `, ${plural(w.unknown, "tessera sconosciuta", "tessere sconosciute")}` : ""}">
+      const label = fmtDay(w.day, {weekday: "short"});
+      return `<div class="col" title="${esc(fmtDay(w.day, {day: "numeric", month: "short", year: "numeric"}))}: ${plural(w.granted, "accesso", "accessi")}, ${plural(w.denied, "negato", "negati")}${w.unknown ? `, ${plural(w.unknown, "tessera sconosciuta", "tessere sconosciute")}` : ""}">
         <div class="num">${total || ""}</div>
         <div class="bars"><div class="bar g" style="height:${h(w.granted)}"></div><div class="bar d" style="height:${h(w.denied)}"></div></div>
         <div class="lbl">${esc(label)}</div></div>`;
@@ -1716,7 +1773,7 @@ async function viewDashboard(el) {
   const layout = () => dash.draft || dash.layout;
   const stamp = () => {
     const now = new Date();
-    const day = now.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long"});
+    const day = now.toLocaleDateString("it-IT", zoned({weekday: "long", day: "numeric", month: "long"}));
     $("#page-sub").textContent = `${day[0].toUpperCase()}${day.slice(1)} · ${fmtTime(now.toISOString())}`;
     $("#page-sub").hidden = false;
   };
@@ -2470,13 +2527,6 @@ let logSelected = 0;
 let logSeq = 0, logHiddenSeq = 0, logBusy = false;
 // Giorno della lista disegnata: dopo mezzanotte "Oggi" e "Ieri" cambiano anche senza eventi nuovi
 let logDay = "";
-// Giorno di calendario aaaa-mm-gg, e lo stesso spostato di n giorni (al cambio dell'ora un giorno non dura 24 ore)
-const logDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-function logShiftDay(day, n) {
-  const d = new Date(day + "T12:00:00");
-  d.setDate(d.getDate() + n);
-  return logDate(d);
-}
 function logParams(extra = {}) {
   const p = new URLSearchParams();
   if (logFilters.q) p.set("q", logFilters.q);
@@ -2484,9 +2534,10 @@ function logParams(extra = {}) {
   if (kinds) p.set("kind", kinds);
   if (logFilters.door) p.set("door", logFilters.door);
   if (logFilters.person_id) p.set("person_id", logFilters.person_id);
-  // Senza fuso: la mezzanotte la calcola il server con l'ora di Home Assistant, come per il CSV e il cruscotto
+  // Senza fuso: la mezzanotte la calcola il server con l'ora di Home Assistant, come per il CSV e il cruscotto (e i
+  // giorni scelti sono dell'impianto, come gli orari mostrati)
   if (logFilters.from) p.set("since", logFilters.from + "T00:00:00");
-  if (logFilters.to) p.set("until", logShiftDay(logFilters.to, 1) + "T00:00:00");
+  if (logFilters.to) p.set("until", shiftDay(logFilters.to, 1) + "T00:00:00");
   Object.entries(extra).forEach(([k, v]) => p.set(k, v));
   return p;
 }
@@ -2653,7 +2704,7 @@ async function updateHiddenCount() {
   const kinds = (LOG_VIEWS[logFilters.view] || LOG_VIEWS.tutto)[1];
   if (!kinds || kinds.includes("concesso")) { box.hidden = true; return; }
   const p = logParams({kind: ACCESS_KINDS});
-  if (!logFilters.from && !logFilters.to) p.set("since", logDate(new Date()) + "T00:00:00");
+  if (!logFilters.from && !logFilters.to) p.set("since", plantDay() + "T00:00:00");
   const r = await api("api/events/count?" + p).catch(() => null);
   if (seq !== logHiddenSeq || !r || !box.isConnected) return;
   box.hidden = !r.count;
@@ -2662,20 +2713,18 @@ async function updateHiddenCount() {
 // Righe del registro con l'intestazione del giorno quando cambia
 function logRows(events, {place = true} = {}) {
   let lastDay = "";
-  const before = new Date();
-  before.setDate(before.getDate() - 1);
-  const today = new Date().toDateString(), yesterday = before.toDateString();
+  const today = plantDay(), yesterday = shiftDay(today, -1);
   return events.map((e) => {
-    const d = new Date(e.ts);
-    const long = d.toLocaleDateString("it-IT", {weekday: "long", day: "numeric", month: "long", year: "numeric"});
-    const day = d.toDateString() === today ? "Oggi" : d.toDateString() === yesterday ? "Ieri" : long[0].toUpperCase() + long.slice(1);
+    const date = plantDay(e.ts);
+    const long = fmtDay(date, {weekday: "long", day: "numeric", month: "long", year: "numeric"});
+    const day = date === today ? "Oggi" : date === yesterday ? "Ieri" : long[0].toUpperCase() + long.slice(1);
     const head = day !== lastDay ? `<div class="day">${esc(day)}</div>` : "";
     lastDay = day;
     return head + logRow(e, {place});
   }).join("");
 }
 function renderLog() {
-  logDay = new Date().toDateString();
+  logDay = plantDay();
   $("#l-list").innerHTML = logEvents.length ? logRows(logEvents) : `<div class="empty">${logFilters.view === "controllo" && !logFilters.q && !logFilters.person_id ? "Niente da controllare: nessun accesso negato, nessuna tessera sconosciuta e nessun allarme." : "Nessun evento con questi filtri."}</div>`;
 }
 async function refreshLog() {
@@ -2690,7 +2739,7 @@ async function refreshLog() {
   const rest = data.length === 100 && logEvents.length > 100 ? logEvents.filter((e) => e.ts < last.ts || (e.ts === last.ts && e.id < last.id)) : [];
   const fresh = data.concat(rest);
   // Anche un evento recuperato che entra più in basso, una foto o un dettaglio arrivati dopo, o un giorno nuovo
-  if (JSON.stringify(fresh) === JSON.stringify(logEvents) && logDay === new Date().toDateString()) return;
+  if (JSON.stringify(fresh) === JSON.stringify(logEvents) && logDay === plantDay()) return;
   const shown = JSON.stringify(logEvents.find((e) => e.id === logSelected));
   logEvents = fresh;
   renderLog();
@@ -2979,7 +3028,7 @@ async function viewHolidays(body) {
   let list;
   try { list = await api("api/holidays"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   if (!body.isConnected) return;
-  const year = new Date().getFullYear();
+  const year = Number(plantDay().slice(0, 4));
   body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie gestite dall'app con l'opzione Non Valida nei Giorni Festivi. Le fasce mai modificate qui non cambiano.</p>
     <div class="card w-regole"><h2>Aggiungi Festività</h2>
       <form class="row" id="h-form"><input type="date" name="day" required><input name="name" placeholder="Nome (es. Patrono)" maxlength="60" style="flex:1;min-width:160px">
@@ -2987,7 +3036,7 @@ async function viewHolidays(body) {
       <p class="hint">Oppure <button type="button" class="small" id="h-it">Aggiungi le Festività Nazionali Italiane</button> (fisse ogni anno, Pasquetta ${year} e ${year + 1}).</p></div>
     <div class="card flush"><div class="list">${list.length ? list.map((h) => `<div class="item">
       <div class="ev-icon k-accent">${icon("clock")}</div>
-      <div class="grow"><div class="title">${esc(h.name || "Festività")}</div><div class="meta">${esc(new Date(h.day + "T12:00:00").toLocaleDateString("it-IT", h.yearly ? {day: "numeric", month: "long"} : {day: "numeric", month: "long", year: "numeric"})) + (h.yearly ? " · ogni anno" : "")}</div></div>
+      <div class="grow"><div class="title">${esc(h.name || "Festività")}</div><div class="meta">${esc(fmtDay(h.day, h.yearly ? {day: "numeric", month: "long"} : {day: "numeric", month: "long", year: "numeric"})) + (h.yearly ? " · ogni anno" : "")}</div></div>
       <button type="button" class="small danger w-regole" data-h-del="${esc(h.day)}">Elimina</button></div>`).join("") : '<div class="empty">Nessuna festività.</div>'}</div></div>`;
   paintIcons(body);
   $("#h-form").onsubmit = async (e) => {
@@ -3016,11 +3065,10 @@ const notifFilters = {q: "", door: "", tab: "tutte", onlyOpen: false};
 let notifData = null, notifEvents = [];
 // "oggi 13:34", "ieri 13:34" o "24/10/2026 13:34"
 function dayTime(iso) {
-  const d = new Date(iso), today = new Date();
-  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
-  const day = d.toDateString() === today.toDateString() ? "oggi" : d.toDateString() === yesterday.toDateString() ? "ieri"
-    : d.toLocaleDateString("it-IT", {day: "2-digit", month: "2-digit", year: "numeric"});
-  return `${day} ${fmtTime(iso)}`;
+  const day = plantDay(iso), today = plantDay();
+  const label = day === today ? "oggi" : day === shiftDay(today, -1) ? "ieri"
+    : new Date(iso).toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit", year: "numeric"}));
+  return `${label} ${fmtTime(iso)}`;
 }
 const notifSince = () => new Date(Date.now() - 86400000).toISOString();
 function notifCard(i) {
@@ -3077,7 +3125,7 @@ function notifRow(e) {
   const unknown = e.kind === "negato" && !e.person_id && !e.person_name;
   const who = e.person_name ? esc(e.person_name) : e.card ? `<code>${esc(e.card)}</code>` : '<span class="muted">—</span>';
   return `<tr data-event="${e.id}" tabindex="0" title="${esc(fmtFull(e.ts))}">
-    <td class="n-time">${esc(new Date(e.ts).toDateString() === new Date().toDateString() ? fmtTime(e.ts) : dayTime(e.ts))}</td>
+    <td class="n-time">${esc(plantDay(e.ts) === plantDay() ? fmtTime(e.ts) : dayTime(e.ts))}</td>
     <td><span class="n-ev"><span class="dot ${e.kind === "negato" ? "warn" : "err"}"></span>${esc(label)}</span></td>
     <td>${who}${unknown && e.card ? ' <span class="n-unk">Sconosciuta</span>' : ""}</td>
     <td class="n-reason">${esc(e.detail || "")}</td>
@@ -4143,10 +4191,12 @@ function cappedRows(rows) {
 function shadowHtml(sh) {
   const rounds = sh?.rounds || {};
   const when = (key, label) => `${label}: ${rounds[key] ? `${esc(relTime(rounds[key].at))}${rounds[key].error ? ` <span style="color:var(--warn)">· ${esc(rounds[key].error)}</span>` : ""}` : "non ancora fatto"}`;
-  const head = `<p class="muted small-text" style="margin:0 0 8px">${when("utenti_tessere", "Utenti e tessere, dopo ogni sincronizzazione")}<br>${when("programmazione", "Programmazione, ogni ora")}</p>`;
-  // Giro senza niente letto (controller che non rispondeva): il motivo è già nella sua riga
-  const failed = new Set(Object.values(rounds).filter((r) => r.error).flatMap((r) => r.kinds));
-  const kinds = (sh?.kinds || []).filter((k) => !failed.has(k.kind));
+  // Il giro di ogni ora e Confronta Ora ognuno con la sua ora: Confronta Ora non sposta il giro orario
+  const head = `<p class="muted small-text" style="margin:0 0 8px">${when("utenti_tessere", "Utenti e tessere, dopo ogni sincronizzazione")}<br>${when("programmazione", "Programmazione, ogni ora")}<br>${when("confronta_ora", "Programmazione, con Confronta Ora")}</p>`;
+  // Tipi il cui ultimo confronto è un giro senza niente letto (controller che non rispondeva): il motivo è già nella
+  // riga del giro. Un giro dopo, riuscito, li rimette nella tabella
+  const failed = Object.values(rounds).filter((r) => r.error);
+  const kinds = (sh?.kinds || []).filter((k) => !failed.some((r) => r.at === k.at && r.kinds.includes(k.kind)));
   if (!kinds.length) return head;
   const line = (k) => {
     if (k.non_letto) return `${statusDot("warn")} Non letto <span class="muted">· ${esc(k.non_letto)}</span>`;
@@ -4166,18 +4216,23 @@ function comparisonHtml(r) {
   const lookHtml = `<h3 class="diff-part">Da Guardare${look.length ? ` (${look.length})` : ""}</h3>${look.length ? `<div class="rs-list">${cappedRows(look)}</div>` : '<p class="muted" style="margin:0">Nessuna sorpresa.</p>'}`;
   const notes = r.notes.length ? `<ul class="diff" style="margin-top:6px">${capped(r.notes, (n) => `<li class="${n.surprise || n.warnings.length ? "del" : "chg"}"><b>${n.surprise || n.warnings.length ? "!" : "~"}</b><span>${esc(n.label)} <span class="muted">· ${esc(n.text)}</span>${n.surprise ? `<span class="diff-fields"><span>Da guardare: ${esc(n.surprise)}</span></span>` : ""}${n.warnings.map((w) => `<span class="diff-fields"><span>${esc(cap(w))}</span></span>`).join("")}</span></li>`)}</ul>` : "";
   const takenHtml = `<h3 class="diff-part">Presa in Carico</h3>${taken.length ? `<p class="muted" style="margin:0">L'app prenderebbe com'è sul controller:</p><div class="cmp-counts">${taken.join("")}</div>` : '<p class="muted" style="margin:0">Niente da prendere in carico.</p>'}${notes}`;
-  // Le righe che cambierebbero qualcosa sono aperte; quelle prese in carico com'erano e quelle uguali si aprono a richiesta
-  const folded = (rows, text, mark) => rows.length ? `<details class="cmp-kind"><summary>${esc(text)}</summary><ul class="diff">${capped(rows, (i) => `<li class="add"><b>${mark}</b>${esc(i.label)}</li>`)}</ul></details>` : "";
+  // Le righe che cambierebbero qualcosa sono aperte; quelle prese in carico com'erano e quelle uguali si aprono a
+  // richiesta. Ogni tipo ha tutte le sue righe: una che è anche in Da Guardare (lì per intero) qui ha il nome e il
+  // rimando. Al collaudo della 0.28.0 la porta da prendere in carico c'era solo in Da Guardare, e Porte non aveva elenco
+  const seen = (i) => top.has(i.key) ? ' <span class="muted">· in Da Guardare</span>' : "";
+  const folded = (rows, text, mark) => rows.length ? `<details class="cmp-kind"><summary>${esc(text)}</summary><ul class="diff">${capped(rows, (i) => `<li class="add"><b>${mark}</b><span>${esc(i.label)}${seen(i)}</span></li>`)}</ul></details>` : "";
   const kinds = r.kinds.map((g) => {
-    const rest = g.rows.filter((i) => !top.has(i.key));
-    const open = rest.filter((i) => !["prende", "uguale"].includes(i.action));
-    const takenRows = rest.filter((i) => i.action === "prende");
-    const same = rest.filter((i) => i.action === "uguale");
+    const changing = g.rows.filter((i) => !["prende", "uguale"].includes(i.action));
+    const open = changing.filter((i) => !top.has(i.key));
+    const looked = changing.filter((i) => top.has(i.key));
+    const takenRows = g.rows.filter((i) => i.action === "prende");
+    const same = g.rows.filter((i) => i.action === "uguale");
     const counts = compareCounts(g.counts);
+    const lookedHtml = looked.length ? `<ul class="diff" style="margin-bottom:6px">${capped(looked, (i) => `<li class="chg"><b>!</b><span>${esc(i.label)} <span class="muted">· ${esc(i.text)}</span>${seen(i)}</span></li>`)}</ul>` : "";
     const body = g.unread ? `<div class="rs-note">${icon("question")}<span>Non letto: ${esc(g.unread)}. Per questo tipo il confronto non toglierebbe, non ricreerebbe e non confermerebbe niente.</span></div>`
       : g.hidden ? `<p class="muted small-text" style="margin:0">Solo il conteggio: ${esc(g.hidden)}.</p>`
       : !g.rows.length ? '<p class="muted small-text" style="margin:0">Nessun oggetto.</p>'
-      : `${open.length ? `<div class="rs-list">${cappedRows(open)}</div>` : ""}${folded(takenRows, `${takenRows.length} da prendere in carico com'è sul controller`, "↓")}${folded(same, `${plural(same.length, "uguale", "uguali")} nell'app e sul controller`, "=")}`;
+      : `${open.length ? `<div class="rs-list">${cappedRows(open)}</div>` : ""}${lookedHtml}${folded(takenRows, `${takenRows.length} da prendere in carico com'è sul controller`, "↓")}${folded(same, `${plural(same.length, "uguale", "uguali")} nell'app e sul controller`, "=")}`;
     return `<h3 class="diff-part">${esc(g.title)}${counts ? ` <span class="muted small-text">· ${esc(counts)}</span>` : ""}</h3>${body}`;
   }).join("");
   return `${alerts}<p class="muted small-text" style="margin:0">Letto ${esc(relTime(r.at))}${r.serial ? ` dal controller ${esc(r.serial)}` : ""}. Nelle differenze, barrato com'è sul controller e dopo la freccia com'è nell'app.</p>${lookHtml}${takenHtml}${kinds}`;
@@ -4478,11 +4533,11 @@ const backupTitle = (b) => b.name || b.kind_label;
 const BACKUP_FREQ = {ora: "Ogni Ora se Cambiato", "6ore": "Ogni 6 Ore se Cambiato", notte: "Solo Notturno"};
 // "alle 21:47", "domani alle 03:00"; un momento già passato è questione di un minuto
 function aheadTime(iso) {
-  const d = new Date(iso), now = new Date();
-  if (d <= now) return "a breve";
-  const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-  const day = d.toDateString() === now.toDateString() ? "" : d.toDateString() === tomorrow.toDateString() ? "domani " : `${d.toLocaleDateString("it-IT", {day: "2-digit", month: "2-digit"})} `;
-  return `${day}alle ${fmtTime(iso)}`;
+  const d = new Date(iso);
+  if (d.getTime() <= Date.now()) return "a breve";
+  const today = plantDay(), day = plantDay(d);
+  const label = day === today ? "" : day === shiftDay(today, 1) ? "domani " : `${d.toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit"}))} `;
+  return `${label}alle ${fmtTime(iso)}`;
 }
 const backupNext = (next) => !next ? "" : `${next.kind === "notturno" ? "prossimo notturno" : "prossimo controllo"} ${aheadTime(next.at)}`;
 function retentionText(p) {

@@ -580,6 +580,12 @@ class EventMonitor:
                         except Exception:
                             # Un messaggio strano non deve fermare l'ascolto: eventi, pulsanti di HA e citofono
                             _LOGGER.exception("Messaggio MQTT su %s non elaborato", message.topic.value)
+            except asyncio.CancelledError:
+                # Ascolto fermato (spegnimento, nuova configurazione): il client è scollegato e quello che arriva dopo
+                # non prova più a pubblicare con lui (publish restituisce False, senza WARNING)
+                self.client = None
+                self.connected = False
+                raise
             except Exception as err:  # noqa: BLE001
                 # Errori del broker, ma anche imprevisti: si risulta scollegati e si riprova, così l'interruzione
                 # si vede nell'app e dopo si recuperano gli eventi persi
