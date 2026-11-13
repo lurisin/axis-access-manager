@@ -540,17 +540,19 @@
   .p-table tbody tr:last-child td { border-bottom: none; }
   .p-table .c-photo { width: 64px; }
   .p-table .c-emp { width: 104px; }
-  .p-table .c-cards { width: 140px; }
+  .p-table .c-cards { width: 124px; }
   /* Tessere come nella scheda: il Codice Stampato sopra, il numero sotto più piccolo; una tessera sotto l'altra */
   .p-card { line-height: 1.25; }
   .p-card + .p-card { margin-top: 5px; }
   .p-card > div { overflow: hidden; text-overflow: ellipsis; }
   .p-card .p-code { font-weight: 600; }
   .p-card .card-no { font-size: 12px; color: var(--muted); }
+  /* Il numero a 12 px anche senza codice: uno di 14 cifre esadecimali sta intero nella colonna */
+  .p-card .mono { font-size: 12px; }
   .p-table .c-access, .p-table .c-extra { width: 140px; }
   /* Con la colonna della data di inserimento o di modifica, Tessere lascia il posto, tranne quando la ricerca ha trovato
      delle tessere (data-cards) */
-  .p-table[data-sorted="inserimento"]:not([data-cards]) .c-cards, .p-table[data-sorted="modifica"]:not([data-cards]) .c-cards { display: none; }
+  .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"]):not([data-cards]) .c-cards { display: none; }
   .p-table .c-state { width: 168px; }
   .p-table .avatar { display: inline-grid; vertical-align: middle; }
   .p-table .c-last, .p-table .c-first { font-weight: 600; }
@@ -567,10 +569,38 @@
   .p-table tbody tr[data-person]:hover td, .p-table tbody tr[data-person]:focus-visible td { background: var(--surface-2); }
   .p-table tbody tr:focus-visible { outline-offset: -2px; }
   table.table.p-table tr.sec td { background: var(--surface-2); font-size: 12px; font-weight: 700; color: var(--muted); padding-top: 4px; padding-bottom: 4px; height: auto; overflow: visible; }
-  @container persone (max-width: 1059px) { .p-table:not([data-cards]) .c-cards { display: none; } }
-  @container persone (max-width: 859px) { .p-table:not([data-sorted="matricola"]) .c-emp { display: none; } .p-table .c-state { width: 156px; } }
-  @container persone (max-width: 759px) { .p-table:not([data-sorted="ditta"]) .c-company { display: none; } }
-  @container persone (max-width: 599px) { .p-table:not([data-sorted="accesso"]) .c-access { display: none; } }
+  /* Riquadro stretto: le colonne in più lasciano il posto, perché Cognome, Nome, Ditta e Tipologia (larghe quanto
+     avanza) non scendano sotto i 95 px circa. Prima Tessere, poi Matricola, Ditta e Ultimo Accesso, mai la colonna
+     dell'ordine scelto. Quando la ricerca trova delle tessere (data-cards) Tessere resta e prende il posto di Ultimo
+     Accesso; la data dell'ordine per inserimento o modifica prende quello di Tessere e, sotto i 1060 px, di Ultimo
+     Accesso; Matricola o Ditta dell'ordine prendono il posto di Ultimo Accesso, Ultimo Accesso dell'ordine quello di
+     Tipologia. Con Tessere e un'altra colonna fissa che resta (data, Ultimo Accesso o Matricola dell'ordine) vanno via
+     prima Matricola, Ditta, Tipologia e, al limite, Stato; con l'ordine per Ditta o Tipologia, Tipologia e Stato */
+  @container persone (max-width: 1179px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"])[data-cards] .c-access { display: none; } }
+  @container persone (max-width: 1059px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"]) .c-access { display: none; } }
+  @container persone (max-width: 979px) {
+    .p-table:not([data-cards]) .c-cards { display: none; }
+    .p-table[data-cards]:not([data-sorted="accesso"]) .c-access { display: none; }
+    .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"])[data-cards] .c-emp { display: none; }
+  }
+  @container persone (max-width: 883px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"], [data-sorted="matricola"])[data-cards] .c-company { display: none; } }
+  @container persone (max-width: 859px) {
+    .p-table:not([data-sorted="matricola"]) .c-emp { display: none; } .p-table .c-state { width: 156px; }
+    /* Matricola dell'ordine al posto di Ultimo Accesso */
+    .p-table[data-sorted="matricola"] .c-access { display: none; }
+  }
+  @container persone (max-width: 768px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"], [data-sorted="matricola"])[data-cards] .c-cat { display: none; } }
+  @container persone (max-width: 759px) { .p-table:not([data-sorted="ditta"]) .c-company { display: none; } .p-table[data-sorted="ditta"] .c-access { display: none; } }
+  @container persone (max-width: 739px) { .p-table[data-sorted="ditta"][data-cards] .c-cat { display: none; } }
+  @container persone (max-width: 673px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"], [data-sorted="matricola"])[data-cards] .c-state { display: none; } }
+  @container persone (max-width: 644px) {
+    .p-table:not([data-sorted="accesso"]) .c-access { display: none; }
+    /* Ultimo Accesso c'è già solo se è l'ordine scelto: Tessere trovate o la data dell'ordine prendono il posto di
+       Tipologia, o di Stato quando Tipologia (o Ditta) è l'ordine scelto */
+    .p-table:is([data-cards], [data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"]):not([data-sorted="tipologia"]) .c-cat { display: none; }
+    .p-table:is([data-sorted="ditta"], [data-sorted="tipologia"])[data-cards] .c-state { display: none; }
+  }
+  @container persone (max-width: 609px) { .p-table:is([data-sorted="matricola"], [data-sorted="ditta"]) .c-cat { display: none; } }
   .chip svg.icon { width: 14px; height: 14px; }
   .ev-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none; font-size: 16px; }
   .ev-icon svg { width: 18px; height: 18px; fill: currentColor; }
