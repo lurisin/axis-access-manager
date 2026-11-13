@@ -2331,6 +2331,9 @@ document.addEventListener("input", (e) => {
   const clean = cleanContact(kind, e.target.value);
   if (clean !== e.target.value) e.target.value = clean;
 });
+// Collegamento per scrivere all'email: codificata tutta tranne la @, se no «#» e «?», validi in un indirizzo, farebbero
+// scrivere a un altro destinatario
+const mailtoHref = (email) => "mailto:" + encodeURIComponent(email).replace(/%40/g, "@");
 async function newPerson(card = "") {
   await loadCategories();
   const created = await modal({
@@ -2410,7 +2413,7 @@ async function openPerson(id) {
         <dl class="props"><dt>Nome</dt><dd>${esc(p.first_name || "—")}</dd><dt>Cognome</dt><dd>${esc(p.last_name || "—")}</dd>
           <dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
           <dt>Telefono</dt><dd>${p.phone ? `<a href="tel:${esc(p.phone.replace(/[^\d+]/g, ""))}">${esc(p.phone)}</a>` : "—"}</dd>
-          <dt>Email</dt><dd>${p.email ? `<a href="mailto:${esc(encodeURI(p.email))}">${esc(p.email)}</a>` : "—"}</dd>
+          <dt>Email</dt><dd>${p.email ? `<a href="${esc(mailtoHref(p.email))}">${esc(p.email)}</a>` : "—"}</dd>
           <dt>Note</dt><dd style="white-space:pre-wrap">${esc(p.notes || "—")}</dd></dl>
         ${p.axis_user_token ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici</summary>
           <dl class="props" style="margin-top:8px"><dt>Codice sul Controller</dt><dd><code>${esc(p.axis_user_token)}</code></dd></dl></details>` : ""}</div>

@@ -932,3 +932,18 @@ def test_page_cleans_pasted_phone_and_email_like_the_server():
         assert normalize_phone(out[key]) == out[key]
     for key in ("email", "invisible"):
         assert normalize_email(out[key]) == out[key]
+
+
+@needs_node
+def test_mailto_link_writes_to_the_whole_address():
+    """Collegamento mailto: della scheda: «#» e «?», validi in un indirizzo, non tagliano il destinatario."""
+    emails = ["ufficio#2@example.it", "info?x@example.it", "nome.cognome+ufficio@sub.example.com", "a%b&c@example.it"]
+    calls = {
+        email: f"(() => {{ const u = new URL(mailtoHref({json.dumps(email)})); "
+        "return [decodeURIComponent(u.pathname), u.search, u.hash]; })()"
+        for email in emails
+    }
+    out = run_page("Europe/Rome", calls, names=("mailtoHref",))
+    assert out == {email: [email, "", ""] for email in emails}
+    for email in emails:
+        assert normalize_email(email) == email
