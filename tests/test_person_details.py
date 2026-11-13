@@ -921,6 +921,7 @@ def test_persons_are_sorted_by_last_name_and_found_by_phone_and_email():
             "comparePersons",
             "foldText",
             "PHONE_MARKS",
+            "searchFold",
             "personTexts",
             "personHaystack",
             "personMatches",

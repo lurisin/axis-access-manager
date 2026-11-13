@@ -514,6 +514,12 @@
   .person-row .p-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
   .person-row .p-main .name { flex: none; }
   .p-sub { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Tessera trovata dalla ricerca, sotto il nome: il codice in evidenza, il numero più piccolo. Con poco spazio si
+     accorcia prima il codice, così il numero cercato resta intero */
+  .p-found { display: flex; align-items: baseline; gap: 5px; }
+  .p-found svg.icon { width: 14px; height: 14px; align-self: center; }
+  .p-found .p-code { color: var(--text); font-weight: 600; min-width: 3em; overflow: hidden; text-overflow: ellipsis; }
+  .p-found .mono { font-size: 12px; flex: none; }
   /* Barra delle Persone: ricerca, stato, ordine, Nuova Persona */
   .sort-pick { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); min-width: 0; }
   .p-tools input[type=search] { flex: 1 1 260px; }
@@ -534,10 +540,17 @@
   .p-table tbody tr:last-child td { border-bottom: none; }
   .p-table .c-photo { width: 64px; }
   .p-table .c-emp { width: 104px; }
-  .p-table .c-cards { width: 72px; }
+  .p-table .c-cards { width: 140px; }
+  /* Tessere come nella scheda: il Codice Stampato sopra, il numero sotto più piccolo; una tessera sotto l'altra */
+  .p-card { line-height: 1.25; }
+  .p-card + .p-card { margin-top: 5px; }
+  .p-card > div { overflow: hidden; text-overflow: ellipsis; }
+  .p-card .p-code { font-weight: 600; }
+  .p-card .card-no { font-size: 12px; color: var(--muted); }
   .p-table .c-access, .p-table .c-extra { width: 140px; }
-  /* Con la colonna della data di inserimento o di modifica, Tessere lascia il posto */
-  .p-table[data-sorted="inserimento"] .c-cards, .p-table[data-sorted="modifica"] .c-cards { display: none; }
+  /* Con la colonna della data di inserimento o di modifica, Tessere lascia il posto, tranne quando la ricerca ha trovato
+     delle tessere (data-cards) */
+  .p-table[data-sorted="inserimento"]:not([data-cards]) .c-cards, .p-table[data-sorted="modifica"]:not([data-cards]) .c-cards { display: none; }
   .p-table .c-state { width: 168px; }
   .p-table .avatar { display: inline-grid; vertical-align: middle; }
   .p-table .c-last, .p-table .c-first { font-weight: 600; }
@@ -554,7 +567,7 @@
   .p-table tbody tr[data-person]:hover td, .p-table tbody tr[data-person]:focus-visible td { background: var(--surface-2); }
   .p-table tbody tr:focus-visible { outline-offset: -2px; }
   table.table.p-table tr.sec td { background: var(--surface-2); font-size: 12px; font-weight: 700; color: var(--muted); padding-top: 4px; padding-bottom: 4px; height: auto; overflow: visible; }
-  @container persone (max-width: 979px) { .p-table .c-cards { display: none; } }
+  @container persone (max-width: 1059px) { .p-table:not([data-cards]) .c-cards { display: none; } }
   @container persone (max-width: 859px) { .p-table:not([data-sorted="matricola"]) .c-emp { display: none; } .p-table .c-state { width: 156px; } }
   @container persone (max-width: 759px) { .p-table:not([data-sorted="ditta"]) .c-company { display: none; } }
   @container persone (max-width: 599px) { .p-table:not([data-sorted="accesso"]) .c-access { display: none; } }
@@ -2484,27 +2497,41 @@ function personSortNote(p, key) {
 const foldText = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 // Separatori di un numero di telefono: la ricerca lo trova anche scritto senza spazi
 const PHONE_MARKS = /[\s.\-\/()]/g;
+// Campo o ricerca come si confrontano: minuscolo, senza accenti e con gli spazi di fila contati come uno
+const searchFold = (text) => foldText(String(text || "").replace(/\s+/g, " "));
 // Testo in cui cercare, preparato una volta per persona (l'elenco nuovo, ogni 15 secondi, sono oggetti nuovi): nome
-// completo, nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono, email, numeri delle tessere e note.
-// Un campo per riga: una ricerca non trova la fine di un campo unita all'inizio del successivo
+// completo, nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono, email, numeri e Codici Stampati delle
+// tessere e note. Un campo per riga: una ricerca non trova la fine di un campo unita all'inizio del successivo
 const personTexts = new WeakMap();
 function personHaystack(p) {
   let text = personTexts.get(p);
   if (text === undefined) {
-    text = foldText([p.name, p.first_name, p.last_name, `${p.last_name || ""} ${p.first_name || ""}`, p.employee_id, p.company, p.referent,
-      p.phone, p.email, ...(p.cards || []).map((c) => c.number), p.notes].map((f) => String(f || "").replace(/\s+/g, " ")).join("\n"));
+    text = [p.name, p.first_name, p.last_name, `${p.last_name || ""} ${p.first_name || ""}`, p.employee_id, p.company, p.referent,
+      p.phone, p.email, ...(p.cards || []).flatMap((c) => [c.number, c.printed_code]), p.notes].map(searchFold).join("\n");
     personTexts.set(p, text);
   }
   return text;
 }
 // Ricerca dell'elenco su tutti i campi della persona; il telefono anche scritto senza spazi né trattini
 function personMatches(p, q) {
-  const text = foldText(q).trim().replace(/\s+/g, " ");
+  const text = searchFold(q).trim();
   if (!text) return true;
   if (personHaystack(p).includes(text)) return true;
   const digits = text.replace(PHONE_MARKS, "");
   return Boolean(digits && p.phone && p.phone.replace(PHONE_MARKS, "").includes(digits));
 }
+// Tessere della persona che la ricerca trova, per Codice Stampato o per numero, con lo stesso confronto di
+// personMatches: sul telefono compaiono sotto il nome, perché si capisca perché la persona è nell'elenco, e nella
+// tabella la colonna Tessere resta in vista
+function searchedCards(p, q) {
+  const text = searchFold(q).trim();
+  if (!text) return [];
+  return (p.cards || []).filter((c) => searchFold(c.number).includes(text) || searchFold(c.printed_code).includes(text));
+}
+// Tessera nell'elenco come nella scheda: il Codice Stampato in evidenza e sotto il numero, più piccolo; senza codice
+// il numero. Nella cella, con poco spazio, i puntini e tutto nel title
+const cardTag = (c) => `<div class="p-card">${c.printed_code ? `<div class="p-code">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="mono">${esc(c.number)}</div>`}</div>`;
+const cardTitle = (cards) => cards.map((c) => c.printed_code ? `${c.printed_code} · ${c.number}` : c.number).join("\n");
 // Le tipologie stanno in Persone; chi ha il permesso Regole ma non Persone le trova in Regole
 const categoriesLink = () => can("persone") ? "#persone/tipologie" : "#regole/tipologie";
 const personTabs = (tab) => `<div class="segmented">${[["", "Persone"], ["tipologie", "Tipologie"]].map(([k, label]) => `<a href="#persone${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`;
@@ -2517,7 +2544,7 @@ async function viewPersons(el, sub) {
   if (!el.isConnected) return;
   el.innerHTML = `${personTabs("")}
     <div class="toolbar p-tools">
-      <input type="search" id="p-q" placeholder="Cerca nome, tessera, matricola…" aria-label="Cerca persone" title="Cerca per nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono (anche senza spazi), email, numero tessera o note" value="${esc(personFilters.q)}">
+      <input type="search" id="p-q" placeholder="Cerca nome, tessera, matricola…" aria-label="Cerca persone" title="Cerca per nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono (anche senza spazi), email, note, numero o Codice Stampato della tessera" value="${esc(personFilters.q)}">
       <select id="p-state" aria-label="Mostra">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
         <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
@@ -2649,7 +2676,8 @@ function renderPersonList() {
   morph(list, phoneLayout() ? personRows(sorted) : personTable(sorted));
 }
 // Telefono: foto o iniziali con il pallino della tipologia, «Nome Cognome», l'etichetta dello stato e, se l'ordine
-// non è per cognome o per nome, il valore usato per ordinare
+// non è per cognome o per nome, il valore usato per ordinare. La riga non mostra le tessere: solo quelle che la
+// ricerca ha trovato, una per riga sotto il nome, con il codice in evidenza e il numero più piccolo
 function personRows(sorted) {
   const key = personFilters.sort.split(":")[0];
   let letter = "";
@@ -2659,16 +2687,18 @@ function personRows(sorted) {
     letter = first;
     const c = categoryOf(p.category_id);
     const note = personSortNote(p, key);
+    const found = searchedCards(p, personFilters.q).map((t) => `<span class="p-sub p-found" title="${esc(cardTitle([t]))}">${icon("card")}${t.printed_code
+      ? `<span class="p-code">${esc(t.printed_code)}</span>` : ""}<span class="mono">${esc(t.number)}</span></span>`).join("");
     return `${head}<div class="person-row" data-person="${p.id}" data-key="p${p.id}" role="button" tabindex="0">
       <span class="p-face">${personAvatar(p, "sm")}<span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span></span>
-      <span class="p-main"><span class="name">${esc(p.name)}</span>${note ? `<span class="p-sub">${esc(note)}</span>` : ""}</span>${personFlag(p)}
+      <span class="p-main"><span class="name">${esc(p.name)}</span>${note ? `<span class="p-sub">${esc(note)}</span>` : ""}${found}</span>${personFlag(p)}
     </div>`;
   }).join("");
 }
 // Computer: tabella con le intestazioni che ordinano (un pulsante in ogni intestazione, aria-sort su quella scelta).
 // Con l'ordine per data di inserimento o di modifica compare anche la colonna con quella data. Le righe non dipendono
-// dall'ordine scelto (la colonna da tenere in vista la dice data-sorted della tabella): cambiando ordine si spostano e
-// basta, senza ridisegnarle
+// dall'ordine scelto né dalla ricerca (la colonna da tenere in vista la dice data-sorted della tabella, e data-cards
+// quando la ricerca trova delle tessere): cambiando ordine si spostano e basta, senza ridisegnarle
 function personTable(sorted) {
   const [key, dir] = personFilters.sort.split(":");
   const extra = key === "inserimento" ? "Data di Inserimento" : key === "modifica" ? "Ultima Modifica" : "";
@@ -2691,10 +2721,11 @@ function personTable(sorted) {
     return `${section}<tr data-person="${p.id}" data-key="p${p.id}" tabindex="0">
       <td class="c-photo">${personAvatar(p, "sm")}</td>${text("c-last", p.last_name)}${text("c-first", p.first_name)}${text("c-emp", p.employee_id)}${text("c-company", p.company)}
       <td class="c-cat"${c ? ` title="${esc(c.name)}"` : ""}>${c ? `<span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}` : dash}</td>
-      <td class="c-cards">${p.cards.length || dash}</td>${when("c-access", p.last_access, relTime)}${extra ? when("c-extra", key === "inserimento" ? p.created_at : p.updated_at, fmtNumDay) : ""}
+      <td class="c-cards"${p.cards.length ? ` title="${esc(cardTitle(p.cards))}"` : ""}>${p.cards.map(cardTag).join("") || dash}</td>${when("c-access", p.last_access, relTime)}${extra ? when("c-extra", key === "inserimento" ? p.created_at : p.updated_at, fmtNumDay) : ""}
       <td class="c-state">${personFlag(p)}</td></tr>`;
   }).join("");
-  return `<table class="table p-table" data-sorted="${key}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  const found = sorted.some((p) => searchedCards(p, personFilters.q).length);
+  return `<table class="table p-table" data-sorted="${key}"${found ? " data-cards" : ""}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 // Telefono girato o finestra allargata oltre gli 860 px (o il contrario): righe o tabella
 window.matchMedia("(max-width: 860px)").addEventListener("change", () => renderPersonList());

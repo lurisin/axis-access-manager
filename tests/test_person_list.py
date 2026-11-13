@@ -50,9 +50,11 @@ SORT = (
     "personLetter",
     "personSortNote",
     "PHONE_MARKS",
+    "searchFold",
     "personTexts",
     "personHaystack",
     "personMatches",
+    "searchedCards",
 )
 TABLE = (
     "esc",
@@ -64,6 +66,10 @@ TABLE = (
     "VALIDITY_PILL",
     "customAccess",
     "personFlag",
+    "ICONS",
+    "icon",
+    "cardTag",
+    "cardTitle",
     "personRows",
     "personTable",
 )
@@ -362,6 +368,172 @@ def test_text_to_search_is_prepared_once_per_person():
     assert out == {"same": True, "fresh": True}
 
 
+# Codici Stampati di fantasia: una persona con due tessere con il codice, una con una tessera senza codice, una con un
+# codice che contiene l'altro, una senza tessere
+CODED = [
+    person(
+        20,
+        "Marta",
+        "Gialli",
+        cards=[
+            {"id": 1, "number": "04ab12cd", "printed_code": "Ciccio"},
+            {"id": 2, "number": "04ff0011", "printed_code": "Ávila  7"},
+        ],
+    ),
+    person(21, "Paolo", "Verdi", cards=[{"id": 3, "number": "04cc0099", "printed_code": ""}]),
+    person(22, "Ugo", "Neri", cards=[{"id": 4, "number": "04dd2200", "printed_code": "cICCIObello"}]),
+    person(23, "Rita", "Bruni", notes="tessera da fare"),
+]
+CODED_PRELUDE = f"store.categories = {json.dumps(CATEGORIES)}; const persons = {json.dumps(CODED)};"
+
+
+def test_search_finds_the_printed_code_of_any_card():
+    """«cicc» trova chi ha la tessera «Ciccio», come gli altri campi: parte del testo, maiuscole e accenti indifferenti,
+    anche sulla seconda tessera della persona; un codice e il numero accanto non si uniscono."""
+    searches = {
+        "part": "cicc",
+        "upper": "CICCIO",
+        "longer": "ciccioB",
+        "second_card": "vila",
+        "accent": "AVILA 7",
+        "spaces": "  ávila   7 ",
+        "number": "04CC",
+        "both_cards": "04ff",
+        "name": "marta",
+        "code_and_number": "ciccio 04ff",
+        "nothing": "zeta",
+    }
+    calls = {
+        key: f"persons.filter((p) => personMatches(p, {json.dumps(text)})).map((p) => p.id)"
+        for key, text in searches.items()
+    }
+    out = run(calls, CODED_PRELUDE)
+    assert out == {
+        "part": [20, 22],
+        "upper": [20, 22],
+        "longer": [22],
+        "second_card": [20],
+        "accent": [20],
+        "spaces": [20],
+        "number": [21],
+        "both_cards": [20],
+        "name": [20],
+        "code_and_number": [],
+        "nothing": [],
+    }
+
+
+def test_cards_found_by_the_search_are_the_ones_shown():
+    """Le tessere che la ricerca trova, per codice o per numero: quelle che il telefono mostra sotto il nome."""
+    found = "(i, q) => searchedCards(persons[i], q).map((c) => c.id)"
+    out = run(
+        {
+            "code": f"({found})(0, 'CICC')",
+            "second": f"({found})(0, 'avila 7')",
+            "number": f"({found})(0, '04FF00')",
+            "every": f"({found})(0, '04')",
+            "no_code": f"({found})(1, 'cc00')",
+            "by_name": f"({found})(0, 'gialli')",
+            "empty": f"({found})(0, '   ')",
+            "no_cards": f"({found})(3, 'tessera')",
+        },
+        CODED_PRELUDE,
+    )
+    assert out == {
+        "code": [1],
+        "second": [2],
+        "number": [2],
+        "every": [1, 2],
+        "no_code": [3],
+        "by_name": [],
+        "empty": [],
+        "no_cards": [],
+    }
+
+
+def test_desktop_table_shows_every_card_like_the_sheet():
+    """Colonna Tessere: ogni tessera come nella scheda, il codice sopra e il numero sotto più piccolo; senza codice il
+    numero; tutto anche nel title. Con la ricerca che trova delle tessere la tabella ha data-cards (la colonna resta
+    in vista), e le righe sono le stesse con e senza ricerca."""
+    persons = [*CODED, person(24, "Lia", "Rame", cards=[{"id": 5, "number": "04ee", "printed_code": "A&B <7>"}])]
+    prelude = f"store.categories = {json.dumps(CATEGORIES)}; const persons = {json.dumps(persons)};"
+    table = (
+        "(q) => { personFilters.q = q; personFilters.sort = 'cognome:asc'; "
+        "return personTable(sortPersons(persons.filter((p) => personMatches(p, q)), 'cognome:asc')); }"
+    )
+    out = run(
+        {
+            "plain": f"({table})('')",
+            "code": f"({table})('cicc')",
+            "name": f"({table})('marta')",
+            "number": f"({table})('04cc')",
+        },
+        prelude,
+        names=DATES + SORT + TABLE,
+    )
+    html = out["plain"]
+    cells = dict(re.findall(r'<tr data-person="(\d+)".*?<td class="c-cards"(.*?)</td>', html, re.S))
+    assert cells["20"] == (
+        ' title="Ciccio · 04ab12cd\nÁvila  7 · 04ff0011">'
+        '<div class="p-card"><div class="p-code">Ciccio</div><div class="card-no mono">04ab12cd</div></div>'
+        '<div class="p-card"><div class="p-code">Ávila  7</div><div class="card-no mono">04ff0011</div></div>'
+    )
+    assert cells["21"] == ' title="04cc0099"><div class="p-card"><div class="mono">04cc0099</div></div>'
+    assert cells["23"] == '><span class="muted">—</span>'
+    # Il codice si scrive com'è, senza diventare HTML
+    assert cells["24"] == (
+        ' title="A&amp;B &lt;7&gt; · 04ee"><div class="p-card"><div class="p-code">A&amp;B &lt;7&gt;</div>'
+        '<div class="card-no mono">04ee</div></div>'
+    )
+    assert '<table class="table p-table" data-sorted="cognome">' in html
+    assert '<table class="table p-table" data-sorted="cognome" data-cards>' in out["code"]
+    assert '<table class="table p-table" data-sorted="cognome" data-cards>' in out["number"]
+    # Trovata per nome: niente data-cards, la colonna segue lo spazio come sempre
+    assert '<table class="table p-table" data-sorted="cognome">' in out["name"]
+    rows = {pid: row for row, pid in re.findall(r'(<tr data-person="(\d+)".*?</tr>)', html, re.S)}
+    found = {pid: row for row, pid in re.findall(r'(<tr data-person="(\d+)".*?</tr>)', out["code"], re.S)}
+    assert found["20"] == rows["20"] and found["22"] == rows["22"]
+
+
+def test_phone_rows_show_the_cards_the_search_found():
+    """Telefono: la riga non mostra le tessere, solo quelle che la ricerca ha trovato, sotto il nome, con il codice in
+    evidenza e il numero più piccolo (senza codice il numero); niente per una persona trovata per nome."""
+    rows = (
+        "(q) => { personFilters.q = q; personFilters.sort = 'cognome:asc'; "
+        "return personRows(sortPersons(persons.filter((p) => personMatches(p, q)), 'cognome:asc')); }"
+    )
+    out = run(
+        {
+            "code": f"({rows})('Cicc')",
+            "number": f"({rows})('04cc')",
+            "name": f"({rows})('marta')",
+            "all": f"({rows})('')",
+        },
+        CODED_PRELUDE,
+        names=DATES + SORT + TABLE,
+    )
+
+    def found(html):
+        return {
+            pid: re.findall(
+                r'<span class="p-sub p-found" title="([^"]*)"><svg class="icon".*?</svg>'
+                r'(.*?<span class="mono">[^<]*</span>)</span>',
+                row,
+                re.S,
+            )
+            for row, pid in re.findall(r'(<div class="person-row" data-person="(\d+)".*?</div>)', html, re.S)
+        }
+
+    code = found(out["code"])
+    assert code["20"] == [("Ciccio · 04ab12cd", '<span class="p-code">Ciccio</span><span class="mono">04ab12cd</span>')]
+    assert code["22"] == [
+        ("cICCIObello · 04dd2200", '<span class="p-code">cICCIObello</span><span class="mono">04dd2200</span>')
+    ]
+    assert found(out["number"]) == {"21": [("04cc0099", '<span class="mono">04cc0099</span>')]}
+    assert found(out["name"]) == {"20": []}
+    assert "p-found" not in out["all"]
+
+
 @pytest.mark.parametrize(
     ("storage", "expected"),
     [
@@ -462,3 +634,134 @@ def test_photo_is_prepared_in_the_browser_and_sent_inside_the_waiting_box():
     )
     assert re.search(r'\{method: "DELETE"\}\), "Foto tolta", "Rimozione della foto"\)', page)
     assert 'e.person_id && can("persone") ? `<div class="ev-face"' in page
+
+
+# Chromium vero (Playwright, se c'è): l'elenco con i Codici Stampati disegnato con le regole CSS della pagina com'è, a
+# 1280 px (tabella) e a 390 px (righe del telefono), in tema chiaro e scuro
+LAYOUT = r"""
+const { chromium } = require("playwright");
+(async () => {
+  const browser = await chromium.launch();
+  const out = {};
+  const cases = [
+    ["wide", 1280, false, "", "light"],
+    ["wide_dark", 1280, false, "cicc", "dark"],
+    ["narrow", 1000, false, "", "light"],
+    ["narrow_search", 1000, false, "cicc", "light"],
+    ["narrow_by_date", 1280, false, "04cc", "light", "inserimento:desc"],
+    ["phone", 390, true, "", "light"],
+    ["phone_code", 390, true, "CICC", "light"],
+    ["phone_long", 390, true, "04AAB", "dark"],
+  ];
+  for (const [name, width, phone, q, scheme, sort = "cognome:asc"] of cases) {
+    const page = await browser.newPage({viewport: {width, height: 800}, colorScheme: scheme});
+    await page.setContent(__PAGE__);
+    out[name] = await page.evaluate(([phone, q, sort]) => {
+      personFilters.q = q;
+      personFilters.sort = sort;
+      const shown = sortPersons(persons.filter((p) => personMatches(p, q)), sort);
+      document.getElementById("p-list").innerHTML = phone ? personRows(shown) : personTable(shown);
+      const de = document.documentElement;
+      const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).display !== "none";
+      // Testo intero: niente puntini (scrollWidth oltre la larghezza vera, con il mezzo pixel del browser)
+      const whole = (el) => el.scrollWidth <= el.getBoundingClientRect().width + 0.5;
+      const style = (el) => el && {weight: getComputedStyle(el).fontWeight, size: getComputedStyle(el).fontSize,
+        color: getComputedStyle(el).color};
+      const head = document.querySelector("th.c-cards");
+      const codes = [...document.querySelectorAll(".p-code")];
+      const numbers = [...document.querySelectorAll(".p-card .card-no, .p-card > .mono, .p-found .mono")];
+      return {
+        scroll: de.scrollWidth <= de.clientWidth,
+        column: head ? visible(head) : null,
+        codes: codes.filter(visible).map((el) => el.textContent),
+        numbers: numbers.filter(visible).map((el) => [el.textContent, whole(el)]),
+        code: style(codes.find(visible)),
+        number: style(document.querySelector(".p-card .card-no, .p-found .mono")),
+        found: [...document.querySelectorAll(".p-found")].map((el) => el.closest("[data-person]").dataset.person),
+        rows: document.querySelectorAll("[data-person]").length,
+      };
+    }, [phone, q, sort]);
+    await page.close();
+  }
+  console.log(JSON.stringify(out));
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+def _has_playwright() -> bool:
+    if shutil.which("node") is None:
+        return False
+    probe = subprocess.run(["node", "-e", "require('playwright')"], capture_output=True, timeout=30)
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
+def test_list_with_printed_codes_in_a_real_browser_at_1280_and_390():
+    """Tabella: la colonna Tessere con il codice in evidenza (grassetto) e il numero intero, più piccolo e più chiaro;
+    con il riquadro stretto la colonna sparisce, tranne quando la ricerca trova delle tessere (anche con l'ordine per
+    data). Telefono: senza ricerca nessuna tessera; con la ricerca per codice o per numero la tessera sotto il nome,
+    con il numero intero anche dopo un codice lungo. Mai scorrimento orizzontale."""
+    page = PAGE.read_text(encoding="utf-8")
+    css = re.search(r"<style>(.*?)</style>", page, re.S).group(1)
+    persons = [
+        *CODED,
+        person(
+            24,
+            "Elena",
+            "Bruno",
+            cards=[{"id": 6, "number": "04aab2c200993f", "printed_code": "Riserva Magazzino Lunga"}],
+        ),
+    ]
+    script = "\n".join(
+        [
+            "const store = {me: {time_zone: 'Europe/Rome'}, categories: " + json.dumps(CATEGORIES) + ", persons: []};",
+            "const persons = " + json.dumps(persons) + ";",
+            _declarations(DATES + SORT + TABLE),
+        ]
+    )
+    html = (
+        f'<!doctype html><html lang="it"><head><meta charset="utf-8"><style>{css}</style></head><body>'
+        '<div class="main"><div style="padding:16px"><div class="card flush p-table-wrap">'
+        f'<div class="list" id="p-list"></div></div></div></div><script>{script}</script></body></html>'
+    )
+    result = subprocess.run(
+        ["node", "-e", LAYOUT.replace("__PAGE__", json.dumps(html))], capture_output=True, text=True, timeout=120
+    )
+    if result.returncode and "Executable doesn't exist" in result.stderr:
+        pytest.skip("Chromium di Playwright non installato")
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert all(case["scroll"] for case in out.values()), out
+    wide = out["wide"]
+    assert wide["column"] is True and wide["rows"] == 5
+    assert wide["codes"] == ["Riserva Magazzino Lunga", "Ciccio", "Ávila  7", "cICCIObello"]
+    # Ogni numero intero, anche quello di una tessera senza codice (Verdi); nessuno per chi non ha tessere (Bruni)
+    assert wide["numbers"] == [
+        ["04aab2c200993f", True],
+        ["04ab12cd", True],
+        ["04ff0011", True],
+        ["04dd2200", True],
+        ["04cc0099", True],
+    ]
+    # Il codice in evidenza, il numero più piccolo e più chiaro, in tutti e due i temi
+    for case in (wide, out["wide_dark"]):
+        assert int(case["code"]["weight"]) >= 600
+        assert float(case["number"]["size"].removesuffix("px")) < float(case["code"]["size"].removesuffix("px"))
+        assert case["number"]["color"] != case["code"]["color"]
+    assert out["wide_dark"]["codes"] == ["Ciccio", "Ávila  7", "cICCIObello"]
+    # Riquadro stretto: la colonna lascia il posto, tranne quando la ricerca trova delle tessere
+    assert out["narrow"]["column"] is False and out["narrow"]["numbers"] == []
+    assert out["narrow_search"]["column"] is True
+    assert out["narrow_search"]["numbers"] == [["04ab12cd", True], ["04ff0011", True], ["04dd2200", True]]
+    assert out["narrow_by_date"]["column"] is True and out["narrow_by_date"]["numbers"] == [["04cc0099", True]]
+    # Telefono
+    assert out["phone"]["column"] is None and out["phone"]["rows"] == 5 and out["phone"]["found"] == []
+    assert out["phone"]["numbers"] == []
+    assert out["phone_code"]["found"] == ["20", "22"]
+    assert out["phone_code"]["codes"] == ["Ciccio", "cICCIObello"]
+    assert out["phone_code"]["numbers"] == [["04ab12cd", True], ["04dd2200", True]]
+    assert int(out["phone_code"]["code"]["weight"]) >= 600
+    # Codice lungo: si accorcia il codice, il numero cercato resta intero
+    assert out["phone_long"]["found"] == ["24"]
+    assert out["phone_long"]["numbers"] == [["04aab2c200993f", True]]
