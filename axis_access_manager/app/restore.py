@@ -398,25 +398,30 @@ def _plan_persons(
         key = f"persona:{person['id']}:{person['created_at']}"
         item = _new(key, "persone", "riporta" if now else "ricrea", person["name"], "")
         # Matricola del backup data nel frattempo a un'altra persona: resta sua, e il ripristino non si ferma (vedi
-        # AccessService._saved_employee_id). Se il backup ridà a quella persona un'altra matricola, libera, torna a
-        # questa quando si ripristinano insieme: la riga va dopo la sua (_after). Due matricole scambiate restano come
-        # sono. Il valore non si mostra, come in Persone
+        # AccessService._saved_employee_id). Se il backup ridà a quella persona un'altra matricola, libera, o se quella
+        # persona è registrata dopo il backup (la sua riga la elimina), torna a questa quando si ripristinano insieme:
+        # la riga va dopo la sua (_after). Due matricole scambiate restano come sono. Il valore non si mostra, come in
+        # Persone
         holder = employee_ids.get(nocase(person.get("employee_id") or ""))
         taken = holder is not None and (now is None or holder["id"] != now["id"])
         if taken:
-            theirs = saved_persons.get((holder["id"], holder["created_at"])) or {}
-            wanted = nocase(theirs.get("employee_id") or "")
+            theirs = saved_persons.get((holder["id"], holder["created_at"]))
+            wanted = nocase((theirs or {}).get("employee_id") or "")
             busy = employee_ids.get(wanted) if wanted else None
-            freed = (
+            if theirs is None:
+                freed = f"eliminando anche {holder['name']}, registrata dopo il backup"
+            elif (
                 "employee_id" in theirs
                 and wanted != nocase(person["employee_id"])
                 and (busy is None or busy["id"] == holder["id"])
-            )
+            ):
+                freed = f"ripristinando anche {holder['name']}"
+            else:
+                freed = ""
             if freed:
                 item["_after"] = True
                 item["warnings"].append(
-                    f"la matricola del backup ora è di {holder['name']}: torna a questa persona solo ripristinando "
-                    f"anche {holder['name']}"
+                    f"la matricola del backup ora è di {holder['name']}: torna a questa persona solo {freed}"
                 )
                 taken = False
             else:
@@ -539,6 +544,15 @@ def _plan_persons(
         if changes:
             item["text"] = "Riporta com'era"
             item["changes"] = changes
+            items.append(item)
+        elif taken and "employee_id" in person:
+            # La sola differenza è la matricola, che resta dell'altra persona: la riga c'è lo stesso e lo dice, senza
+            # niente da fare (senza, la differenza sparirebbe in silenzio)
+            item["text"] = "Riporta com'era"
+            item["changes"] = _changes(current_item, saved_item, only=("employee_id",))
+            item["warnings"] = [w for w in item["warnings"] if not w.startswith("la matricola del backup")]
+            item["blocked"] = f"la matricola del backup ora è di {holder['name']}, che la tiene"
+            item["default"] = False
             items.append(item)
         # Tessere aggiunte dopo il backup: restano, e si eliminano solo spuntando la loro riga. Non quelle che nel
         # backup erano di un'altra persona: la riga dell'altra dice già che restano di questa

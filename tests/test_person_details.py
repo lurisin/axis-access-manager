@@ -1311,9 +1311,12 @@ async def test_restore_leaves_an_employee_id_given_to_someone_else_meanwhile(pla
         "la matricola del backup ora è di Anna Bianchi: torna a questa persona solo ripristinando anche Anna Bianchi"
     ]
     assert [c["label"] for c in rows["Mario Rossi"]["changes"]] == ["Ditta o Reparto", "Matricola"]
+    # Bruno è registrato dopo il backup: la C1 torna a Carla solo se si elimina anche lui (la sua riga)
     assert rows["Carla Verdi"]["warnings"] == [
-        "la matricola del backup ora è di Bruno Neri: resta sua, e torna senza matricola"
+        "la matricola del backup ora è di Bruno Neri: torna a questa persona solo eliminando anche Bruno Neri, "
+        "registrata dopo il backup"
     ]
+    assert rows["Carla Verdi"]["_after"] and not rows["Bruno Neri"]["default"]
     assert not rows["Anna Bianchi"]["warnings"]
     text = json.dumps(public(items))
     assert all(f'"{value}"' not in text for value in ("M1", "M2", "m1", "A1", "C1", "c1"))
@@ -1332,7 +1335,7 @@ async def test_restore_leaves_an_employee_id_given_to_someone_else_meanwhile(pla
 async def test_restoring_both_gives_each_employee_id_back(plant, db):
     """La matricola di Mario è andata ad Anna, che nel backup ne ha un'altra: ripristinandoli insieme la riga di Mario
     va dopo quella di Anna, che la lascia, e tornano com'erano. Due matricole scambiate tra loro invece restano come
-    sono adesso, e l'anteprima lo dice: il ripristino non si ferma."""
+    sono adesso, e l'anteprima lo dice anche quando è l'unica differenza: il ripristino non si ferma."""
     mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", employee_id="M1")
     anna = await plant.access.create_person("Anna Bianchi", "", "admin", employee_id="A1")
     backup = await plant.backup()
@@ -1350,16 +1353,71 @@ async def test_restoring_both_gives_each_employee_id_back(plant, db):
     await plant.access.update_person(anna["id"], "admin", employee_id="M1")
     await plant.access.update_person(mario["id"], "admin", employee_id="A1")
     items, result = await plant.restore(backup["id"], ["persone"])
-    # Nessuna delle due si libera: niente da ripristinare, e niente righe
-    assert items == [] and not result["failed"]
+    # Nessuna delle due si libera: niente da ripristinare, ma una riga per persona lo dice (non spuntabile). Prima
+    # la differenza spariva in silenzio
+    assert [(i["label"], i["blocked"], i["default"], i["warnings"]) for i in items] == [
+        ("Mario Rossi", "la matricola del backup ora è di Anna Bianchi, che la tiene", False, []),
+        ("Anna Bianchi", "la matricola del backup ora è di Mario Rossi, che la tiene", False, []),
+    ]
+    assert [i["changes"] for i in items] == [[{"label": "Matricola", "old": "indicato", "new": "cambiato"}]] * 2
+    assert not result["failed"] and not result["applied"]
     assert {p["name"]: p["employee_id"] for p in db.all_persons()} == {"Mario Rossi": "A1", "Anna Bianchi": "M1"}
-    # Con un'altra modifica la riga c'è, e dice perché la matricola non torna
+    # Con un'altra modifica la riga di Mario si spunta, e dice perché la matricola non torna
     await plant.access.update_person(mario["id"], "admin", company="Altra")
     items, result = await plant.restore(backup["id"], ["persone"])
-    assert [(i["label"], i["warnings"]) for i in items] == [
-        ("Mario Rossi", ["la matricola del backup ora è di Anna Bianchi: resta sua, e tiene quella di adesso"])
+    assert [(i["label"], i["warnings"], bool(i["blocked"])) for i in items] == [
+        ("Mario Rossi", ["la matricola del backup ora è di Anna Bianchi: resta sua, e tiene quella di adesso"], False),
+        ("Anna Bianchi", [], True),
     ]
     assert not result["failed"] and db.get_person(mario["id"])["employee_id"] == "A1"
+
+
+@pytest.mark.parametrize("mario_now", ["eliminato", "senza matricola"])
+async def test_employee_id_of_a_person_registered_after_the_backup_comes_back_deleting_her(plant, db, mario_now):
+    """Rilievo: la M1 di Mario (nel backup) è andata a Luca, registrato dopo il backup, mentre Mario è stato
+    eliminato o è rimasto senza matricola. La riga di Mario c'è (anche se la matricola è la sua unica differenza),
+    dice che la M1 torna solo eliminando anche Luca, e va dopo la riga che elimina Luca: con tutte le righe Mario
+    riprende la M1 in un ripristino solo. Prima tornava senza matricola, o non aveva nemmeno la riga, e serviva un
+    secondo ripristino."""
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", employee_id="M1")
+    backup = await plant.backup()
+    if mario_now == "eliminato":
+        await plant.access.delete_person(mario["id"], "admin")
+    else:
+        await plant.access.update_person(mario["id"], "admin", employee_id="")
+    luca = await plant.access.create_person("Luca Verdi", "", "admin", employee_id="m1")
+    _, saved = plant.backups.load(backup["id"])
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, ["persone"], plant.controller_id)
+
+    rows = {i["label"]: i for i in items}
+    assert set(rows) == {"Mario Rossi", "Luca Verdi"}
+    assert rows["Mario Rossi"]["warnings"] == [
+        "la matricola del backup ora è di Luca Verdi: torna a questa persona solo eliminando anche Luca Verdi, "
+        "registrata dopo il backup"
+    ]
+    assert rows["Mario Rossi"]["_after"] and rows["Mario Rossi"]["default"] and not rows["Mario Rossi"]["blocked"]
+    if mario_now == "senza matricola":
+        assert rows["Mario Rossi"]["changes"] == [{"label": "Matricola", "old": "—", "new": "indicato"}]
+    assert rows["Luca Verdi"]["key"] == f"persona-nuova:{luca['id']}" and not rows["Luca Verdi"]["default"]
+    assert "M1" not in json.dumps(public(items)) and "m1" not in json.dumps(public(items))
+
+    # Senza la riga di Luca: Luca tiene la sua, Mario resta senza, il ripristino va
+    runtime = Runtime(db, plant.access, plant.rules, plant.programming, plant.controller_id)
+    result = await apply(items, [rows["Mario Rossi"]["key"]], runtime, "admin")
+    assert not result["failed"]
+    assert {p["name"]: p["employee_id"] for p in db.all_persons()} == {"Mario Rossi": "", "Luca Verdi": "m1"}
+
+    # Con tutte le righe: prima si elimina Luca, poi Mario riprende la M1
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, ["persone"], plant.controller_id)
+    result = await apply(items, [i["key"] for i in items], runtime, "admin")
+    assert not result["failed"]
+    assert [a["label"] for a in result["applied"]] == ["Luca Verdi", "Mario Rossi"]
+    assert {p["name"]: p["employee_id"] for p in db.all_persons()} == {"Mario Rossi": "M1"}
+    # Una seconda anteprima non ha più niente da fare
+    current, _ = await plant.backups.snapshot(plant.clients)
+    assert plan(saved, current, ["persone"], plant.controller_id) == []
 
 
 async def test_employee_id_taken_between_preview_and_restore_does_not_stop_it(plant, db):
