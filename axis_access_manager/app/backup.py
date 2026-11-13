@@ -32,8 +32,9 @@ import zlib
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 
-from .compare import FIELD_LABELS, READ_LABELS, _device, _optional, snapshot_lists
-from .db import Database, now_iso
+from .compare import FIELD_LABELS as COMPARE_LABELS
+from .compare import READ_LABELS, _device, _optional, snapshot_lists
+from .db import Database, now_iso, split_name
 from .programming import CONTACTS, DIRECTIONS, DOOR_TIMES, INPUT_ROLES, parse_duration
 from .rules import describe_rules
 from .service import ServiceError, card_of_credential, plural
@@ -142,6 +143,20 @@ SECTION_TITLES = {
     "punti": "Punti di Accesso",
     "profili": "Profili di Accesso",
     "ingressi": "Ingressi",
+}
+# Telefono, email, matricola e referente delle persone: il confronto dei backup (permesso Backup) e l'anteprima del
+# ripristino dicono che sono cambiati, mai il valore, che si vede solo in Persone. La foto della persona non è nei
+# backup dell'app (troppo pesante): resta nel database, quindi nei backup di Home Assistant
+PRIVATE_FIELDS = ("phone", "email", "employee_id", "referent")
+PRIVATE_SHOWN = "indicato"
+FIELD_LABELS = {
+    **COMPARE_LABELS,
+    "phone": "Telefono",
+    "email": "Email",
+    "employee_id": "Matricola",
+    "referent": "Referente Interno",
+    # Il Codice Stampato della tessera non è un dato personale: si mostra com'è
+    "printed_code": "Codice Stampato",
 }
 COLOR_NAMES = {
     "blue": "Blu",
@@ -331,9 +346,15 @@ def common_snapshot(db: Database, schedules: list[dict]) -> dict:
                 "id": person["id"],
                 "created_at": person["created_at"],
                 "name": person["name"],
+                "first_name": person["first_name"],
+                "last_name": person["last_name"],
                 "company": person["company"] or "",
                 "notes": person["notes"] or "",
                 "category_id": person["category_id"] or 0,
+                "phone": person["phone"],
+                "email": person["email"],
+                "employee_id": person["employee_id"],
+                "referent": person["referent"],
             }
         )
         for card in person["cards"]:
@@ -345,6 +366,7 @@ def common_snapshot(db: Database, schedules: list[dict]) -> dict:
                     "access_profile": card["access_profile"] or "",
                     "valid_from": card["valid_from"] or "",
                     "valid_to": card["valid_to"] or "",
+                    "printed_code": card["printed_code"],
                 }
             )
     settings = {
@@ -567,20 +589,49 @@ def _schedule_rules_text(rules: list[dict]) -> str:
         return _text(rules)
 
 
+def _person_name(person: dict) -> tuple[list[str], str]:
+    """Nome di una persona nel confronto, con nome e cognome: dividerlo in un altro modo è una modifica anche con lo
+    stesso nome completo. Si mostra il nome completo, con nome e cognome solo se non sono quelli di split_name. I
+    backup di prima della 0.28.3 non li hanno: valgono quelli di split_name, come nella migrazione."""
+    name = person["name"]
+    derived = split_name(name)
+    first, last = (person["first_name"], person["last_name"]) if "first_name" in person else derived
+    shown = name if (first, last) == derived else f"{name} (nome {first or '—'}, cognome {last or '—'})"
+    return [name, first, last], shown
+
+
+def shown_change(old: dict, new: dict, field: str) -> tuple[str, str]:
+    """Valore di prima e di dopo di un campo cambiato, come si mostra: telefono, email, matricola e referente senza il
+    valore."""
+    was, now = _shown(old, field), _shown(new, field)
+    if field in PRIVATE_FIELDS and was == now:
+        now = "cambiato"
+    return was, now
+
+
 def common_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
     categories = ctx["categories"]
     view: dict[str, dict[str, dict]] = {key: {} for key in SECTIONS}
     for p in part.get("persons", []):
         category = p["category_id"]
+        name, shown = _person_name(p)
+        # Telefono, email, matricola e referente solo se ci sono: i backup di prima non li hanno, e non risultano tolti
+        private = {f: p[f] for f in PRIVATE_FIELDS if p.get(f)}
         view["persone"][f"{p['id']}:{p['created_at']}"] = _item(
             p["name"],
-            {k: p[k] for k in ("name", "company", "notes", "category_id")},
-            {"category_id": categories.get(category, f"tipologia n. {category}") if category else "nessuna"},
+            {"name": name, **{k: p[k] for k in ("company", "notes", "category_id")}, **private},
+            {
+                "name": shown,
+                "category_id": categories.get(category, f"tipologia n. {category}") if category else "nessuna",
+                **dict.fromkeys(private, PRIVATE_SHOWN),
+            },
         )
     for c in part.get("cards", []):
+        # Codice Stampato solo se c'è: i backup di prima della 0.28.3 non lo hanno, e non risulta tolto
+        printed = {"printed_code": c["printed_code"]} if c.get("printed_code") else {}
         view["tessere"][c["number"]] = _item(
             c["number"],
-            {k: c[k] for k in ("person_id", "enabled", "access_profile", "valid_from", "valid_to")},
+            {k: c[k] for k in ("person_id", "enabled", "access_profile", "valid_from", "valid_to")} | printed,
             {
                 "person_id": ctx["persons"].get(c["person_id"], f"persona n. {c['person_id']}"),
                 "enabled": "attiva" if c["enabled"] else "sospesa",
@@ -623,7 +674,7 @@ def common_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
         view["utenti"][u["username"]] = _item(
             u["name"] or u["username"],
             {"name": u["name"], "perms": u["perms"]},
-            # Come nella pagina Utenti: "Operatore" o "Personalizzato: Stato, Persone", non le chiavi dei permessi
+            # Come nella pagina Utenti: "Operatore" o "Personalizzato: Stato, Anagrafica", non le chiavi dei permessi
             {"perms": role_label(list(u["perms"] or []))},
         )
     for key, value in (part.get("settings") or {}).items():
@@ -831,7 +882,8 @@ def diff_views(old: dict, new: dict) -> list[dict]:
                         if was.get(n) != now.get(n)
                     ]
                     continue
-                fields.append({"field": f, "label": FIELD_LABELS.get(f, f), "old": _shown(a, f), "new": _shown(b, f)})
+                old_text, new_text = shown_change(a, b, f)
+                fields.append({"field": f, "label": FIELD_LABELS.get(f, f), "old": old_text, "new": new_text})
             if fields:
                 changed.append({"key": k, "label": b["label"], "fields": fields})
         if added or removed or changed:

@@ -26,9 +26,12 @@ NAMES = (
     "plantDay",
     "shiftDay",
     "fmtDay",
+    "dateFormats",
+    "fmtWith",
     "fmtDateTime",
     "fmtFull",
     "fmtDate",
+    "fmtNumDay",
     "fmtTime",
     "relTime",
     "toLocalInput",
@@ -152,6 +155,43 @@ def test_validity_written_in_the_page_is_in_the_plant_zone():
         "missing": "2026-03-29T01:30:00.000Z",
         "twice": "2026-10-25T00:30:00.000Z",
         "empty": "",
+    }
+
+
+def test_the_access_form_sends_back_the_saved_validity_of_the_fields_not_touched():
+    """Il modulo Accesso lavora al minuto (datetime-local): un campo non toccato rimanda la validità salvata com'è, con
+    i suoi secondi (sito Axis, durata della tipologia prima della 0.28.3). Prima Salva senza toccare niente mandava le
+    date al minuto: validità cambiata, Ultima Modifica della persona cambiata e tessera riscritta sul controller."""
+    prelude = """
+const $ = (sel, root) => root.querySelector(sel);
+const fields = {};
+const dlg = {querySelector: (sel) => fields[/name="([^"]+)"/.exec(sel)[1]] || null};
+const fill = (limited, from, to) => {
+  fields.limited = {type: "checkbox", checked: limited};
+  fields.valid_from = {type: "datetime-local", value: from};
+  fields.valid_to = {type: "datetime-local", value: to};
+  return dlg;
+};
+const FROM = "2026-11-12T16:00:39Z", TO = "2026-11-15T12:00:39Z";
+"""
+    out = run_page(
+        "Europe/Rome",
+        {
+            "untouched": "readValidity(fill(true, toLocalInput(FROM), toLocalInput(TO)), FROM, TO)",
+            "end_moved": 'readValidity(fill(true, toLocalInput(FROM), "2026-11-15T14:00"), FROM, TO)',
+            "new_person": 'readValidity(fill(true, "2026-11-12T17:00", "2026-11-15T13:00"))',
+            "not_limited": "readValidity(fill(false, toLocalInput(FROM), toLocalInput(TO)), FROM, TO)",
+            "was_open": 'readValidity(fill(true, "2026-11-12T17:00", ""), "", "")',
+        },
+        names=(*NAMES, "val", "readValidity"),
+        prelude=prelude,
+    )
+    assert out == {
+        "untouched": {"valid_from": "2026-11-12T16:00:39Z", "valid_to": "2026-11-15T12:00:39Z"},
+        "end_moved": {"valid_from": "2026-11-12T16:00:39Z", "valid_to": "2026-11-15T13:00:00.000Z"},
+        "new_person": {"valid_from": "2026-11-12T16:00:00.000Z", "valid_to": "2026-11-15T12:00:00.000Z"},
+        "not_limited": {"valid_from": "", "valid_to": ""},
+        "was_open": {"valid_from": "2026-11-12T16:00:00.000Z", "valid_to": ""},
     }
 
 

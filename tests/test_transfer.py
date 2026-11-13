@@ -280,7 +280,8 @@ async def test_first_card_of_a_registered_person_is_like_a_new_person(
     names = {g["token"]: g["name"] for g in FIRST_GROUPS}
     exported = persons_csv(db.list_persons(), names, {}, {i: n for n, i in categories.items()})
     header, row = exported.lstrip("﻿").splitlines()[:2]
-    assert row == "Ospite Rossi;;;;;Ditta;;Visitatori;;"
+    # In fondo ultimo accesso, telefono, email, matricola, referente e Codice Stampato della tessera
+    assert row == "Ospite Rossi;;;;;Ditta;;Visitatori;;;;;;;"
     cells = row.split(";")
     cells[1], cells[2], cells[4], cells[7] = "04AA", group, valid_to, category
     text = "\n".join([header, ";".join(cells)])

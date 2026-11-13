@@ -437,6 +437,11 @@
   .pill.accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
   /* Pallino senza colore proprio dentro un'etichetta: prende quello dell'etichetta (verde se collegato) */
   .pill .dot { background: currentColor; }
+  /* Codice Stampato di una tessera (quello scritto sopra la tessera fisica) accanto al nome o al numero nel registro */
+  .pcode { display: inline-block; border: 1px solid var(--border-strong); border-radius: 6px; padding: 0 6px; font-size: 12px;
+           font-weight: 600; color: var(--text); line-height: 1.5; max-width: 100%; overflow-wrap: anywhere; vertical-align: 1px; }
+  /* Scheda: il numero esadecimale sotto il Codice Stampato, più piccolo */
+  .item .card-no { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
   .alert { display: flex; gap: 12px; align-items: flex-start; border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
@@ -473,6 +478,19 @@
             display: grid; place-items: center; font-weight: 700; font-size: 14px; }
   .avatar.big { width: 52px; height: 52px; font-size: 18px; }
   .avatar.off { background: var(--surface-2); color: var(--muted); }
+  /* Foto della persona al posto delle iniziali (elenco, scheda, dettaglio evento) */
+  .avatar { overflow: hidden; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .avatar.sm { width: 32px; height: 32px; font-size: 12px; }
+  button.avatar { padding: 0; border: 1px solid var(--border); cursor: zoom-in; }
+  button.avatar:hover { filter: brightness(1.05); background: var(--accent-soft); }
+  /* Campo della foto: nascosto alla vista ma non display:none, che su alcuni telefoni non si apre dal pulsante */
+  .file-pick { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  /* Dettaglio Evento: Foto in Anagrafica, distinta da quella della telecamera */
+  .ev-photo-label { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  .ev-face { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+  .ev-face-img { width: 84px; height: 104px; padding: 0; border-radius: 10px; overflow: hidden; flex: none; cursor: zoom-in; background: var(--surface); }
+  .ev-face-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   /* Etichette piccole (controller e porte di un'area); i bollini della barra in alto sono .top-chip */
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--surface-2); border: 1px solid var(--border);
@@ -489,6 +507,100 @@
   #p-list > .person-row:first-child { border-top: none; }
   .person-row:hover { background: var(--surface-2); }
   .person-row .name { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+  /* Riga del telefono: foto (o iniziali) con il pallino della tipologia, nome e, se l'ordine non è per nome, il valore
+     usato per ordinare */
+  .p-face { position: relative; flex: none; display: inline-flex; }
+  .p-face > .swatch { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; box-shadow: 0 0 0 2px var(--surface); }
+  .person-row .p-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .person-row .p-main .name { flex: none; }
+  .p-sub { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Tessera trovata dalla ricerca, sotto il nome: il codice in evidenza, il numero più piccolo. Con poco spazio si
+     accorcia prima il codice, così il numero cercato resta intero */
+  .p-found { display: flex; align-items: baseline; gap: 5px; }
+  .p-found svg.icon { width: 14px; height: 14px; align-self: center; }
+  .p-found .p-code { color: var(--text); font-weight: 600; min-width: 3em; overflow: hidden; text-overflow: ellipsis; }
+  .p-found .mono { font-size: 12px; flex: none; }
+  /* Barra delle Persone: ricerca, stato, ordine, Nuova Persona */
+  .sort-pick { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); min-width: 0; }
+  .p-tools input[type=search] { flex: 1 1 260px; }
+  .p-tools select { max-width: 230px; }
+  .p-tools .sort-pick select { max-width: 270px; }
+  /* Tabella delle Persone sul computer: colonne fisse, testi lunghi con i puntini (e il testo intero nel title), mai
+     più larga della pagina. Le colonne meno importanti spariscono quando il riquadro è stretto (menu aperto, finestra
+     piccola), tranne quella dell'ordine scelto (data-sorted) */
+  .p-table-wrap { container: persone / inline-size; }
+  table.p-table { table-layout: fixed; }
+  /* table.table.p-table: più peso di table.table, che viene dopo (vertical-align: top) */
+  table.table.p-table th, table.table.p-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+  table.table.p-table td { padding-top: 6px; padding-bottom: 6px; height: 46px; }
+  table.table.p-table th { padding-top: 10px; }
+  table.table.p-table td.c-photo { text-overflow: clip; }
+  table.table.p-table th:first-child, table.table.p-table td:first-child { padding-left: 18px; }
+  table.table.p-table th:last-child, table.table.p-table td:last-child { padding-right: 18px; }
+  .p-table tbody tr:last-child td { border-bottom: none; }
+  .p-table .c-photo { width: 64px; }
+  .p-table .c-emp { width: 104px; }
+  .p-table .c-cards { width: 124px; }
+  /* Tessere come nella scheda: il Codice Stampato sopra, il numero sotto più piccolo; una tessera sotto l'altra */
+  .p-card { line-height: 1.25; }
+  .p-card + .p-card { margin-top: 5px; }
+  .p-card > div { overflow: hidden; text-overflow: ellipsis; }
+  .p-card .p-code { font-weight: 600; }
+  .p-card .card-no { font-size: 12px; color: var(--muted); }
+  /* Il numero a 12 px anche senza codice: uno di 14 cifre esadecimali sta intero nella colonna */
+  .p-card .mono { font-size: 12px; }
+  .p-table .c-access, .p-table .c-extra { width: 140px; }
+  /* Con la colonna della data di inserimento o di modifica, Tessere lascia il posto, tranne quando la ricerca ha trovato
+     delle tessere (data-cards) */
+  .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"]):not([data-cards]) .c-cards { display: none; }
+  .p-table .c-state { width: 168px; }
+  .p-table .avatar { display: inline-grid; vertical-align: middle; }
+  .p-table .c-last, .p-table .c-first { font-weight: 600; }
+  .p-table td.c-emp { font-variant-numeric: tabular-nums; }
+  .p-table .c-cat .swatch { vertical-align: -1px; margin-right: 7px; }
+  .p-table td.c-state .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle; }
+  .th-sort { border: none; background: none; padding: 2px 6px; margin: -2px -6px; border-radius: 6px; color: inherit; font: inherit; gap: 4px;
+             max-width: calc(100% + 12px); justify-content: flex-start; }
+  .th-sort:hover { background: var(--surface-2); color: var(--text); }
+  .th-sort > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+  .p-table th[aria-sort] { color: var(--text); font-weight: 600; }
+  .th-sort .arrow { font-size: 12px; }
+  .p-table tbody tr[data-person] { cursor: pointer; }
+  .p-table tbody tr[data-person]:hover td, .p-table tbody tr[data-person]:focus-visible td { background: var(--surface-2); }
+  .p-table tbody tr:focus-visible { outline-offset: -2px; }
+  table.table.p-table tr.sec td { background: var(--surface-2); font-size: 12px; font-weight: 700; color: var(--muted); padding-top: 4px; padding-bottom: 4px; height: auto; overflow: visible; }
+  /* Riquadro stretto: le colonne in più lasciano il posto, perché Cognome, Nome, Ditta e Tipologia (larghe quanto
+     avanza) non scendano sotto i 95 px circa. Prima Tessere, poi Matricola, Ditta e Ultimo Accesso, mai la colonna
+     dell'ordine scelto. Quando la ricerca trova delle tessere (data-cards) Tessere resta e prende il posto di Ultimo
+     Accesso; la data dell'ordine per inserimento o modifica prende quello di Tessere e, sotto i 1060 px, di Ultimo
+     Accesso; Matricola o Ditta dell'ordine prendono il posto di Ultimo Accesso, Ultimo Accesso dell'ordine quello di
+     Tipologia. Con Tessere e un'altra colonna fissa che resta (data, Ultimo Accesso o Matricola dell'ordine) vanno via
+     prima Matricola, Ditta, Tipologia e, al limite, Stato; con l'ordine per Ditta o Tipologia, Tipologia e Stato */
+  @container persone (max-width: 1179px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"])[data-cards] .c-access { display: none; } }
+  @container persone (max-width: 1059px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"]) .c-access { display: none; } }
+  @container persone (max-width: 979px) {
+    .p-table:not([data-cards]) .c-cards { display: none; }
+    .p-table[data-cards]:not([data-sorted="accesso"]) .c-access { display: none; }
+    .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"])[data-cards] .c-emp { display: none; }
+  }
+  @container persone (max-width: 883px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"], [data-sorted="matricola"])[data-cards] .c-company { display: none; } }
+  @container persone (max-width: 859px) {
+    .p-table:not([data-sorted="matricola"]) .c-emp { display: none; } .p-table .c-state { width: 156px; }
+    /* Matricola dell'ordine al posto di Ultimo Accesso */
+    .p-table[data-sorted="matricola"] .c-access { display: none; }
+  }
+  @container persone (max-width: 768px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"], [data-sorted="matricola"])[data-cards] .c-cat { display: none; } }
+  @container persone (max-width: 759px) { .p-table:not([data-sorted="ditta"]) .c-company { display: none; } .p-table[data-sorted="ditta"] .c-access { display: none; } }
+  @container persone (max-width: 739px) { .p-table[data-sorted="ditta"][data-cards] .c-cat { display: none; } }
+  @container persone (max-width: 673px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"], [data-sorted="matricola"])[data-cards] .c-state { display: none; } }
+  @container persone (max-width: 644px) {
+    .p-table:not([data-sorted="accesso"]) .c-access { display: none; }
+    /* Ultimo Accesso c'è già solo se è l'ordine scelto: Tessere trovate o la data dell'ordine prendono il posto di
+       Tipologia, o di Stato quando Tipologia (o Ditta) è l'ordine scelto */
+    .p-table:is([data-cards], [data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"]):not([data-sorted="tipologia"]) .c-cat { display: none; }
+    .p-table:is([data-sorted="ditta"], [data-sorted="tipologia"])[data-cards] .c-state { display: none; }
+  }
+  @container persone (max-width: 609px) { .p-table:is([data-sorted="matricola"], [data-sorted="ditta"]) .c-cat { display: none; } }
   .chip svg.icon { width: 14px; height: 14px; }
   .ev-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none; font-size: 16px; }
   .ev-icon svg { width: 18px; height: 18px; fill: currentColor; }
@@ -576,7 +688,28 @@
   .spinner { width: 18px; height: 18px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%;
              animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* Con il movimento ridotto la rotellina non gira: pulsa piano */
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: pulse 2s ease-in-out infinite; } }
   .loading { padding: 40px; text-align: center; color: var(--muted); }
+  /* Riquadro «Attendere…» di una modifica che dura più di mezzo secondo: piccolo e al centro, sopra un velo leggero
+     che lascia vedere la pagina. Nel top layer come le finestre, quindi anche sopra una finestra aperta */
+  dialog#busy { width: auto; max-width: min(360px, calc(100vw - 32px)); padding: 16px 20px; border-radius: 14px;
+                box-shadow: 0 12px 32px rgba(0, 0, 0, .25); outline: none; }
+  dialog#busy::backdrop { background: rgba(10, 14, 20, .18); }
+  @media (prefers-color-scheme: dark) {
+    dialog#busy { background: var(--surface-2); border-color: var(--border-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .6); }
+    dialog#busy::backdrop { background: rgba(0, 0, 0, .35); }
+  }
+  .busy-box { display: flex; align-items: flex-start; gap: 12px; }
+  .busy-box .spinner { width: 22px; height: 22px; flex: none; margin-top: 1px; }
+  .busy-text { min-width: 0; overflow-wrap: anywhere; }
+  .busy-text b { display: block; font-size: 16px; }
+  #busy-status { color: var(--muted); font-size: 14px; }
+  #busy-status > span { display: block; margin-top: 2px; }
+  #busy-slow { color: var(--warn); font-weight: 500; }
+  /* Fuoco rimesso sulla pagina dopo il riquadro, quando l'elemento di prima non c'è più */
+  #view:focus { outline: none; }
   /* Pulsanti e sezioni visibili solo con il permesso giusto */
   body.no-persone_modifica .w-persone, body.no-regole_modifica .w-regole, body.no-import_export .w-io { display: none !important; }
   .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex: none; background: var(--muted); }
@@ -674,6 +807,11 @@
     .topbar { position: relative; }
     .top-pop { right: 8px; }
     .toolbar input[type=date], .toolbar select { flex: 1 1 40%; }
+    /* Persone: ricerca su una riga, stato e ordine sotto, Nuova Persona in fondo a tutta larghezza */
+    .p-tools .sort-pick { flex: 1 1 40%; }
+    .p-tools select { max-width: none; }
+    .p-tools .sort-pick select { flex: 1 1 auto; width: 100%; }
+    .p-tools #p-new { flex: 1 1 100%; }
     .fields-2 { grid-template-columns: 1fr; }
     dialog { width: calc(100vw - 16px); }
   }
@@ -689,10 +827,10 @@
     <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Allarga il menu" aria-expanded="false"><span data-icon="menu"></span><span class="lbl">Controllo Accessi</span></button>
     <a href="#cruscotto" data-route="cruscotto" title="Cruscotto"><span data-icon="dashboard"></span><span class="lbl">Cruscotto</span></a>
     <a href="#porte" data-route="porte" title="Porte"><span data-icon="door"></span><span class="lbl">Porte</span></a>
-    <a href="#persone" data-route="persone" title="Persone"><span data-icon="people"></span><span class="lbl">Persone</span></a>
+    <a href="#persone" data-route="persone" title="Anagrafica"><span data-icon="people"></span><span class="lbl">Anagrafica</span></a>
     <a href="#da-registrare" data-route="da-registrare" title="Da Registrare"><span data-icon="cardplus"></span><span class="lbl">Da Registrare</span><span class="count" id="nav-unknown" hidden></span></a>
     <a href="#registro" data-route="registro" title="Registro"><span data-icon="list"></span><span class="lbl">Registro</span></a>
-    <a href="#regole" data-route="regole" title="Regole"><span data-icon="clock"></span><span class="lbl">Regole</span></a>
+    <a href="#regole" data-route="regole" title="Fasce Orarie"><span data-icon="clock"></span><span class="lbl">Fasce Orarie</span></a>
     <a href="#impianti" data-route="impianti" title="Impianti"><span data-icon="building"></span><span class="lbl">Impianti</span></a>
     <!-- In basso, separate dalle pagine dell'impianto: notifiche, impostazioni dell'app e utente, come in Home Assistant -->
     <div class="nav-bottom">
@@ -720,6 +858,12 @@
 <dialog id="sheet" class="sheet"></dialog>
 <dialog id="modal"></dialog>
 <dialog id="retry"></dialog>
+<!-- Riquadro di attesa delle modifiche (busy): nessun pulsante, si chiude da solo alla fine dell'operazione -->
+<dialog id="busy" aria-labelledby="busy-title" aria-describedby="busy-status">
+  <div class="busy-box"><span class="spinner" aria-hidden="true"></span>
+    <div class="busy-text"><b id="busy-title">Attendere…</b>
+      <div id="busy-status" role="status" aria-live="polite"><span id="busy-what" hidden></span><span id="busy-slow" hidden>Il controller risponde lentamente: l'operazione continua</span></div></div></div>
+</dialog>
 <div id="toast" role="status" popover="manual"></div>
 
 <script>
@@ -768,6 +912,7 @@ const ICONS = {
   user: "M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z",
   lock: "M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z",
   lockopen: "M18,1C15.24,1 13,3.24 13,6V8H4C2.9,8 2,8.89 2,10V20C2,21.11 2.9,22 4,22H16C17.11,22 18,21.11 18,20V10C18,8.9 17.11,8 16,8H15V6C15,4.34 16.34,3 18,3C19.66,3 21,4.34 21,6V8H23V6C23,3.24 20.76,1 18,1M10,13C11.1,13 12,13.89 12,15C12,16.1 11.1,17 10,17C8.9,17 8,16.11 8,15C8,13.9 8.9,13 10,13Z",
+  sort: "M18,21L14,17H17V7H14L18,3L22,7H19V17H22M2,19V17H12V19M2,13V11H9V13M2,7V5H6V7H2Z",
   history: "M13.5,8H12V13L16.28,15.54L17,14.33L13.5,12.25V8M13,3A9,9 0 0,0 4,12H1L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3",
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ""}"/></svg>`;
@@ -782,15 +927,26 @@ function morph(target, html) {
   const next = document.createElement("template");
   next.innerHTML = html;
   paintIcons(next.content);
+  const focused = document.activeElement;
   morphChildren(target, next.content);
+  // Un elemento spostato perde il fuoco (il browser lo toglie a chi esce dalla pagina, anche per un attimo): se c'è
+  // ancora gli si ridà, senza scorrere la pagina. Così Invio apre ancora la riga scelta dopo l'aggiornamento
+  const now = document.activeElement;
+  if (focused && focused !== document.body && focused !== now && focused.isConnected && (!now || now === document.body)) {
+    focused.focus({preventScroll: true});
+  }
 }
 function morphChildren(from, to) {
   // Righe sparite tolte prima: spostare le successive davanti a loro farebbe perdere il fuoco
   const nextKeys = new Set([...to.childNodes].map(nodeKey).filter(Boolean));
   [...from.children].forEach((c) => { const k = nodeKey(c); if (k && !nextKeys.has(k)) c.remove(); });
   const keyed = new Map([...from.children].filter(nodeKey).map((c) => [nodeKey(c), c]));
+  const steady = steadyNodes(from, to, keyed);
   let cur = from.firstChild;
   [...to.childNodes].forEach((next) => {
+    // Le righe che vanno più avanti restano dove sono finché non arriva il loro turno: una riga che scende in fondo
+    // si sposta una volta sola, invece di spostare davanti a lei tutte quelle che la seguono
+    while (cur && !steady.has(cur) && keyed.get(nodeKey(cur)) === cur) cur = cur.nextSibling;
     const key = nodeKey(next);
     const match = key ? keyed.get(key) : cur && !nodeKey(cur) ? cur : null;
     if (key) keyed.delete(key);
@@ -801,9 +957,31 @@ function morphChildren(from, to) {
   });
   while (cur) { const after = cur.nextSibling; cur.remove(); cur = after; }
 }
+// Righe con data-key che restano ferme: le più numerose che sono già nell'ordine nuovo (la sottosequenza crescente più
+// lunga delle loro posizioni di adesso, n log n). Si spostano solo le altre, una mossa per riga che cambia posto
+function steadyNodes(from, to, keyed) {
+  const place = new Map();
+  [...from.children].forEach((c, i) => place.set(c, i));
+  const seq = [];
+  to.childNodes.forEach((n) => { const match = keyed.get(nodeKey(n)); if (match) seq.push(match); });
+  const tails = [], prev = [];
+  seq.forEach((node, k) => {
+    const at = place.get(node);
+    let lo = 0, hi = tails.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (place.get(seq[tails[mid]]) < at) lo = mid + 1; else hi = mid; }
+    prev[k] = lo ? tails[lo - 1] : -1;
+    tails[lo] = k;
+  });
+  const steady = new Set();
+  for (let k = tails.length ? tails[tails.length - 1] : -1; k >= 0; k = prev[k]) steady.add(seq[k]);
+  return steady;
+}
 function morphNode(cur, next) {
   if (cur.nodeType !== next.nodeType || cur.nodeName !== next.nodeName) { cur.replaceWith(next); return; }
   if (cur.nodeType !== 1) { if (cur.nodeValue !== next.nodeValue) cur.nodeValue = next.nodeValue; return; }
+  // Uguale in tutto (attributi e contenuto): niente da toccare. Il confronto lo fa il browser, molto più in fretta
+  // che nodo per nodo qui sotto: con 2000 persone l'elenco si ridisegna in decine di millisecondi, non in centinaia
+  if (cur.isEqualNode(next)) return;
   [...cur.attributes].forEach((a) => { if (!next.hasAttribute(a.name)) cur.removeAttribute(a.name); });
   [...next.attributes].forEach((a) => { if (cur.getAttribute(a.name) !== a.value) cur.setAttribute(a.name, a.value); });
   // Quello che l'utente sta scrivendo o scegliendo non si tocca
@@ -902,11 +1080,24 @@ function shiftDay(day, n) {
 }
 // Giorno di calendario (aaaa-mm-gg, senza ora: festività, colonne della settimana) come testo: lo stesso in ogni fuso
 const fmtDay = (day, options) => day ? new Date(day + "T12:00:00Z").toLocaleDateString("it-IT", {...options, timeZone: "UTC"}) : "";
+// Formati delle date pronti, uno per opzioni e fuso: toLocaleString ne crea uno nuovo a ogni chiamata, e negli elenchi
+// lunghi (2000 persone con l'ultimo accesso, il registro) si sentiva. Stesso testo di toLocale*String
+const dateFormats = new Map();
+function fmtWith(options, iso) {
+  const when = new Date(iso);
+  if (!iso || Number.isNaN(when.getTime())) return "";
+  const key = JSON.stringify(zoned(options));
+  let format = dateFormats.get(key);
+  if (!format) dateFormats.set(key, format = new Intl.DateTimeFormat("it-IT", zoned(options)));
+  return format.format(when);
+}
 // "24/10/2026 13:34", senza la virgola che toLocaleString mette tra data e ora
-const fmtDateTime = (iso) => iso ? `${new Date(iso).toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit", year: "numeric"}))} ${fmtTime(iso)}` : "";
-const fmtFull = (iso) => iso ? new Date(iso).toLocaleString("it-IT", zoned({dateStyle: "medium", timeStyle: "medium"})) : "";
-const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", zoned({day: "numeric", month: "short", year: "numeric"})) : "";
-const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("it-IT", zoned({hour: "2-digit", minute: "2-digit"})) : "";
+const fmtDateTime = (iso) => iso ? `${fmtNumDay(iso)} ${fmtTime(iso)}` : "";
+const fmtFull = (iso) => fmtWith({dateStyle: "medium", timeStyle: "medium"}, iso);
+const fmtDate = (iso) => fmtWith({day: "numeric", month: "short", year: "numeric"}, iso);
+// Solo il giorno, in cifre (12/11/2026): anche Inserita il e Modificata il dell'elenco Persone
+const fmtNumDay = (iso) => fmtWith({day: "2-digit", month: "2-digit", year: "numeric"}, iso);
+const fmtTime = (iso) => fmtWith({hour: "2-digit", minute: "2-digit"}, iso);
 // "adesso", "5 min fa", poi come dayTime: "oggi 13:34", "ieri 13:34" (dal calendario) o "24/10/2026 13:34".
 // Più avanti di adesso (orologio del controller avanti): l'ora vera, non "adesso"
 function relTime(iso) {
@@ -964,7 +1155,8 @@ function toast(message, error = false) {
   // Un errore con una finestra aperta va dentro la finestra, in cima al contenuto, e resta fino al prossimo avviso.
   // Sopra la finestra, sul telefono, copriva per 7 secondi titolo e × (un tocco sull'avviso chiudeva la finestra)
   $$(".dlg-error").forEach((box) => box.remove());
-  const open = $$("dialog[open]").pop();
+  // Il riquadro di attesa (#busy) non è una finestra: l'avviso va sopra il suo velo, non dentro
+  const open = $$("dialog[open]:not(#busy)").pop();
   const body = error && open ? $(".dlg-body", open) : null;
   if (body) {
     const box = document.createElement("div");
@@ -981,7 +1173,7 @@ function toast(message, error = false) {
   el.textContent = cap(message);
   el.className = error ? "error" : "";
   // Sopra una finestra l'avviso non riceve i clic (che vanno alla finestra): non deve nasconderne i pulsanti
-  el.classList.toggle("over", Boolean($("dialog[open]")));
+  el.classList.toggle("over", Boolean($("dialog[open]:not(#busy)")));
   el.style.display = "block";
   // Le finestre aperte stanno nel top layer, sopra qualsiasi z-index: riaperto, l'avviso va sopra l'ultima
   if (el.showPopover) {
@@ -1001,9 +1193,11 @@ document.addEventListener("close", (e) => {
   // vista come avviso, nella finestra sotto o in basso
   const box = e.target instanceof Element ? $(".dlg-error", e.target) : null;
   if (box && Date.now() - Number(box.dataset.at) < 7000) toast(box.dataset.message, true);
-  if (!$("dialog[open]")) $("#toast").classList.remove("over");
+  if (!$("dialog[open]:not(#busy)")) $("#toast").classList.remove("over");
 }, true);
 
+// L'app nei messaggi che non vengono dal server: «l'add-on», o «l'app» per chi non deve leggere di Home Assistant
+const appName = () => hideHA() ? "l'app" : "l'add-on";
 // Prova del collegamento e rilettura dal controller: POST che non modificano niente, quindi senza Riprova
 const NO_RETRY = ["api/controllers/test", "api/sync"];
 async function api(path, options = {}) {
@@ -1011,16 +1205,17 @@ async function api(path, options = {}) {
   let res;
   try {
     // X-AAM-Request: dall'accesso diretto le modifiche senza questa intestazione si rifiutano (un altro sito non può
-    // mandarla)
+    // mandarla). raw: un Blob mandato com'è (la foto della persona), body: dati in JSON
+    const type = options.raw ? options.raw.type || "application/octet-stream" : options.body !== undefined ? "application/json" : "";
     res = await fetch(path, {
       method,
-      headers: options.body !== undefined ? {"Content-Type": "application/json", "X-AAM-Request": "1"} : {"X-AAM-Request": "1"},
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      headers: type ? {"Content-Type": type, "X-AAM-Request": "1"} : {"X-AAM-Request": "1"},
+      body: options.raw || (options.body !== undefined ? JSON.stringify(options.body) : undefined),
     });
   } catch (err) {
     // Rete o add-on caduti a metà richiesta: il browser direbbe solo "Failed to fetch", e una modifica può essere arrivata
-    throw new Error(method === "GET" ? "collegamento con l'add-on non riuscito: controlla la rete e riprova tra qualche secondo"
-      : "collegamento con l'add-on interrotto: la modifica potrebbe essere stata fatta lo stesso, controlla prima di riprovare");
+    throw new Error(method === "GET" ? `collegamento con ${appName()} non riuscito: controlla la rete e riprova tra qualche secondo`
+      : `collegamento con ${appName()} interrotto: la modifica potrebbe essere stata fatta lo stesso, controlla prima di riprovare`);
   }
   const data = await res.json().catch(() => ({}));
   // Accesso diretto: sessione chiusa o mai aperta, oppure password provvisoria ancora da cambiare
@@ -1031,7 +1226,7 @@ async function api(path, options = {}) {
     const fromApp = typeof data?.detail === "string";
     // Il messaggio resta com'è: la maiuscola la mette chi lo mostra da solo, non chi lo mette dentro una frase
     const message = fromApp ? data.detail : res.status >= 502 && res.status <= 504
-      ? `l'add-on non risponde (errore ${res.status}): riprova tra qualche secondo` : `richiesta non riuscita (errore ${res.status})`;
+      ? `${appName()} non risponde (errore ${res.status}): riprova tra qualche secondo` : `richiesta non riuscita (errore ${res.status})`;
     // Il controller non ha risposto a una modifica: si può riprovare senza rifare tutto da capo. Gli altri errori del
     // controller (credenziali, richiesta rifiutata, scritture sospese) riprovando tornerebbero uguali
     const unreachable = data?.unreachable ?? (fromApp && data.detail.startsWith("il controller non risponde"));
@@ -1083,7 +1278,7 @@ function showAuth(mode, current = "", message = "") {
     button.disabled = true;
     try {
       if (login) {
-        const result = await api("api/login", {method: "POST", body: {username: $("[name=username]", form).value, password}});
+        const result = await busy("Accesso", api("api/login", {method: "POST", body: {username: $("[name=username]", form).value, password}}));
         if (result.must_change) {
           store.me = await api("api/me");
           showAuth("change", password);
@@ -1092,7 +1287,7 @@ function showAuth(mode, current = "", message = "") {
       } else {
         const fresh = checkNewPassword(form);
         if (fresh === null) return;
-        await api("api/password", {method: "POST", body: {current: password, new: fresh}});
+        await busy("Salvataggio della password", api("api/password", {method: "POST", body: {current: password, new: fresh}}));
       }
       location.reload();
     } catch (err) {
@@ -1124,7 +1319,7 @@ function checkNewPassword(form) {
 }
 
 async function logout() {
-  try { await api("api/logout", {method: "POST"}); } catch (err) { /* si ricarica comunque */ }
+  try { await busy("Uscita", api("api/logout", {method: "POST"})); } catch (err) { /* si ricarica comunque */ }
   location.reload();
 }
 
@@ -1135,8 +1330,7 @@ async function userMenu() {
   if (me.admin && !me.direct) actions.push({label: "Utenti", value: "users"});
   if (me.has_password) actions.push({label: "Cambia Password", value: "password"});
   if (me.direct) actions.push({label: "Esci", kind: "primary", value: "logout"});
-  const choice = await modal({title: me.user, body: props([["Ruolo", esc(me.role || "Personalizzato")], ["Nome Utente", `<code>${esc(me.username)}</code>`],
-    ...(me.direct ? [["Accesso", "Diretto, fuori da Home Assistant"]] : [])]), actions});
+  const choice = await modal({title: me.user, body: props([["Ruolo", esc(me.role || "Personalizzato")], ["Nome Utente", `<code>${esc(me.username)}</code>`]]), actions});
   if (choice === "logout") logout();
   else if (choice === "password") changePassword();
   else if (choice === "users") location.hash = "#impostazioni/utenti";
@@ -1144,7 +1338,7 @@ async function userMenu() {
 
 async function changePassword() {
   const body = `${field("Password Attuale", `<input name="password" type="password" autocomplete="current-password" maxlength="512" required>`)}${passwordFields()}<p class="auth-err" id="pw-err" role="alert" hidden></p>`;
-  const done = await modal({title: "Cambia Password", body, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+  const done = await modal({title: "Cambia Password", body, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, busy: "Salvataggio della password", onClick: async (dlg) => {
     const error = $("#pw-err", dlg);
     error.hidden = true;
     const fresh = checkNewPassword(dlg);
@@ -1183,17 +1377,165 @@ function retryBox(message) {
       <div class="dlg-body"><p style="margin:0 0 8px">La modifica non è stata completata.</p><p class="muted small-text" style="margin:0">${esc(cap(message))}</p>
         <p class="hint">Controlla che il controller sia acceso e in rete, poi riprova. Riprovare non crea doppioni.</p></div>
       <div class="dlg-foot"><button type="button" data-r="0">Annulla</button><button type="button" class="primary" data-r="1">Riprova</button></div></div>`;
-    const finish = (value) => { dlg.close(); resolve(value); };
+    // Arriva a metà di una modifica: il riquadro di attesa si toglie finché non si risponde, poi torna
+    const finish = (value) => { dlg.close(); busyHold(false); resolve(value); };
     $$("[data-r]", dlg).forEach((b) => { b.onclick = () => finish(b.dataset.r === "1"); });
     dlg.oncancel = (e) => { e.preventDefault(); finish(false); };
+    busyHold(true);
     dlg.showModal();
     $("[data-r='1']", dlg).focus();
   });
 }
 
-async function run(action, success) {
+// ---------- Attesa delle modifiche ----------
+// Ogni modifica avviata dall'utente passa da busy (run, runPerson e le azioni delle finestre lo fanno da sole). Se
+// dura più di mezzo secondo, di solito perché aspetta il controller, compare il riquadro «Attendere…» con cosa sta
+// facendo; dopo 5 secondi aggiunge che il controller risponde lentamente. Il riquadro non ferma mai l'operazione e
+// non ha un tempo massimo suo: si chiude alla fine, anche dopo un errore, e poi arriva l'avviso di sempre. Dall'inizio
+// alla fine la pagina non prende clic né tasti (niente doppio clic, niente seconda modifica a metà), anche nel primo
+// mezzo secondo, quando il riquadro non c'è ancora. Più operazioni insieme o una dentro l'altra: il riquadro resta
+// finché finiscono tutte e mostra il testo dell'ultima avviata. Mai per gli aggiornamenti automatici, le ricerche e
+// il caricamento delle pagine, che non passano da qui
+const BUSY_DELAY = 500;
+const BUSY_SLOW = 5000;
+const busyState = {ops: [], timers: [], due: false, slow: false, held: false, focus: null, keep: null};
+// Ultimo elemento che ha perso il fuoco senza darlo a un altro. Un pulsante disattivato da chi l'ha premuto subito
+// prima di run() (Rileggi dal Controller, Usa il Fuso, Accedi, i pulsanti delle finestre) lo perde così, e busy() deve
+// sapere che il fuoco era lì per rimetterlo alla fine
+const focusLeft = {el: null, at: 0};
+function noteFocusLeft(e) {
+  if (!e.relatedTarget) Object.assign(focusLeft, {el: e.target, at: Date.now()});
+}
+document.addEventListener("focusout", noteFocusLeft, true);
+// Dov'è il fuoco all'inizio di un'operazione: l'elemento attivo, o il pulsante appena disattivato che l'aveva
+function focusOrigin() {
+  const active = document.activeElement;
+  if (active && active !== document.body) return active;
+  const {el, at} = focusLeft;
+  return el?.isConnected && Date.now() - at < 1000 && el.matches(":disabled") ? el : null;
+}
+// label: cosa sta facendo («Eliminazione della tipologia sul controller»), "" per il solo «Attendere…», false per
+// nessun riquadro (le letture e le operazioni con un loro segno di avanzamento). work: una funzione o una promessa
+async function busy(label, work) {
+  if (label === false) return typeof work === "function" ? work() : work;
+  const op = {label: label || ""};
+  busyState.ops.push(op);
+  if (busyState.ops.length === 1) {
+    busyState.focus = focusOrigin();
+    busyState.timers = [setTimeout(() => { busyState.due = true; busyPaint(); }, BUSY_DELAY),
+      setTimeout(() => { busyState.slow = true; busyPaint(); }, BUSY_SLOW)];
+    $(".main").setAttribute("aria-busy", "true");
+  }
+  busyPaint();
   try {
-    const result = await action();
+    return await (typeof work === "function" ? work() : work);
+  } finally {
+    busyState.ops.splice(busyState.ops.indexOf(op), 1);
+    if (busyState.ops.length) busyPaint();
+    else busyDone();
+  }
+}
+// Testo e apertura del riquadro: aperto dopo il mezzo secondo, ma non mentre c'è la finestra Riprova (held)
+function busyPaint() {
+  const dlg = $("#busy"), line = $("#busy-what");
+  const what = [...busyState.ops].reverse().find((op) => op.label)?.label || "";
+  // Lo stesso testo non si riscrive: il lettore di schermo lo ripeterebbe
+  if (line.textContent !== what) line.textContent = what;
+  line.hidden = !what;
+  $("#busy-slow").hidden = !busyState.slow;
+  const show = busyState.ops.length > 0 && busyState.due && !busyState.held;
+  if (show && !dlg.open) {
+    busyState.focus ||= document.activeElement;
+    dlg.showModal();
+  } else if (!show && dlg.open) dlg.close();
+}
+// Finita l'ultima operazione: il riquadro si chiude e il fuoco torna dov'era
+function busyDone() {
+  busyState.timers.forEach(clearTimeout);
+  busyState.timers = [];
+  busyState.due = busyState.slow = false;
+  const shown = $("#busy").open, back = busyState.focus;
+  busyState.focus = null;
+  busyPaint();
+  $(".main").removeAttribute("aria-busy");
+  if (shown) busyRefocus(back);
+  // Senza riquadro il fuoco resta dov'era, salvo su un pulsante disattivato da chi l'ha premuto: torna lì
+  else if (back && back !== document.body) busyRefocus(back, true, false);
+  busyKeepFocus(back);
+}
+// Subito dopo, chi ha avviato l'operazione di solito ridisegna la pagina o la scheda, e il fuoco da tastiera finirebbe
+// in cima alla pagina: per qualche secondo, se l'elemento con il fuoco sparisce, il fuoco va su quello uguale della
+// pagina nuova (vedi sameElement) appena compare. Sul telefono non su un campo: aprirebbe la tastiera. back: dov'era il
+// fuoco all'inizio, se adesso non è su niente (un pulsante disattivato che torna attivo un momento dopo)
+function busyKeepFocus(back = null) {
+  busyState.keep?.();
+  let last = document.activeElement && document.activeElement !== document.body ? document.activeElement : back;
+  const mark = (e) => { last = e.target; };
+  const observer = new MutationObserver(() => {
+    if (document.activeElement && document.activeElement !== document.body) return;
+    const same = sameElement(last);
+    if (same && !(same.matches("input, select, textarea") && "ontouchstart" in window)) same.focus({preventScroll: true});
+  });
+  const stop = () => { observer.disconnect(); document.removeEventListener("focusin", mark); clearTimeout(timer); busyState.keep = null; };
+  const timer = setTimeout(stop, 10000);
+  observer.observe(document.body, {childList: true, subtree: true});
+  document.addEventListener("focusin", mark);
+  busyState.keep = stop;
+}
+// L'elemento uguale a old nella pagina ridisegnata, visibile e non inert: con lo stesso id, o lo stesso attributo data-
+// con il suo valore (data-toggle="13"), o senza valore (i pulsanti della scheda: data-add-card, data-edit-data,
+// data-photo-pick…), cercato prima nella finestra aperta. Se non c'è più, quello indicato dal suo data-refocus (Togli
+// Foto → Aggiungi Foto, Elimina Tessera → Aggiungi)
+function sameElement(old) {
+  if (!old?.attributes) return null;
+  const attrs = [...old.attributes].filter((a) => a.name !== "data-refocus");
+  const attr = attrs.find((a) => a.name === "id") || attrs.find((a) => a.name.startsWith("data-") && a.value)
+    || attrs.find((a) => a.name.startsWith("data-"));
+  const top = $$("dialog[open]:not(#busy)").pop();
+  const pick = (sel) => [...(top ? $$(sel, top) : []), ...$$(sel)].find((el) => el.getClientRects().length && !el.closest("[inert]"));
+  const same = attr && pick(`${old.localName}[${attr.name}${attr.value ? `="${CSS.escape(attr.value)}"` : ""}]`);
+  return same || (old.dataset?.refocus ? pick(old.dataset.refocus) : null) || null;
+}
+// Alla chiusura il browser lo rimette da solo; se non può, perché l'elemento di prima non c'è più (pagina ridisegnata,
+// finestra chiusa), va sulla finestra aperta sotto, se no sulla pagina, o sul primo campo della pagina di accesso.
+// Un pulsante disattivato da chi l'ha premuto, che lo riattiva subito dopo la fine, si riprova un momento dopo.
+// fallback false: solo back (operazione veloce, senza riquadro)
+function busyRefocus(back, again = true, fallback = true) {
+  const lost = () => !document.activeElement || document.activeElement === document.body || document.activeElement.id === "busy";
+  if (!lost()) return;
+  if (back && back !== document.body && back.isConnected) {
+    if (back.disabled && again) { setTimeout(() => busyRefocus(back, false, fallback)); return; }
+    back.focus({preventScroll: true});
+    if (!lost()) return;
+  }
+  if (!fallback) return;
+  const top = $$("dialog[open]:not(#busy)").pop();
+  const target = top ? $("[autofocus]", top) || $("input:not([type=hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled), [href]", top) || top
+    : document.body.dataset.auth ? $("#auth input:not([hidden])") : $("#view");
+  if (!target) return;
+  if (!top && !target.hasAttribute("tabindex") && !target.matches("input")) target.tabIndex = -1;
+  target.focus({preventScroll: true});
+}
+// La finestra Riprova (dentro api) chiede una risposta a metà operazione: il riquadro si toglie e poi torna
+function busyHold(on) {
+  busyState.held = on;
+  busyPaint();
+}
+// Clic e tasti fermi per tutta l'operazione: anche il doppio clic dei primi 500 ms, prima del riquadro, ed Esc, che
+// chiuderebbe il riquadro o la finestra sotto. Restano la finestra Riprova e i tasti del browser (Ctrl, Alt, Cmd, F5)
+function busyBlock(e) {
+  if (!busyState.ops.length || e.target?.closest?.("#retry")) return;
+  if (e.type.startsWith("key") && (e.ctrlKey || e.metaKey || e.altKey || /^F\d+$/.test(e.key))) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}
+["click", "dblclick", "auxclick", "mousedown", "keydown", "keypress", "submit", "beforeinput", "paste", "drop"].forEach((type) => window.addEventListener(type, busyBlock, true));
+$("#busy").oncancel = (e) => e.preventDefault();
+
+// wait: il testo del riquadro di attesa (vedi busy); false per le letture che non devono mostrarlo
+async function run(action, success, wait = "") {
+  try {
+    const result = await busy(wait, action);
     if (success) toast(success);
     return result ?? true;
   } catch (err) {
@@ -1204,9 +1546,9 @@ async function run(action, success) {
 // Come run, per le modifiche dalla scheda di una persona. Se intanto la persona è cambiata (per esempio una tessera
 // assegnata da un'altra scheda, dalla pagina Da Registrare o da un'importazione) il server rifiuta con 409 senza
 // modificare niente: il risultato è {stale: motivo}, e chi chiama rilegge la scheda e lo mostra
-async function runPerson(action, success) {
+async function runPerson(action, success, wait = "") {
   try {
-    const result = await action();
+    const result = await busy(wait, action);
     if (success) toast(success);
     return result ?? true;
   } catch (err) {
@@ -1219,7 +1561,8 @@ async function runPerson(action, success) {
 // ---------- Finestre ----------
 // Chiude la finestra aperta come la ×, se non sta salvando: serve al cambio di pagina
 let cancelModal = () => {};
-// Apre una finestra: body è HTML, actions [{label, kind, onClick(dialogEl) → false per lasciarla aperta}]
+// Apre una finestra: body è HTML, actions [{label, kind, onClick(dialogEl) → false per lasciarla aperta, busy}].
+// onClick passa dal riquadro di attesa: busy è il suo testo (se no quello delle operazioni dentro, o «Attendere…»)
 function modal({title, body = "", actions = [], wide = false, cls = "", onOpen}) {
   return new Promise((resolve) => {
     const dlg = $("#modal");
@@ -1229,27 +1572,31 @@ function modal({title, body = "", actions = [], wide = false, cls = "", onOpen})
       <div class="dlg-body">${body}</div>
       ${actions.length ? `<div class="dlg-foot">${actions.map((a, i) => `<button type="${a.submit ? "submit" : "button"}" class="${a.kind || ""}" data-a="${i}">${esc(a.label)}</button>`).join("")}</div>` : ""}
     </form>`;
-    let done = false, busy = false;
+    let done = false, working = false;
     const finish = (value) => { if (done) return; done = true; dlg.close(); resolve(value); };
     // Mentre l'azione è in corso × ed Esc non chiudono: il chiamante la crederebbe annullata e non aggiornerebbe la pagina
-    const cancel = () => { if (!busy) finish(null); };
+    const cancel = () => { if (!working) finish(null); };
     cancelModal = cancel;
     $("[data-x]", dlg).onclick = cancel;
     dlg.oncancel = (e) => { e.preventDefault(); cancel(); };
     const invoke = async (i) => {
       const action = actions[i];
-      if (busy) return;
+      if (working) return;
       if (!action.onClick) return finish("value" in action ? action.value : i);
       const btns = $$(".dlg-foot button, [data-x]", dlg);
-      busy = true;
+      working = true;
       btns.forEach((b) => { b.disabled = true; });
-      try {
-        const result = await action.onClick(dlg);
-        if (result !== false) finish(result ?? true);
-      } finally {
-        busy = false;
-        btns.forEach((b) => { b.disabled = false; });
-      }
+      // Pulsanti riattivati prima della fine dell'attesa, e finestra chiusa dopo: il fuoco torna sul pulsante premuto
+      // e poi, alla chiusura, dove era prima della finestra
+      const result = await busy(action.busy ?? "", async () => {
+        try {
+          return await action.onClick(dlg);
+        } finally {
+          working = false;
+          btns.forEach((b) => { b.disabled = false; });
+        }
+      });
+      if (result !== false) finish(result ?? true);
     };
     $$(".dlg-foot button", dlg).forEach((b) => { if (!actions[b.dataset.a].submit) b.onclick = () => invoke(Number(b.dataset.a)); });
     $("form", dlg).onsubmit = (e) => {
@@ -1275,6 +1622,13 @@ function showImage(src, title) {
 // ---------- Stato condiviso ----------
 const store = {me: {perms: [], admin: false}, persons: [], groups: null, schedules: null, categories: [], summary: {}};
 const can = (perm) => Boolean(store.me.admin || store.me.perms.includes(perm));
+// Pagina dell'accesso diretto, fuori da Home Assistant: lo dice api/me. Finché non si sa, il login (c'è solo lì) o
+// l'indirizzo: da Home Assistant la pagina sta sempre sotto /api/hassio_ingress/
+const directPage = () => store.me.direct ?? (Boolean(document.body.dataset.auth) || !location.pathname.includes("/hassio_ingress/"));
+// Chi entra dall'accesso diretto senza i permessi tecnici (Impianti o Backup) non legge mai Home Assistant, MQTT,
+// broker e add-on: lo decide il server (api/me, come per i suoi messaggi), e finché non si sa vale l'accesso diretto.
+// Resta solo il registro, dove Home Assistant è chi ha aperto la porta a distanza
+const hideHA = () => store.me.hide_home_assistant ?? directPage();
 const ALL_PERMS = ["stato", "persone", "persone_modifica", "registro", "regole", "regole_modifica", "import_export", "impianti", "backup", "utenti"];
 // Profili e fasce stanno sul controller, le tipologie nell'app. Se il controller non risponde restano i profili di
 // prima (store.groupsError dice perché, store.groupsLoaded resta falso) e le tipologie si leggono lo stesso dall'app.
@@ -1417,15 +1771,17 @@ async function loadSummary() {
     $("#nav [data-route=notifiche]").title = s.notifications ? `Notifiche: ${s.notifications} da gestire` : "Notifiche";
     renderTopStatus();
   } catch (err) {
+    // Dall'accesso diretto, per tutti, l'app e non l'add-on
+    $("#offline-pill").textContent = directPage() ? "App Non Raggiungibile" : "Add-on Non Raggiungibile";
     $("#offline-pill").hidden = false;
   }
 }
 
 // Add-on aggiornato mentre la pagina era aperta (Home Assistant tiene viva la scheda): si ricarica appena
-// non c'è niente in sospeso, cioè nessuna finestra aperta e nessuna modifica da salvare
+// non c'è niente in sospeso, cioè nessuna finestra aperta, nessuna modifica da salvare e nessuna in corso
 function reloadIfUpdated(version) {
   if (!version || !store.me?.version || version === store.me.version) return;
-  if ($("#modal").open || $("#sheet").open || $("#retry").open || pageGuard?.dirty()) return;
+  if ($("#modal").open || $("#sheet").open || $("#retry").open || busyState.ops.length || pageGuard?.dirty()) return;
   location.reload();
 }
 
@@ -1470,7 +1826,7 @@ document.addEventListener("click", async (e) => {
   if (chip) { if (!pop.hidden && pop.dataset.kind === chip.dataset.pop) { pop.hidden = true; markTopChips(); } else showTopPop(chip.dataset.pop); return; }
   if (e.target.closest("[data-pop-seen]")) {
     const ids = (store.summary.alarms || []).map((i) => i.id);
-    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids}}))) {
+    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids}}), "", "Aggiornamento delle notifiche")) {
       pop.hidden = true;
       await loadSummary();
       // Solo i dati, senza ridisegnare: una modifica del cruscotto in corso non si perde
@@ -1486,14 +1842,16 @@ document.addEventListener("click", async (e) => {
 window.addEventListener("scroll", () => $(".topbar").classList.toggle("scrolled", window.scrollY > 4), {passive: true});
 
 // ---------- Navigazione ----------
-// Pagina: titolo, vista, permesso necessario per vederla
+// Pagina: titolo, vista, permesso necessario per vederla. Gli indirizzi restano quelli di prima anche quando il nome
+// della pagina cambia (#persone è Anagrafica, #regole Fasce Orarie e Festività): segnalibri e collegamenti delle
+// notifiche continuano a funzionare
 const ROUTES = {
   cruscotto: ["Cruscotto", viewDashboard, "stato"],
   porte: ["Porte", viewDoorsPage, "stato"],
-  persone: ["Persone", viewPersons, "persone"],
-  "da-registrare": ["Da Registrare", viewUnknown, "persone"],
+  persone: ["Anagrafica", viewPersons, "persone"],
+  "da-registrare": ["Tessere da Registrare", viewUnknown, "persone"],
   registro: ["Registro Accessi", viewLog, "registro"],
-  regole: ["Regole di Accesso", viewRules, "regole"],
+  regole: ["Fasce Orarie e Festività", viewRules, "regole"],
   impianti: ["Impianti", viewInstallation, ["impianti", "backup"]],
   notifiche: ["Notifiche", viewNotifications, "stato"],
   impostazioni: ["Impostazioni", viewSettings, ["import_export", "impianti", "utenti"]],
@@ -1512,7 +1870,7 @@ function parseHash() {
 function viewNoAccess(el) {
   el.innerHTML = store.me.user
     ? `<div class="card"><div class="empty">${icon("block")}<br><b>Nessuna Sezione Disponibile</b><br>Il tuo utente non ha permessi in questa app: chiedi a un amministratore di assegnarti un ruolo.</div></div>`
-    : `<div class="alert err">L'add-on non risponde: ricarica la pagina tra qualche secondo.</div>`;
+    : `<div class="alert err">${cap(appName())} non risponde: ricarica la pagina tra qualche secondo.</div>`;
   paintIcons(el);
 }
 let viewBox = null;  // contenitore della pagina aperta, dentro #view
@@ -1586,9 +1944,10 @@ window.addEventListener("hashchange", async () => {
   render();
 });
 window.addEventListener("beforeunload", (e) => { if (pageGuard?.dirty()) { e.preventDefault(); e.returnValue = ""; } });
-// Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta
+// Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta né una modifica in corso (chi
+// l'ha avviata ridisegna la pagina alla fine)
 async function refreshView() {
-  if ($("#modal").open || $("#sheet").open || $("#retry").open) return;
+  if ($("#modal").open || $("#sheet").open || $("#retry").open || busyState.ops.length) return;
   if (route.name === "cruscotto" && dash.editing) return;
   // Solo i dati, senza ridisegnare la pagina: prima ogni 15 secondi la pagina lampeggiava e perdeva scroll e focus
   if (route.name === "cruscotto") await (dash.reload && $("#dash") ? dash.reload() : render());
@@ -1634,7 +1993,7 @@ const WIDGETS = {
   ultimi_eventi: {title: "Ultimi Eventi", desc: "Gli ultimi passaggi del registro.", size: 2, height: 5, minSize: 2, minHeight: 2, perm: "registro"},
   scadenze: {title: "Tessere in Scadenza", desc: "Persone con tessere che scadono nei prossimi 7 giorni.", size: 2, height: 3, minHeight: 2, perm: "persone"},
   da_registrare: {title: "Tessere da Registrare", desc: "Tessere passate sul lettore ma non ancora di nessuno.", size: 2, height: 3, minHeight: 2, perm: "persone"},
-  impianto: {title: "Stato Impianto", desc: "Controller, eventi MQTT, coperchio e ultimo evento.", size: 2, height: 3, minHeight: 3},
+  impianto: {title: "Stato Impianto", get desc() { return `Controller, eventi ${hideHA() ? "in diretta" : "MQTT"}, coperchio e ultimo evento.`; }, size: 2, height: 3, minHeight: 3},
   backup: {title: "Backup", desc: "Ultimo backup, backup automatico e verifica dei file.", size: 2, height: 3, minHeight: 3, perm: "backup"},
 };
 const MAX_HEIGHT = 12;
@@ -1698,7 +2057,7 @@ const WIDGET_BODY = {
   },
   negati_oggi: ({d: {today: t}}) => kpi("Negati Oggi", t.denied, t.unknown ? plural(t.unknown, "tessera sconosciuta", "tessere sconosciute") : "nessuna tessera sconosciuta", t.denied ? "var(--warn)" : ""),
   allarmi_oggi: ({d: {today: t}}) => kpi("Allarmi Oggi", t.alarms, t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme", t.alarms ? "var(--err)" : ""),
-  persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">Persone</a>' : ""}`),
+  persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">Anagrafica</a>' : ""}`),
   porte: ({doors}) => !doors ? '<h2>Porte<span class="spacer"></span><a class="small-text" href="#porte">Tutte le Porte</a></h2><div class="empty">Porte non leggibili: riprovo tra poco.</div>'
     : `<h2>${doors.length > 1 ? "Porte" : "Porta"}<span class="spacer"></span>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</h2>
     ${doors.length ? doorGroups(doors) : `<div class="empty">Nessuna porta configurata.</div>`}`,
@@ -1719,7 +2078,7 @@ const WIDGET_BODY = {
   },
   ultimi_eventi: ({d}) => `<h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro" data-log-all>Registro Completo</a></h2>
     <div class="list compact" data-dash-events>${d.recent.length ? logRows(d.recent) : '<div class="empty">Nessun evento registrato.</div>'}</div>`,
-  scadenze: ({d}) => `<h2>Tessere in Scadenza<span class="spacer"></span><a class="small-text" href="#persone">Persone</a></h2>
+  scadenze: ({d}) => `<h2>Tessere in Scadenza<span class="spacer"></span><a class="small-text" href="#persone">Anagrafica</a></h2>
     ${d.expiring.length ? `<div class="list">${d.expiring.slice(0, 6).map((e) => `<a class="item" href="#persone/${e.id}"><div class="ev-icon k-warn">${icon("clock")}</div><div class="grow"><div class="title">${esc(e.name)}</div><div class="meta">scade il ${esc(fmtDateTime(e.valid_to))}</div></div></a>`).join("")}</div>${d.expiring.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">${d.expiring.length === 7 ? "e un'altra" : `e altre ${d.expiring.length - 6}`}</p>` : ""}`
       : '<div class="empty">Nessuna tessera scade nei prossimi 7 giorni.</div>'}`,
   // Come nella pagina Da Registrare: stessa icona, stesse parole
@@ -1735,7 +2094,7 @@ const WIDGET_BODY = {
     const why = mqtt ? `${mqtt.title}: ${mqtt.text}` : s.controller_online === false ? "Il controller non è raggiungibile." : "";
     return `<h2>Stato Impianto${can("impianti") ? '<span class="spacer"></span><a class="small-text" href="#impianti/stato">Dettagli</a>' : ""}</h2>
       ${row(s.controller_online === false ? "err" : s.controller_online ? "ok" : "", "Controller", s.controller_online === false ? "Non Raggiungibile" : s.controller_online ? "Raggiungibile" : "Stato Sconosciuto")}
-      ${s.controller_online === false ? "" : s.events_waiting ? row("", "Eventi in Diretta", "In Collegamento") : row(s.events_source ? "ok" : "warn", "Eventi in Diretta", s.events_source === "websocket" ? "WebSocket" : s.events_source === "mqtt" ? "MQTT" : "Non in Arrivo", s.events_source ? "" : why)}
+      ${s.controller_online === false ? "" : s.events_waiting ? row("", "Eventi in Diretta", "In Collegamento") : row(s.events_source ? "ok" : "warn", "Eventi in Diretta", hideHA() && s.events_source ? "In Arrivo" : s.events_source === "websocket" ? "WebSocket" : s.events_source === "mqtt" ? "MQTT" : "Non in Arrivo", s.events_source ? "" : why)}
       ${s.casing_open === null ? row("warn", "Coperchio del Controller", "Sconosciuto") : row(s.casing_open ? "err" : "ok", "Coperchio del Controller", s.casing_open ? "Aperto" : "Chiuso")}
       ${row("", "Ultimo Evento", s.last_event ? esc(relTime(s.last_event)) : "nessuno")}`;
   },
@@ -1830,7 +2189,7 @@ async function viewDashboard(el) {
     };
   };
   const saveDash = async () => {
-    const res = await run(() => api("api/dashboard/layout", {method: "PUT", body: {widgets: dash.draft}}), "Cruscotto salvato");
+    const res = await run(() => api("api/dashboard/layout", {method: "PUT", body: {widgets: dash.draft}}), "Cruscotto salvato", "Salvataggio del cruscotto");
     if (!res) return false;
     dash.layout = res.widgets;
     dash.editing = false;
@@ -1854,7 +2213,7 @@ function bindDashEdit(el, draw, missing) {
   $("#dash-cancel").onclick = leave;
   $("#dash-reset").onclick = async () => {
     if (!await confirmBox("Ripristina Predefinito", "Rimettere i riquadri e le larghezze di partenza? Le tue modifiche al cruscotto si perdono.", "Ripristina")) return;
-    if (await run(() => api("api/dashboard/layout", {method: "DELETE"}), "Cruscotto ripristinato")) leave();
+    if (await run(() => api("api/dashboard/layout", {method: "DELETE"}), "Cruscotto ripristinato", "Ripristino del cruscotto predefinito")) leave();
   };
   $("#dash-add").onclick = async () => {
     let type = "";
@@ -2079,8 +2438,7 @@ async function viewDoorDetail(el, id, doors) {
       ${d.state?.known ? "" : '<p class="hint" style="margin-bottom:0">Il controller non risponde, o non è ancora stato letto: lo stato compare appena risponde.</p>'}</div>
     <div class="grid two">
       <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") && d.controller.id ? `<a class="small-text" href="#impianti/c${d.controller.id}">Configura</a>` : ""}</h2>
-        <div class="list" style="margin-top:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div>
-        <p class="hint" style="padding:0 18px 14px">L'apertura della porta resta nei pulsanti di Home Assistant.</p></div>
+        <div class="list" style="margin-top:8px;padding-bottom:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div></div>
       ${d.groups ? `<div class="card flush"><h2>Chi Può Entrare<span class="spacer"></span>${can("persone") || can("regole") ? `<a class="small-text" href="${categoriesLink()}">Tipologie</a>` : ""}</h2>
         <div class="list" style="margin-top:8px">${d.groups.length ? d.groups.map((g) => `<div class="item"><div class="grow"><div class="title"><span class="swatch c-${esc(g.color)}"></span> ${esc(g.name)}${g.default ? ' <span class="pill accent">Predefinita</span>' : ""}${g.enabled ? "" : ' <span class="pill">Disattivata</span>'}</div><div class="meta">${esc(g.schedule_names.join(", ") || "sempre")}</div></div><div class="side">${plural(g.persons, "persona", "persone")}</div></div>`).join("") : '<div class="empty">Nessuna tipologia apre questa porta.</div>'}</div></div>` : ""}
     </div>
@@ -2093,12 +2451,129 @@ async function viewDoorDetail(el, id, doors) {
 }
 
 // ---------- Persone ----------
-const personFilters = {q: "", state: "", category: ""};
+// Ordini dell'elenco, «chiave:direzione», nell'ordine della tendina Ordina per; le intestazioni della tabella usano le
+// stesse chiavi. Predefinito: per cognome, come prima
+const PERSON_SORTS = [
+  ["cognome:asc", "Cognome A→Z"], ["cognome:desc", "Cognome Z→A"], ["nome:asc", "Nome A→Z"], ["nome:desc", "Nome Z→A"],
+  ["matricola:asc", "Matricola A→Z"], ["matricola:desc", "Matricola Z→A"], ["ditta:asc", "Ditta A→Z"], ["ditta:desc", "Ditta Z→A"],
+  ["tipologia:asc", "Tipologia A→Z"], ["tipologia:desc", "Tipologia Z→A"],
+  ["accesso:desc", "Ultimo Accesso Più Recente"], ["accesso:asc", "Ultimo Accesso Meno Recente"],
+  ["inserimento:desc", "Data di Inserimento Più Recente"], ["inserimento:asc", "Data di Inserimento Meno Recente"],
+  ["modifica:desc", "Ultima Modifica Più Recente"], ["modifica:asc", "Ultima Modifica Meno Recente"],
+];
+const PERSON_SORT_DEFAULT = "cognome:asc";
+// Chiavi con una data: il primo clic sull'intestazione mette in cima la più recente
+const PERSON_SORT_DATES = ["accesso", "inserimento", "modifica"];
+// Ordine scelto, ricordato nel browser. Senza localStorage (navigazione privata, dati bloccati) o con un valore che
+// non c'è più resta il predefinito
+function savedPersonSort() {
+  let saved = "";
+  try { saved = localStorage.getItem("aam-persone-ordine") || ""; } catch (err) { /* facoltativo */ }
+  return PERSON_SORTS.some(([value]) => value === saved) ? saved : PERSON_SORT_DEFAULT;
+}
+const personFilters = {q: "", state: "", category: "", sort: savedPersonSort()};
 async function loadPersons() {
   store.persons = await api("api/persons");
   return store.persons;
 }
-// Le tipologie stanno in Persone; chi ha il permesso Regole ma non Persone le trova in Regole
+// Elenco per cognome e poi nome, senza distinguere maiuscole e accenti; chi non ha il cognome sta al suo nome. Si mostra
+// sempre il nome completo, «Nome Cognome», come sul controller, nel registro e in Home Assistant
+const personSortKey = (p) => p.last_name || p.first_name || p.name || "";
+// Confronti fatti una volta sola per il browser, non uno nuovo per ogni coppia (con 2000 persone si sentirebbe). Le
+// matricole con i numeri in ordine di valore: 2 prima di 10
+const nameCollator = new Intl.Collator("it", {sensitivity: "base"});
+const codeCollator = new Intl.Collator("it", {sensitivity: "base", numeric: true});
+function comparePersons(a, b) {
+  const given = (p) => p.last_name ? p.first_name || "" : "";
+  return nameCollator.compare(personSortKey(a), personSortKey(b)) || nameCollator.compare(given(a), given(b))
+    || nameCollator.compare(a.name || "", b.name || "") || a.id - b.id;
+}
+// Valore della persona per l'ordine scelto: testo, numero (le date) o "" se manca. Per nome chi non ha il nome sta al
+// suo cognome, come per cognome chi non ha il cognome sta al suo nome
+function personSortValue(p, key) {
+  switch (key) {
+    case "nome": return p.first_name || p.last_name || p.name || "";
+    case "matricola": return p.employee_id || "";
+    case "ditta": return p.company || "";
+    case "tipologia": return categoryOf(p.category_id)?.name || "";
+    case "accesso": return Date.parse(p.last_access || "") || "";
+    case "inserimento": return Date.parse(p.created_at || "") || "";
+    case "modifica": return Date.parse(p.updated_at || "") || "";
+    default: return personSortKey(p);
+  }
+}
+// Persone nell'ordine scelto. I valori vuoti (senza matricola, senza ditta, nessun accesso…) stanno sempre in fondo,
+// anche nell'ordine inverso; a parità di valore vale l'ordine per cognome. Ogni valore si calcola una volta sola
+function sortPersons(rows, sort) {
+  const [key, dir] = sort.split(":");
+  const sign = dir === "desc" ? -1 : 1;
+  const text = key === "matricola" ? codeCollator : nameCollator;
+  const base = [...rows].sort(comparePersons);
+  const rank = new Map(base.map((p, i) => [p, i]));
+  const value = new Map(base.map((p) => [p, personSortValue(p, key)]));
+  return base.sort((a, b) => {
+    const x = value.get(a), y = value.get(b);
+    if (x === "" || y === "") return (x === "") - (y === "") || rank.get(a) - rank.get(b);
+    return sign * (typeof x === "number" ? x - y : text.compare(x, y)) || rank.get(a) - rank.get(b);
+  });
+}
+// Lettera di sezione (con più di 12 persone), solo con l'ordine per cognome o per nome: l'iniziale del campo usato
+function personLetter(p, key) {
+  if (key !== "cognome" && key !== "nome") return "";
+  return (foldText(personSortValue(p, key)).trim()[0] || "#").toLocaleUpperCase("it");
+}
+// Sul telefono, sotto il nome, il valore usato per ordinare (niente con l'ordine per cognome o per nome)
+function personSortNote(p, key) {
+  switch (key) {
+    case "matricola": return p.employee_id ? `Matricola ${p.employee_id}` : "Senza matricola";
+    case "ditta": return p.company || "Senza ditta";
+    case "tipologia": return categoryOf(p.category_id)?.name || "Senza tipologia";
+    case "accesso": return p.last_access ? `Ultimo accesso ${relTime(p.last_access)}` : "Nessun accesso registrato";
+    case "inserimento": return p.created_at ? `Inserita il ${fmtNumDay(p.created_at)}` : "";
+    case "modifica": return p.updated_at ? `Modificata il ${fmtNumDay(p.updated_at)}` : "";
+    default: return "";
+  }
+}
+// Testo per la ricerca: minuscolo e senza accenti
+const foldText = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+// Separatori di un numero di telefono: la ricerca lo trova anche scritto senza spazi
+const PHONE_MARKS = /[\s.\-\/()]/g;
+// Campo o ricerca come si confrontano: minuscolo, senza accenti e con gli spazi di fila contati come uno
+const searchFold = (text) => foldText(String(text || "").replace(/\s+/g, " "));
+// Testo in cui cercare, preparato una volta per persona (l'elenco nuovo, ogni 15 secondi, sono oggetti nuovi): nome
+// completo, nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono, email, numeri e Codici Stampati delle
+// tessere e note. Un campo per riga: una ricerca non trova la fine di un campo unita all'inizio del successivo
+const personTexts = new WeakMap();
+function personHaystack(p) {
+  let text = personTexts.get(p);
+  if (text === undefined) {
+    text = [p.name, p.first_name, p.last_name, `${p.last_name || ""} ${p.first_name || ""}`, p.employee_id, p.company, p.referent,
+      p.phone, p.email, ...(p.cards || []).flatMap((c) => [c.number, c.printed_code]), p.notes].map(searchFold).join("\n");
+    personTexts.set(p, text);
+  }
+  return text;
+}
+// Ricerca dell'elenco su tutti i campi della persona; il telefono anche scritto senza spazi né trattini
+function personMatches(p, q) {
+  const text = searchFold(q).trim();
+  if (!text) return true;
+  if (personHaystack(p).includes(text)) return true;
+  const digits = text.replace(PHONE_MARKS, "");
+  return Boolean(digits && p.phone && p.phone.replace(PHONE_MARKS, "").includes(digits));
+}
+// Tessere della persona che la ricerca trova, per Codice Stampato o per numero, con lo stesso confronto di
+// personMatches: sul telefono compaiono sotto il nome, perché si capisca perché la persona è nell'elenco, e nella
+// tabella la colonna Tessere resta in vista
+function searchedCards(p, q) {
+  const text = searchFold(q).trim();
+  if (!text) return [];
+  return (p.cards || []).filter((c) => searchFold(c.number).includes(text) || searchFold(c.printed_code).includes(text));
+}
+// Tessera nell'elenco come nella scheda: il Codice Stampato in evidenza e sotto il numero, più piccolo; senza codice
+// il numero. Nella cella, con poco spazio, i puntini e tutto nel title
+const cardTag = (c) => `<div class="p-card">${c.printed_code ? `<div class="p-code">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="mono">${esc(c.number)}</div>`}</div>`;
+const cardTitle = (cards) => cards.map((c) => c.printed_code ? `${c.printed_code} · ${c.number}` : c.number).join("\n");
+// Le tipologie stanno in Anagrafica; chi ha il permesso Fasce Orarie ma non Anagrafica le trova in Fasce Orarie
 const categoriesLink = () => can("persone") ? "#persone/tipologie" : "#regole/tipologie";
 const personTabs = (tab) => `<div class="segmented">${[["", "Persone"], ["tipologie", "Tipologie"]].map(([k, label]) => `<a href="#persone${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`;
 async function viewPersons(el, sub) {
@@ -2109,18 +2584,19 @@ async function viewPersons(el, sub) {
   // Nel frattempo si è aperta un'altra pagina: niente elenco né scheda sopra di lei
   if (!el.isConnected) return;
   el.innerHTML = `${personTabs("")}
-    <div class="toolbar">
-      <input type="search" id="p-q" placeholder="Cerca nome, ditta o numero tessera" value="${esc(personFilters.q)}">
-      <select id="p-state">
+    <div class="toolbar p-tools">
+      <input type="search" id="p-q" placeholder="Cerca nome, tessera, matricola…" aria-label="Cerca persone" title="Cerca per nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono (anche senza spazi), email, note, numero o Codice Stampato della tessera" value="${esc(personFilters.q)}">
+      <select id="p-state" aria-label="Mostra">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
         <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
         <option value="mancanti">Non Presenti sul Controller</option><option value="senza">Senza Tessera</option>
       </select>
+      <label class="sort-pick" title="Ordina per">${icon("sort")}<select id="p-sort" aria-label="Ordina per">${PERSON_SORTS.map(([value, label]) => `<option value="${value}">${esc(label)}</option>`).join("")}</select></label>
       <button type="button" class="primary w-persone" id="p-new">${icon("plus")}Nuova Persona</button>
     </div>
     <div id="p-missing"></div>
     <div class="chips" id="p-cats" style="margin:-6px 0 14px"></div>
-    <div class="card flush"><h2 style="padding-bottom:12px"><span id="p-count" class="muted small-text"></span><span class="spacer"></span>
+    <div class="card flush p-table-wrap"><h2 style="padding-bottom:12px"><span id="p-count" class="muted small-text"></span><span class="spacer"></span>
       <button type="button" class="small ghost w-persone" id="p-sync" title="Rilegge tessere e utenti dal controller">${icon("refresh")}Rileggi dal Controller</button></h2>
       <div class="list" id="p-list"></div></div>`;
   $("#p-cats").addEventListener("click", (e) => {
@@ -2130,45 +2606,86 @@ async function viewPersons(el, sub) {
     renderPersonList();
   });
   $("#p-state").value = personFilters.state;
+  $("#p-sort").value = personFilters.sort;
   $("#p-q").addEventListener("input", (e) => { personFilters.q = e.target.value; renderPersonList(); });
   $("#p-state").addEventListener("change", (e) => { personFilters.state = e.target.value; renderPersonList(); });
+  $("#p-sort").addEventListener("change", (e) => setPersonSort(e.target.value));
   $("#p-new").addEventListener("click", () => newPerson());
   $("#p-sync").addEventListener("click", async (e) => {
     // Il pulsante e non l'icona su cui si è cliccato: resta disabilitato fino alla fine della rilettura
     const button = e.currentTarget;
     button.disabled = true;
-    const r = await run(() => api("api/sync", {method: "POST"}));
+    const r = await run(() => api("api/sync", {method: "POST"}), "", "Rilettura dal controller");
     button.disabled = false;
     if (r) { toast(`Riletto dal controller: ${plural(r.cards, "tessera", "tessere")} (${plural(r.added, "nuova", "nuove")}${r.missing ? `, ${plural(r.missing, "non presente", "non presenti")} sul controller` : ""})`); await loadPersons(); renderPersonList(); }
   });
   $("#p-list").addEventListener("click", (e) => {
+    // Intestazione della tabella: stessa colonna, ordine inverso; un'altra colonna, il suo ordine di partenza
+    const head = e.target.closest("[data-sort]");
+    if (head) {
+      const [key, dir] = personFilters.sort.split(":"), next = head.dataset.sort;
+      setPersonSort(next === key ? `${key}:${dir === "asc" ? "desc" : "asc"}` : `${next}:${PERSON_SORT_DATES.includes(next) ? "desc" : "asc"}`);
+      return;
+    }
     const item = e.target.closest("[data-person]");
     if (!item) return;
     history.pushState(null, "", `#persone/${item.dataset.person}`);
     openPerson(Number(item.dataset.person));
   });
-  $("#p-list").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.closest("[data-person]")) { e.preventDefault(); e.target.click(); } });
+  $("#p-list").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-person]")) { e.preventDefault(); e.target.click(); } });
   renderPersonList();
   if (sub) openPerson(Number(sub));
 }
-// Aggiornamento periodico della pagina: l'avviso delle tessere non presenti segue le riletture dal controller
+// Ordine scelto dalla tendina o dalle intestazioni: ricordato nel browser, se si può
+function setPersonSort(sort) {
+  personFilters.sort = PERSON_SORTS.some(([value]) => value === sort) ? sort : PERSON_SORT_DEFAULT;
+  try { localStorage.setItem("aam-persone-ordine", personFilters.sort); } catch (err) { /* facoltativo */ }
+  renderPersonList();
+}
+// Aggiornamento periodico della pagina: l'avviso delle tessere non presenti segue le riletture dal controller. Senza
+// novità l'elenco si ridisegna solo una volta al minuto, per l'Ultimo Accesso («5 min fa», «ieri»): le righe uguali
+// restano com'erano (morph), cambia solo quel testo
+let personsDrawn = 0;
 async function refreshPersons() {
   if (!$("#p-list")) return;
   const persons = await api("api/persons").catch(() => null);
-  if (!persons || !$("#p-list") || JSON.stringify(persons) === JSON.stringify(store.persons)) return;
-  store.persons = persons;
+  if (!persons || !$("#p-list")) return;
+  const same = JSON.stringify(persons) === JSON.stringify(store.persons);
+  if (same && Date.now() - personsDrawn < 60000) return;
+  if (!same) store.persons = persons;
   renderPersonList();
 }
 const missingCards = () => store.persons.flatMap((p) => p.cards.filter((c) => c.missing_since));
 // Tessera che oggi apre: abilitata, presente sul controller e nel suo periodo di validità
 const cardActive = (c) => c.enabled && !c.missing_since && !["scaduta", "futura"].includes(validityState(c.valid_from, c.valid_to));
+// Foto della persona con la sua versione nell'indirizzo: il browser la tiene finché non cambia, e l'aggiornamento
+// dell'elenco ogni 15 secondi non la scarica di nuovo. Non è la foto della telecamera degli eventi
+const photoUrl = (p) => `api/persons/${p.id}/photo?v=${encodeURIComponent(p.photo)}`;
+// Foto rotonda della persona, o le sue iniziali se non ne ha (o se intanto è stata tolta: vedi l'ascoltatore di error)
+const personAvatar = (p, cls = "") => `<span class="avatar ${cls}">${p.photo ? `<img src="${esc(photoUrl(p))}" alt="" loading="lazy" decoding="async" data-initials="${esc(initials(p.name))}">` : esc(initials(p.name))}</span>`;
+// Foto tolta da un'altra scheda prima dell'aggiornamento dell'elenco: al posto dell'immagine rotta le iniziali
+document.addEventListener("error", (e) => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  const face = img.closest("[data-face]");
+  if (face) face.hidden = true;
+  else if (img.dataset.initials !== undefined) img.replaceWith(img.dataset.initials);
+}, true);
+// Etichetta dello stato, solo se c'è qualcosa da sistemare o da sapere; il resto è nella scheda
+function personFlag(p) {
+  const a = personAccess(p);
+  const suspended = p.cards.length && !p.cards.some((c) => c.enabled);
+  return p.cards.some((c) => c.missing_since) ? '<span class="pill err" title="Tessera sparita dal controller: riscrivila o toglila dall\'app">Non sul Controller</span>'
+    : !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>'
+    : VALIDITY_PILL[validityState(a.from, a.to)] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
+}
 function renderPersonList() {
   const list = $("#p-list");
   if (!list) return;
-  const q = personFilters.q.trim().toLowerCase();
+  personsDrawn = Date.now();
   const rows = store.persons.filter((p) => {
     const a = personAccess(p);
-    if (q && !(p.name.toLowerCase().includes(q) || (p.company || "").toLowerCase().includes(q) || p.cards.some((c) => c.number.toLowerCase().includes(q)))) return false;
+    if (!personMatches(p, personFilters.q)) return false;
     if (personFilters.category !== "" && (p.category_id || 0) !== Number(personFilters.category)) return false;
     const st = personFilters.state;
     if (st === "attive" && !p.cards.some(cardActive)) return false;
@@ -2182,30 +2699,77 @@ function renderPersonList() {
   const cards = store.persons.reduce((n, p) => n + p.cards.length, 0);
   $("#p-count").textContent = `${plural(store.persons.length, "persona", "persone")} · ${plural(cards, "tessera", "tessere")}` + (rows.length !== store.persons.length ? ` · ${plural(rows.length, "mostrata", "mostrate")}` : "");
   // Tipologie come filtri rapidi, con il numero di persone di ognuna
-  const count = (id) => store.persons.filter((p) => (p.category_id || 0) === id).length;
+  const counts = new Map();
+  store.persons.forEach((p) => counts.set(p.category_id || 0, (counts.get(p.category_id || 0) || 0) + 1));
   const chip = (value, label, n, color = "") => `<button type="button" class="chip-btn ${personFilters.category === value ? "on" : ""}" data-cat="${value}" data-key="cat${value}">${color ? `<span class="swatch c-${esc(color)}"></span>` : ""}${esc(label)} <span class="muted">${n}</span></button>`;
-  const none = count(0);
+  const none = counts.get(0) || 0;
   // Con morph e non innerHTML: l'aggiornamento ogni 15 secondi (refreshPersons) lascia il fuoco sulla riga o sul filtro
-  morph($("#p-cats"), store.categories.length ? chip("", "Tutte", store.persons.length) + store.categories.map((c) => chip(String(c.id), c.name, count(c.id), c.color)).join("") + (none ? chip("0", "Senza Tipologia", none) : "") : "");
-  // Elenco essenziale: nome e tipologia, un'etichetta solo se c'è qualcosa da sistemare; il resto è nella scheda
-  const sorted = [...rows].sort((a, b) => a.name.localeCompare(b.name, "it", {sensitivity: "base"}));
-  let letter = "";
-  morph(list, sorted.length ? sorted.map((p) => {
-    const a = personAccess(p);
-    const vs = validityState(a.from, a.to);
-    const suspended = p.cards.length && !p.cards.some((c) => c.enabled);
-    const flag = p.cards.some((c) => c.missing_since) ? '<span class="pill err" title="Tessera sparita dal controller: riscrivila o toglila dall\'app">Non sul Controller</span>'
-      : !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
-    const c = categoryOf(p.category_id);
-    const first = (p.name.trim()[0] || "#").toLocaleUpperCase("it");
-    const head = sorted.length > 12 && first !== letter ? `<div class="day" data-key="h${esc(first)}">${esc(first)}</div>` : "";
-    letter = first;
-    return `${head}<div class="person-row" data-person="${p.id}" data-key="p${p.id}" role="button" tabindex="0">
-      <span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span>
-      <span class="name">${esc(p.name)}</span>${flag}
-    </div>`;
-  }).join("") : `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : can("persone_modifica") ? "Nessuna persona registrata: aggiungila con Nuova Persona, anche senza tessera, oppure passa una tessera sul lettore e registrala dalla pagina Da Registrare." : "Nessuna persona registrata."}</div>`);
+  morph($("#p-cats"), store.categories.length ? chip("", "Tutte", store.persons.length) + store.categories.map((c) => chip(String(c.id), c.name, counts.get(c.id) || 0, c.color)).join("") + (none ? chip("0", "Senza Tipologia", none) : "") : "");
+  // La tendina segue anche le intestazioni della tabella
+  const pick = $("#p-sort");
+  if (pick && pick.value !== personFilters.sort) pick.value = personFilters.sort;
+  if (!rows.length) {
+    morph(list, `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : can("persone_modifica") ? "Nessuna persona registrata: aggiungila con Nuova Persona, anche senza tessera, oppure passa una tessera sul lettore e registrala dalla pagina Da Registrare." : "Nessuna persona registrata."}</div>`);
+    return;
+  }
+  const sorted = sortPersons(rows, personFilters.sort);
+  // Sul telefono righe essenziali, sul computer una tabella con le colonne
+  morph(list, phoneLayout() ? personRows(sorted) : personTable(sorted));
 }
+// Telefono: foto o iniziali con il pallino della tipologia, «Nome Cognome», l'etichetta dello stato e, se l'ordine
+// non è per cognome o per nome, il valore usato per ordinare. La riga non mostra le tessere: solo quelle che la
+// ricerca ha trovato, una per riga sotto il nome, con il codice in evidenza e il numero più piccolo
+function personRows(sorted) {
+  const key = personFilters.sort.split(":")[0];
+  let letter = "";
+  return sorted.map((p) => {
+    const first = sorted.length > 12 ? personLetter(p, key) : "";
+    const head = first && first !== letter ? `<div class="day" data-key="h${esc(first)}">${esc(first)}</div>` : "";
+    letter = first;
+    const c = categoryOf(p.category_id);
+    const note = personSortNote(p, key);
+    const found = searchedCards(p, personFilters.q).map((t) => `<span class="p-sub p-found" title="${esc(cardTitle([t]))}">${icon("card")}${t.printed_code
+      ? `<span class="p-code">${esc(t.printed_code)}</span>` : ""}<span class="mono">${esc(t.number)}</span></span>`).join("");
+    return `${head}<div class="person-row" data-person="${p.id}" data-key="p${p.id}" role="button" tabindex="0">
+      <span class="p-face">${personAvatar(p, "sm")}<span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span></span>
+      <span class="p-main"><span class="name">${esc(p.name)}</span>${note ? `<span class="p-sub">${esc(note)}</span>` : ""}${found}</span>${personFlag(p)}
+    </div>`;
+  }).join("");
+}
+// Computer: tabella con le intestazioni che ordinano (un pulsante in ogni intestazione, aria-sort su quella scelta).
+// Con l'ordine per data di inserimento o di modifica compare anche la colonna con quella data. Le righe non dipendono
+// dall'ordine scelto né dalla ricerca (la colonna da tenere in vista la dice data-sorted della tabella, e data-cards
+// quando la ricerca trova delle tessere): cambiando ordine si spostano e basta, senza ridisegnarle
+function personTable(sorted) {
+  const [key, dir] = personFilters.sort.split(":");
+  const extra = key === "inserimento" ? "Data di Inserimento" : key === "modifica" ? "Ultima Modifica" : "";
+  const columns = [["c-photo", "Foto", ""], ["c-last", "Cognome", "cognome"], ["c-first", "Nome", "nome"], ["c-emp", "Matricola", "matricola"],
+    ["c-company", "Ditta", "ditta"], ["c-cat", "Tipologia", "tipologia"], ["c-cards", "Tessere", ""], ["c-access", "Ultimo Accesso", "accesso"],
+    ...(extra ? [["c-extra", extra, key]] : []), ["c-state", "Stato", ""]];
+  const head = columns.map(([cls, label, k]) => !k ? `<th class="${cls}" scope="col">${label}</th>`
+    : `<th class="${cls}" scope="col"${k === key ? ` aria-sort="${dir === "desc" ? "descending" : "ascending"}"` : ""}><button type="button" class="th-sort" data-sort="${k}" title="Ordina per ${label}"><span>${label}</span><span class="arrow" aria-hidden="true">${k === key ? (dir === "desc" ? "↓" : "↑") : ""}</span></button></th>`).join("");
+  const dash = '<span class="muted">—</span>';
+  const text = (cls, value) => `<td class="${cls}"${value ? ` title="${esc(value)}"` : ""}>${value ? esc(value) : dash}</td>`;
+  const when = (cls, iso, shown) => `<td class="${cls}"${iso ? ` title="${esc(fmtFull(iso))}"` : ""}>${iso ? esc(shown(iso)) : dash}</td>`;
+  let letter = "";
+  const body = sorted.map((p) => {
+    const first = sorted.length > 12 ? personLetter(p, key) : "";
+    // Una cella per colonna, con le classi delle colonne: un colspan contato su tutte le colonne, con quelle nascoste
+    // dal riquadro stretto, lascerebbe colonne vuote in fondo
+    const section = first && first !== letter ? `<tr class="sec" data-key="h${esc(first)}">${columns.map(([cls], i) => `<td class="${cls}">${i ? "" : esc(first)}</td>`).join("")}</tr>` : "";
+    letter = first;
+    const c = categoryOf(p.category_id);
+    return `${section}<tr data-person="${p.id}" data-key="p${p.id}" tabindex="0">
+      <td class="c-photo">${personAvatar(p, "sm")}</td>${text("c-last", p.last_name)}${text("c-first", p.first_name)}${text("c-emp", p.employee_id)}${text("c-company", p.company)}
+      <td class="c-cat"${c ? ` title="${esc(c.name)}"` : ""}>${c ? `<span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}` : dash}</td>
+      <td class="c-cards"${p.cards.length ? ` title="${esc(cardTitle(p.cards))}"` : ""}>${p.cards.map(cardTag).join("") || dash}</td>${when("c-access", p.last_access, relTime)}${extra ? when("c-extra", key === "inserimento" ? p.created_at : p.updated_at, fmtNumDay) : ""}
+      <td class="c-state">${personFlag(p)}</td></tr>`;
+  }).join("");
+  const found = sorted.some((p) => searchedCards(p, personFilters.q).length);
+  return `<table class="table p-table" data-sorted="${key}"${found ? " data-cards" : ""}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+// Telefono girato o finestra allargata oltre gli 860 px (o il contrario): righe o tabella
+window.matchMedia("(max-width: 860px)").addEventListener("change", () => renderPersonList());
 
 // Tessere sparite dal controller (reset, sostituzione, cancellate a mano): l'app non le cancella da sola
 function renderMissingBanner() {
@@ -2229,7 +2793,8 @@ function renderMissingBanner() {
   $("#m-forget").onclick = () => forgetMissing();
 }
 async function restoreMissing(ids) {
-  const r = await run(() => api("api/missing-cards/restore", {method: "POST", body: {ids}}));
+  const r = await run(() => api("api/missing-cards/restore", {method: "POST", body: {ids}}), "",
+    ids.length === 1 ? "Riscrittura della tessera sul controller" : "Riscrittura delle tessere sul controller");
   if (!r) return false;
   if (r.failed.length) {
     await modal({title: "Tessere Non Riscritte", body: `<p style="margin-top:0">${plural(r.restored, "tessera riscritta", "tessere riscritte")}, ${plural(r.failed.length, "non riuscita", "non riuscite")}:</p>
@@ -2252,7 +2817,8 @@ async function forgetMissing() {
   const total = store.persons.reduce((k, p) => k + p.cards.length, 0);
   const reset = n * 2 > total ? " Manca più della metà delle tessere: se il controller è stato resettato o sostituito, serve invece il Ripristino Completo, che le rimette." : "";
   if (!await confirmBox("Togli dall'App", `Togliere dall'app ${n === 1 ? "la tessera non presente" : `le ${n} tessere non presenti`} sul controller? Le persone restano in anagrafica, anche senza tessere. Il registro dei passaggi resta.${reset}`, "Togli", true)) return false;
-  const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids: cards.map((c) => c.id)}}));
+  const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids: cards.map((c) => c.id)}}), "",
+    n === 1 ? "Rimozione della tessera dall'app" : "Rimozione delle tessere dall'app");
   if (!r) return false;
   toast(`${plural(r.cards, "tessera tolta", "tessere tolte")} dall'app`);
   loadSummary();
@@ -2284,33 +2850,79 @@ function bindValidity(dlg) {
     $("[name=valid_to]", dlg).value = toLocalInput(end.toISOString());
   }));
 }
-function readValidity(dlg) {
+// from e to: la validità salvata. Un campo non toccato la rimanda com'è: il modulo lavora al minuto, e una validità con i
+// secondi (scritta dal sito Axis o calcolata prima della 0.28.3) tornerebbe diversa, con l'Ultima Modifica della persona
+// cambiata e la tessera riscritta senza che nessuno abbia cambiato niente
+function readValidity(dlg, from = "", to = "") {
   if (!val(dlg, "limited")) return {valid_from: "", valid_to: ""};
-  return {valid_from: fromLocalInput(val(dlg, "valid_from")), valid_to: fromLocalInput(val(dlg, "valid_to"))};
+  const read = (name, saved) => {
+    const value = val(dlg, name);
+    return saved && value === toLocalInput(saved) ? saved : fromLocalInput(value);
+  };
+  return {valid_from: read("valid_from", from), valid_to: read("valid_to", to)};
 }
 
+// Nome e cognome della persona (almeno uno dei due), nella Nuova Persona e nei suoi Dati
+const nameFields = (p = {}) => `<div class="fields-2">${field("Nome", `<input name="first_name" autocomplete="off" maxlength="100" value="${esc(p.first_name || "")}">`)}
+  ${field("Cognome", `<input name="last_name" autocomplete="off" maxlength="100" value="${esc(p.last_name || "")}">`)}</div>`;
+// Telefono ed email: solo nell'app, mai sul controller, in Home Assistant o nel registro
+const contactFields = (p = {}) => `<div class="fields-2">${field("Telefono", `<input type="tel" name="phone" inputmode="tel" autocomplete="tel" maxlength="30" data-clean="phone" value="${esc(p.phone || "")}" placeholder="facoltativo">`)}
+  ${field("Email", `<input type="email" name="email" autocomplete="email" maxlength="254" data-clean="email" value="${esc(p.email || "")}" placeholder="facoltativa">`)}</div>`;
+// Matricola (codice interno, unica) e referente interno: anche loro solo nell'app
+const idFields = (p = {}) => `<div class="fields-2">${field("Matricola", `<input name="employee_id" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(p.employee_id || "")}" placeholder="facoltativa">`)}
+  ${field("Referente Interno", `<input name="referent" autocomplete="off" maxlength="100" value="${esc(p.referent || "")}" placeholder="facoltativo">`)}</div>`;
+// Codice Stampato della tessera: quello scritto sopra la tessera fisica (sono tutte bianche), facoltativo e unico. Solo
+// nell'app: mai sul controller. Si scrive aggiungendo o registrando una tessera, e dopo dalla scheda (Codice)
+const printedCodeField = (value = "", hint = "Quello scritto sopra la tessera. Resta solo nell'app.") =>
+  field("Codice Stampato", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo, es. Ciccio o 1234">`, hint);
+// Telefono ed email incollati da una pagina web, da un PDF o da Word, puliti come fa il server mentre si scrivono:
+// senza caratteri invisibili, con gli spazi non separabili come lo spazio e i trattini tipografici («–» di Word) come
+// il trattino. L'email anche senza spazi ai lati, che il browser altrimenti rifiuta prima di mandarla
+const INVISIBLE_MARKS = /[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]/g;
+function cleanContact(kind, text) {
+  const value = String(text || "").replace(INVISIBLE_MARKS, "");
+  return kind === "email" ? value.trim() : value.replace(/[\u2010-\u2015\u2212]/g, "-").replace(/\s/g, " ");
+}
+document.addEventListener("input", (e) => {
+  const kind = e.target.dataset?.clean;
+  if (!kind) return;
+  const clean = cleanContact(kind, e.target.value);
+  if (clean !== e.target.value) e.target.value = clean;
+});
+// Collegamento per scrivere all'email: codificata tutta tranne la @, se no «#» e «?», validi in un indirizzo, farebbero
+// scrivere a un altro destinatario
+const mailtoHref = (email) => "mailto:" + encodeURIComponent(email).replace(/%40/g, "@");
 async function newPerson(card = "") {
   await loadCategories();
   const created = await modal({
     title: "Nuova Persona",
-    body: `${field("Nome e Cognome", `<input name="name" autocomplete="off" maxlength="100" required>`)}
+    body: `${nameFields()}
       ${field("Ditta o Reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
+      ${contactFields()}
+      ${idFields()}
       ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
-      ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Persone → Tipologie.")}
+      <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField("", "Quello che hai scritto sopra la tessera, es. Ciccio o 1234. Resta solo nell'app.")}</div>
+      ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Anagrafica → Tipologie.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
-      ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}`,
+      ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}
+      <p class="hint">La Foto della Persona si aggiunge dalla sua scheda, dopo averla registrata. Telefono, email, matricola, referente e foto restano solo nell'app.</p>`,
     actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
-      const body = {name: val(dlg, "name"), card: val(dlg, "card"), company: val(dlg, "company"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0)};
-      // La validità è della tessera: senza, la durata della tipologia parte dalla prima tessera
-      if (body.card) Object.assign(body, readValidity(dlg));
-      if (!body.name) { toast("Serve il nome", true); return false; }
-      const person = await run(() => api("api/persons", {method: "POST", body}), body.card ? "Persona registrata: la tessera è attiva sul controller" : "Persona registrata senza tessera");
+      const body = {first_name: val(dlg, "first_name"), last_name: val(dlg, "last_name"), card: val(dlg, "card"), company: val(dlg, "company"), phone: val(dlg, "phone"), email: val(dlg, "email"), employee_id: val(dlg, "employee_id"), referent: val(dlg, "referent"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0)};
+      // Validità e Codice Stampato sono della tessera: senza, la durata della tipologia parte dalla prima tessera
+      if (body.card) Object.assign(body, readValidity(dlg), {printed_code: val(dlg, "printed_code")});
+      if (!body.first_name && !body.last_name) { toast("Serve il nome o il cognome", true); return false; }
+      const person = await run(() => api("api/persons", {method: "POST", body}), body.card ? "Persona registrata: la tessera è attiva sul controller" : "Persona registrata senza tessera",
+        body.card ? "Registrazione della persona e scrittura della tessera sul controller" : "Registrazione della persona");
       return person || false;
     }}],
     onOpen: (dlg) => {
       bindValidity(dlg);
       bindCategory(dlg);
-      $("[name=card]", dlg).addEventListener("input", (e) => { $("#f-card-validity", dlg).hidden = !e.target.value.trim(); });
+      $("[name=card]", dlg).addEventListener("input", (e) => {
+        const none = !e.target.value.trim();
+        $("#f-card-validity", dlg).hidden = none;
+        $("#f-card-code", dlg).hidden = none;
+      });
     },
   });
   if (created) {
@@ -2318,6 +2930,52 @@ async function newPerson(card = "") {
     if (route.name === "persone") { await loadPersons(); renderPersonList(); } else await render();
   }
   return created;
+}
+
+// Foto della persona scelta dal telefono (fotocamera o galleria: niente capture, il browser offre tutte e due) o dal
+// computer. Letta nel browser, girata come quando è stata scattata, al massimo 600 px sul lato lungo, in JPEG sotto i
+// 512 KB del server. Un'immagine che il browser non sa leggere (HEIC su Chrome per computer, un file che non è
+// un'immagine) non parte neanche
+const PHOTO_SIDE = 600;
+const PHOTO_BYTES = 512 * 1024;
+const PHOTO_UNREADABLE = "questa immagine non si può leggere: usa una foto JPEG o PNG";
+async function decodePhoto(file) {
+  try {
+    const bitmap = await createImageBitmap(file, {imageOrientation: "from-image"});
+    return {image: bitmap, width: bitmap.width, height: bitmap.height, done: () => bitmap.close()};
+  } catch (err) { /* sotto, con un'immagine della pagina (browser senza imageOrientation) */ }
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  try {
+    img.src = url;
+    await img.decode();
+  } catch (err) {
+    URL.revokeObjectURL(url);
+    throw new Error(PHOTO_UNREADABLE);
+  }
+  return {image: img, width: img.naturalWidth, height: img.naturalHeight, done: () => URL.revokeObjectURL(url)};
+}
+async function photoBlob(file) {
+  const source = await decodePhoto(file);
+  try {
+    if (!source.width || !source.height) throw new Error(PHOTO_UNREADABLE);
+    const scale = Math.min(1, PHOTO_SIDE / Math.max(source.width, source.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(source.width * scale));
+    canvas.height = Math.max(1, Math.round(source.height * scale));
+    const ctx = canvas.getContext("2d");
+    // Fondo bianco: le parti trasparenti di un PNG in JPEG diventerebbero nere
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(source.image, 0, 0, canvas.width, canvas.height);
+    // Qualità 0,85; più bassa solo se supera i 512 KB (a 600 px non succede quasi mai)
+    for (const quality of [0.85, 0.75, 0.6, 0.45]) {
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+      if (!blob) break;
+      if (blob.size <= PHOTO_BYTES) return blob;
+    }
+    throw new Error(PHOTO_UNREADABLE);
+  } finally { source.done(); }
 }
 
 // Scheda persona
@@ -2344,8 +3002,14 @@ async function openPerson(id) {
     const state = validityState(c.valid_from, c.valid_to);
     return state === "scaduta" || state === "futura" ? VALIDITY_PILL[state] : '<span class="pill ok">Attiva</span>';
   };
+  // Foto della persona: la vede chi vede le persone, la cambia chi le modifica. Scelta da un campo file nascosto alla
+  // vista, aperto dal pulsante: dal telefono fotocamera o galleria
+  const editPhoto = can("persone_modifica");
+  const photoCell = `<div class="row">${p.photo ? `<button type="button" class="avatar" data-photo-view aria-label="Ingrandisci la foto di ${esc(p.name)}" title="Ingrandisci la foto"><img src="${esc(photoUrl(p))}" alt=""></button>` : editPhoto ? "" : "—"}
+    ${editPhoto ? `<span class="row w-persone">${p.photo ? `<button type="button" class="small" data-photo-pick>${icon("camera")}Cambia Foto</button><button type="button" class="small danger" data-photo-del data-refocus="[data-photo-pick]">Togli Foto</button>`
+      : `<button type="button" class="small" data-photo-pick>${icon("camera")}Aggiungi Foto</button>`}<input type="file" accept="image/*" class="file-pick" data-photo-file tabindex="-1" aria-hidden="true"></span>` : ""}</div>`;
   sheet.innerHTML = `<div class="dlg">
-    <div class="dlg-head"><div class="avatar big">${esc(initials(p.name))}</div>
+    <div class="dlg-head">${p.photo ? `<button type="button" class="avatar big" data-photo-view aria-label="Ingrandisci la foto di ${esc(p.name)}" title="Ingrandisci la foto"><img src="${esc(photoUrl(p))}" alt=""></button>` : `<div class="avatar big">${esc(initials(p.name))}</div>`}
       <div style="flex:1;min-width:0"><h2 style="margin:0">${esc(p.name)}</h2><div class="muted small-text">${esc(p.company || "")}${p.company ? " · " : ""}${p.last_access ? "ultimo accesso " + esc(relTime(p.last_access)) : "nessun accesso registrato"}</div></div>
       <button type="button" class="ghost icon-only" data-close aria-label="Chiudi">${icon("close")}</button></div>
     <div class="dlg-body" tabindex="-1" autofocus style="outline:none">
@@ -2360,11 +3024,17 @@ async function openPerson(id) {
       <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
           <div class="ev-icon ${cardActive(c) ? "k-accent" : "k-muted"}">${icon("card")}</div>
-          <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
+          <div class="grow">${c.printed_code ? `<div class="title" title="Codice Stampato">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="title mono">${esc(c.number)}</div>`}<div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
-          <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
+          <button type="button" class="small" data-card-code="${c.id}" aria-label="Codice Stampato della tessera ${esc(c.number)}" title="Codice Stampato">${icon("edit")}Codice</button>
+          <button type="button" class="small danger" data-del-card="${c.id}" data-refocus="[data-add-card]">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
-        <dl class="props"><dt>Nome</dt><dd>${esc(p.name)}</dd><dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
+        <dl class="props"><dt>Foto</dt><dd>${photoCell}</dd>
+          <dt>Nome</dt><dd>${esc(p.first_name || "—")}</dd><dt>Cognome</dt><dd>${esc(p.last_name || "—")}</dd>
+          <dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
+          <dt>Telefono</dt><dd>${p.phone ? `<a href="tel:${esc(p.phone.replace(/[^\d+]/g, ""))}">${esc(p.phone)}</a>` : "—"}</dd>
+          <dt>Email</dt><dd>${p.email ? `<a href="${esc(mailtoHref(p.email))}">${esc(p.email)}</a>` : "—"}</dd>
+          <dt>Matricola</dt><dd>${esc(p.employee_id || "—")}</dd><dt>Referente Interno</dt><dd>${esc(p.referent || "—")}</dd>
           <dt>Note</dt><dd style="white-space:pre-wrap">${esc(p.notes || "—")}</dd></dl>
         ${p.axis_user_token ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici</summary>
           <dl class="props" style="margin-top:8px"><dt>Codice sul Controller</dt><dd><code>${esc(p.axis_user_token)}</code></dd></dl></details>` : ""}</div>
@@ -2398,8 +3068,9 @@ async function openPerson(id) {
         // Senza tipologia, se non se ne sceglie una, le tessere tengono il profilo di adesso e non prendono il predefinito.
         // Senza tessere la validità non si manda: se intanto la persona ne ha avuta una, il server rifiuta invece di
         // toglierle la scadenza
-        const body = {...(category || chosen ? {category_id: chosen} : {group: a.group}), ...(p.cards.length ? readValidity(dlg) : {})};
-        const result = await runPerson(() => api(`api/persons/${id}/access`, {method: "PUT", body}), p.cards.length ? "Accesso aggiornato sul controller" : "Tipologia aggiornata");
+        const body = {...(category || chosen ? {category_id: chosen} : {group: a.group}), ...(p.cards.length ? readValidity(dlg, a.from, a.to) : {})};
+        const result = await runPerson(() => api(`api/persons/${id}/access`, {method: "PUT", body}), p.cards.length ? "Accesso aggiornato sul controller" : "Tipologia aggiornata",
+          p.cards.length ? "Salvataggio dell'accesso sul controller" : "Salvataggio della tipologia");
         // Scheda vecchia: la finestra si chiude e la scheda si rilegge
         if (result?.stale) { stale = result.stale; return true; }
         return result || false;
@@ -2418,47 +3089,91 @@ async function openPerson(id) {
     else if (ok) reload();
   };
   if ($("[data-align]", sheet)) $("[data-align]", sheet).onclick = async () => {
-    if (await run(() => api(`api/persons/${id}/align`, {method: "POST"}), "Accesso riportato a quello della tipologia")) reload();
+    if (await run(() => api(`api/persons/${id}/align`, {method: "POST"}), "Accesso riportato a quello della tipologia", "Allineamento dell'accesso sul controller")) reload();
+  };
+  $$("[data-photo-view]", sheet).forEach((b) => { b.onclick = () => showImage(photoUrl(p), `Foto di ${p.name}`); });
+  // Elenco, scheda e Foto in Anagrafica del registro (che non aspetta i suoi 15 secondi) con la foto nuova
+  const photoChanged = () => { faceVersions.at = 0; reload(); };
+  const picker = $("[data-photo-file]", sheet);
+  $$("[data-photo-pick]", sheet).forEach((b) => { b.onclick = () => { picker.value = ""; picker.click(); }; });
+  if (picker) picker.onchange = async () => {
+    const file = picker.files[0];
+    if (!file) return;
+    // Preparata nel browser (photoBlob) e mandata, tutto dentro il riquadro di attesa
+    if (await run(async () => api(`api/persons/${id}/photo`, {method: "PUT", raw: await photoBlob(file)}), p.photo ? "Foto cambiata" : "Foto aggiunta", "Caricamento della foto")) photoChanged();
+  };
+  if ($("[data-photo-del]", sheet)) $("[data-photo-del]", sheet).onclick = async () => {
+    if (!await confirmBox("Togli Foto", `Togliere la foto di <b>${esc(p.name)}</b> dall'app?`, "Togli", true)) return;
+    if (await run(() => api(`api/persons/${id}/photo`, {method: "DELETE"}), "Foto tolta", "Rimozione della foto")) photoChanged();
   };
   $("[data-edit-data]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Dati di " + p.name,
-      body: `${field("Nome e Cognome", `<input name="name" value="${esc(p.name)}" maxlength="100">`)}
+      body: `${nameFields(p)}
         ${field("Ditta o Reparto", `<input name="company" value="${esc(p.company || "")}" maxlength="100">`)}
-        ${field("Note", `<textarea name="notes" maxlength="1000">${esc(p.notes || "")}</textarea>`)}`,
-      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await run(() => api(`api/persons/${id}`, {method: "PATCH", body: {name: val(dlg, "name"), company: val(dlg, "company"), notes: val(dlg, "notes")}}), "Dati aggiornati")) || false}],
+        ${contactFields(p)}
+        ${idFields(p)}
+        ${field("Note", `<textarea name="notes" maxlength="1000">${esc(p.notes || "")}</textarea>`)}
+        <p class="hint">Sul controller la persona ha il nome completo, «Nome Cognome»: se cambia, cambia anche lì. Telefono, email, matricola e referente restano solo nell'app.</p>`,
+      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+        const body = {company: val(dlg, "company"), phone: val(dlg, "phone"), email: val(dlg, "email"), employee_id: val(dlg, "employee_id"), referent: val(dlg, "referent"), notes: val(dlg, "notes")};
+        const first = val(dlg, "first_name"), last = val(dlg, "last_name");
+        if (!first && !last) { toast("Serve il nome o il cognome", true); return false; }
+        // Nome e cognome solo se cambiati: com'erano non riscrivono il nome sul controller (anche con gli spazi doppi
+        // di un nome letto dal controller)
+        if (first !== (p.first_name || "").trim() || last !== (p.last_name || "").trim()) Object.assign(body, {first_name: first, last_name: last});
+        return (await run(() => api(`api/persons/${id}`, {method: "PATCH", body}), "Dati aggiornati", "Salvataggio della persona")) || false;
+      }}],
     });
     if (ok) reload();
   };
   $("[data-add-card]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Aggiungi Tessera a " + p.name,
-      body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, `${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.`)}`,
+      body: `<div class="fields-2">${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`)}
+        ${printedCodeField("", "")}</div>
+        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Il Codice Stampato è quello scritto sopra la tessera (es. Ciccio o 1234) e resta solo nell'app. Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.</p>`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card")}}), "Tessera aggiunta")) || false}],
+        (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card"), printed_code: val(dlg, "printed_code")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false}],
     });
     if (ok) reload();
   };
+  // Codice Stampato: solo nell'app, non scrive sul controller (veloce anche con il controller spento)
+  $$("[data-card-code]", sheet).forEach((b) => b.onclick = async () => {
+    const card = p.cards.find((c) => c.id === Number(b.dataset.cardCode));
+    const ok = await modal({
+      title: "Codice Stampato",
+      body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", "Quello scritto sopra la tessera, es. Ciccio o 1234. Vuoto per toglierlo. Resta solo nell'app e non va sul controller.")}`,
+      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+        const code = val(dlg, "printed_code");
+        if (code === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
+        return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code}}), code ? "Codice stampato salvato" : "Codice stampato tolto", "Salvataggio del codice stampato")) || false;
+      }}],
+    });
+    if (ok) reload();
+  });
   $$("[data-restore-card]", sheet).forEach((b) => b.onclick = async () => {
     if (await restoreMissing([Number(b.dataset.restoreCard)])) reload();
   });
   $$("[data-toggle]", sheet).forEach((b) => b.onclick = async () => {
     const enable = b.dataset.enabled !== "1";
-    if (await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable}}), enable ? "Tessera riattivata" : "Tessera sospesa")) reload();
+    if (await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable}}), enable ? "Tessera riattivata" : "Tessera sospesa",
+      enable ? "Riattivazione della tessera sul controller" : "Sospensione della tessera sul controller")) reload();
   });
   $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
     const last = p.cards.length === 1;
     if (!await confirmBox("Elimina Tessera", `Eliminare la tessera <code>${esc(card.number)}</code> ${card.missing_since ? "dall'app? Sul controller non c'è già più." : "dal controller?"}` + (last ? ` È l'unica tessera: <b>${esc(p.name)}</b> resta in anagrafica senza tessere, e si elimina solo con Elimina Persona.` : ""), "Elimina", true)) return;
-    if (await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), last ? "Tessera eliminata: la persona resta in anagrafica" : "Tessera eliminata")) reload();
+    if (await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), last ? "Tessera eliminata: la persona resta in anagrafica" : "Tessera eliminata",
+      card.missing_since ? "Eliminazione della tessera dall'app" : "Eliminazione della tessera dal controller")) reload();
   });
   $("[data-del-person]", sheet).onclick = async () => {
     const what = p.cards.length ? `<b>${esc(p.name)}</b> e ${plural(p.cards.length, "tessera", "tessere")} dal controller? Non apriranno più la porta.` : `<b>${esc(p.name)}</b> dall'anagrafica? Non ha tessere.`;
     if (!await confirmBox("Elimina Persona", `Eliminare ${what} Il registro dei passaggi resta.`, "Elimina", true)) return;
     // Con le tessere contate nella conferma: se intanto sono cambiate (per esempio «Non ha tessere» e una appena
     // assegnata) il server non elimina niente
-    const result = await runPerson(() => api(`api/persons/${id}?cards=${p.cards.map(c => c.id).join(",")}`, {method: "DELETE"}), "Persona eliminata");
+    const result = await runPerson(() => api(`api/persons/${id}?cards=${p.cards.map(c => c.id).join(",")}`, {method: "DELETE"}), "Persona eliminata",
+      p.cards.length ? "Eliminazione della persona e delle tessere dal controller" : "Eliminazione della persona");
     if (result?.stale) reloadStale(result.stale);
     else if (result) { close(); await loadPersons(); renderPersonList(); }
   };
@@ -2496,16 +3211,18 @@ async function viewUnknown(el) {
       if (await newPerson(b.dataset.new)) render();
     } else if (b.dataset.assign) {
       const number = b.dataset.assign;
-      const options = store.persons.map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
+      // Nello stesso ordine dell'elenco Persone: per cognome
+      const options = [...store.persons].sort(comparePersons).map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
       const ok = await modal({
         title: "Assegna Tessera " + number,
-        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.") : '<p class="muted">Nessuna persona registrata.</p>',
+        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.")
+          + printedCodeField("", "Quello che hai scritto sopra la tessera, es. Ciccio o 1234. Resta solo nell'app.") : '<p class="muted">Nessuna persona registrata.</p>',
         actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
-          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number}}), "Tessera assegnata")) || false}] : [])],
+          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number, printed_code: val(dlg, "printed_code")}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
       });
       if (ok) { loadSummary(); render(); }
     } else if (b.dataset.ignore) {
-      if (await run(() => api(`api/unknown-cards/${encodeURIComponent(b.dataset.ignore)}`, {method: "DELETE"}))) { loadSummary(); render(); }
+      if (await run(() => api(`api/unknown-cards/${encodeURIComponent(b.dataset.ignore)}`, {method: "DELETE"}), "", "Rimozione della tessera dall'elenco")) { loadSummary(); render(); }
     }
   };
 }
@@ -2558,9 +3275,11 @@ function logRow(e, {place = true} = {}) {
   const who = e.person_name || (e.card ? `Tessera ${e.card}` : e.kind === "citofono" ? e.source || "Citofono" : e.kind === "apertura_remota" ? e.source || "Home Assistant" : e.kind === "uscita" ? e.source || "Pulsante" : inputDenied(e) ? e.source : "");
   let what = who ? LOG_ROW_WHAT[e.kind] || label.replace(/^Accesso /, "").replace(/^Tessera /, "") : label;
   if (what.toLowerCase() === who.toLowerCase()) what = "";
+  // Codice Stampato che la tessera ha adesso (il registro salva solo il numero)
+  const code = e.printed_code ? ` <span class="pcode" title="Codice Stampato della tessera ${esc(e.card)}">${esc(e.printed_code)}</span>` : "";
   return `<div class="ev ${e.id === logSelected ? "sel" : ""}" data-event="${e.id}" role="button" tabindex="0" title="${esc(fmtFull(e.ts))}">
     <span class="time">${esc(fmtTime(e.ts))}</span><span class="dot ${KIND_DOT[cls] || ""}"></span>
-    <span class="what">${who ? `<b>${esc(who)}</b> <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="Con foto">${icon("camera", "icon")}</span>` : ""}${e.recovered ? ' <span class="muted small-text" title="Recuperato dal registro interno del controller">· recuperato</span>' : ""}</span>
+    <span class="what">${who ? `<b>${esc(who)}</b>${code} <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="Con foto">${icon("camera", "icon")}</span>` : ""}${e.recovered ? ' <span class="muted small-text" title="Recuperato dal registro interno del controller">· recuperato</span>' : ""}</span>
     ${place && multiDoor() ? `<span class="where">${esc(eventPlace(e))}</span>` : "<span></span>"}
   </div>`;
 }
@@ -2572,13 +3291,17 @@ function eventDetail(e) {
     door ? ["Porta", `${can("stato") ? `<a href="#porte/${door.id}">${esc(door.name)}</a>` : esc(door.name)}${placeOf(door) ? ` <span class="muted">· ${esc(placeOf(door))}</span>` : ""}`] : e.door ? ["Porta", `<code>${esc(e.door)}</code>`] : null,
     e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
+    // Quello che la tessera ha adesso: il registro salva solo il numero
+    e.printed_code ? ["Codice Stampato", `${esc(e.printed_code)} <span class="muted small-text">· quello di adesso della tessera</span>`] : null,
     e.detail ? ["Dettaglio", `${esc(e.detail)}${DETAIL_HINTS[e.detail] ? ` <span class="muted">· ${esc(DETAIL_HINTS[e.detail])}</span>` : ""}`] : null,
     e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
-    e.recovered ? ["Recuperato", "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
+    e.recovered ? ["Recuperato", hideHA() ? "Arrivato in ritardo dal registro interno del controller: senza foto"
+      : "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(LOG_SOURCES[e.source] || e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
-    ${e.snapshot ? `<img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    ${e.snapshot ? `<div class="ev-photo-label" data-snap-label hidden>Foto della Telecamera</div><img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    ${e.person_id && can("persone") ? `<div class="ev-face" data-face="${e.person_id}" data-face-name="${esc(e.person_name || "")}" hidden></div>` : ""}
     ${props(rows)}
     <div class="row" style="margin-top:14px">
       ${e.person_id && can("persone") ? `<a class="btn small" href="#persone/${e.person_id}">${icon("user")}Scheda Persona</a>` : ""}
@@ -2608,14 +3331,43 @@ function showEvent(e) {
     $(".log-layout").classList.add("split");
     $("#l-detail-x").onclick = () => { panel.hidden = true; $(".log-layout").classList.remove("split"); logSelected = 0; $$(".list.compact > .ev.sel").forEach((r) => r.classList.remove("sel")); };
     bind(panel, () => {});
+    fillFaces(panel);
   } else {
     modal({title: "Dettaglio Evento", body: eventDetail(e), onOpen: (dlg) => {
       bindSnapshots(dlg);
+      fillFaces(dlg);
       bind(dlg, () => dlg.close());
       // Porta, Scheda Persona e Registra Tessera aprono un'altra pagina: la finestra non deve restarle sopra
       $$('a[href^="#"]', dlg).forEach((a) => a.addEventListener("click", () => dlg.close()));
     }});
   }
+}
+// Foto in Anagrafica nel Dettaglio Evento (solo per chi vede le persone), accanto a quella della telecamera per
+// confrontarle. La versione della foto di ogni persona arriva con una richiesta sola, tenuta per 15 secondi: niente
+// richieste per evento, niente elenco delle persone
+const faceVersions = {at: 0, map: {}, pending: null};
+function loadFaceVersions() {
+  if (faceVersions.pending) return faceVersions.pending;
+  if (Date.now() - faceVersions.at < 15000) return Promise.resolve(faceVersions.map);
+  faceVersions.pending = api("api/persons/photos").then((map) => Object.assign(faceVersions, {map, at: Date.now()}).map, () => faceVersions.map)
+    .finally(() => { faceVersions.pending = null; });
+  return faceVersions.pending;
+}
+async function fillFaces(root) {
+  const slots = $$("[data-face]", root);
+  if (!slots.length) return;
+  const map = await loadFaceVersions();
+  slots.forEach((slot) => {
+    const version = map[slot.dataset.face];
+    if (!version || !slot.isConnected) return;
+    const url = photoUrl({id: slot.dataset.face, photo: version}), name = slot.dataset.faceName;
+    const camera = $("[data-snap-label]", root);
+    slot.innerHTML = `<button type="button" class="ev-face-img" aria-label="Ingrandisci la Foto in Anagrafica di ${esc(name)}" title="Ingrandisci la foto"><img src="${esc(url)}" alt=""></button>
+      <div class="grow"><b>Foto in Anagrafica</b><div class="muted small-text">${camera ? "Quella della scheda della persona: confrontala con la foto della telecamera." : "Quella della scheda della persona."}</div></div>`;
+    $("button", slot).onclick = (e) => { e.stopPropagation(); showImage(url, `Foto in Anagrafica · ${name}`); };
+    slot.hidden = false;
+    if (camera) camera.hidden = false;
+  });
 }
 async function viewLog(el) {
   const doors = allDoors();
@@ -2689,7 +3441,7 @@ async function loadLog(more = false) {
   // Un doppio clic su "Carica Altri" chiederebbe due volte la stessa pagina
   if (more && $("#l-more")) $("#l-more").disabled = true;
   logBusy = true;
-  const data = await run(() => api("api/events?" + params));
+  const data = await run(() => api("api/events?" + params), "", false);
   if (seq !== logSeq) return;
   logBusy = false;
   if ($("#l-more")) $("#l-more").disabled = false;
@@ -2782,7 +3534,7 @@ function weekPreview(rules) {
 }
 const showHidden = {group: false, schedule: false};
 async function viewRules(el, sub) {
-  // Le tipologie (con i vecchi gruppi) sono passate in Persone: qui solo per chi non vede le persone
+  // Le tipologie (con i vecchi gruppi) sono passate in Anagrafica: qui solo per chi non vede l'anagrafica
   if (sub === "gruppi") sub = "tipologie";
   if (sub === "tipologie" && can("persone")) { location.replace("#persone/tipologie"); return; }
   const tabs = [["fasce", "Fasce Orarie"], ["festivita", "Festività"], ...(can("persone") ? [] : [["tipologie", "Tipologie"]])];
@@ -2800,7 +3552,7 @@ async function viewRules(el, sub) {
   store.groupsError = "";
   if (!body.isConnected) return;
   if (stale && !store.groups.length) {
-    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Regole Non Leggibili dal Controller</b>${esc(cap(stale))}</div></div>`;
+    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Fasce Orarie Non Leggibili dal Controller</b>${esc(cap(stale))}</div></div>`;
     return;
   }
   viewSchedules(body, stale);
@@ -2818,7 +3570,7 @@ function bindHiddenToggle(kind) {
   if (box) box.onchange = () => { showHidden[kind] = box.checked; render(); };
 }
 async function setHidden(kind, token, hidden) {
-  return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosta: la ritrovi con Mostra Nascoste" : "Di nuovo visibile");
+  return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosta: la ritrovi con Mostra Nascoste" : "Di nuovo visibile", "Aggiornamento dell'elenco");
 }
 
 // Tipologie: chi è la persona, dove e quando entra, quanto dura la tessera. L'app tiene il profilo sul controller.
@@ -2907,7 +3659,8 @@ async function viewCategories(el, tabs = personTabs("tipologie")) {
         // Tutte le righe a video: una riga senza luogo la rifiuta il server, invece di sparire in silenzio
         const rules = rows.map((r) => { const [target, id] = r.place.split(":"); return {target, target_id: Number(id) || 0, schedule: r.schedule}; });
         const payload = {name: val(dlg, "name"), color: $("[name=color]:checked", dlg)?.value || "blue", valid_days: Number(val(dlg, "valid_days") || 0), description: val(dlg, "description"), rules};
-        const r = await run(() => api(c ? `api/categories/${c.id}` : "api/categories", {method: c ? "PUT" : "POST", body: payload}));
+        const r = await run(() => api(c ? `api/categories/${c.id}` : "api/categories", {method: c ? "PUT" : "POST", body: payload}), "",
+          c ? "Salvataggio della tipologia sul controller" : "Creazione della tipologia sul controller");
         if (!r) return false;
         toast(r.updated ? `Tipologia salvata sul controller: ${plural(r.updated, "persona aggiornata", "persone aggiornate")}` : "Tipologia salvata sul controller");
         return true;
@@ -2921,11 +3674,11 @@ async function viewCategories(el, tabs = personTabs("tipologie")) {
     if (b.dataset.cEdit) {
       if (await editor(c)) render();
     } else if (b.dataset.cDefault) {
-      if (await run(() => api("api/default-category", {method: "PUT", body: {category_id: c.id}}), `${c.name} è la nuova tipologia predefinita`)) { store.me.default_category = c.id; render(); }
+      if (await run(() => api("api/default-category", {method: "PUT", body: {category_id: c.id}}), `${c.name} è la nuova tipologia predefinita`, "Salvataggio della tipologia predefinita")) { store.me.default_category = c.id; render(); }
     } else if (b.dataset.cDel) {
       if (c.persons) { toast(`${c.name} ha ${plural(c.persons, "persona", "persone")}: ${c.persons === 1 ? "spostala" : "spostale"} prima in un'altra tipologia`, true); return; }
       if (await confirmBox("Elimina Tipologia", `Eliminare la tipologia <b>${esc(c.name)}</b> e il suo profilo sul controller?`, "Elimina", true) &&
-          await run(() => api(`api/categories/${c.id}`, {method: "DELETE"}), "Tipologia eliminata")) render();
+          await run(() => api(`api/categories/${c.id}`, {method: "DELETE"}), "Tipologia eliminata", "Eliminazione della tipologia sul controller")) render();
     }
   };
 }
@@ -2961,11 +3714,11 @@ function viewSchedules(body, stale = "") {
     if (b.dataset.sEdit) scheduleEditor(s);
     else if (b.dataset.sRestore) {
       const payload = {name: s.name, description: s.description, holidays: false, rules: SCHEDULE_ALWAYS};
-      if (await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "PUT", body: payload}), "Fascia ripristinata sul controller")) render();
+      if (await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "PUT", body: payload}), "Fascia ripristinata sul controller", "Ripristino della fascia sul controller")) render();
     } else if (b.dataset.sHide) { if (await setHidden("schedule", s.token, b.dataset.hidden !== "1")) render(); }
     else if (b.dataset.sDel) {
       if (await confirmBox("Elimina Fascia Oraria", `Eliminare <b>${esc(s.name)}</b> dal controller?${s.standard ? " È una fascia predefinita del controller: se ti serve di nuovo dovrai ricrearla." : ""}`, "Elimina", true) &&
-          await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "DELETE"}), "Fascia eliminata")) render();
+          await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "DELETE"}), "Fascia eliminata", "Eliminazione della fascia sul controller")) render();
     }
   };
 }
@@ -2999,7 +3752,8 @@ async function scheduleEditor(s) {
       const payload = {name: val(dlg, "name"), description: val(dlg, "description"), holidays: fixed ? false : val(dlg, "holidays"),
         rules: fixed ? SCHEDULE_ALWAYS : rules.map((r) => ({...r, end: r.end === "23:59" ? "24:00" : r.end}))};
       const path = s ? `api/schedules/${encodeURIComponent(s.token)}` : "api/schedules";
-      return (await run(() => api(path, {method: s ? "PUT" : "POST", body: payload}), s ? "Fascia aggiornata sul controller" : "Fascia creata sul controller")) || false;
+      return (await run(() => api(path, {method: s ? "PUT" : "POST", body: payload}), s ? "Fascia aggiornata sul controller" : "Fascia creata sul controller",
+        s ? "Salvataggio della fascia sul controller" : "Creazione della fascia sul controller")) || false;
     }}],
     onOpen: (dlg) => {
       if (fixed) return;
@@ -3046,14 +3800,14 @@ async function viewHolidays(body) {
   $("#h-form").onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target;
-    if (await run(() => api("api/holidays", {method: "POST", body: {day: f.day.value, name: f.name.value.trim(), yearly: f.yearly.checked}}), "Festività aggiunta")) viewHolidays(body);
+    if (await run(() => api("api/holidays", {method: "POST", body: {day: f.day.value, name: f.name.value.trim(), yearly: f.yearly.checked}}), "Festività aggiunta", "Aggiunta della festività sul controller")) viewHolidays(body);
   };
   $("#h-it").onclick = async () => {
-    if (await run(() => api("api/holidays/italia", {method: "POST", body: {year}}), "Festività nazionali aggiunte")) viewHolidays(body);
+    if (await run(() => api("api/holidays/italia", {method: "POST", body: {year}}), "Festività nazionali aggiunte", "Aggiunta delle festività nazionali sul controller")) viewHolidays(body);
   };
   body.onclick = async (e) => {
     const b = e.target.closest("[data-h-del]");
-    if (b && await run(() => api(`api/holidays/${encodeURIComponent(b.dataset.hDel)}`, {method: "DELETE"}), "Festività eliminata")) viewHolidays(body);
+    if (b && await run(() => api(`api/holidays/${encodeURIComponent(b.dataset.hDel)}`, {method: "DELETE"}), "Festività eliminata", "Eliminazione della festività sul controller")) viewHolidays(body);
   };
 }
 
@@ -3070,8 +3824,7 @@ let notifData = null, notifEvents = [];
 // "oggi 13:34", "ieri 13:34" o "24/10/2026 13:34"
 function dayTime(iso) {
   const day = plantDay(iso), today = plantDay();
-  const label = day === today ? "oggi" : day === shiftDay(today, -1) ? "ieri"
-    : new Date(iso).toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit", year: "numeric"}));
+  const label = day === today ? "oggi" : day === shiftDay(today, -1) ? "ieri" : fmtNumDay(iso);
   return `${label} ${fmtTime(iso)}`;
 }
 const notifSince = () => new Date(Date.now() - 86400000).toISOString();
@@ -3229,7 +3982,7 @@ async function viewNotifications(el) {
   // Con il peso che la scheda mostrava: un guasto peggiorato prima dell'aggiornamento della pagina resta da gestire
   const mark = async (ids) => {
     const weights = Object.fromEntries(notifData.items.filter((i) => ids.includes(i.id)).map((i) => [i.id, i.weight || 0]));
-    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids, weights}}))) { await loadSummary(); render(); }
+    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids, weights}}), "", "Aggiornamento delle notifiche")) { await loadSummary(); render(); }
   };
   $("#n-all").onclick = () => mark(notifData.items.filter((i) => !i.seen && notifMatches(i)).map((i) => i.id));
   let timer;
@@ -3282,7 +4035,7 @@ async function viewNotificationSettings(body) {
   paintIcons(body);
   body.onchange = async (e) => {
     const sel = e.target.closest("[data-level]");
-    if (sel && await run(() => api("api/notifications/settings", {method: "PUT", body: {[sel.dataset.level]: sel.value}}), "Notifiche aggiornate")) loadSummary();
+    if (sel && await run(() => api("api/notifications/settings", {method: "PUT", body: {[sel.dataset.level]: sel.value}}), "Notifiche aggiornate", "Salvataggio delle impostazioni delle notifiche")) loadSummary();
   };
 }
 
@@ -3431,7 +4184,7 @@ function identityAlert(ctrl) {
   return `<div class="alert err stack">${icon("alert")}<div class="grow"><b>Controller Cambiato</b>All'indirizzo <code>${esc(ctrl.host)}</code> risponde un apparecchio diverso da quello memorizzato. Finché non confermi, l'app non scrive niente sul controller e non rilegge le tessere.
       <div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th></th><th>Memorizzato</th><th>Trovato</th></tr></thead><tbody>
         ${row("Numero di Serie", k.serial, h.serial)}${row("Modello", k.model, h.model)}${row("Certificato", (k.cert_fingerprint || "").slice(0, 23), (h.cert_fingerprint || "").slice(0, 23))}</tbody></table></div>
-      <p class="hint" style="margin-bottom:0">Conferma solo se il controller è stato davvero sostituito o resettato. Dopo la conferma le tessere che non trova restano segnate in Persone, da riscrivere o togliere.</p></div>
+      <p class="hint" style="margin-bottom:0">Conferma solo se il controller è stato davvero sostituito o resettato. Dopo la conferma le tessere che non trova restano segnate in Anagrafica, da riscrivere o togliere.</p></div>
     ${store.me.admin ? `<button type="button" class="small primary" data-accept-identity="${ctrl.id}">Conferma Nuovo Controller</button>` : '<span class="small-text muted">Serve un amministratore</span>'}</div>`;
 }
 function bindIdentityAlert(root, ctrl) {
@@ -3439,7 +4192,7 @@ function bindIdentityAlert(root, ctrl) {
   if (!b) return;
   b.onclick = async () => {
     if (!await confirmBox("Conferma Nuovo Controller", `Da ora <b>${esc(ctrl.name)}</b> è l'apparecchio con numero di serie <code>${esc(ctrl.health.serial)}</code>. Le scritture ripartono e le tessere vengono rilette.`, "Conferma")) return;
-    if (await run(() => api(`api/controllers/${ctrl.id}/identity/accept`, {method: "POST"}), "Nuovo controller confermato")) { loadSummary(); render(); }
+    if (await run(() => api(`api/controllers/${ctrl.id}/identity/accept`, {method: "POST"}), "Nuovo controller confermato", "Conferma del nuovo controller")) { loadSummary(); render(); }
   };
 }
 
@@ -3520,7 +4273,7 @@ async function controllerEditor() {
     title: "Nuovo Controller", wide: true,
     body: controllerFields(null, sites),
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async () =>
-      (await run(() => api("api/controllers", {method: "POST", body: read()}), "Controller aggiunto: collegamento avviato")) || false}],
+      (await run(() => api("api/controllers", {method: "POST", body: read()}), "Controller aggiunto: collegamento avviato", "Aggiunta del controller")) || false}],
     onOpen: (dlg) => { read = bindControllerFields(dlg, null); },
   });
   if (result?.id) { loadSummary(); location.hash = `#impianti/c${result.id}`; }
@@ -3578,14 +4331,14 @@ async function viewConnection(el, ctrl) {
   const initial = JSON.stringify(read());
   pageGuard = {dirty: () => JSON.stringify(read()) !== initial, save: () => saveConnection(false)};
   async function saveConnection(navigate = true) {
-    const ok = await run(() => api(`api/controllers/${ctrl.id}`, {method: "PUT", body: read()}), "Controller salvato: collegamento riavviato");
+    const ok = await run(() => api(`api/controllers/${ctrl.id}`, {method: "PUT", body: read()}), "Controller salvato: collegamento riavviato", "Salvataggio del controller");
     if (ok) { pageGuard = null; loadSummary(); if (navigate) location.hash = `#impianti/c${ctrl.id}`; }
     return Boolean(ok);
   }
   form.onsubmit = (e) => { e.preventDefault(); saveConnection(); };
   $("#ctrl-del").onclick = async () => {
     if (await confirmBox("Togli Controller", `Togliere <b>${esc(ctrl.name)}</b> e le sue porte dall'app? Sul controller non cambia niente: tessere, profili di accesso e programmazione restano dove sono.`, "Togli", true) &&
-        await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller tolto dall'app")) { pageGuard = null; loadSummary(); location.hash = "#impianti"; }
+        await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller tolto dall'app", "Rimozione del controller dall'app")) { pageGuard = null; loadSummary(); location.hash = "#impianti"; }
   };
 }
 
@@ -3625,20 +4378,16 @@ async function viewController(el, ctrl, tab) {
   const errors = unmanaged + rexMissing + rewrite + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${p.errors.map((x) => esc(cap(x))).join("<br>")}</div></div>` : "");
   // Le due riparazioni passano dalla stessa richiesta: ogni pulsante le fa tutte e due
   if (unmanaged || rexMissing) setTimeout(() => body.querySelectorAll("[data-manage]").forEach((button) => {
-    const label = button.textContent;
     button.onclick = async () => {
-      // Più letture e una scrittura sul controller: qualche secondo, e senza segno sembrava non succedere niente
+      // Più letture e una scrittura sul controller: qualche secondo, e senza segno sembrava non succedere niente. Il
+      // segno è il riquadro di attesa (prima la scritta «Sto Scrivendo…» sul pulsante)
       body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = true; });
-      button.textContent = "Sto Scrivendo…";
-      const r = await run(() => api("api/programming/manage", {method: "POST"}));
+      const r = await run(() => api("api/programming/manage", {method: "POST"}), "", "Scrittura della programmazione sul controller");
       if (r) {
         const done = [r.managed && `${plural(r.managed, "punto di accesso gestito", "punti di accesso gestiti")} dal controller`, r.permitted && `permesso di apertura a ${plural(r.permitted, "ingresso", "ingressi")}`].filter(Boolean);
         toast(done.length ? done.join(", ") : "Già tutto a posto");
         render();
-      } else {
-        body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = false; });
-        button.textContent = label;
-      }
+      } else body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = false; });
     };
   }));
   const appDoor = (token) => ctrl.doors.find((d) => d.door_token === token);
@@ -3914,7 +4663,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
         };
       },
       actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await saveProgramming(`api/programming/inputs/${encodeURIComponent(i.io)}`, {name: val(dlg, "name"), role: val(dlg, "role"), door: val(dlg, "door"), contact: val(dlg, "contact"), supervised: val(dlg, "supervised")}, "Ingresso salvato")) || false}]});
+        (await saveProgramming(`api/programming/inputs/${encodeURIComponent(i.io)}`, {name: val(dlg, "name"), role: val(dlg, "role"), door: val(dlg, "door"), contact: val(dlg, "contact"), supervised: val(dlg, "supervised")}, "Ingresso salvato", "Scrittura dell'ingresso sul controller")) || false}]});
     if (ok) { keep(); render(); }
   }
 
@@ -3959,7 +4708,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     if (!list.length) return true;
     const ok = await confirmBox("Scrivi sul Controller", `Queste modifiche cambiano quale lettore apre quale porta:<ul style="margin:8px 0 0;padding-left:20px">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="hint">Se dopo il salvataggio le tessere non aprono più, annulla dallo Storico Modifiche.</p>`, "Scrivi sul Controller");
     if (!ok) return false;
-    const result = await run(() => api("api/programming/links", {method: "PUT", body: {links: pending}}), "Collegamenti scritti sul controller");
+    const result = await run(() => api("api/programming/links", {method: "PUT", body: {links: pending}}), "Collegamenti scritti sul controller", "Scrittura dei collegamenti sul controller");
     if (!result) return false;
     pageGuard = null;
     if (rerender) render();
@@ -3986,7 +4735,7 @@ const DOOR_TIME_FIELDS = [
 ];
 const configDetails = (items) => items.length ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici (${items.length})</summary>
   <div class="table-wrap"><table class="table"><tbody>${items.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td><code>${esc(c.value)}</code></td></tr>`).join("")}</tbody></table></div></details>` : "";
-const saveProgramming = (path, payload, message) => run(() => api(path, {method: "PUT", body: payload}), message);
+const saveProgramming = (path, payload, message, wait) => run(() => api(path, {method: "PUT", body: payload}), message, wait);
 
 // Tempi che il controller ha per la porta (una porta appena creata può averne solo alcuni)
 const doorTimes = (d) => DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
@@ -4030,7 +4779,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
     else if (b.dataset.appDel) {
       const door = appDoor(b.dataset.appDel);
       if (await confirmBox("Togli dall'App", `Togliere <b>${esc(door.name)}</b> dall'app? Spariscono anche i suoi pulsanti in Home Assistant e il collegamento al videocitofono. Sul controller non cambia niente.`, "Togli", true) &&
-          await run(() => api(`api/doors/${door.id}`, {method: "DELETE"}), "Porta tolta dall'app")) { loadSummary(); render(); }
+          await run(() => api(`api/doors/${door.id}`, {method: "DELETE"}), "Porta tolta dall'app", "Rimozione della porta dall'app")) { loadSummary(); render(); }
     } else if (b.dataset.pd) {
       const d = p.doors.find((x) => x.token === b.dataset.pd);
       const times = doorTimes(d);
@@ -4041,7 +4790,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
           const payload = {name: val(dlg, "name"), description: val(dlg, "description")};
           // Un campo vuoto lascia il tempo com'è: Number("") darebbe 0, cioè niente preallarme
           times.forEach(([k]) => { if (val(dlg, k) !== "") payload[k] = Number(val(dlg, k)); });
-          return (await saveProgramming(`api/programming/doors/${encodeURIComponent(d.token)}`, payload, "Porta aggiornata sul controller")) || false;
+          return (await saveProgramming(`api/programming/doors/${encodeURIComponent(d.token)}`, payload, "Porta aggiornata sul controller", "Scrittura della porta sul controller")) || false;
         }}]});
       if (ok) render();
     }
@@ -4075,7 +4824,7 @@ function controllerReaders(body, p, errors, doorName) {
     const ok = await modal({title: named("Lettore", r.name || r.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(r.name)}">`)}
       ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(r.description)}">`)}`,
       actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await saveProgramming(`api/programming/readers/${encodeURIComponent(r.token)}`, {name: val(dlg, "name"), description: val(dlg, "description")}, "Lettore aggiornato sul controller")) || false}]});
+        (await saveProgramming(`api/programming/readers/${encodeURIComponent(r.token)}`, {name: val(dlg, "name"), description: val(dlg, "description")}, "Lettore aggiornato sul controller", "Scrittura del lettore sul controller")) || false}]});
     if (ok) render();
   };
 }
@@ -4180,7 +4929,7 @@ async function controllerStatus(body, ctrl) {
   if (zoneButton) zoneButton.onclick = async () => {
     if (!await confirmBox("Usa il Fuso di Home Assistant", `Scrivere nel controller il fuso orario di Home Assistant (<b>${esc(h.ha_time_zone)}</b>)? Fasce orarie e festività scatteranno con l'ora locale di Home Assistant.`, "Scrivi sul Controller")) return;
     zoneButton.disabled = true;
-    if (await run(() => api(`api/controllers/${ctrl.id}/time-zone`, {method: "POST"}), "Fuso orario scritto sul controller")) render();
+    if (await run(() => api(`api/controllers/${ctrl.id}/time-zone`, {method: "POST"}), "Fuso orario scritto sul controller", "Scrittura del fuso orario sul controller")) render();
     else zoneButton.disabled = false;
   };
 }
@@ -4190,7 +4939,7 @@ const COMPARE_COUNTS = [["prende", "da prendere in carico", "da prendere in cari
 const compareCounts = (counts) => COMPARE_COUNTS.filter(([k]) => counts[k]).map(([k, one, many]) => plural(counts[k], one, many)).join(" · ");
 function cappedRows(rows) {
   const rest = rows.length - 40;
-  return rows.slice(0, 40).map((i) => restoreItemHtml(i, true)).join("") + (rest > 0 ? `<p class="muted small-text" style="margin:4px 0 0">${rest === 1 ? "E un'altra riga." : `E altre ${rest} righe.`}</p>` : "");
+  return rows.slice(0, 40).map((i) => restoreItemHtml(i, {readonly: true})).join("") + (rest > 0 ? `<p class="muted small-text" style="margin:4px 0 0">${rest === 1 ? "E un'altra riga." : `E altre ${rest} righe.`}</p>` : "");
 }
 function shadowHtml(sh) {
   const rounds = sh?.rounds || {};
@@ -4339,7 +5088,7 @@ function controllerHistory(body, p) {
     if (!b) return;
     const c = p.changes.find((x) => x.id === Number(b.dataset.undo));
     if (await confirmBox("Annulla Modifica", `Riportare <b>${esc(c.summary)}</b> com'era prima della modifica del ${esc(fmtDateTime(c.ts))}?`, "Riporta Com'era") &&
-        await run(() => api(`api/programming/changes/${c.id}/undo`, {method: "POST"}), "Modifica annullata sul controller")) render();
+        await run(() => api(`api/programming/changes/${c.id}/undo`, {method: "POST"}), "Modifica annullata sul controller", "Annullamento della modifica sul controller")) render();
   };
 }
 
@@ -4372,7 +5121,7 @@ async function viewSites(body, data) {
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: (dlg) => ({name: val(dlg, "name"), description: val(dlg, "description")})}]});
   $("#site-new").onclick = async () => {
     const r = await nameDialog("Nuova Struttura", "Nome", "", field("Descrizione", '<input name="description" maxlength="200" placeholder="facoltativa">'));
-    if (r && await run(() => api("api/sites", {method: "POST", body: r}), "Struttura aggiunta")) { store.places = null; await loadSummary(); render(); }
+    if (r && await run(() => api("api/sites", {method: "POST", body: r}), "Struttura aggiunta", "Aggiunta della struttura")) { store.places = null; await loadSummary(); render(); }
   };
   const inside = (a) => a.controllers.length ? ` ${plural(a.controllers.length, "controller resterà", "controller resteranno")} senza area.` : "";
   body.onclick = async (e) => {
@@ -4383,20 +5132,20 @@ async function viewSites(body, data) {
     let done;
     if (b.dataset.areaNew) {
       const r = await nameDialog(`Nuova Area in ${site.name}`, "Nome dell'Area", "");
-      done = r && await run(() => api(`api/sites/${site.id}/areas`, {method: "POST", body: {name: r.name}}), "Area aggiunta");
+      done = r && await run(() => api(`api/sites/${site.id}/areas`, {method: "POST", body: {name: r.name}}), "Area aggiunta", "Aggiunta dell'area");
     } else if (b.dataset.siteEdit) {
       const r = await nameDialog("Modifica Struttura", "Nome", site.name, field("Descrizione", `<input name="description" maxlength="200" value="${esc(site.description)}">`));
-      done = r && await run(() => api(`api/sites/${site.id}`, {method: "PUT", body: r}), "Struttura salvata");
+      done = r && await run(() => api(`api/sites/${site.id}`, {method: "PUT", body: r}), "Struttura salvata", "Salvataggio della struttura");
     } else if (b.dataset.siteDel) {
       const n = site.areas.reduce((k, a) => k + a.controllers.length, 0);
       done = await confirmBox("Elimina Struttura", `Eliminare <b>${esc(site.name)}</b> con le sue aree?${n ? ` ${plural(n, "controller resterà", "controller resteranno")} senza area.` : ""} Sul controller non cambia niente.`, "Elimina", true) &&
-        await run(() => api(`api/sites/${site.id}`, {method: "DELETE"}), "Struttura eliminata");
+        await run(() => api(`api/sites/${site.id}`, {method: "DELETE"}), "Struttura eliminata", "Eliminazione della struttura");
     } else if (b.dataset.areaEdit) {
       const r = await nameDialog("Rinomina Area", "Nome dell'Area", area.name);
-      done = r && await run(() => api(`api/areas/${area.id}`, {method: "PUT", body: {name: r.name}}), "Area salvata");
+      done = r && await run(() => api(`api/areas/${area.id}`, {method: "PUT", body: {name: r.name}}), "Area salvata", "Salvataggio dell'area");
     } else if (b.dataset.areaDel) {
       done = await confirmBox("Elimina Area", `Eliminare l'area <b>${esc(area.name)}</b>?${inside(area)}`, "Elimina", true) &&
-        await run(() => api(`api/areas/${area.id}`, {method: "DELETE"}), "Area eliminata");
+        await run(() => api(`api/areas/${area.id}`, {method: "DELETE"}), "Area eliminata", "Eliminazione dell'area");
     }
     // Nomi e aree cambiati: le righe Dove e Quando delle tipologie le rileggono
     if (done) { store.places = null; await loadSummary(); render(); }
@@ -4449,13 +5198,13 @@ async function controllerCameras(body, ctrl) {
     if (b.dataset.camEdit === "ctrl") return cameraEditor(ctrl, cameras, null, true);
     if (b.dataset.camDel === "ctrl") {
       if (await confirmBox("Togli Telecamera", `Togliere la telecamera del coperchio del controller <b>${esc(ctrl.name)}</b>? Le foto già salvate restano nel registro.`, "Togli", true) &&
-          await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera: ""}}), "Telecamera tolta")) { loadSummary(); render(); }
+          await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera: ""}}), "Telecamera tolta", "Rimozione della telecamera")) { loadSummary(); render(); }
       return;
     }
     const door = ctrl.doors.find((d) => String(d.id) === (b.dataset.camEdit || b.dataset.camDel));
     if (b.id === "cam-new" || b.dataset.camEdit) return cameraEditor(ctrl, cameras, door);
     if (b.dataset.camDel && await confirmBox("Togli Telecamera", `Togliere la telecamera dalla porta <b>${esc(door.name)}</b>? Le foto già salvate restano nel registro.`, "Togli", true) &&
-        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}), "Telecamera tolta")) { loadSummary(); render(); }
+        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}), "Telecamera tolta", "Rimozione della telecamera")) { loadSummary(); render(); }
   };
 }
 async function cameraEditor(ctrl, cameras, door, forController = false) {
@@ -4480,7 +5229,7 @@ async function cameraEditor(ctrl, cameras, door, forController = false) {
       $("[name=door]", dlg).addEventListener("change", sync);
       sync();
     },
-    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, busy: "Salvataggio della telecamera", onClick: async (dlg) => {
       const choice = val(dlg, "door");
       const target = ctrl.doors.find((d) => String(d.id) === choice);
       const camera = val(dlg, "camera").trim();
@@ -4525,7 +5274,7 @@ async function controllerIntercoms(body, ctrl) {
     const door = ctrl.doors.find((d) => String(d.id) === (b.dataset.icEdit || b.dataset.icDel));
     if (b.id === "ic-new" || b.dataset.icEdit) return intercomEditor(ctrl, door);
     if (b.dataset.icDel && await confirmBox("Togli Videocitofono", `Togliere il videocitofono dalla porta <b>${esc(door.name)}</b>? Le chiamate non finiranno più nel registro.`, "Togli", true) &&
-        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}), "Videocitofono tolto")) { loadSummary(); render(); }
+        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}), "Videocitofono tolto", "Rimozione del videocitofono")) { loadSummary(); render(); }
   };
 }
 async function intercomEditor(ctrl, door) {
@@ -4541,7 +5290,7 @@ async function intercomEditor(ctrl, door) {
       <p class="hint" style="margin-top:-8px">"Apri" dal monitor o da Hik-Connect: l'app manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Disattivata: le chiamate finiscono solo nel registro.</p>
       <div class="fields-2">${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}
       ${field("Prefisso MQTT del Videocitofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}</div>`,
-    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, busy: "Salvataggio del videocitofono", onClick: async (dlg) => {
       const target = ctrl.doors.find((x) => String(x.id) === val(dlg, "door"));
       const name = val(dlg, "intercom_name").trim();
       if (!name) { toast("Scrivi il nome del videocitofono", true); return false; }
@@ -4578,7 +5327,7 @@ async function doorEditor(ctrl, door, token = "", controllerName = "") {
       <p class="hint">Telecamera e videocitofono della porta si scelgono nelle schede <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a> e <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a> del controller.</p>`,
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
       const body = doorBody(d, {name: val(dlg, "name"), ha_buttons: val(dlg, "ha_buttons")});
-      return (await run(() => api(door ? `api/doors/${door.id}` : `api/controllers/${ctrl.id}/doors`, {method: door ? "PUT" : "POST", body}), "Porta salvata")) || false;
+      return (await run(() => api(door ? `api/doors/${door.id}` : `api/controllers/${ctrl.id}/doors`, {method: door ? "PUT" : "POST", body}), "Porta salvata", "Salvataggio della porta")) || false;
     }}],
   });
   if (result) { loadSummary(); render(); }
@@ -4679,7 +5428,7 @@ async function viewBackups(body, part = "") {
   paintIcons(body);
   $("#bk-new").onclick = () => createBackup();
   if ($("#bk-verify")) $("#bk-verify").onclick = async () => {
-    const result = await run(() => api("api/backups/verify", {method: "POST"}));
+    const result = await run(() => api("api/backups/verify", {method: "POST"}), "", "Verifica dei backup");
     if (!result) return;
     toast(result.ok ? `Backup verificati: ${plural(result.backups, "backup leggibile", "backup leggibili")}` : `Verifica: ${plural(result.damaged, "backup rovinato", "backup rovinati")}`, !result.ok);
     loadSummary();
@@ -4689,8 +5438,8 @@ async function viewBackups(body, part = "") {
   $$("[data-del-index]", body).forEach((btn) => btn.onclick = async () => {
     const when = idTime(btn.dataset.delIndex);
     if (!await confirmBox("Elimina Backup", `Eliminare il backup del <b>${esc(when)}</b>? Il suo indice non si legge, quindi non si può ripristinare. Non si può annullare.`, "Elimina", true)) return;
-    if (!await run(() => api(`api/backups/${encodeURIComponent(btn.dataset.delIndex)}`, {method: "DELETE"}), "Backup eliminato")) return;
-    await run(() => api("api/backups/verify", {method: "POST"}));
+    if (!await run(() => api(`api/backups/${encodeURIComponent(btn.dataset.delIndex)}`, {method: "DELETE"}), "Backup eliminato", "Eliminazione del backup")) return;
+    await run(() => api("api/backups/verify", {method: "POST"}), "", "Verifica dei backup");
     loadSummary();
     render();
   });
@@ -4701,10 +5450,11 @@ async function viewBackups(body, part = "") {
     if ("cmp" in btn.dataset) compareBackup(b, data.backups, part);
     else if ("restore" in btn.dataset) restoreBackup(b, data, part);
     else if ("lock" in btn.dataset) {
-      if (await run(() => api(`api/backups/${b.id}/lock`, {method: "PUT", body: {locked: !b.locked}}), b.locked ? "Backup sbloccato" : "Backup bloccato: non si elimina finché non lo sblocchi")) render();
+      if (await run(() => api(`api/backups/${b.id}/lock`, {method: "PUT", body: {locked: !b.locked}}), b.locked ? "Backup sbloccato" : "Backup bloccato: non si elimina finché non lo sblocchi",
+        b.locked ? "Sblocco del backup" : "Blocco del backup")) render();
     } else if ("del" in btn.dataset) {
       if (await confirmBox("Elimina Backup", `Eliminare il backup <b>${esc(backupTitle(b))}</b> del ${esc(fmtDateTime(b.created_at))}? Non si può annullare.`, "Elimina", true) &&
-          await run(() => api(`api/backups/${b.id}`, {method: "DELETE"}), "Backup eliminato")) render();
+          await run(() => api(`api/backups/${b.id}`, {method: "DELETE"}), "Backup eliminato", "Eliminazione del backup")) render();
     }
   };
 }
@@ -4749,7 +5499,7 @@ async function viewBackupSettings(body) {
       if (!Number.isInteger(value) || value < Number(input.min) || value > Number(input.max)) { toast(`Scrivi un numero tra ${input.min} e ${input.max}`, true); undo(); return; }
     } else if (input.type === "time" && !value) { undo(); return; }
     if (value === p[key]) return;
-    const save = (confirm) => run(() => api("api/backups/policy", {method: "PUT", body: {[key]: value, confirm}}));
+    const save = (confirm) => run(() => api("api/backups/policy", {method: "PUT", body: {[key]: value, confirm}}), "", "Salvataggio delle impostazioni dei backup");
     let result = await save(false);
     if (result && !result.saved) {
       const n = result.would_remove;
@@ -4784,7 +5534,7 @@ async function viewBackupSettings(body) {
 async function createBackup() {
   const created = await modal({title: "Crea Backup Ora",
     body: field("Nome", '<input name="name" maxlength="80" placeholder="es. Prima dei lavori al piano 2">', "Facoltativo. Il backup comprende Dati Comuni e configurazione di ogni controller."),
-    actions: [{label: "Annulla", value: null}, {label: "Crea Backup", kind: "primary", submit: true, onClick: async (dlg) => (await run(() => api("api/backups", {method: "POST", body: {name: val(dlg, "name")}}))) || false}]});
+    actions: [{label: "Annulla", value: null}, {label: "Crea Backup", kind: "primary", submit: true, onClick: async (dlg) => (await run(() => api("api/backups", {method: "POST", body: {name: val(dlg, "name")}}), "", "Creazione del backup")) || false}]});
   if (!created) return;
   toast(created.errors?.length ? `Backup incompleto: ${created.errors[0]}` : `Backup creato · ${created.summary}`, Boolean(created.errors?.length));
   render();
@@ -4831,8 +5581,9 @@ function compareBackup(b, backups, part = "") {
       load();
     }});
 }
-// readonly: riga del Confronto, senza casella e con le sorprese in evidenza
-function restoreItemHtml(i, readonly = false) {
+// readonly: riga del Confronto, senza casella e con le sorprese in evidenza. In un oggetto: con .map(restoreItemHtml)
+// l'indice della riga faceva da readonly, e in Cosa Cambierà solo la prima riga di ogni sezione si poteva spuntare
+function restoreItemHtml(i, {readonly = false} = {}) {
   const [cls, ic] = RESTORE_ACTIONS[i.action] || ["k-muted", "refresh"];
   const tag = readonly ? "div" : "label";
   return `<${tag} class="rs-item${i.blocked ? " blocked" : ""}${readonly ? " readonly" : ""}">
@@ -4845,6 +5596,10 @@ function restoreItemHtml(i, readonly = false) {
       ${i.blocked ? `<div class="rs-note err">${icon("block")}<span>Non si può: ${esc(i.blocked)}</span></div>` : ""}
       ${i.password ? `<div class="rs-pass"><input type="password" name="mqtt_password" autocomplete="new-password" placeholder="Password di ${esc(i.username)}"><small class="muted">Nei backup le password non ci sono: scrivila qui, non viene salvata.</small></div>` : ""}
     </div></${tag}>`;
+}
+// Righe di Cosa Cambierà per sezione, ognuna con la sua casella
+function restoreGroupsHtml(groups, items) {
+  return groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map((i) => restoreItemHtml(i)).join("")}</div>`).join("");
 }
 const RESTORE_MODES = {
   porte: {sections: ["porte"], title: "Porte e Lettori", text: "Riporta nomi e tempi delle porte, le impostazioni dell'app sulle porte e i nomi dei lettori, per un controller che funziona."},
@@ -4872,7 +5627,7 @@ async function restoreBackup(b, data, part = "") {
     actions: [{label: "Annulla", value: null}, {label: "Mostra Cosa Cambierà", kind: "primary", submit: true, onClick: async (dlg) => {
       sections = part ? RESTORE_MODES[$('[name="mode"]:checked', dlg)?.value || "porte"].sections : $$('[name="sec"]:checked', dlg).map((x) => x.value);
       if (!sections.length) { toast("Scegli almeno una voce", true); return false; }
-      return (await run(() => api(`api/backups/${b.id}/preview`, {method: "POST", body: {sections, part}}))) || false;
+      return (await run(() => api(`api/backups/${b.id}/preview`, {method: "POST", body: {sections, part}}), "", "Confronto del backup con lo stato attuale")) || false;
     }}]});
   if (!preview) return;
   const items = preview.items;
@@ -4888,7 +5643,7 @@ async function restoreBackup(b, data, part = "") {
       <p class="muted small-text" style="margin-top:0">${full
         ? "Si scrive nell'ordine dell'elenco, le tessere per ultime. Quello che sul controller c'è ma nel backup no è spuntato solo se il controller è appena stato resettato. La programmazione oraria delle porte non si ripristina: niente sblocchi programmati."
         : "Spunta cosa riportare com'era. Le righe che toglierebbero ciò che è stato aggiunto dopo il backup non sono spuntate: di solito è lavoro fatto nel frattempo, da tenere."} Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
-      ${groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map(restoreItemHtml).join("")}</div>`).join("")}`,
+      ${restoreGroupsHtml(groups, items)}`,
     actions: [{label: "Annulla", value: null}, {label: "Ripristina Selezionati", kind: "primary", onClick: (dlg) => {
       const chosen = $$('[name="rs"]:checked', dlg).map((x) => x.value);
       if (!chosen.length) { toast("Spunta almeno una riga", true); return false; }
@@ -4905,8 +5660,8 @@ async function restoreBackup(b, data, part = "") {
       update();
     }});
   if (!keys) return;
-  toast(full ? "Ripristino Completo in corso: può volerci qualche decina di secondi…" : "Ripristino in corso…");
-  const result = await run(() => api(`api/backups/${b.id}/restore`, {method: "POST", body: {sections, part, keys, mqtt_password: mqttPassword}}));
+  const result = await run(() => api(`api/backups/${b.id}/restore`, {method: "POST", body: {sections, part, keys, mqtt_password: mqttPassword}}), "",
+    full ? "Ripristino Completo in corso: può volerci qualche decina di secondi" : "Ripristino dal backup in corso");
   if (!result) return;
   const title = !result.failed.length ? "Ripristino Fatto" : result.applied.length ? "Ripristino Parziale" : "Ripristino Non Riuscito";
   await modal({title, body: restoreResultHtml(result), actions: [{label: "Chiudi", value: null}]});
@@ -4930,18 +5685,33 @@ async function viewSettings(el, sub) {
   try { s = await api("api/status?controller=false"); } catch (err) { body.innerHTML = errorBox("Stato Non Leggibile", err); return; }
   const m = s.mqtt, ha = s.home_assistant, o = s.options;
   // Controllo del database all'avvio ({at, text}) e copia per il backup di Home Assistant: i motivi arrivano in minuscolo
-  const dbRecovered = s.database.recovered?.text ? s.database.recovered : null;
+  const dbRecovered = s.database?.recovered?.text ? s.database.recovered : null;
   const capFirst = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
-  // Le tipologie solo a chi le vede (permesso Persone o Regole): per gli altri il server le rifiuta
+  // Le tipologie solo a chi le vede (permesso Anagrafica o Fasce Orarie): per gli altri il server le rifiuta
   const seesCategories = can("persone") || can("regole");
   // Dal database dell'app: la pagina non aspetta il controller
   if (seesCategories) await loadCategories();
-  const haCard = props([
+  const haCard = !ha ? "" : props([
     ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} Attive, dispositivo "Controllo Accessi"` : `${statusDot("")} Disattivate nelle opzioni`],
     ...(ha.integration ? [["Entità", esc(ha.entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
     ["API di Home Assistant", ha.api ? `${statusDot("ok")} Disponibile` : `${statusDot("warn")} Non Disponibile`],
   ]) + `<p class="hint">L'evento "Eventi Accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, uscita, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni. I pulsanti di apertura si attivano per ogni porta nella pagina del controller.</p>`;
-  body.innerHTML = `
+  const ioCard = `<div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
+          <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
+          <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio, «Nome Cognome» in una colonna, diviso al primo spazio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. Il file esportato ha in più <code>ultimo_accesso; telefono; email; matricola; referente; codice_stampato</code>, che l'importazione ignora: telefono, email, matricola e referente si scrivono nella scheda della persona, il Codice Stampato con Codice sulla riga della tessera. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>`;
+  // Dall'accesso diretto senza permessi tecnici: le opzioni dell'app ed Esporta e Importa, senza Home Assistant, broker
+  // e database dell'add-on (il server non li manda)
+  if (hideHA()) body.innerHTML = `
+    <div class="grid two">
+      <div><div class="card"><h2>${icon("cog")}Opzioni dell'App</h2>${props([
+        ...(seesCategories ? [["Tipologia Predefinita", esc(categoryOf(store.me.default_category)?.name || "—")]] : []),
+        ["Conservazione Registro", plural(o.event_retention_days, "giorno", "giorni")],
+      ])}<p class="hint">La conservazione del registro la sceglie l'amministratore dell'impianto.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.` : ""}</p></div></div>
+      <div>${ioCard}</div>
+    </div>
+    <p class="muted small-text" style="text-align:center">Axis Access Manager ${esc(store.me.version || "")}</p>`;
+  else body.innerHTML = `
     ${store.summary.configured === false && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b>Controller, porte, videocitofono e telecamera si impostano nella pagina Impianti.</div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
     <div class="grid two">
       <div>
@@ -4950,13 +5720,10 @@ async function viewSettings(el, sub) {
           ...(seesCategories ? [["Tipologia Predefinita", esc(categoryOf(store.me.default_category)?.name || "—")]] : []),
           ["Conservazione Registro", plural(o.event_retention_days, "giorno", "giorni")],
           ["Broker MQTT", !m.configured ? `${statusDot("warn")} Nessun Broker: installa l'add-on Mosquitto, l'app lo trova da sola` : o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
-        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Persone" : "Regole"} → Tipologie.` : ""}</p></div>
+        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.` : ""}</p></div>
       </div>
       <div>
-        <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
-          <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
-          <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>
+        ${ioCard}
         <div class="card"><h2>${icon("history")}Database dell'Add-on</h2>${dbRecovered ? `<div class="alert err">${icon("alert")}<div class="grow"><b>${esc(dbRecovered.title || (dbRecovered.text.includes("ripristinata la copia") ? "Database Ripristinato dalla Copia" : "Database Non Ripristinato"))}</b>${esc(capFirst(dbRecovered.text))} · ${esc(relTime(dbRecovered.at))}${dbRecovered.hint ? `<br>${esc(dbRecovered.hint)}` : ""}</div></div>` : ""}${props([
           ["Versione dello Schema", esc(s.database.schema)],
           // Il motivo dice già che la copia non è aggiornata ("copia non aggiornata (…)", "… resta la copia precedente")
@@ -5017,7 +5784,7 @@ async function viewUsers(body) {
   };
   const save = (u) => async (dlg) => {
     const payload = {username: u ? u.username : val(dlg, "username"), name: val(dlg, "name"), perms: $$("[name=perm]:checked", dlg).map((x) => x.value)};
-    return (await run(() => api(u ? `api/users/${encodeURIComponent(u.username)}` : "api/users", {method: u ? "PUT" : "POST", body: payload}), "Utente salvato")) || false;
+    return (await run(() => api(u ? `api/users/${encodeURIComponent(u.username)}` : "api/users", {method: u ? "PUT" : "POST", body: payload}), "Utente salvato", "Salvataggio dell'utente")) || false;
   };
   $("#u-new").onclick = async () => {
     if (await modal({title: "Nuovo Utente", body: form(null), onOpen: bind, actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: save(null)}]})) render();
@@ -5035,7 +5802,7 @@ async function viewUsers(body) {
         if (u.username === store.me.username) location.reload(); else render();
       }
     } else if (await confirmBox("Elimina Utente", `Eliminare <b>${esc(u.name || u.username)}</b>? Se riapre l'app verrà aggiunto di nuovo con "Solo Stato".`, "Elimina", true) &&
-        await run(() => api(`api/users/${encodeURIComponent(u.username)}`, {method: "DELETE"}), "Utente eliminato")) render();
+        await run(() => api(`api/users/${encodeURIComponent(u.username)}`, {method: "DELETE"}), "Utente eliminato", "Eliminazione dell'utente")) render();
   };
 }
 // Accesso diretto di un utente: stato, computer collegati, password provvisoria, chiusura delle sessioni
@@ -5055,7 +5822,7 @@ async function directAccessBox(u, enabled) {
   const choice = await modal({title: `Accesso Diretto di ${name}`, body: info + off, actions});
   if (choice === "temporary") {
     if (d && !d.temporary && !await confirmBox("Nuova Password Provvisoria", `La password di <b>${esc(name)}</b> smette di valere e i suoi computer escono.`, "Crea")) return false;
-    const result = await run(() => api(`${path}/password`, {method: "POST"}));
+    const result = await run(() => api(`${path}/password`, {method: "POST"}), "", "Creazione della password provvisoria");
     if (!result) return false;
     await modal({title: `Password Provvisoria di ${name}`, body: `<code class="temp-pass">${esc(result.password)}</code><p class="hint" style="margin:0">Si vede solo ora. Al primo accesso va cambiata. Scade ${esc(fmtDateTime(result.expires))}.</p><p class="hint" id="tp-copy" style="margin:6px 0 0" hidden></p>`,
       actions: [{label: "Copia", onClick: async (dlg) => {
@@ -5066,9 +5833,9 @@ async function directAccessBox(u, enabled) {
       }}, {label: "Fatto", kind: "primary", value: true}]});
     return true;
   }
-  if (choice === "close") return Boolean(await run(() => api(`${path}/sessions`, {method: "DELETE"}), "Sessioni chiuse"));
+  if (choice === "close") return Boolean(await run(() => api(`${path}/sessions`, {method: "DELETE"}), "Sessioni chiuse", "Chiusura delle sessioni"));
   if (choice === "remove" && await confirmBox("Togli Accesso Diretto", `<b>${esc(name)}</b> non potrà più entrare dall'accesso diretto e i suoi computer escono.`, "Togli", true)) {
-    return Boolean(await run(() => api(`${path}/password`, {method: "DELETE"}), "Accesso diretto tolto"));
+    return Boolean(await run(() => api(`${path}/password`, {method: "DELETE"}), "Accesso diretto tolto", "Rimozione dell'accesso diretto"));
   }
   return false;
 }
@@ -5096,14 +5863,14 @@ async function viewDirectAccess(body) {
   paintIcons(body);
   const save = async () => {
     const next = {enabled: $('[data-da="enabled"]', body).value === "true"};
-    const result = await run(() => api("api/direct-access", {method: "PUT", body: next}));
+    const result = await run(() => api("api/direct-access", {method: "PUT", body: next}), "", "Salvataggio dell'accesso diretto");
     if (result && result.settings.enabled && !result.status.running) toast(`Accesso diretto non avviato: ${result.status.error}`, true);
     render();
   };
   $$("[data-da]", body).forEach((el) => { el.onchange = save; });
   if ($("#da-close", body)) $("#da-close", body).onclick = async () => {
     if (await confirmBox("Chiudi Tutte le Sessioni", "Tutti i computer dell'accesso diretto dovranno rientrare.", "Chiudi", true) &&
-        await run(() => api("api/direct-access/sessions", {method: "DELETE"}), "Sessioni chiuse")) render();
+        await run(() => api("api/direct-access/sessions", {method: "DELETE"}), "Sessioni chiuse", "Chiusura delle sessioni")) render();
   };
 }
 
@@ -5140,7 +5907,7 @@ async function importCsv(e) {
   const bytes = await file.arrayBuffer();
   let text;
   try { text = new TextDecoder("utf-8", {fatal: true}).decode(bytes); } catch (err) { text = new TextDecoder("windows-1252").decode(bytes); }
-  const preview = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: false}}));
+  const preview = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: false}}), "", "Lettura del file CSV");
   if (!preview) return;
   const table = (res) => {
     const s = res.riepilogo, ok = s.ok, updated = s.aggiornate || 0;
@@ -5150,7 +5917,7 @@ async function importCsv(e) {
   const go = await modal({title: "Anteprima Importazione", wide: true, body: table(preview),
     actions: [{label: "Annulla", value: false}, ...(preview.riepilogo.ok || preview.riepilogo.aggiornate ? [{label: [preview.riepilogo.ok ? `Importa ${preview.riepilogo.ok}` : "", preview.riepilogo.aggiornate ? `Aggiorna ${preview.riepilogo.aggiornate}` : ""].filter(Boolean).join(" e "), kind: "primary", value: true}] : [])]});
   if (!go) return;
-  const result = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: true}}));
+  const result = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: true}}), "", "Importazione delle persone");
   if (result) await modal({title: "Importazione Completata", wide: true, body: table(result), actions: [{label: "Chiudi", kind: "primary", value: true}]});
 }
 

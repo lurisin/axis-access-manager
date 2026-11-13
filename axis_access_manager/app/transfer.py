@@ -25,6 +25,9 @@ EVENT_LABELS = {
 }
 
 IMPORT_COLUMNS = ["nome", "tessera", "gruppo", "valida_dal", "valida_al", "ditta", "note", "tipologia", "stato"]
+# Colonne in più del file esportato, in fondo: l'importazione non le usa (telefono, email, matricola, referente e Codice
+# Stampato della tessera si scrivono a mano nella scheda della persona), e il file esportato si reimporta com'è
+EXPORT_COLUMNS = ["ultimo_accesso", "telefono", "email", "matricola", "referente", "codice_stampato"]
 # Con i secondi come nel file esportato, o senza come lo risalva spesso un foglio di calcolo
 DATE_FORMATS = [
     "%d/%m/%Y %H:%M:%S",
@@ -82,6 +85,25 @@ def _card_text(number: str) -> str:
     return f'="{number}"' if NUMERIC_CARD.fullmatch(number) else number
 
 
+def _formula_text(value: str) -> str:
+    """Testo come formula di testo (="..."), come le tessere, perché il foglio di calcolo lo mostri com'è: se no toglie
+    lo zero iniziale, prende «06.123.456» per un numero con il punto delle migliaia e lascia in vista l'apostrofo
+    davanti a «+39 …». Solo senza virgolette, che chiuderebbero il testo della formula: con, come il testo normale."""
+    return f'="{value}"' if value and '"' not in value else _text(value)
+
+
+def _contacts(person: dict) -> list[str]:
+    """Telefono, email, matricola e referente per il file esportato. Telefono e matricola come formula di testo (vedi
+    _formula_text): la matricola 000123 resta con gli zeri. Il telefono non ha mai virgolette (vedi
+    service.normalize_phone)."""
+    return [
+        _formula_text(person.get("phone") or ""),
+        _text(person.get("email") or ""),
+        _formula_text(person.get("employee_id") or ""),
+        _text(person.get("referent") or ""),
+    ]
+
+
 def events_csv(events: list[dict], doors: dict[str, str] | None = None) -> str:
     """Registro in CSV; con più porte aggiunge la colonna Porta (nomi dati da doors: token → nome)."""
     doors = doors or {}
@@ -116,10 +138,12 @@ def persons_csv(
     last_access: dict[int, str],
     categories: dict[int, str] | None = None,
 ) -> str:
-    """Stesse colonne dell'importazione, più l'ultimo accesso: il file si può reimportare. Una riga per tessera; chi
-    non ne ha una riga con tessera, gruppo, validità e stato vuoti."""
+    """Stesse colonne dell'importazione, più ultimo accesso, telefono, email, matricola, referente e Codice Stampato
+    della tessera (in fondo, che l'importazione ignora): il file si può reimportare. Una riga per tessera; chi non ne ha
+    una riga con tessera, gruppo, validità, stato e codice vuoti. Il codice come formula di testo (vedi _formula_text):
+    «0042» resta con gli zeri."""
     categories = categories or {}
-    rows = [IMPORT_COLUMNS + ["ultimo_accesso"]]
+    rows = [IMPORT_COLUMNS + EXPORT_COLUMNS]
     for person in persons:
         if not person["cards"]:
             rows.append(
@@ -134,6 +158,8 @@ def persons_csv(
                     _text(categories.get(person.get("category_id") or 0, "")),
                     "",
                     _local(last_access.get(person["id"], "")),
+                    *_contacts(person),
+                    "",
                 ]
             )
         for card in person["cards"]:
@@ -149,6 +175,8 @@ def persons_csv(
                     _text(categories.get(person.get("category_id") or 0, "")),
                     "attiva" if card["enabled"] else "sospesa",
                     _local(last_access.get(person["id"], "")),
+                    *_contacts(person),
+                    _formula_text(card.get("printed_code") or ""),
                 ]
             )
     return _csv(rows)

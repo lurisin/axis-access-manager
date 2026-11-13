@@ -11,15 +11,18 @@ import os
 import sqlite3
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
@@ -83,6 +86,7 @@ from .notifications import (
     recovery_hint,
     recovery_title,
 )
+from .plain import ASK_ADMIN, once, plain_text, technical
 from .presa_in_carico import confronto
 from .programming import (
     CONTACTS,
@@ -100,6 +104,8 @@ from .service import (
     CONTROLLER_KINDS,
     DENIED_REASONS,
     INPUT_TERMINALS,
+    PHOTO_MAX,
+    PHOTO_TOO_BIG,
     AccessService,
     PersonChanged,
     ServiceError,
@@ -165,7 +171,10 @@ BACKUP_TICK = 60
 
 
 class PersonIn(BaseModel):
-    name: str
+    # Nome e cognome (almeno uno dei due); senza, il nome completo name, diviso al primo spazio (versioni precedenti)
+    first_name: str | None = None
+    last_name: str | None = None
+    name: str = ""
     # Vuota: persona senza tessera, solo nell'app
     card: str = ""
     group: str = ""
@@ -174,12 +183,27 @@ class PersonIn(BaseModel):
     company: str = ""
     notes: str = ""
     category_id: int = 0
+    # Controllati da AccessService (normalize_phone, normalize_email, normalize_employee_id, normalize_referent): i
+    # limiti qui finirebbero con il valore nel log
+    phone: str = ""
+    email: str = ""
+    employee_id: str = ""
+    referent: str = ""
+    # Codice Stampato della tessera (solo con card), controllato da AccessService (normalize_printed_code)
+    printed_code: str = ""
 
 
 class PersonUpdateIn(BaseModel):
+    # None: il campo non cambia
+    first_name: str | None = None
+    last_name: str | None = None
     name: str | None = None
     company: str | None = None
     notes: str | None = None
+    phone: str | None = None
+    email: str | None = None
+    employee_id: str | None = None
+    referent: str | None = None
 
 
 class AccessIn(BaseModel):
@@ -191,10 +215,14 @@ class AccessIn(BaseModel):
 
 class CardIn(BaseModel):
     card: str
+    # Codice Stampato sulla tessera fisica, facoltativo (vedi AccessService.add_card)
+    printed_code: str = ""
 
 
 class CardStateIn(BaseModel):
-    enabled: bool
+    # None: non cambia. Lo stato va sul controller, il Codice Stampato resta nell'app (vedi AccessService.update_card)
+    enabled: bool | None = None
+    printed_code: str | None = None
 
 
 class ScheduleRuleIn(BaseModel):
@@ -467,13 +495,39 @@ def request_user(request: Request) -> str:
     return current_user(request).label
 
 
+def hides_home_assistant(request: Request) -> bool:
+    """Chi entra dall'accesso diretto senza i permessi tecnici (Impianti o Backup) non legge mai di Home Assistant, MQTT
+    e add-on (vedi plain.py). Lo dice la richiesta stessa: il server da cui arriva e l'utente della sua sessione, mai
+    un'intestazione o un parametro del browser. Prima del login (nessun utente) vale per tutti."""
+    if not is_direct(request):
+        return False
+    user = getattr(request.state, "user", None)
+    return user is None or not technical(user)
+
+
+def _say(request: Request, text: str) -> str:
+    """Messaggio del server per questa richiesta: senza Home Assistant per chi non lo deve leggere. I nomi scritti
+    dagli utenti («la tessera è già registrata a nome VAN NAM HA») restano come sono."""
+    return plain_text(text, names=_written_names(request)) if hides_home_assistant(request) else text
+
+
+def _written_names(request: Request) -> Callable[[], list[str]]:
+    """Nomi scritti dagli utenti (vedi Database.written_names), letti dal database solo se un testo della risposta ha
+    una parola vietata, e una volta sola per richiesta."""
+    names = getattr(request.state, "written_names", None)
+    if names is None:
+        names = request.state.written_names = once(lambda: request.app.state.db.written_names())
+    return names
+
+
 def need(*perms: str, any_of: bool = False) -> Any:
     """Dipendenza: l'utente deve avere tutti i permessi indicati (o almeno uno con any_of)."""
 
     def check(request: Request) -> AppUser:
         user = current_user(request)
         allowed = any(user.can(p) for p in perms) if any_of else user.can(*perms)
-        if not allowed and ADMIN in perms and is_direct(request):
+        # Senza permessi tecnici il messaggio di sempre sul permesso che manca, senza Home Assistant
+        if not allowed and ADMIN in perms and is_direct(request) and not hides_home_assistant(request):
             raise HTTPException(status_code=403, detail="si fa solo dall'app dentro Home Assistant")
         if not allowed:
             # Le descrizioni contengono virgole: ognuna tra virgolette, separate dal punto e virgola
@@ -529,7 +583,18 @@ FIELD_LABELS = {
     "schedule": "fascia oraria",
     "host": "indirizzo del controller",
     "category_id": "tipologia",
+    "first_name": "nome",
+    "last_name": "cognome",
+    "phone": "telefono",
+    "email": "email",
+    "employee_id": "matricola",
+    "referent": "referente interno",
+    "printed_code": "Codice Stampato",
 }
+# Campi delle persone che non finiscono nel log neanche quando sono rifiutati (vedi db.PERSON_COLUMNS), a qualsiasi
+# profondità dei dati mandati
+PRIVATE_INPUTS = {"phone", "email", "employee_id", "referent"}
+HIDDEN = "…"
 VALIDATION_REASONS = {
     "missing": "valore mancante",
     "string_too_long": "al massimo {max_length} caratteri",
@@ -550,9 +615,32 @@ VALIDATION_REASONS = {
 }
 
 
+def _masked(value: Any) -> Any:
+    """Dati mandati senza i valori dei campi di PRIVATE_INPUTS, cercati per chiave in dizionari e liste a qualsiasi
+    profondità; byte (una foto) mai."""
+    if isinstance(value, dict):
+        return {k: HIDDEN if k in PRIVATE_INPUTS else _masked(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_masked(item) for item in value]
+    if isinstance(value, bytes | bytearray | memoryview):
+        return HIDDEN
+    return value
+
+
+def _loggable(error: dict) -> dict:
+    """Errore di validazione per il log, senza telefono, email, matricola e referente delle persone: il valore
+    rifiutato di uno di quei campi, o quei campi nei dati mandati (anche in una lista o annidati) quando l'errore è di
+    tutta la richiesta o di un altro campo."""
+    if any(part in PRIVATE_INPUTS for part in error.get("loc") or ()):
+        return {**error, "input": HIDDEN}
+    if "input" in error:
+        return {**error, "input": _masked(error["input"])}
+    return error
+
+
 def _validation_text(errors: list[dict]) -> str:
     """Primo errore di validazione in parole; quello tecnico (campo, tipo, valore) resta nel log."""
-    _LOGGER.info("Dati non validi: %s", errors)
+    _LOGGER.info("Dati non validi: %s", [_loggable(error) for error in errors])
     first = errors[0] if errors else {}
     names = [str(p) for p in first.get("loc") or () if not isinstance(p, int) and p not in ("body", "query", "path")]
     field = FIELD_LABELS.get(names[-1], "") if names else ""
@@ -561,6 +649,27 @@ def _validation_text(errors: list[dict]) -> str:
     except (KeyError, IndexError):
         reason = "valore non valido"
     return f"dati non validi: {field}, {reason}" if field else f"dati non validi: {reason}"
+
+
+# Foto della persona chiesta con la sua versione (?v=): non cambia mai, solo nel browser di chi la guarda
+PHOTO_CACHE = "private, max-age=31536000, immutable"
+
+
+async def _photo_body(request: Request) -> bytes:
+    """Byte della foto mandata, letti al massimo fino a PHOTO_MAX: oltre si risponde subito 413 (la dimensione
+    dichiarata, se c'è, si controlla prima di leggere)."""
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > PHOTO_MAX:
+        raise HTTPException(status_code=413, detail=PHOTO_TOO_BIG)
+    data = bytearray()
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > PHOTO_MAX:
+            raise HTTPException(status_code=413, detail=PHOTO_TOO_BIG)
+    return bytes(data)
 
 
 def _moment(value: str | None) -> datetime | None:
@@ -766,22 +875,30 @@ def create_app(
     async def login_required(request: Request, err: LoginRequired) -> JSONResponse:
         return JSONResponse({"detail": DIRECT_LOGIN, "login": True}, status_code=401)
 
+    # Tutti i messaggi d'errore passano da _say: senza Home Assistant per chi entra dall'accesso diretto senza
+    # permessi tecnici
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, err: StarletteHTTPException) -> Response:
+        if isinstance(err.detail, str) and hides_home_assistant(request):
+            err = StarletteHTTPException(err.status_code, _say(request, err.detail), err.headers)
+        return await http_exception_handler(request, err)
+
     @app.exception_handler(DirectError)
     async def direct_error(request: Request, err: DirectError) -> JSONResponse:
-        return JSONResponse({"detail": str(err)}, status_code=err.status)
+        return JSONResponse({"detail": _say(request, str(err))}, status_code=err.status)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, err: ServiceError) -> JSONResponse:
-        return JSONResponse({"detail": str(err)}, status_code=400)
+        return JSONResponse({"detail": _say(request, str(err))}, status_code=400)
 
     @app.exception_handler(PersonChanged)
     async def person_changed(request: Request, err: PersonChanged) -> JSONResponse:
         # Niente è stato modificato: l'interfaccia rilegge la scheda della persona e mostra il motivo
-        return JSONResponse({"detail": str(err)}, status_code=409)
+        return JSONResponse({"detail": _say(request, str(err))}, status_code=409)
 
     @app.exception_handler(UserError)
     async def user_error(request: Request, err: UserError) -> JSONResponse:
-        return JSONResponse({"detail": str(err)}, status_code=400)
+        return JSONResponse({"detail": _say(request, str(err))}, status_code=400)
 
     @app.exception_handler(VapixError)
     async def vapix_error(request: Request, err: VapixError) -> JSONResponse:
@@ -789,7 +906,9 @@ def create_app(
         # "il controller non risponde", "credenziali del controller…": il controller è già nominato.
         # unreachable: nessuna risposta, l'interfaccia propone di riprovare
         detail = text if "controller" in text else f"errore del controller: {text}"
-        return JSONResponse({"detail": detail, "unreachable": isinstance(err, ControllerUnreachable)}, 502)
+        return JSONResponse(
+            {"detail": _say(request, detail), "unreachable": isinstance(err, ControllerUnreachable)}, 502
+        )
 
     @app.exception_handler(sqlite3.Error)
     async def database_error(request: Request, err: sqlite3.Error) -> JSONResponse:
@@ -801,11 +920,15 @@ def create_app(
         detail = f"{error_reason(err)}: libera spazio"
         if request.method != "GET":
             detail = f"{error_reason(err)}: la modifica non è stata salvata, libera spazio e riprova"
+        if hides_home_assistant(request):
+            # Liberare spazio è un lavoro tecnico: senza permessi tecnici si avvisa l'amministratore
+            saved = "" if request.method == "GET" else "la modifica non è stata salvata, "
+            detail = f"{error_reason(err)}: {saved}{ASK_ADMIN}"
         return JSONResponse({"detail": detail}, status_code=503)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, err: RequestValidationError) -> JSONResponse:
-        return JSONResponse({"detail": _validation_text(list(err.errors()))}, status_code=422)
+        return JSONResponse({"detail": _say(request, _validation_text(list(err.errors())))}, status_code=422)
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -831,6 +954,8 @@ def create_app(
             "time_zone": ha_time_zone(),
             # Accesso diretto: pagina aperta fuori da Home Assistant, password dell'utente e se è provvisoria
             "direct": is_direct(request),
+            # Senza permessi tecnici dall'accesso diretto la pagina non nomina Home Assistant, MQTT e add-on (plain.py)
+            "hide_home_assistant": hides_home_assistant(request),
             "has_password": password is not None,
             "must_change": bool(password and password["must_change"]) and is_direct(request),
         }
@@ -840,6 +965,16 @@ def create_app(
         """Stato di collegamenti e integrazioni; controller=false evita di interrogare il controller."""
         state = request.app.state
         cfg = state.settings
+        if hides_home_assistant(request):
+            # Impostazioni → Generale dall'accesso diretto con il solo permesso Importa ed Esporta: le opzioni che la
+            # pagina mostra, senza Home Assistant, broker e database dell'add-on
+            return {
+                "options": {
+                    "default_group": state.service.default_group,
+                    "event_retention_days": cfg.event_retention_days,
+                },
+                "now": _now(),
+            }
         return {
             "controller": await _controller_status(state.controller, cfg, state.db.all_controller_inputs())
             if controller
@@ -929,13 +1064,16 @@ def create_app(
         # Solo quelle che l'utente vede: la presa visione vale per tutti, e ognuna resta nel registro attività
         visible = {i["id"] for i in listing["items"]}
         ids = [i for i in body.ids if i in visible] if body.ids is not None else list(visible)
+        # Nel registro attività titolo e testo veri della notifica, uguali per chiunque prenda visione: non quelli
+        # senza Home Assistant mostrati al personale dall'accesso diretto (le Attività le legge solo l'Amministratore)
+        real = _notification_listing(request, plain=False) if hides_home_assistant(request) else listing
         state = request.app.state
         state.notifications.mark_seen(ids, _current_notifications(state), body.weights, _unknown_faults(state))
         after = _notification_listing(request)
         # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche. Solo quelle ora viste: una
         # peggiorata dopo l'ultimo aggiornamento della pagina resta da gestire, e nessuno l'ha ancora vista così
         chosen = {i["id"] for i in after["items"] if i["seen"]} & set(ids)
-        marked = [i for i in listing["items"] if i["id"] in chosen and not i["seen"]]
+        marked = [i for i in real["items"] if i["id"] in chosen and not i["seen"]]
         if marked:
             titles = ", ".join(f"{i['title']} ({i['text']})" if i["text"] else i["title"] for i in marked[:3])
             more = f" e altre {len(marked) - 3}" if len(marked) > 3 else ""
@@ -1005,7 +1143,10 @@ def create_app(
             "unknown_cards": len(db.list_unknown_cards()),
             # Nomi e passaggi solo a chi può vedere anagrafica e registro
             "expiring": expiring if user.can("persone") else [],
-            "recent": db.list_events(limit=8) if user.can("registro") else [],
+            # Con il Codice Stampato di adesso delle tessere, per il Dettaglio Evento
+            "recent": _events_out(request, db.with_printed_codes(db.list_events(limit=8)))
+            if user.can("registro")
+            else [],
             "backup": await asyncio.to_thread(state.backups.overview) if user.can("backup") else None,
             "system": {
                 # Controller raggiungibile dall'add-on (None: non ancora noto)
@@ -1091,6 +1232,14 @@ def create_app(
             person["last_access"] = last.get(person["id"], "")
         return result
 
+    # Prima di /api/persons/{person_id}, che altrimenti prenderebbe «photos» per un numero di persona
+    @app.get("/api/persons/photos", dependencies=[need("persone")])
+    async def person_photos(request: Request) -> dict[str, str]:
+        """Versione della foto di ogni persona che ne ha una, {numero: versione}: il Dettaglio Evento del registro
+        mostra la Foto in Anagrafica senza leggere tutte le persone né fare una richiesta per evento. Dall'indice,
+        senza i byte."""
+        return {str(person_id): version for person_id, version in request.app.state.db.person_photo_versions().items()}
+
     @app.post("/api/persons", dependencies=[need("persone_modifica")])
     async def create_person(body: PersonIn, request: Request) -> dict:
         return await request.app.state.service.create_person(
@@ -1103,6 +1252,13 @@ def create_app(
             body.company,
             body.notes,
             body.category_id,
+            first_name=body.first_name,
+            last_name=body.last_name,
+            phone=body.phone,
+            email=body.email,
+            employee_id=body.employee_id,
+            referent=body.referent,
+            printed_code=body.printed_code,
         )
 
     @app.get("/api/persons/{person_id}", dependencies=[need("persone")])
@@ -1112,7 +1268,8 @@ def create_app(
         if person is None:
             raise ServiceError("persona non trovata")
         can_log = current_user(request).can("registro")
-        person["events"] = await asyncio.to_thread(db.list_events, person_id=person_id, limit=50) if can_log else []
+        events = await asyncio.to_thread(db.list_events, person_id=person_id, limit=50) if can_log else []
+        person["events"] = _events_out(request, events)
         # Solo quella persona: prima si calcolavano gli ultimi accessi di tutti
         person["last_access"] = db.last_access(person_id)
         return person
@@ -1120,8 +1277,52 @@ def create_app(
     @app.patch("/api/persons/{person_id}", dependencies=[need("persone_modifica")])
     async def update_person(person_id: int, body: PersonUpdateIn, request: Request) -> dict:
         return await request.app.state.service.update_person(
-            person_id, request_user(request), name=body.name, company=body.company, notes=body.notes
+            person_id,
+            request_user(request),
+            name=body.name,
+            company=body.company,
+            notes=body.notes,
+            first_name=body.first_name,
+            last_name=body.last_name,
+            phone=body.phone,
+            email=body.email,
+            employee_id=body.employee_id,
+            referent=body.referent,
         )
+
+    @app.get("/api/persons/{person_id}/photo", dependencies=[need("persone")])
+    async def person_photo(person_id: int, request: Request) -> Response:
+        """Foto della persona (non quelle della telecamera degli eventi), con il tipo salvato. Con la versione giusta
+        nell'URL (?v=, il campo photo della persona) il browser la tiene finché non cambia; senza, la richiede ogni
+        volta."""
+        db = request.app.state.db
+        photo = db.get_person_photo(person_id)
+        if photo is None:
+            detail = "nessuna foto" if db.get_person(person_id) else "persona non trovata"
+            return JSONResponse({"detail": detail}, status_code=404)
+        # Il + della versione (fuso orario) arriva come spazio se la pagina non lo codifica
+        current = (request.query_params.get("v") or "").replace(" ", "+") == photo["updated_at"]
+        return Response(
+            bytes(photo["data"]),
+            media_type=photo["mime"],
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": "inline",
+                "Content-Security-Policy": "default-src 'none'; sandbox",
+                "Cache-Control": PHOTO_CACHE if current else "private, no-cache",
+            },
+        )
+
+    @app.put("/api/persons/{person_id}/photo", dependencies=[need("persone_modifica")])
+    async def put_person_photo(person_id: int, request: Request) -> dict:
+        """Foto nuova o sostituita: il corpo della richiesta sono i byte dell'immagine (JPEG, PNG o WebP, riconosciuti
+        dai primi byte e non dal Content-Type), al massimo 512 KB. Una foto più grande non si legge neanche tutta."""
+        data = await _photo_body(request)
+        return request.app.state.service.set_person_photo(person_id, data, request_user(request))
+
+    @app.delete("/api/persons/{person_id}/photo", dependencies=[need("persone_modifica")])
+    async def delete_person_photo(person_id: int, request: Request) -> dict:
+        return request.app.state.service.delete_person_photo(person_id, request_user(request))
 
     @app.put("/api/persons/{person_id}/access", dependencies=[need("persone_modifica")])
     async def set_access(person_id: int, body: AccessIn, request: Request) -> dict:
@@ -1149,11 +1350,19 @@ def create_app(
 
     @app.post("/api/persons/{person_id}/cards", dependencies=[need("persone_modifica")])
     async def add_card(person_id: int, body: CardIn, request: Request) -> dict:
-        return await request.app.state.service.add_card(person_id, body.card, request_user(request))
+        return await request.app.state.service.add_card(
+            person_id, body.card, request_user(request), printed_code=body.printed_code
+        )
 
     @app.patch("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
     async def set_card_state(card_id: int, body: CardStateIn, request: Request) -> dict:
-        return await request.app.state.service.set_card_enabled(card_id, body.enabled, request_user(request))
+        """Stato (sospesa o attiva, sul controller) e Codice Stampato (solo nell'app: da solo non chiama il
+        controller) di una tessera; quello che non si manda non cambia."""
+        if body.enabled is None and body.printed_code is None:
+            raise HTTPException(400, "indica cosa cambiare della tessera")
+        return await request.app.state.service.update_card(
+            card_id, request_user(request), enabled=body.enabled, printed_code=body.printed_code
+        )
 
     @app.delete("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
     async def delete_card(card_id: int, request: Request) -> dict:
@@ -1185,8 +1394,9 @@ def create_app(
         door: str = "",
     ) -> list[dict]:
         # Una ricerca legge tutto il registro (un anno: un secondo e più): in un thread, per non fermare l'app
-        return await asyncio.to_thread(
-            request.app.state.db.list_events,
+        db = request.app.state.db
+        events = await asyncio.to_thread(
+            db.list_events,
             kind=kind,
             search=q,
             before_id=before_id,
@@ -1197,6 +1407,8 @@ def create_app(
             person_id=person_id,
             door=door,
         )
+        # Codice Stampato di adesso delle tessere della pagina: una query per tutta la pagina
+        return _events_out(request, db.with_printed_codes(events))
 
     @app.get("/api/events/count", dependencies=[need("registro")])
     async def count_events(
@@ -1225,7 +1437,7 @@ def create_app(
         event = request.app.state.db.event_row(event_id)
         if not event:
             raise HTTPException(404, "evento non trovato")
-        return event
+        return _events_out(request, request.app.state.db.with_printed_codes([event]))[0]
 
     @app.get("/api/events/{event_id}/snapshot", dependencies=[need("registro")])
     async def snapshot(event_id: int, request: Request) -> Response:
@@ -1267,7 +1479,9 @@ def create_app(
             while rows := await asyncio.to_thread(
                 state.db.list_events, **filters, before_id=before_id, before_ts=before_ts, limit=EXPORT_PAGE
             ):
-                yield events_csv(rows, names)[len(header) :].encode("utf-8")
+                # Come nella pagina: senza permessi tecnici dall'accesso diretto il dettaglio senza Home Assistant,
+                # e l'origine (chi ha aperto) com'è
+                yield events_csv(_events_out(request, rows), names)[len(header) :].encode("utf-8")
                 before_id, before_ts = rows[-1]["id"], rows[-1]["ts"]
 
         filename = f"registro_accessi_{datetime.now():%Y%m%d_%H%M}.csv"
@@ -1548,7 +1762,10 @@ def create_app(
             # manomissione senza porta (coperchio aperto, controller inclinato): riguarda il controller
             door_filter = config["door_token"] + ("," if len(state.doors) == 1 else "")
             listed = state.db.list_events(door=door_filter, limit=50)
-            events = [e for e in listed if e["door"] or e["kind"] != "manomissione"][:15]
+            events = _events_out(
+                request,
+                state.db.with_printed_codes([e for e in listed if e["door"] or e["kind"] != "manomissione"][:15]),
+            )
         return {
             **door,
             "controller": {
@@ -1561,7 +1778,7 @@ def create_app(
             "readers": readers,
             "groups": groups,
             "events": events,
-            "errors": errors,
+            "errors": [_say(request, e) for e in errors],
         }
 
     @app.post("/api/sites", dependencies=[need("impianti")])
@@ -2924,12 +3141,36 @@ def _low_space(state) -> tuple[int, int] | None:
     return None
 
 
-def _notification_listing(request: Request) -> dict:
+def _notification_listing(request: Request, plain: bool | None = None) -> dict:
+    """Notifiche per l'utente della richiesta; plain None: senza Home Assistant se non lo deve leggere."""
     user = current_user(request)
     state = request.app.state
     return state.notifications.listing(
-        _current_notifications(state), None if user.can("utenti") else user.perms, _unknown_faults(state)
+        _current_notifications(state),
+        None if user.can("utenti") else user.perms,
+        _unknown_faults(state),
+        plain=hides_home_assistant(request) if plain is None else plain,
     )
+
+
+def _events_out(request: Request, events: list[dict]) -> list[dict]:
+    """Eventi del registro per questa richiesta. Senza permessi tecnici dall'accesso diretto dettaglio e motivo della
+    foto mancante senza Home Assistant (un'apertura da Home Assistant non eseguita, una telecamera che non risponde):
+    chi ha aperto o provato ad aprire (source) resta com'è, come nel registro di tutti."""
+    if not hides_home_assistant(request):
+        return events
+    # Anche i nomi delle persone salvati negli eventi, di chi nel frattempo è stato eliminato
+    saved = _written_names(request)
+    names = once(lambda: [*saved(), *(e.get("person_name") or "" for e in events)])
+    result = []
+    for event in events:
+        event = dict(event)
+        if event.get("detail"):
+            event["detail"] = plain_text(event["detail"], f"dettaglio tecnico: {ASK_ADMIN}", names)
+        if event.get("snapshot_error"):
+            event["snapshot_error"] = plain_text(event["snapshot_error"], "foto non riuscita", names)
+        result.append(event)
+    return result
 
 
 def _intercom_status(intercom: IntercomBridge) -> dict:
