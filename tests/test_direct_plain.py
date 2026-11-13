@@ -263,6 +263,23 @@ def test_log_keeps_home_assistant_as_who_opened(plant, monkeypatch):
         assert original["detail"] == HA_FAILED
 
 
+def test_log_csv_without_home_assistant(plant, monkeypatch):
+    """Il Registro CSV scaricato dal personale (Registro e Importa ed Esporta) ha il dettaglio come nella pagina: senza
+    il log dell'add-on. Home Assistant resta solo nella colonna Origine, chi ha aperto o provato ad aprire."""
+    ingress, site, admin, app = plant
+    faults(app, monkeypatch)
+    rows = [line for line in site.get("/api/export/events.csv").text.splitlines() if "apertura non eseguita" in line]
+    assert len(rows) == 1
+    assert f"apertura non eseguita: errore imprevisto: {ASK_ADMIN}" in rows[0] and HA_SOURCE in rows[0]
+    assert not says(rows[0].replace(HA_SOURCE, ""))
+    for line in site.get("/api/export/events.csv").text.splitlines():
+        assert not says(line.replace(HA_SOURCE, "")), line
+    # Con i permessi tecnici e da Home Assistant, come è salvato
+    for client, headers in ((admin, {}), (ingress, OPERATOR)):
+        text = client.get("/api/export/events.csv", headers=headers).text
+        assert HA_FAILED in text and HA_SOURCE in text
+
+
 def test_error_messages_without_home_assistant(plant, monkeypatch):
     ingress, site, admin, app = plant
     # Gestione degli utenti: per il personale il messaggio di sempre sul permesso che manca

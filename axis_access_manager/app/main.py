@@ -1465,7 +1465,9 @@ def create_app(
             while rows := await asyncio.to_thread(
                 state.db.list_events, **filters, before_id=before_id, before_ts=before_ts, limit=EXPORT_PAGE
             ):
-                yield events_csv(rows, names)[len(header) :].encode("utf-8")
+                # Come nella pagina: senza permessi tecnici dall'accesso diretto il dettaglio senza Home Assistant,
+                # e l'origine (chi ha aperto) com'è
+                yield events_csv(_events_out(request, rows), names)[len(header) :].encode("utf-8")
                 before_id, before_ts = rows[-1]["id"], rows[-1]["ts"]
 
         filename = f"registro_accessi_{datetime.now():%Y%m%d_%H%M}.csv"
