@@ -407,11 +407,99 @@ async def test_synchronization_never_takes_the_code_away(service, controller, db
     await service.sync_from_controller()
     assert codes(db) == {"04bc": "1234"}
 
+    # Il numero passato a una tessera dell'app senza codice: su quella tessera fisica non c'è scritto niente, e il
+    # codice dell'altra non la segue (prima diventava «1234», come se fosse scritto anche lì)
+    bruno = await service.create_person("Bruno Verdi", "04dd", "admin")
+    controller.credentials.pop(bruno["cards"][0]["axis_credential_token"])
+    controller.credentials[ugo_token]["IdData"] = [{"Name": "Card", "Value": "04dd"}]
+    await service.sync_from_controller()
+    assert codes(db) == {"04dd": ""} and db.card_by_token(ugo_token)["printed_code"] == ""
+    await service.add_card(bruno["id"], "04ee", "admin", printed_code="1234")
+
     # Giri senza novità: niente cambia, neanche l'Ultima Modifica
     with watch(db, clock) as step:
         await service.sync_from_controller()
         await service.sync_from_controller()
-    assert step.changed() == set() and codes(db) == {"04bc": "1234"}
+    assert step.changed() == set() and codes(db) == {"04dd": "", "04ee": "1234"}
+
+
+def set_number(controller, token: str, number: str) -> None:
+    controller.credentials[token]["IdData"] = [{"Name": "Card", "Value": number}]
+
+
+async def two_with_codes(service) -> tuple[str, str]:
+    """Mario con la 04aa («C1») e Anna con la 04bb («C2»): i token delle loro credenziali."""
+    mario = await service.create_person("Mario Rossi", "04aa", "admin", printed_code="C1")
+    anna = await service.create_person("Anna Bianchi", "04bb", "admin", printed_code="C2")
+    await service.sync_from_controller()
+    return mario["cards"][0]["axis_credential_token"], anna["cards"][0]["axis_credential_token"]
+
+
+@pytest.mark.parametrize("steps", ["un giro", "un giro, Anna letta prima", "tre passaggi e un giro alla fine"])
+async def test_numbers_swapped_on_the_controller_keep_the_codes_on_their_cards(service, controller, db, steps):
+    """Due numeri scambiati tra due credenziali (tessere consegnate alla persona sbagliata): ogni numero è sempre la
+    stessa tessera fisica, con sopra lo stesso codice. Prima la seconda credenziale non trovava più il codice della
+    sua tessera, già passato alla prima, e «C1» spariva: {'04aa': '', '04bb': 'C2'}."""
+    t_mario, t_anna = await two_with_codes(service)
+    mario_id = db.card_by_token(t_mario)["person_id"]
+    anna_id = db.card_by_token(t_anna)["person_id"]
+    if steps.startswith("un giro"):
+        set_number(controller, t_mario, "04bb")
+        set_number(controller, t_anna, "04aa")
+        if steps != "un giro":
+            controller.credentials[t_mario] = controller.credentials.pop(t_mario)
+    else:
+        # Con Axis i numeri sono unici: lo scambio passa da un numero di appoggio
+        set_number(controller, t_mario, "04ff")
+        set_number(controller, t_anna, "04aa")
+        set_number(controller, t_mario, "04bb")
+    await service.sync_from_controller()
+    assert codes(db) == {"04aa": "C1", "04bb": "C2"}
+    assert card_of(db, "04bb")["person_id"] == mario_id and card_of(db, "04aa")["person_id"] == anna_id
+    assert audit_details(db) == []
+    # Il giro dopo non cambia niente
+    await service.sync_from_controller()
+    assert codes(db) == {"04aa": "C1", "04bb": "C2"}
+
+
+async def test_numbers_swapped_with_a_round_between_the_steps_lose_no_code(service, controller, db):
+    """Con un giro di sincronizzazione tra un passaggio e l'altro ogni passaggio, visto da solo, è un numero corretto
+    su una tessera (numero nuovo per l'app): il codice resta alla tessera, come per un numero sbagliato corretto sul
+    controller. Nessun codice si perde e l'indice unico tiene; i due codici finiscono scambiati, e si sistemano dalla
+    scheda (vedi DOCS)."""
+    t_mario, t_anna = await two_with_codes(service)
+    set_number(controller, t_mario, "04ff")
+    await service.sync_from_controller()
+    assert codes(db) == {"04ff": "C1", "04bb": "C2"}
+    set_number(controller, t_anna, "04aa")
+    await service.sync_from_controller()
+    assert codes(db) == {"04ff": "C1", "04aa": "C2"}
+    set_number(controller, t_mario, "04bb")
+    await service.sync_from_controller()
+    assert codes(db) == {"04bb": "C1", "04aa": "C2"}
+
+
+async def test_a_corrected_number_gives_the_code_back_to_its_old_number(service, controller, db):
+    """Nello stesso giro il numero di Mario è corretto in uno nuovo per l'app e il suo numero di prima passa ad Anna:
+    il codice è scritto sulla tessera 04aa, quindi va ad Anna; la 04bb di Anna non è più nell'app, e il suo codice
+    con lei."""
+    t_mario, t_anna = await two_with_codes(service)
+    set_number(controller, t_mario, "04ff")
+    set_number(controller, t_anna, "04aa")
+    await service.sync_from_controller()
+    assert codes(db) == {"04ff": "", "04aa": "C1"}
+    assert db.card_by_token(t_anna)["printed_code"] == "C1"
+
+
+def test_codes_swapped_between_two_cards_in_one_write(db):
+    """set_printed_codes: due tessere che si scambiano il codice non trovano mai lo stesso codice due volte."""
+    mario = db.add_person("Mario Rossi", "utente_mario")
+    first = db.add_card(mario, "04aa", "cred-1", printed_code="C1")
+    second = db.add_card(mario, "04bb", "cred-2", printed_code="c2")
+    db.set_printed_codes({first: "C2", second: "c1"})
+    assert codes(db) == {"04aa": "C2", "04bb": "c1"}
+    db.set_printed_codes({first: "", second: "c1"})
+    assert codes(db) == {"04aa": "", "04bb": "c1"}
 
 
 async def test_rewriting_a_missing_card_keeps_the_code_and_removing_it_takes_it_away(service, controller, db):

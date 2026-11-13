@@ -1218,18 +1218,11 @@ class Database:
         return cursor.lastrowid
 
     def update_card(
-        self,
-        card_id: int,
-        *,
-        person_id: int,
-        number: str,
-        enabled: bool,
-        access: dict | None = None,
-        printed_code: str | None = None,
+        self, card_id: int, *, person_id: int, number: str, enabled: bool, access: dict | None = None
     ) -> None:
         """Tessera come la legge il controller (sincronizzazione). L'Ultima Modifica cambia, per la persona di prima e
-        per quella di adesso, solo se cambia qualcosa della tessera: non se torna solo presente (missing_since).
-        printed_code None: il Codice Stampato resta com'è (il controller non lo conosce)."""
+        per quella di adesso, solo se cambia qualcosa della tessera: non se torna solo presente (missing_since). Il
+        Codice Stampato resta com'è: il controller non lo conosce (vedi set_printed_codes)."""
         # Una tessera ricomparsa sul controller non è più "non presente"
         sql = "UPDATE cards SET person_id = ?, number = ?, enabled = ?, missing_since = ''"
         params: tuple = (person_id, number, int(enabled))
@@ -1239,10 +1232,6 @@ class Database:
             values = (access.get("access_profile", ""), access.get("valid_from", ""), access.get("valid_to", ""))
             params += values
             wanted |= dict(zip(("access_profile", "valid_from", "valid_to"), values, strict=True))
-        if printed_code is not None:
-            sql += ", printed_code = ?"
-            params += (printed_code,)
-            wanted["printed_code"] = printed_code
         with self._writing() as conn:
             row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
             conn.execute(f"{sql} WHERE id = ?", (*params, card_id))
@@ -1273,6 +1262,25 @@ class Database:
             conn.execute("UPDATE cards SET printed_code = ? WHERE id = ?", (printed_code, card_id))
             self._touch_persons([row["person_id"]])
         return True, row["printed_code"]
+
+    def set_printed_codes(self, codes: dict[int, str]) -> None:
+        """Codice Stampato di più tessere insieme ({id: codice}): la sincronizzazione che li rimette sui loro numeri
+        (vedi service.printed_codes_after_sync). Prima si tolgono quelli che cambiano e poi si scrivono i nuovi, così
+        l'indice unico non trova mai lo stesso codice su due tessere a metà strada (due tessere che se lo scambiano).
+        L'Ultima Modifica cambia per le persone delle tessere cambiate davvero."""
+        if not codes:
+            return
+        with self._writing() as conn:
+            changed = {}
+            for card_id, code in codes.items():
+                row = conn.execute("SELECT person_id, printed_code FROM cards WHERE id = ?", (card_id,)).fetchone()
+                if row is not None and row["printed_code"] != code:
+                    changed[card_id] = (row["person_id"], code)
+            conn.executemany("UPDATE cards SET printed_code = '' WHERE id = ?", [(i,) for i in changed])
+            conn.executemany(
+                "UPDATE cards SET printed_code = ? WHERE id = ?", [(c, i) for i, (_, c) in changed.items() if c]
+            )
+            self._touch_persons(person_id for person_id, _ in changed.values())
 
     def set_card_enabled(self, card_id: int, enabled: bool) -> None:
         with self._writing() as conn:

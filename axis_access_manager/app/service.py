@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from .backup_copy import error_reason
 from .config import Settings
-from .db import Database, compose_name, now_iso, split_name
+from .db import Database, compose_name, nocase, now_iso, split_name
 from .events import Event, EventMonitor, door_of_topic, event_from_log
 from .rules import RuleError, check_validity, normalize_validity, validity_state
 from .vapix import A1210Client, ControllerUnreachable, VapixError
@@ -280,6 +280,25 @@ def normalize_printed_code(value: str | None) -> str:
     PRINTED_CODE_MAX caratteri (vedi _short_text). Unico senza distinguere le maiuscole: lo controlla
     AccessService.check_printed_code."""
     return _short_text(value, PRINTED_CODE_MAX, PRINTED_CODE_LABEL)
+
+
+def printed_codes_after_sync(cards: list[dict], before: dict[str, str]) -> dict[int, str]:
+    """Codici Stampati da cambiare alla fine di un giro di sincronizzazione ({id della tessera: codice}). Il codice è
+    scritto sulla tessera fisica, cioè sul suo numero: ogni numero che l'app conosceva all'inizio del giro (before,
+    {nocase(numero): codice}, "" compreso) tiene il suo, qualunque credenziale o persona lo abbia adesso (tessera
+    passata a un altro utente, scritta di nuovo con un token nuovo, numeri scambiati tra due credenziali, numero
+    passato a una tessera che nell'app ne aveva un altro). Un numero nuovo per l'app arrivato a una tessera già nota
+    (numero corretto sul controller) tiene il codice della tessera, a meno che quel codice non sia tornato al numero su
+    cui è scritto. Il controller non conosce il codice: la sincronizzazione non ne crea mai uno."""
+    wanted = {}
+    for card in cards:
+        number = nocase(card["number"])
+        wanted[card["id"]] = before[number] if number in before else card["printed_code"]
+    back = {nocase(wanted[c["id"]]) for c in cards if nocase(c["number"]) in before and wanted[c["id"]]}
+    for card in cards:
+        if nocase(card["number"]) not in before and nocase(wanted[card["id"]]) in back:
+            wanted[card["id"]] = ""
+    return {card["id"]: wanted[card["id"]] for card in cards if wanted[card["id"]] != card["printed_code"]}
 
 
 def photo_mime(data: bytes) -> str:
@@ -614,6 +633,10 @@ class AccessService:
             # Una scrittura per tessera cambiata e un solo commit: con centinaia di tessere su una scheda SD
             # un commit per riga fermava l'add-on (comandi di apertura compresi) per secondi
             with self.db.batch():
+                # Codici Stampati di adesso per numero: alla fine del giro tornano ai loro numeri (vedi
+                # printed_codes_after_sync). Durante il giro non si spostano: con due numeri scambiati la seconda
+                # credenziale non troverebbe più il codice della sua tessera, già passato alla prima
+                codes_before = {nocase(card["number"]): card["printed_code"] for card in self.db.all_cards()}
                 for credential in credentials:
                     token = credential.get("token") or ""
                     number = card_of_credential(credential)
@@ -640,38 +663,29 @@ class AccessService:
                     access = access_of_credential(credential)
                     if existing is None:
                         other = self.db.card_by_number(number)
-                        printed_code = ""
                         if other is not None:
                             # La stessa tessera fisica scritta di nuovo sul controller (per esempio passata a un altro
-                            # utente): tiene il suo Codice Stampato, che il controller non conosce
-                            printed_code = other["printed_code"]
+                            # utente): il suo Codice Stampato torna alla fine del giro, con il numero
                             self.db.delete_card(other["id"])
-                        self.db.add_card(person_id, number, token, enabled, access, printed_code)
+                        self.db.add_card(person_id, number, token, enabled, access)
                         added += 1
                     elif self._card_changed(existing, person_id, number, enabled, access):
-                        printed_code = None
                         if number != existing["number"]:
                             # Numero passato a questa tessera da un'altra (tessera riassegnata sul controller):
-                            # l'altra, rimasta nell'app come non presente, se ne va come per una tessera nuova. Il suo
-                            # Codice Stampato è scritto su quella tessera fisica, e passa con il numero
+                            # l'altra, rimasta nell'app come non presente, se ne va come per una tessera nuova
                             other = self.db.card_by_number(number)
                             if other is not None and other["id"] != existing["id"]:
-                                printed_code = other["printed_code"] or None
                                 self.db.delete_card(other["id"])
                             self.db.forget_unknown_card(number)
                         self.db.update_card(
-                            existing["id"],
-                            person_id=person_id,
-                            number=number,
-                            enabled=enabled,
-                            access=access,
-                            printed_code=printed_code,
+                            existing["id"], person_id=person_id, number=number, enabled=enabled, access=access
                         )
                     seen_cards.add(token)
                 # Tessere sparite dal controller: mai cancellate da sole. Si segnano e decide l'utente
                 # (riscriverle o toglierle dall'app): un controller resettato o sostituito non svuota l'anagrafica.
                 # Neanche le persone rimaste senza tessere (passate a un altro utente) se ne vanno: solo a mano
                 cards = self.db.all_cards()
+                self.db.set_printed_codes(printed_codes_after_sync(cards, codes_before))
                 missing = [c for c in cards if c["axis_credential_token"] not in seen_cards]
                 new_missing = [c["id"] for c in missing if not c["missing_since"]]
                 if new_missing:
