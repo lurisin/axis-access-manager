@@ -27,6 +27,11 @@ GRANT_LOG_TAIL = 30
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
 # Telefono ed email delle persone: solo nell'app (vedi db.PERSON_COLUMNS)
 PHONE_PATTERN = re.compile(r"[0-9 +\-./()]+")
+# Telefono ed email incollati da una pagina web, da un PDF o da Word (index.html li pulisce allo stesso modo):
+# caratteri invisibili che si tolgono (segni di direzione del testo, spazi di larghezza zero, trattino morbido) e
+# trattini tipografici che valgono come il trattino; gli spazi non separabili valgono come lo spazio
+INVISIBLE_MARKS = re.compile(r"[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]")
+DASHES = re.compile(r"[\u2010-\u2015\u2212]")
 PHONE_DIGITS = 6
 PHONE_MAX = 30
 EMAIL_MAX = 254
@@ -203,9 +208,11 @@ def saved_names(saved: dict) -> tuple[str, str, str]:
 
 
 def normalize_phone(value: str | None) -> str:
-    """Telefono facoltativo: cifre, spazi e + - . / ( ), almeno PHONE_DIGITS cifre. Il messaggio non ripete il valore,
-    che non deve finire nei log."""
-    phone = (value or "").strip()
+    """Telefono facoltativo: cifre, spazi e + - . / ( ), almeno PHONE_DIGITS cifre. Ogni spazio (anche quello non
+    separabile di un numero copiato) è uno spazio normale, e gli spazi sono compattati come nel nome; i trattini
+    tipografici («–» di Word) sono il trattino e i caratteri invisibili si tolgono (vedi INVISIBLE_MARKS). Il messaggio
+    non ripete il valore, che non deve finire nei log."""
+    phone = " ".join(DASHES.sub("-", INVISIBLE_MARKS.sub("", value or "")).split())
     if not phone:
         return ""
     if len(phone) > PHONE_MAX:
@@ -218,9 +225,10 @@ def normalize_phone(value: str | None) -> str:
 
 
 def normalize_email(value: str | None) -> str:
-    """Email facoltativa: senza spazi, una sola @, dopo la @ un dominio con almeno un punto. Il messaggio non ripete
-    il valore, che non deve finire nei log."""
-    email = (value or "").strip()
+    """Email facoltativa: senza spazi, una sola @, dopo la @ un dominio con almeno un punto. Senza gli spazi ai lati
+    (anche quelli non separabili) e i caratteri invisibili di un indirizzo copiato (vedi INVISIBLE_MARKS). Il messaggio
+    non ripete il valore, che non deve finire nei log."""
+    email = INVISIBLE_MARKS.sub("", value or "").strip()
     if not email:
         return ""
     if len(email) > EMAIL_MAX:

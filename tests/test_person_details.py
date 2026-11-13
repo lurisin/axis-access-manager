@@ -624,6 +624,18 @@ async def test_backup_of_0_28_2_against_a_new_one_shows_only_what_changed(plant,
         ("(06) 123-45.67/8", "(06) 123-45.67/8"),
         ("123456", "123456"),
         ("1" * 30, "1" * 30),
+        # Incollati da una pagina web, da un PDF o da Word: spazi non separabili (anche stretti), tabulazioni e spazi
+        # doppi, trattini tipografici, segni di direzione del testo (WhatsApp Web) e spazi di larghezza zero
+        ("333\u00a01234567", "333 1234567"),
+        ("+39\u202f333\u2007123\u00a04567", "+39 333 123 4567"),
+        ("333\t1234567", "333 1234567"),
+        ("  333   123  4567 ", "333 123 4567"),
+        ("06 \u2013 1234567", "06 - 1234567"),
+        ("06\u20101234\u2011567\u2212890\u2014", "06-1234-567-890-"),
+        ("\u202a+39 333 1234567\u202c", "+39 333 1234567"),
+        ("\ufeff333\u200b123\u00ad4567\u200e", "3331234567"),
+        # Il massimo di 30 caratteri vale dopo la pulizia
+        ("+39  333  1234  5678  9012  345", "+39 333 1234 5678 9012 345"),
     ],
 )
 def test_valid_phones(value, expected):
@@ -635,7 +647,8 @@ def test_valid_phones(value, expected):
     [
         ("12345", "almeno 6 cifre"),
         ("+39 333 abc 4567", "ammessi"),
-        ("333\t1234567", "ammessi"),
+        ("333#1234567", "ammessi"),
+        ("333\u20201234567", "ammessi"),
         ("1" * 31, "massimo 30"),
         ("+-./() ", "almeno 6 cifre"),
     ],
@@ -646,12 +659,31 @@ def test_invalid_phones_say_why_without_the_value(value, reason):
     assert value.strip() not in str(err.value)
 
 
+async def test_pasted_phone_and_email_are_saved_clean(service, db):
+    """Telefono ed email copiati da una pagina web o da Word, con lo spazio non separabile e il trattino lungo: si
+    salvano puliti, come scritti a mano, invece di un errore che dice che gli spazi sono ammessi."""
+    person = await service.create_person(
+        "", "", "admin", first_name="Giulia", last_name="Bianchi", phone="333\u00a01234567", email=f"{EMAIL}\u00a0"
+    )
+    assert (person["phone"], person["email"]) == ("333 1234567", EMAIL)
+    person = await service.update_person(person["id"], "admin", phone="06 \u2013 1234567", email=f"\u00a0{EMAIL}")
+    assert (person["phone"], person["email"]) == ("06 - 1234567", EMAIL)
+    # Lo stesso telefono scritto con lo spazio normale non è una modifica
+    await service.update_person(person["id"], "admin", phone="06\u00a0-\u00a01234567")
+    assert [a["detail"] for a in db.list_audit()].count("Giulia Bianchi: telefono") == 1
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
         ("", ""),
         (f"  {EMAIL} ", EMAIL),
         ("nome.cognome+ufficio@sub.example.com", "nome.cognome+ufficio@sub.example.com"),
+        # Copiata con uno spazio non separabile o un carattere invisibile ai lati o in mezzo
+        (f"\u00a0{EMAIL}\u00a0", EMAIL),
+        (f"\u2003{EMAIL}\u3000\n", EMAIL),
+        (f"\ufeff{EMAIL}\u200b", EMAIL),
+        ("riservata@\u200bexample.it", EMAIL),
     ],
 )
 def test_valid_emails(value, expected):
@@ -669,6 +701,7 @@ def test_valid_emails(value, expected):
         ("mario@.it", "nome@esempio.it"),
         ("mario@example.", "nome@esempio.it"),
         ("mario rossi@example.it", "spazi"),
+        ("mario\u00a0rossi@example.it", "spazi"),
         ("x" * 250 + "@a.it", "massimo 254"),
     ],
 )
@@ -869,3 +902,33 @@ def test_persons_are_sorted_by_last_name_and_found_by_phone_and_email():
         "nothing": [],
         "blank": [1, 2, 3, 4, 5, 6, 7, 8],
     }
+
+
+@needs_node
+def test_page_cleans_pasted_phone_and_email_like_the_server():
+    """Telefono ed email incollati nella pagina: puliti mentre si scrivono come li pulisce il server (spazio non
+    separabile, trattino lungo di Word, segni invisibili), l'email anche senza spazi ai lati, che il browser
+    rifiuterebbe prima dell'invio. Il telefono che si sta scrivendo tiene i suoi spazi, anche in fondo."""
+    values = {
+        "nbsp": ("phone", "333 1234567"),
+        "endash": ("phone", "06 – 1234567"),
+        "marks": ("phone", "‪+39 333 1234567‬"),
+        "typing": ("phone", "333 "),
+        "email": ("email", f" {EMAIL} "),
+        "invisible": ("email", f"﻿{EMAIL}​"),
+    }
+    calls = {key: f"cleanContact({json.dumps(kind)}, {json.dumps(text)})" for key, (kind, text) in values.items()}
+    out = run_page("Europe/Rome", calls, names=("INVISIBLE_MARKS", "cleanContact"))
+    assert out == {
+        "nbsp": "333 1234567",
+        "endash": "06 - 1234567",
+        "marks": "+39 333 1234567",
+        "typing": "333 ",
+        "email": EMAIL,
+        "invisible": EMAIL,
+    }
+    # Ripulito dalla pagina, il server lo salva com'è
+    for key in ("nbsp", "endash", "marks"):
+        assert normalize_phone(out[key]) == out[key]
+    for key in ("email", "invisible"):
+        assert normalize_email(out[key]) == out[key]

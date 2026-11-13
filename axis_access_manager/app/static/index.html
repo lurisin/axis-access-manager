@@ -2315,8 +2315,22 @@ function readValidity(dlg) {
 const nameFields = (p = {}) => `<div class="fields-2">${field("Nome", `<input name="first_name" autocomplete="off" maxlength="100" value="${esc(p.first_name || "")}">`)}
   ${field("Cognome", `<input name="last_name" autocomplete="off" maxlength="100" value="${esc(p.last_name || "")}">`)}</div>`;
 // Telefono ed email: solo nell'app, mai sul controller, in Home Assistant o nel registro
-const contactFields = (p = {}) => `<div class="fields-2">${field("Telefono", `<input type="tel" name="phone" inputmode="tel" autocomplete="tel" maxlength="30" value="${esc(p.phone || "")}" placeholder="facoltativo">`)}
-  ${field("Email", `<input type="email" name="email" autocomplete="email" maxlength="254" value="${esc(p.email || "")}" placeholder="facoltativa">`)}</div>`;
+const contactFields = (p = {}) => `<div class="fields-2">${field("Telefono", `<input type="tel" name="phone" inputmode="tel" autocomplete="tel" maxlength="30" data-clean="phone" value="${esc(p.phone || "")}" placeholder="facoltativo">`)}
+  ${field("Email", `<input type="email" name="email" autocomplete="email" maxlength="254" data-clean="email" value="${esc(p.email || "")}" placeholder="facoltativa">`)}</div>`;
+// Telefono ed email incollati da una pagina web, da un PDF o da Word, puliti come fa il server mentre si scrivono:
+// senza caratteri invisibili, con gli spazi non separabili come lo spazio e i trattini tipografici («–» di Word) come
+// il trattino. L'email anche senza spazi ai lati, che il browser altrimenti rifiuta prima di mandarla
+const INVISIBLE_MARKS = /[\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff]/g;
+function cleanContact(kind, text) {
+  const value = String(text || "").replace(INVISIBLE_MARKS, "");
+  return kind === "email" ? value.trim() : value.replace(/[\u2010-\u2015\u2212]/g, "-").replace(/\s/g, " ");
+}
+document.addEventListener("input", (e) => {
+  const kind = e.target.dataset?.clean;
+  if (!kind) return;
+  const clean = cleanContact(kind, e.target.value);
+  if (clean !== e.target.value) e.target.value = clean;
+});
 async function newPerson(card = "") {
   await loadCategories();
   const created = await modal({
