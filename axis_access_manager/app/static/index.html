@@ -879,15 +879,26 @@ function morph(target, html) {
   const next = document.createElement("template");
   next.innerHTML = html;
   paintIcons(next.content);
+  const focused = document.activeElement;
   morphChildren(target, next.content);
+  // Un elemento spostato perde il fuoco (il browser lo toglie a chi esce dalla pagina, anche per un attimo): se c'è
+  // ancora gli si ridà, senza scorrere la pagina. Così Invio apre ancora la riga scelta dopo l'aggiornamento
+  const now = document.activeElement;
+  if (focused && focused !== document.body && focused !== now && focused.isConnected && (!now || now === document.body)) {
+    focused.focus({preventScroll: true});
+  }
 }
 function morphChildren(from, to) {
   // Righe sparite tolte prima: spostare le successive davanti a loro farebbe perdere il fuoco
   const nextKeys = new Set([...to.childNodes].map(nodeKey).filter(Boolean));
   [...from.children].forEach((c) => { const k = nodeKey(c); if (k && !nextKeys.has(k)) c.remove(); });
   const keyed = new Map([...from.children].filter(nodeKey).map((c) => [nodeKey(c), c]));
+  const steady = steadyNodes(from, to, keyed);
   let cur = from.firstChild;
   [...to.childNodes].forEach((next) => {
+    // Le righe che vanno più avanti restano dove sono finché non arriva il loro turno: una riga che scende in fondo
+    // si sposta una volta sola, invece di spostare davanti a lei tutte quelle che la seguono
+    while (cur && !steady.has(cur) && keyed.get(nodeKey(cur)) === cur) cur = cur.nextSibling;
     const key = nodeKey(next);
     const match = key ? keyed.get(key) : cur && !nodeKey(cur) ? cur : null;
     if (key) keyed.delete(key);
@@ -897,6 +908,25 @@ function morphChildren(from, to) {
     morphNode(match, next);
   });
   while (cur) { const after = cur.nextSibling; cur.remove(); cur = after; }
+}
+// Righe con data-key che restano ferme: le più numerose che sono già nell'ordine nuovo (la sottosequenza crescente più
+// lunga delle loro posizioni di adesso, n log n). Si spostano solo le altre, una mossa per riga che cambia posto
+function steadyNodes(from, to, keyed) {
+  const place = new Map();
+  [...from.children].forEach((c, i) => place.set(c, i));
+  const seq = [];
+  to.childNodes.forEach((n) => { const match = keyed.get(nodeKey(n)); if (match) seq.push(match); });
+  const tails = [], prev = [];
+  seq.forEach((node, k) => {
+    const at = place.get(node);
+    let lo = 0, hi = tails.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (place.get(seq[tails[mid]]) < at) lo = mid + 1; else hi = mid; }
+    prev[k] = lo ? tails[lo - 1] : -1;
+    tails[lo] = k;
+  });
+  const steady = new Set();
+  for (let k = tails.length ? tails[tails.length - 1] : -1; k >= 0; k = prev[k]) steady.add(seq[k]);
+  return steady;
 }
 function morphNode(cur, next) {
   if (cur.nodeType !== next.nodeType || cur.nodeName !== next.nodeName) { cur.replaceWith(next); return; }
