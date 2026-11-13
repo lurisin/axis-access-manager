@@ -185,6 +185,8 @@ class PersonIn(BaseModel):
     email: str = ""
     employee_id: str = ""
     referent: str = ""
+    # Codice Stampato della tessera (solo con card), controllato da AccessService (normalize_printed_code)
+    printed_code: str = ""
 
 
 class PersonUpdateIn(BaseModel):
@@ -209,10 +211,14 @@ class AccessIn(BaseModel):
 
 class CardIn(BaseModel):
     card: str
+    # Codice Stampato sulla tessera fisica, facoltativo (vedi AccessService.add_card)
+    printed_code: str = ""
 
 
 class CardStateIn(BaseModel):
-    enabled: bool
+    # None: non cambia. Lo stato va sul controller, il Codice Stampato resta nell'app (vedi AccessService.update_card)
+    enabled: bool | None = None
+    printed_code: str | None = None
 
 
 class ScheduleRuleIn(BaseModel):
@@ -553,6 +559,7 @@ FIELD_LABELS = {
     "email": "email",
     "employee_id": "matricola",
     "referent": "referente interno",
+    "printed_code": "Codice Stampato",
 }
 # Campi delle persone che non finiscono nel log neanche quando sono rifiutati (vedi db.PERSON_COLUMNS), a qualsiasi
 # profondità dei dati mandati
@@ -1077,7 +1084,8 @@ def create_app(
             "unknown_cards": len(db.list_unknown_cards()),
             # Nomi e passaggi solo a chi può vedere anagrafica e registro
             "expiring": expiring if user.can("persone") else [],
-            "recent": db.list_events(limit=8) if user.can("registro") else [],
+            # Con il Codice Stampato di adesso delle tessere, per il Dettaglio Evento
+            "recent": db.with_printed_codes(db.list_events(limit=8)) if user.can("registro") else [],
             "backup": await asyncio.to_thread(state.backups.overview) if user.can("backup") else None,
             "system": {
                 # Controller raggiungibile dall'add-on (None: non ancora noto)
@@ -1189,6 +1197,7 @@ def create_app(
             email=body.email,
             employee_id=body.employee_id,
             referent=body.referent,
+            printed_code=body.printed_code,
         )
 
     @app.get("/api/persons/{person_id}", dependencies=[need("persone")])
@@ -1279,11 +1288,19 @@ def create_app(
 
     @app.post("/api/persons/{person_id}/cards", dependencies=[need("persone_modifica")])
     async def add_card(person_id: int, body: CardIn, request: Request) -> dict:
-        return await request.app.state.service.add_card(person_id, body.card, request_user(request))
+        return await request.app.state.service.add_card(
+            person_id, body.card, request_user(request), printed_code=body.printed_code
+        )
 
     @app.patch("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
     async def set_card_state(card_id: int, body: CardStateIn, request: Request) -> dict:
-        return await request.app.state.service.set_card_enabled(card_id, body.enabled, request_user(request))
+        """Stato (sospesa o attiva, sul controller) e Codice Stampato (solo nell'app: da solo non chiama il
+        controller) di una tessera; quello che non si manda non cambia."""
+        if body.enabled is None and body.printed_code is None:
+            raise HTTPException(400, "indica cosa cambiare della tessera")
+        return await request.app.state.service.update_card(
+            card_id, request_user(request), enabled=body.enabled, printed_code=body.printed_code
+        )
 
     @app.delete("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
     async def delete_card(card_id: int, request: Request) -> dict:
@@ -1315,8 +1332,9 @@ def create_app(
         door: str = "",
     ) -> list[dict]:
         # Una ricerca legge tutto il registro (un anno: un secondo e più): in un thread, per non fermare l'app
-        return await asyncio.to_thread(
-            request.app.state.db.list_events,
+        db = request.app.state.db
+        events = await asyncio.to_thread(
+            db.list_events,
             kind=kind,
             search=q,
             before_id=before_id,
@@ -1327,6 +1345,8 @@ def create_app(
             person_id=person_id,
             door=door,
         )
+        # Codice Stampato di adesso delle tessere della pagina: una query per tutta la pagina
+        return db.with_printed_codes(events)
 
     @app.get("/api/events/count", dependencies=[need("registro")])
     async def count_events(
@@ -1355,7 +1375,7 @@ def create_app(
         event = request.app.state.db.event_row(event_id)
         if not event:
             raise HTTPException(404, "evento non trovato")
-        return event
+        return request.app.state.db.with_printed_codes([event])[0]
 
     @app.get("/api/events/{event_id}/snapshot", dependencies=[need("registro")])
     async def snapshot(event_id: int, request: Request) -> Response:
@@ -1678,7 +1698,7 @@ def create_app(
             # manomissione senza porta (coperchio aperto, controller inclinato): riguarda il controller
             door_filter = config["door_token"] + ("," if len(state.doors) == 1 else "")
             listed = state.db.list_events(door=door_filter, limit=50)
-            events = [e for e in listed if e["door"] or e["kind"] != "manomissione"][:15]
+            events = state.db.with_printed_codes([e for e in listed if e["door"] or e["kind"] != "manomissione"][:15])
         return {
             **door,
             "controller": {

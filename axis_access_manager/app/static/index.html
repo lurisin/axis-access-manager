@@ -437,6 +437,11 @@
   .pill.accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
   /* Pallino senza colore proprio dentro un'etichetta: prende quello dell'etichetta (verde se collegato) */
   .pill .dot { background: currentColor; }
+  /* Codice Stampato di una tessera (quello scritto sopra la tessera fisica) accanto al nome o al numero nel registro */
+  .pcode { display: inline-block; border: 1px solid var(--border-strong); border-radius: 6px; padding: 0 6px; font-size: 12px;
+           font-weight: 600; color: var(--text); line-height: 1.5; max-width: 100%; overflow-wrap: anywhere; vertical-align: 1px; }
+  /* Scheda: il numero esadecimale sotto il Codice Stampato, più piccolo */
+  .item .card-no { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
   .alert { display: flex; gap: 12px; align-items: flex-start; border-radius: var(--radius); padding: 12px 16px; margin-bottom: 12px;
@@ -2794,6 +2799,10 @@ const contactFields = (p = {}) => `<div class="fields-2">${field("Telefono", `<i
 // Matricola (codice interno, unica) e referente interno: anche loro solo nell'app
 const idFields = (p = {}) => `<div class="fields-2">${field("Matricola", `<input name="employee_id" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(p.employee_id || "")}" placeholder="facoltativa">`)}
   ${field("Referente Interno", `<input name="referent" autocomplete="off" maxlength="100" value="${esc(p.referent || "")}" placeholder="facoltativo">`)}</div>`;
+// Codice Stampato della tessera: quello scritto sopra la tessera fisica (sono tutte bianche), facoltativo e unico. Solo
+// nell'app: mai sul controller. Si scrive aggiungendo o registrando una tessera, e dopo dalla scheda (Codice)
+const printedCodeField = (value = "", hint = "Quello scritto sopra la tessera. Resta solo nell'app.") =>
+  field("Codice Stampato", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo, es. Ciccio o 1234">`, hint);
 // Telefono ed email incollati da una pagina web, da un PDF o da Word, puliti come fa il server mentre si scrivono:
 // senza caratteri invisibili, con gli spazi non separabili come lo spazio e i trattini tipografici («–» di Word) come
 // il trattino. L'email anche senza spazi ai lati, che il browser altrimenti rifiuta prima di mandarla
@@ -2820,14 +2829,15 @@ async function newPerson(card = "") {
       ${contactFields()}
       ${idFields()}
       ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
+      <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField("", "Quello che hai scritto sopra la tessera, es. Ciccio o 1234. Resta solo nell'app.")}</div>
       ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Persone → Tipologie.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}
       <p class="hint">La Foto della Persona si aggiunge dalla sua scheda, dopo averla registrata. Telefono, email, matricola, referente e foto restano solo nell'app.</p>`,
     actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
       const body = {first_name: val(dlg, "first_name"), last_name: val(dlg, "last_name"), card: val(dlg, "card"), company: val(dlg, "company"), phone: val(dlg, "phone"), email: val(dlg, "email"), employee_id: val(dlg, "employee_id"), referent: val(dlg, "referent"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0)};
-      // La validità è della tessera: senza, la durata della tipologia parte dalla prima tessera
-      if (body.card) Object.assign(body, readValidity(dlg));
+      // Validità e Codice Stampato sono della tessera: senza, la durata della tipologia parte dalla prima tessera
+      if (body.card) Object.assign(body, readValidity(dlg), {printed_code: val(dlg, "printed_code")});
       if (!body.first_name && !body.last_name) { toast("Serve il nome o il cognome", true); return false; }
       const person = await run(() => api("api/persons", {method: "POST", body}), body.card ? "Persona registrata: la tessera è attiva sul controller" : "Persona registrata senza tessera",
         body.card ? "Registrazione della persona e scrittura della tessera sul controller" : "Registrazione della persona");
@@ -2836,7 +2846,11 @@ async function newPerson(card = "") {
     onOpen: (dlg) => {
       bindValidity(dlg);
       bindCategory(dlg);
-      $("[name=card]", dlg).addEventListener("input", (e) => { $("#f-card-validity", dlg).hidden = !e.target.value.trim(); });
+      $("[name=card]", dlg).addEventListener("input", (e) => {
+        const none = !e.target.value.trim();
+        $("#f-card-validity", dlg).hidden = none;
+        $("#f-card-code", dlg).hidden = none;
+      });
     },
   });
   if (created) {
@@ -2938,8 +2952,9 @@ async function openPerson(id) {
       <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
           <div class="ev-icon ${cardActive(c) ? "k-accent" : "k-muted"}">${icon("card")}</div>
-          <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
+          <div class="grow">${c.printed_code ? `<div class="title" title="Codice Stampato">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="title mono">${esc(c.number)}</div>`}<div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
+          <button type="button" class="small" data-card-code="${c.id}" aria-label="Codice Stampato della tessera ${esc(c.number)}" title="Codice Stampato">${icon("edit")}Codice</button>
           <button type="button" class="small danger" data-del-card="${c.id}" data-refocus="[data-add-card]">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
         <dl class="props"><dt>Foto</dt><dd>${photoCell}</dd>
@@ -3043,12 +3058,28 @@ async function openPerson(id) {
   $("[data-add-card]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Aggiungi Tessera a " + p.name,
-      body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, `${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.`)}`,
+      body: `<div class="fields-2">${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`)}
+        ${printedCodeField("", "")}</div>
+        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Il Codice Stampato è quello scritto sopra la tessera (es. Ciccio o 1234) e resta solo nell'app. Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.</p>`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false}],
+        (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card"), printed_code: val(dlg, "printed_code")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false}],
     });
     if (ok) reload();
   };
+  // Codice Stampato: solo nell'app, non scrive sul controller (veloce anche con il controller spento)
+  $$("[data-card-code]", sheet).forEach((b) => b.onclick = async () => {
+    const card = p.cards.find((c) => c.id === Number(b.dataset.cardCode));
+    const ok = await modal({
+      title: "Codice Stampato",
+      body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", "Quello scritto sopra la tessera, es. Ciccio o 1234. Vuoto per toglierlo. Resta solo nell'app e non va sul controller.")}`,
+      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+        const code = val(dlg, "printed_code");
+        if (code === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
+        return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code}}), code ? "Codice stampato salvato" : "Codice stampato tolto", "Salvataggio del codice stampato")) || false;
+      }}],
+    });
+    if (ok) reload();
+  });
   $$("[data-restore-card]", sheet).forEach((b) => b.onclick = async () => {
     if (await restoreMissing([Number(b.dataset.restoreCard)])) reload();
   });
@@ -3112,9 +3143,10 @@ async function viewUnknown(el) {
       const options = [...store.persons].sort(comparePersons).map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
       const ok = await modal({
         title: "Assegna Tessera " + number,
-        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.") : '<p class="muted">Nessuna persona registrata.</p>',
+        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.")
+          + printedCodeField("", "Quello che hai scritto sopra la tessera, es. Ciccio o 1234. Resta solo nell'app.") : '<p class="muted">Nessuna persona registrata.</p>',
         actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
-          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
+          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number, printed_code: val(dlg, "printed_code")}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
       });
       if (ok) { loadSummary(); render(); }
     } else if (b.dataset.ignore) {
@@ -3171,9 +3203,11 @@ function logRow(e, {place = true} = {}) {
   const who = e.person_name || (e.card ? `Tessera ${e.card}` : e.kind === "citofono" ? e.source || "Citofono" : e.kind === "apertura_remota" ? e.source || "Home Assistant" : e.kind === "uscita" ? e.source || "Pulsante" : inputDenied(e) ? e.source : "");
   let what = who ? LOG_ROW_WHAT[e.kind] || label.replace(/^Accesso /, "").replace(/^Tessera /, "") : label;
   if (what.toLowerCase() === who.toLowerCase()) what = "";
+  // Codice Stampato che la tessera ha adesso (il registro salva solo il numero)
+  const code = e.printed_code ? ` <span class="pcode" title="Codice Stampato della tessera ${esc(e.card)}">${esc(e.printed_code)}</span>` : "";
   return `<div class="ev ${e.id === logSelected ? "sel" : ""}" data-event="${e.id}" role="button" tabindex="0" title="${esc(fmtFull(e.ts))}">
     <span class="time">${esc(fmtTime(e.ts))}</span><span class="dot ${KIND_DOT[cls] || ""}"></span>
-    <span class="what">${who ? `<b>${esc(who)}</b> <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="Con foto">${icon("camera", "icon")}</span>` : ""}${e.recovered ? ' <span class="muted small-text" title="Recuperato dal registro interno del controller">· recuperato</span>' : ""}</span>
+    <span class="what">${who ? `<b>${esc(who)}</b>${code} <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="Con foto">${icon("camera", "icon")}</span>` : ""}${e.recovered ? ' <span class="muted small-text" title="Recuperato dal registro interno del controller">· recuperato</span>' : ""}</span>
     ${place && multiDoor() ? `<span class="where">${esc(eventPlace(e))}</span>` : "<span></span>"}
   </div>`;
 }
@@ -3185,6 +3219,8 @@ function eventDetail(e) {
     door ? ["Porta", `${can("stato") ? `<a href="#porte/${door.id}">${esc(door.name)}</a>` : esc(door.name)}${placeOf(door) ? ` <span class="muted">· ${esc(placeOf(door))}</span>` : ""}`] : e.door ? ["Porta", `<code>${esc(e.door)}</code>`] : null,
     e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
+    // Quello che la tessera ha adesso: il registro salva solo il numero
+    e.printed_code ? ["Codice Stampato", `${esc(e.printed_code)} <span class="muted small-text">· quello di adesso della tessera</span>`] : null,
     e.detail ? ["Dettaglio", `${esc(e.detail)}${DETAIL_HINTS[e.detail] ? ` <span class="muted">· ${esc(DETAIL_HINTS[e.detail])}</span>` : ""}`] : null,
     e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
     e.recovered ? ["Recuperato", "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
@@ -4830,7 +4866,7 @@ const COMPARE_COUNTS = [["prende", "da prendere in carico", "da prendere in cari
 const compareCounts = (counts) => COMPARE_COUNTS.filter(([k]) => counts[k]).map(([k, one, many]) => plural(counts[k], one, many)).join(" · ");
 function cappedRows(rows) {
   const rest = rows.length - 40;
-  return rows.slice(0, 40).map((i) => restoreItemHtml(i, true)).join("") + (rest > 0 ? `<p class="muted small-text" style="margin:4px 0 0">${rest === 1 ? "E un'altra riga." : `E altre ${rest} righe.`}</p>` : "");
+  return rows.slice(0, 40).map((i) => restoreItemHtml(i, {readonly: true})).join("") + (rest > 0 ? `<p class="muted small-text" style="margin:4px 0 0">${rest === 1 ? "E un'altra riga." : `E altre ${rest} righe.`}</p>` : "");
 }
 function shadowHtml(sh) {
   const rounds = sh?.rounds || {};
@@ -5472,8 +5508,9 @@ function compareBackup(b, backups, part = "") {
       load();
     }});
 }
-// readonly: riga del Confronto, senza casella e con le sorprese in evidenza
-function restoreItemHtml(i, readonly = false) {
+// readonly: riga del Confronto, senza casella e con le sorprese in evidenza. In un oggetto: con .map(restoreItemHtml)
+// l'indice della riga faceva da readonly, e in Cosa Cambierà solo la prima riga di ogni sezione si poteva spuntare
+function restoreItemHtml(i, {readonly = false} = {}) {
   const [cls, ic] = RESTORE_ACTIONS[i.action] || ["k-muted", "refresh"];
   const tag = readonly ? "div" : "label";
   return `<${tag} class="rs-item${i.blocked ? " blocked" : ""}${readonly ? " readonly" : ""}">
@@ -5486,6 +5523,10 @@ function restoreItemHtml(i, readonly = false) {
       ${i.blocked ? `<div class="rs-note err">${icon("block")}<span>Non si può: ${esc(i.blocked)}</span></div>` : ""}
       ${i.password ? `<div class="rs-pass"><input type="password" name="mqtt_password" autocomplete="new-password" placeholder="Password di ${esc(i.username)}"><small class="muted">Nei backup le password non ci sono: scrivila qui, non viene salvata.</small></div>` : ""}
     </div></${tag}>`;
+}
+// Righe di Cosa Cambierà per sezione, ognuna con la sua casella
+function restoreGroupsHtml(groups, items) {
+  return groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map((i) => restoreItemHtml(i)).join("")}</div>`).join("");
 }
 const RESTORE_MODES = {
   porte: {sections: ["porte"], title: "Porte e Lettori", text: "Riporta nomi e tempi delle porte, le impostazioni dell'app sulle porte e i nomi dei lettori, per un controller che funziona."},
@@ -5529,7 +5570,7 @@ async function restoreBackup(b, data, part = "") {
       <p class="muted small-text" style="margin-top:0">${full
         ? "Si scrive nell'ordine dell'elenco, le tessere per ultime. Quello che sul controller c'è ma nel backup no è spuntato solo se il controller è appena stato resettato. La programmazione oraria delle porte non si ripristina: niente sblocchi programmati."
         : "Spunta cosa riportare com'era. Le righe che toglierebbero ciò che è stato aggiunto dopo il backup non sono spuntate: di solito è lavoro fatto nel frattempo, da tenere."} Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
-      ${groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map(restoreItemHtml).join("")}</div>`).join("")}`,
+      ${restoreGroupsHtml(groups, items)}`,
     actions: [{label: "Annulla", value: null}, {label: "Ripristina Selezionati", kind: "primary", onClick: (dlg) => {
       const chosen = $$('[name="rs"]:checked', dlg).map((x) => x.value);
       if (!chosen.length) { toast("Spunta almeno una riga", true); return false; }

@@ -344,12 +344,35 @@ def rules_label(item: dict) -> str:
 
 
 def _card_item(card: dict, profile: str) -> dict:
-    """Tessera da confrontare; profile: il suo accesso come si mostra."""
+    """Tessera da confrontare; profile: il suo accesso come si mostra. Il Codice Stampato si mostra com'è."""
     return _item(
         card["number"],
-        {"enabled": card["enabled"], **{k: card[k] for k in CARD_FIELDS}},
+        {"enabled": card["enabled"], **{k: card[k] for k in CARD_FIELDS}, "printed_code": card.get("printed_code")},
         {"enabled": "attiva" if card["enabled"] else "sospesa", "access_profile": profile},
     )
+
+
+def _codes_back(wanted: dict[str, str], codes: dict[str, str]) -> set[str]:
+    """Tessere di una persona (numeri in maiuscolo) che riprendono il Codice Stampato del backup, con gli stessi giri
+    di AccessService._restore_printed_codes: un codice preso da un'altra tessera della persona torna quando quella
+    lascia il suo, due codici scambiati restano come sono. wanted: numero → codice del backup; codes: codici di adesso
+    (vedi nocase) → numero della tessera che li ha."""
+    codes, pending, back = dict(codes), dict(wanted), set()
+    while pending:
+        moved = False
+        for number, code in list(pending.items()):
+            holder = codes.get(nocase(code)) if code else None
+            if holder is not None and holder != number:
+                continue
+            del pending[number]
+            back.add(number)
+            codes = {k: v for k, v in codes.items() if v != number}
+            if code:
+                codes[nocase(code)] = number
+            moved = True
+        if not moved:
+            break
+    return back
 
 
 def _profile_name(token: str, current_ctx: dict, saved_ctx: dict) -> str:
@@ -391,6 +414,9 @@ def _plan_persons(
     # Matricole di adesso, senza distinguere le maiuscole come il database
     employee_ids = {nocase(p["employee_id"]): p for p in current.get("persons", []) if p.get("employee_id")}
     saved_persons = {(p["id"], p["created_at"]): p for p in saved.get("persons", [])}
+    # Codici Stampati di adesso (come le matricole) e tessere del backup per numero
+    codes = {nocase(c["printed_code"]): c for c in current.get("cards", []) if c.get("printed_code")}
+    saved_by_number = {c["number"].upper(): c for c in saved.get("cards", [])}
     items, matched_persons = [], set()
     for person in saved.get("persons", []):
         ident = (person["id"], person["created_at"])
@@ -442,6 +468,10 @@ def _plan_persons(
                 continue
             cards.append(dict(card))
         mine = {c["number"].upper(): c for c in current.get("cards", []) if now and c["person_id"] == now["id"]}
+        # Codice Stampato di ogni tessera come lo lascia il ripristino (_code): quello del backup, se c'è e torna (vedi
+        # _plan_codes), se no quello di adesso o nessuno per una tessera rimessa
+        if _plan_codes(item, cards, mine, codes, saved_by_number, saved_persons, current_names):
+            item["_after"] = True
         lost = []
         for card in cards:
             have = mine.get(card["number"].upper())
@@ -494,6 +524,7 @@ def _plan_persons(
                     for c in cards
                     if c.get("_category_access")
                 ],
+                *[_code_change(c) for c in cards if c["_code"]],
             ]
             # Anche senza tessere (nessuna nel backup, o tutte passate ad altri): resta in anagrafica
             items.append(item)
@@ -534,11 +565,13 @@ def _plan_persons(
                 changes.append({"label": f"Tessera {card['number']}", "old": "—", "new": "rimessa"})
                 if card.get("_category_access"):
                     changes.append({"label": f"Tessera {card['number']}: accesso", "old": "—", "new": shown})
+                if card["_code"]:
+                    changes.append(_code_change(card))
                 continue
             have = mine[number]
             for change in _changes(
                 _card_item(have, _profile_name(have["access_profile"], current_ctx, saved_ctx)),
-                _card_item({**card, "access_profile": profile}, shown),
+                _card_item({**card, "access_profile": profile, "printed_code": card["_code"]}, shown),
             ):
                 changes.append({**change, "label": f"Tessera {card['number']}: {change['label'].lower()}"})
         if changes:
@@ -583,6 +616,73 @@ def _plan_persons(
             )
         )
     return items
+
+
+def _code_change(card: dict) -> dict:
+    """Riga di Cosa Cambierà del Codice Stampato di una tessera rimessa o ricreata."""
+    label = f"Tessera {card['number']}: {FIELD_LABELS['printed_code'].lower()}"
+    return {"label": label, "old": "—", "new": card["_code"]}
+
+
+def _plan_codes(
+    item: dict,
+    cards: list[dict],
+    mine: dict[str, dict],
+    codes: dict[str, dict],
+    saved_by_number: dict[str, dict],
+    saved_persons: dict[tuple, dict],
+    current_names: dict[int, str],
+) -> bool:
+    """Codice Stampato che ogni tessera da ripristinare avrà (card["_code"]) e avvisi della riga, come per la matricola
+    (vedi AccessService._saved_printed_code). Un codice del backup dato nel frattempo a un'altra tessera resta suo e il
+    ripristino non si ferma; se quella tessera lo lascia ripristinando anche la sua persona, o eliminandola perché
+    aggiunta dopo il backup, torna a questa quando si applicano insieme: True, e la riga va dopo le altre (_after).
+    Qui i valori si mostrano: il codice non è un dato personale. Un backup di prima della 0.28.3 non ha codici: restano
+    quelli di adesso."""
+    wanted = {c["number"].upper(): c.get("printed_code") or "" for c in cards if c.get("printed_code") is not None}
+    back = _codes_back(wanted, {code: c["number"].upper() for code, c in codes.items()})
+    after = False
+    for card in cards:
+        number = card["number"].upper()
+        have = mine.get(number)
+        card["_code"] = (have.get("printed_code") or "") if have else ""
+        if number not in wanted:
+            continue
+        code = wanted[number]
+        if number in back:
+            card["_code"] = code
+            continue
+        holder = codes[nocase(code)]
+        held = holder["number"].upper()
+        owner = current_names.get(holder["person_id"], "un'altra persona")
+        what = f"il Codice Stampato {code} della tessera {card['number']} ora è della tessera {holder['number']}"
+        what += f" di {owner}"
+        theirs = saved_by_number.get(held)
+        if theirs is None:
+            # Tessera aggiunta dopo il backup (o della persona registrata dopo): la sua riga la elimina
+            item["warnings"].append(f"{what}: torna a questa tessera solo eliminando anche quella tessera")
+        else:
+            other = nocase(theirs.get("printed_code") or "")
+            busy = codes.get(other) if other else None
+            # La riga della persona che ce l'ha la ripristina solo se nel backup la tessera era già sua
+            restored = theirs["person_id"] == holder["person_id"] and any(
+                person["id"] == holder["person_id"] for person in saved_persons.values()
+            )
+            if (
+                "printed_code" not in theirs
+                or other == nocase(code)
+                or (busy is not None and busy["number"].upper() != held)
+                or not restored
+                # Della stessa persona: i giri di _codes_back non l'hanno liberato (codici scambiati)
+                or held in wanted
+            ):
+                kept = "la tessera tiene quello di adesso" if have else "la tessera torna senza"
+                item["warnings"].append(f"{what}: resta suo, e {kept}")
+                continue
+            item["warnings"].append(f"{what}: torna a questa tessera solo ripristinando anche {owner}")
+        card["_code"] = code
+        after = True
+    return after
 
 
 # Porte e lettori
@@ -814,7 +914,10 @@ async def _apply_person(item: dict, runtime: Runtime, user: str) -> None:
                     f"il profilo di accesso della tessera {card['number']} non c'è più sul controller: rifai "
                     "l'anteprima"
                 )
-        cards.append({"number": card["number"], "enabled": card["enabled"], **access})
+        # Codice Stampato del backup (None da uno di prima: resta quello di adesso), controllato di nuovo dal servizio
+        cards.append(
+            {"number": card["number"], "enabled": card["enabled"], **access, "printed_code": card.get("printed_code")}
+        )
     person = item["_person"]
     current = db.get_person(person["id"])
     if current is not None and current["created_at"] == person["created_at"]:

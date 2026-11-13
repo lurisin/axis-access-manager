@@ -25,9 +25,9 @@ EVENT_LABELS = {
 }
 
 IMPORT_COLUMNS = ["nome", "tessera", "gruppo", "valida_dal", "valida_al", "ditta", "note", "tipologia", "stato"]
-# Colonne in più del file esportato, in fondo: l'importazione non le usa (telefono, email, matricola e referente si
-# scrivono a mano nella scheda della persona), e il file esportato si reimporta com'è
-EXPORT_COLUMNS = ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
+# Colonne in più del file esportato, in fondo: l'importazione non le usa (telefono, email, matricola, referente e Codice
+# Stampato della tessera si scrivono a mano nella scheda della persona), e il file esportato si reimporta com'è
+EXPORT_COLUMNS = ["ultimo_accesso", "telefono", "email", "matricola", "referente", "codice_stampato"]
 # Con i secondi come nel file esportato, o senza come lo risalva spesso un foglio di calcolo
 DATE_FORMATS = [
     "%d/%m/%Y %H:%M:%S",
@@ -138,9 +138,10 @@ def persons_csv(
     last_access: dict[int, str],
     categories: dict[int, str] | None = None,
 ) -> str:
-    """Stesse colonne dell'importazione, più ultimo accesso, telefono, email, matricola e referente (in fondo, che
-    l'importazione ignora): il file si può reimportare. Una riga per tessera; chi non ne ha una riga con tessera,
-    gruppo, validità e stato vuoti."""
+    """Stesse colonne dell'importazione, più ultimo accesso, telefono, email, matricola, referente e Codice Stampato
+    della tessera (in fondo, che l'importazione ignora): il file si può reimportare. Una riga per tessera; chi non ne ha
+    una riga con tessera, gruppo, validità, stato e codice vuoti. Il codice come formula di testo (vedi _formula_text):
+    «0042» resta con gli zeri."""
     categories = categories or {}
     rows = [IMPORT_COLUMNS + EXPORT_COLUMNS]
     for person in persons:
@@ -158,6 +159,7 @@ def persons_csv(
                     "",
                     _local(last_access.get(person["id"], "")),
                     *_contacts(person),
+                    "",
                 ]
             )
         for card in person["cards"]:
@@ -174,6 +176,7 @@ def persons_csv(
                     "attiva" if card["enabled"] else "sospesa",
                     _local(last_access.get(person["id"], "")),
                     *_contacts(person),
+                    _formula_text(card.get("printed_code") or ""),
                 ]
             )
     return _csv(rows)

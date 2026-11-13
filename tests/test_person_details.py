@@ -847,15 +847,15 @@ async def test_exported_file_has_phone_and_email_and_imports_as_before(service, 
     await service.create_person("", "", "admin", first_name="Ada", last_name="Neri", phone="(06) 123-4567")
     text = persons_csv(db.list_persons(), {"profilo_sempre": "Sempre"}, db.last_accesses())
     lines = text.lstrip("\ufeff").splitlines()
-    assert lines[0].split(";")[-5:] == ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
+    assert lines[0].split(";")[-6:-1] == ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
     # Ogni telefono come formula di testo, perché il foglio di calcolo lo mostri com'è: lo zero iniziale resta, il + non
     # ha davanti l'apostrofo che resterebbe in vista, «06.123.456» non diventa il numero 6123456. In fondo matricola e
-    # referente, qui vuoti
+    # referente, qui vuoti, e il Codice Stampato della tessera (vedi test_card_code)
     by_name = {line.split(";")[0]: line for line in lines[1:]}
-    assert by_name["Mario Rossi"].endswith(';"=""0612345678""";mario@example.it;;')
-    assert by_name["Anna Maria Bianchi"] == f'Anna Maria Bianchi;;;;;;;;;;"=""{PHONE}""";;;'
-    assert by_name["Ugo Neri"] == 'Ugo Neri;;;;;;;;;;"=""06.123.456""";;;'
-    assert by_name["Ada Neri"] == 'Ada Neri;;;;;;;;;;"=""(06) 123-4567""";;;'
+    assert by_name["Mario Rossi"].endswith(';"=""0612345678""";mario@example.it;;;')
+    assert by_name["Anna Maria Bianchi"] == f'Anna Maria Bianchi;;;;;;;;;;"=""{PHONE}""";;;;'
+    assert by_name["Ugo Neri"] == 'Ugo Neri;;;;;;;;;;"=""06.123.456""";;;;'
+    assert by_name["Ada Neri"] == 'Ada Neri;;;;;;;;;;"=""(06) 123-4567""";;;;'
     rows = {row["nome"]: row for row in read_import(text)}
     assert rows["Mario Rossi"]["telefono"] == "0612345678" and rows["Anna Maria Bianchi"]["telefono"] == PHONE
     assert (rows["Ugo Neri"]["telefono"], rows["Ada Neri"]["telefono"]) == ("06.123.456", "(06) 123-4567")
@@ -1225,13 +1225,14 @@ async def test_exported_file_has_employee_id_and_referent_and_imports_as_before(
     await service.create_person("Ugo Neri", "", "admin")
     text = persons_csv(db.list_persons(), {"profilo_sempre": "Sempre"}, db.last_accesses())
     lines = text.lstrip("\ufeff").splitlines()
-    assert lines[0].split(";")[-5:] == ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
+    assert lines[0].split(";")[-6:-1] == ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
     by_name = {line.split(";")[0]: line for line in lines[1:]}
-    # La matricola come formula di testo: il foglio di calcolo tiene gli zeri; il referente non diventa una formula
-    assert by_name["Mario Rossi"].endswith(';;"=""000123""";\'=Ufficio Tecnico')
+    # La matricola come formula di testo: il foglio di calcolo tiene gli zeri; il referente non diventa una formula.
+    # Dopo, il Codice Stampato della tessera (vuoto)
+    assert by_name["Mario Rossi"].endswith(';;"=""000123""";\'=Ufficio Tecnico;')
     # Con le virgolette non si può: testo normale
-    assert by_name["Anna Bianchi"].endswith(';;"MAT ""A""";Bruno Neri')
-    assert by_name["Ugo Neri"].endswith(";;;;")
+    assert by_name["Anna Bianchi"].endswith(';;"MAT ""A""";Bruno Neri;')
+    assert by_name["Ugo Neri"].endswith(";;;;;")
     rows = {row["nome"]: row for row in read_import(text)}
     assert (rows["Mario Rossi"]["matricola"], rows["Mario Rossi"]["referente"]) == ("000123", "=Ufficio Tecnico")
     # Reimportato com'è: niente da fare, e una matricola cambiata nel file non cambia niente
