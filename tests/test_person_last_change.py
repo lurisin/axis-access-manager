@@ -154,6 +154,32 @@ async def test_photo_changes_it(plant, db, clock):
     assert step.changed() == set()
 
 
+async def test_the_same_photo_sent_again_changes_nothing(plant, db, clock):
+    """Cambia Foto con lo stesso file (la pagina lo ricodifica uguale) o un caricamento partito due volte: niente di
+    nuovo, quindi né la versione (che farebbe riscaricare la foto a tutti) né l'Ultima Modifica né Attività. Un'altra
+    foto, o la stessa con un altro formato, sì."""
+    mario = (await plant.access.create_person("Mario Rossi", "", "admin"))["id"]
+    plant.access.set_person_photo(mario, PNG, "admin")
+    version = db.get_person(mario)["photo"]
+    audit = len(db.list_audit(100))
+    for _ in range(3):
+        with watch(db, clock) as step:
+            person = plant.access.set_person_photo(mario, bytes(PNG), "admin")
+        assert step.changed() == set()
+        assert person["photo"] == db.get_person(mario)["photo"] == version
+    assert len(db.list_audit(100)) == audit
+    with watch(db, clock) as step:
+        plant.access.set_person_photo(mario, JPEG, "admin")
+    assert step.changed() == {mario} and db.get_person(mario)["photo"] > version
+    assert [row["action"] for row in db.list_audit(100)[:2]] == ["foto sostituita", "foto aggiunta"]
+    # Stessi byte salvati con un altro formato (database di prima, o scritto a mano): si sostituisce
+    db.set_person_photo(mario, "image/png", JPEG)
+    with watch(db, clock) as step:
+        plant.access.set_person_photo(mario, JPEG, "admin")
+    assert step.changed() == {mario}
+    assert db.get_person_photo(mario)["mime"] == "image/jpeg"
+
+
 async def test_cards_and_access_of_the_person_change_it(plant, db, clock, controller):
     category = await plant.rules.save_category(None, {"name": "Personale", "rules": [rule(plant)]}, "admin")
     ospiti = await plant.rules.save_category(None, {"name": "Ospiti", "rules": [rule(plant)]}, "admin")

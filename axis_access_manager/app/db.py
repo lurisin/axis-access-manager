@@ -1064,11 +1064,19 @@ class Database:
         rows = self._query("SELECT mime, updated_at, data FROM person_photos WHERE person_id = ?", (person_id,))
         return rows[0] if rows else None
 
-    def set_person_photo(self, person_id: int, mime: str, data: bytes) -> tuple[bool, str]:
-        """Foto nuova o sostituita: (True se ne sostituisce una, versione nuova). La versione ha i microsecondi ed è
-        sempre diversa dalla precedente: con la stessa la pagina mostrerebbe la foto vecchia dalla cache."""
+    def set_person_photo(self, person_id: int, mime: str, data: bytes) -> str:
+        """Foto nuova o sostituita: "added", "replaced" o "same". La versione ha i microsecondi ed è sempre diversa
+        dalla precedente: con la stessa la pagina mostrerebbe la foto vecchia dalla cache. La stessa foto di prima
+        (stesso file scelto di nuovo, che la pagina ricodifica uguale, o un caricamento partito due volte) non cambia
+        niente: né la versione, che farebbe riscaricare la foto a tutti, né l'Ultima Modifica della persona."""
         with self._writing() as conn:
-            row = conn.execute("SELECT updated_at FROM person_photos WHERE person_id = ?", (person_id,)).fetchone()
+            row = conn.execute(
+                "SELECT updated_at, mime = ? AND length(data) = ? AND data = ? AS same FROM person_photos "
+                "WHERE person_id = ?",
+                (mime, len(data), sqlite3.Binary(data), person_id),
+            ).fetchone()
+            if row is not None and row["same"]:
+                return "same"
             version = datetime.now(tz=UTC).isoformat(timespec="microseconds")
             if row is not None and version <= row["updated_at"]:
                 later = datetime.fromisoformat(row["updated_at"]) + timedelta(microseconds=1)
@@ -1080,7 +1088,7 @@ class Database:
                 (person_id, mime, version, sqlite3.Binary(data)),
             )
             self._touch_persons([person_id])
-        return row is not None, version
+        return "replaced" if row is not None else "added"
 
     def delete_person_photo(self, person_id: int) -> bool:
         """False se la persona non aveva una foto (allora non cambia niente)."""

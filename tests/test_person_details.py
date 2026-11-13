@@ -277,7 +277,8 @@ async def test_new_person_with_first_and_last_name(service, controller, db):
         await service.create_person("", "", "admin", first_name="A" * 60, last_name="B" * 40)
     assert_invariant(db)
     secrets = json.dumps([controller.users, controller.credentials, db.list_audit()])
-    assert "333" not in secrets and EMAIL not in secrets
+    # Il telefono con e senza spazi (non «333», che può capitare nei token casuali del controller)
+    assert "987 6543" not in secrets and "9876543" not in secrets and EMAIL not in secrets
 
 
 async def test_changing_first_or_last_name_renames_on_the_controller(service, controller, db):

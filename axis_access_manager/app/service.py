@@ -831,11 +831,12 @@ class AccessService:
 
     def set_person_photo(self, person_id: int, data: bytes, user: str) -> dict:
         """Foto nuova o sostituita: JPEG, PNG o WebP riconosciuti dai primi byte, al massimo PHOTO_MAX. In Attività
-        solo che è cambiata."""
+        solo che è cambiata; la stessa foto di prima non cambia niente e non si scrive."""
         mime = check_photo(data)
         person = self._person(person_id)
-        replaced, _ = self.db.set_person_photo(person_id, mime, data)
-        self._audit(user, "foto sostituita" if replaced else "foto aggiunta", person["name"])
+        result = self.db.set_person_photo(person_id, mime, data)
+        if result != "same":
+            self._audit(user, "foto sostituita" if result == "replaced" else "foto aggiunta", person["name"])
         return self.db.get_person(person_id)
 
     def delete_person_photo(self, person_id: int, user: str) -> dict:
