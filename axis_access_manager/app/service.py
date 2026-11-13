@@ -35,6 +35,14 @@ DASHES = re.compile(r"[\u2010-\u2015\u2212]")
 PHONE_DIGITS = 6
 PHONE_MAX = 30
 EMAIL_MAX = 254
+# Matricola (codice interno, unica) e referente interno: solo nell'app come telefono ed email
+EMPLOYEE_ID_MAX = 30
+REFERENT_MAX = 100
+# Foto della persona (person_photo): al massimo 512 KB, riconosciuta dai primi byte e mai dal tipo dichiarato. Non
+# sono le foto della telecamera degli eventi (snapshot)
+PHOTO_MAX = 512 * 1024
+PHOTO_TOO_BIG = f"foto troppo grande: al massimo {PHOTO_MAX // 1024} KB"
+PHOTO_UNSUPPORTED = "formato della foto non supportato: usa JPEG, PNG o WebP"
 # Descrizione degli utenti che l'app crea sul controller
 USER_DESCRIPTION = "Registrato da Axis Access Manager"
 # Elenco degli utenti letto vuoto dalla sincronizzazione (senza strict): per il confronto in ombra non è letto
@@ -239,6 +247,51 @@ def normalize_email(value: str | None) -> str:
     if email.count("@") != 1 or not local or "." not in domain or "" in domain.split("."):
         raise ServiceError("email non valida: serve un indirizzo come nome@esempio.it")
     return email
+
+
+def _short_text(value: str | None, limit: int, label: str, ending: str = "o") -> str:
+    """Testo di una riga senza caratteri invisibili (vedi INVISIBLE_MARKS), senza spazi ai lati e con gli spazi
+    interni compattati (anche tabulazioni, a capo e spazi non separabili). Niente caratteri di controllo. Il messaggio
+    non ripete il valore, che non deve finire nei log; ending: "a" per un'etichetta femminile."""
+    text = " ".join(INVISIBLE_MARKS.sub("", value or "").split())
+    if len(text) > limit:
+        raise ServiceError(f"{label} troppo lung{ending} (massimo {limit} caratteri)")
+    if not text.isprintable():
+        raise ServiceError(f"{label} non valid{ending}: contiene caratteri di controllo")
+    return text
+
+
+def normalize_employee_id(value: str | None) -> str:
+    """Matricola facoltativa, al massimo EMPLOYEE_ID_MAX caratteri (vedi _short_text). Unica senza distinguere le
+    maiuscole: lo controlla AccessService.check_employee_id."""
+    return _short_text(value, EMPLOYEE_ID_MAX, "matricola", "a")
+
+
+def normalize_referent(value: str | None) -> str:
+    """Referente interno facoltativo: testo libero di una riga, al massimo REFERENT_MAX caratteri."""
+    return _short_text(value, REFERENT_MAX, "referente interno")
+
+
+def photo_mime(data: bytes) -> str:
+    """Tipo della foto dai primi byte (JPEG, PNG o WebP), "" se non è una di queste: il tipo dichiarato non conta, e
+    un SVG o una pagina HTML chiamati image/jpeg non passano."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
+def check_photo(data: bytes) -> str:
+    """Tipo della foto da salvare; ServiceError se è troppo grande o non è JPEG, PNG o WebP (anche vuota)."""
+    if len(data) > PHOTO_MAX:
+        raise ServiceError(PHOTO_TOO_BIG)
+    mime = photo_mime(data)
+    if not mime:
+        raise ServiceError(PHOTO_UNSUPPORTED)
+    return mime
 
 
 def user_token_for(name: str, now: datetime | None = None) -> str:
@@ -753,6 +806,43 @@ class AccessService:
                 valid_to = (start + timedelta(days=category["valid_days"])).isoformat()
         return self._access(group, valid_from, valid_to)
 
+    def check_employee_id(self, employee_id: str, person_id: int | None = None) -> None:
+        """La matricola non è già di un'altra persona, senza distinguere le maiuscole (come l'indice unico del
+        database). Il messaggio nomina chi ce l'ha, non la matricola."""
+        other = self.db.person_by_employee_id(employee_id, person_id)
+        if other is not None:
+            raise ServiceError(f"matricola già usata da {other['name']}")
+
+    def _saved_employee_id(self, saved: dict, person_id: int | None = None) -> str | None:
+        """Matricola di una persona di un backup dell'app (person_id: la persona di adesso, se c'è). None se il backup
+        non la ha (prima della 0.28.3: resta quella di adesso) o se nel frattempo è stata data a un'altra persona: resta
+        sua, e il ripristino non si ferma. L'anteprima lo dice (vedi restore._plan_persons)."""
+        if saved.get("employee_id") is None:
+            return None
+        employee_id = normalize_employee_id(saved["employee_id"])
+        if self.db.person_by_employee_id(employee_id, person_id) is not None:
+            _LOGGER.info("Matricola della persona %s del backup già di un'altra persona: resta sua", saved.get("id"))
+            return None
+        return employee_id
+
+    # Foto della persona (person_photo): solo nell'app, mai sul controller, in Home Assistant, nel registro o nel log
+
+    def set_person_photo(self, person_id: int, data: bytes, user: str) -> dict:
+        """Foto nuova o sostituita: JPEG, PNG o WebP riconosciuti dai primi byte, al massimo PHOTO_MAX. In Attività
+        solo che è cambiata."""
+        mime = check_photo(data)
+        person = self._person(person_id)
+        replaced, _ = self.db.set_person_photo(person_id, mime, data)
+        self._audit(user, "foto sostituita" if replaced else "foto aggiunta", person["name"])
+        return self.db.get_person(person_id)
+
+    def delete_person_photo(self, person_id: int, user: str) -> dict:
+        """Toglie la foto; senza foto non cambia niente."""
+        person = self._person(person_id)
+        if self.db.delete_person_photo(person_id):
+            self._audit(user, "foto tolta", person["name"])
+        return self.db.get_person(person_id)
+
     def _check_card_free(self, number: str) -> None:
         existing = self.db.card_by_number(number)
         if existing:
@@ -775,16 +865,20 @@ class AccessService:
         last_name: str | None = None,
         phone: str = "",
         email: str = "",
+        employee_id: str = "",
+        referent: str = "",
     ) -> dict:
         """card vuota: persona senza tessera, solo nell'app. enabled False: la tessera si scrive già sospesa
         (importazione con stato «sospesa»). Nome e cognome (anche uno solo) valgono al posto di name, che senza si
-        divide con split_name (vedi person_names). Telefono ed email restano nell'app."""
+        divide con split_name (vedi person_names). Telefono, email, matricola (unica) e referente restano nell'app."""
         name, first, last = person_names(name, first_name, last_name)
         details = {
             "first_name": first,
             "last_name": last,
             "phone": normalize_phone(phone),
             "email": normalize_email(email),
+            "employee_id": normalize_employee_id(employee_id),
+            "referent": normalize_referent(referent),
         }
         number = normalize_card(card) if (card or "").strip() else ""
         company = normalize_text(company, 100, "ditta o reparto")
@@ -794,10 +888,13 @@ class AccessService:
         if not number:
             if group or valid_from or valid_to:
                 raise ServiceError("gruppo e validità valgono per le tessere: senza tessera non si possono salvare")
+            self.check_employee_id(details["employee_id"])
             return self._create_without_card(name, user, company, notes, category, details)
         access = self._category_access(category, group, valid_from, valid_to)
         async with self.lock:
             self._check_card_free(number)
+            # Prima di scrivere sul controller: con la matricola di un altro la persona non si registra
+            self.check_employee_id(details["employee_id"])
             user_token = await self._new_user_token(name)
             await self.controller.set_user(
                 {"token": user_token, "Name": name, "Description": USER_DESCRIPTION, "Attribute": []}
@@ -826,6 +923,9 @@ class AccessService:
                 # Disco pieno: la tessera appena scritta non resta attiva sul controller senza essere nell'app. Prima
                 # restava, e riprovando se ne aggiungeva un'altra con lo stesso numero
                 await self._remove_new(credential_token, user_token)
+                if isinstance(err, sqlite3.IntegrityError):
+                    # Matricola data a un'altra persona mentre si scriveva sul controller
+                    self.check_employee_id(details["employee_id"])
                 raise ServiceError(f"{error_reason(err)}: la persona non è stata registrata") from err
             detail = f"{name}, tessera {number}" + ("" if enabled else " sospesa")
             detail += f", tipologia {category['name']}" if category else ""
@@ -838,7 +938,7 @@ class AccessService:
     ) -> dict:
         """Persona senza tessera: solo nel database, nessuna chiamata al controller (anche spento o con le scritture
         sospese). Il suo utente del controller nasce con la prima tessera, e la durata della tipologia vale da lì.
-        details: nome, cognome, telefono ed email (vedi Database.add_person)."""
+        details: nome, cognome, telefono, email, matricola e referente (vedi Database.add_person)."""
         try:
             with self.db.batch():
                 person_id = self.db.add_person(name, None, **details)
@@ -942,11 +1042,14 @@ class AccessService:
         last_name: str | None = None,
         phone: str | None = None,
         email: str | None = None,
+        employee_id: str | None = None,
+        referent: str | None = None,
     ) -> dict:
-        """Nome completo (scritto anche sul controller), ditta, note, telefono ed email (solo nell'add-on). None: il
-        campo non cambia. Nome e cognome (anche uno solo, l'altro resta) valgono al posto di name; name da solo, se
-        cambia il nome completo, si divide con split_name. Nell'attività i campi cambiati, mai i valori di telefono
-        ed email."""
+        """Nome completo (scritto anche sul controller), ditta, note, telefono, email, matricola e referente interno
+        (solo nell'add-on). None: il campo non cambia. Nome e cognome (anche uno solo, l'altro resta) valgono al posto
+        di name; name da solo, se cambia il nome completo, si divide con split_name. Nell'attività i campi cambiati,
+        mai i valori di telefono, email, matricola e referente. Valori uguali a quelli salvati non cambiano niente,
+        neanche l'Ultima Modifica."""
         person = self._person(person_id)
         # Tutto controllato prima di salvare qualcosa: un valore non valido non lascia mezza modifica
         full = None
@@ -966,11 +1069,18 @@ class AccessService:
             "note": normalize_text(notes, 1000, "testo delle note") if notes is not None else person["notes"],
             "telefono": normalize_phone(phone) if phone is not None else person["phone"],
             "email": normalize_email(email) if email is not None else person["email"],
+            "matricola": normalize_employee_id(employee_id) if employee_id is not None else person["employee_id"],
+            "referente interno": normalize_referent(referent) if referent is not None else person["referent"],
         }
-        before = dict(zip(values, (person["company"], person["notes"], person["phone"], person["email"]), strict=True))
+        before = dict(zip(values, (person[column] for column in self.db.PERSON_DETAILS), strict=True))
         changed = [label for label in values if values[label] != before[label]]
+        if "matricola" in changed:
+            self.check_employee_id(values["matricola"], person_id)
         if changed:
-            self.db.update_person_details(person_id, *values.values())
+            company, notes, phone, email, employee_id, referent = values.values()
+            self.db.update_person_details(
+                person_id, company, notes, phone, email, employee_id=employee_id, referent=referent
+            )
         if full == person["name"] and (first, last) != (person["first_name"], person["last_name"]):
             # Stesso nome completo diviso in un altro modo: solo nell'app, sul controller il nome è già questo
             self.db.rename_person(person_id, full, first, last)
@@ -1013,8 +1123,13 @@ class AccessService:
         user: str,
         category_id: int | None = None,
         with_validity: bool = True,
+        *,
+        for_category: bool = False,
     ) -> dict:
         """Gruppo e validità per tutte le tessere della persona; category_id None lascia la tipologia com'è.
+
+        for_category True: le tessere passano al profilo nuovo della loro tipologia (vedi RulesService.save_category),
+        una modifica della tipologia e non della persona: la sua Ultima Modifica resta.
 
         with_validity False: la richiesta non dice la validità (il modulo di una persona senza tessere). Se intanto la
         persona ne ha avuta una non si cambia niente: le date vuote le toglierebbero la scadenza.
@@ -1074,7 +1189,7 @@ class AccessService:
                         _LOGGER.warning("Accesso della tessera %s non riportato com'era", credential.get("token"))
                 raise
             for card in person["cards"]:
-                self.db.set_card_access(card["id"], access)
+                self.db.set_card_access(card["id"], access, touch=not for_category)
             if category_id is not None and category_id != person["category_id"]:
                 self.db.set_person_category(person_id, category_id)
                 self.db.add_audit(
@@ -1189,8 +1304,10 @@ class AccessService:
         Se non c'è più si ricrea, con lo stesso numero e la stessa data di creazione se il numero è libero.
         cards: tessere del backup già controllate (numero libero o già della persona, profilo che esiste); le altre
         tessere della persona restano come sono. Un backup di prima della 0.28.3 non ha nome e cognome (si ricavano
-        dal nome completo) né telefono ed email (restano quelli di adesso). Nome e cognome uguali a quelli di adesso
-        non cambiano niente, neanche gli spazi doppi di un nome letto dal controller (vedi saved_parts)."""
+        dal nome completo) né telefono, email, matricola e referente (restano quelli di adesso). Nome e cognome uguali a
+        quelli di adesso non cambiano niente, neanche gli spazi doppi di un nome letto dal controller (vedi
+        saved_parts). Una matricola data nel frattempo a un'altra persona resta sua (vedi _saved_employee_id). La foto
+        non è nei backup: resta quella di adesso."""
         current = self.db.get_person(saved["id"])
         if current is not None and current["created_at"] != saved["created_at"]:
             current = None
@@ -1207,6 +1324,8 @@ class AccessService:
             last_name=last,
             phone=saved.get("phone"),
             email=saved.get("email"),
+            employee_id=self._saved_employee_id(saved, person_id),
+            referent=saved.get("referent"),
         )
         if category_id != current["category_id"]:
             self.db.set_person_category(person_id, category_id)
@@ -1367,7 +1486,8 @@ class AccessService:
 
     def _add_saved_person(self, saved: dict, name: str, user_token: str | None, category_id: int) -> int:
         """Persona del backup di nuovo nell'app, con lo stesso numero se è libero e la stessa data di creazione. Nome e
-        cognome dal backup, o ricavati dal nome completo se è di prima della 0.28.3 (vedi saved_names)."""
+        cognome dal backup, o ricavati dal nome completo se è di prima della 0.28.3 (vedi saved_names). Senza foto, che
+        nei backup non c'è, e senza la matricola se intanto è di un altro (vedi _saved_employee_id)."""
         free = self.db.get_person(saved["id"]) is None
         _, first, last = saved_names(saved)
         person_id = self.db.add_person(
@@ -1379,6 +1499,8 @@ class AccessService:
             last_name=last,
             phone=str(saved.get("phone") or ""),
             email=str(saved.get("email") or ""),
+            employee_id=self._saved_employee_id(saved) or "",
+            referent=normalize_referent(saved.get("referent")),
         )
         if saved.get("company") or saved.get("notes"):
             self.db.update_person_details(person_id, saved.get("company") or "", saved.get("notes") or "")

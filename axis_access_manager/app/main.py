@@ -100,6 +100,8 @@ from .service import (
     CONTROLLER_KINDS,
     DENIED_REASONS,
     INPUT_TERMINALS,
+    PHOTO_MAX,
+    PHOTO_TOO_BIG,
     AccessService,
     PersonChanged,
     ServiceError,
@@ -177,9 +179,12 @@ class PersonIn(BaseModel):
     company: str = ""
     notes: str = ""
     category_id: int = 0
-    # Controllati da AccessService (normalize_phone, normalize_email): i limiti qui finirebbero con il valore nel log
+    # Controllati da AccessService (normalize_phone, normalize_email, normalize_employee_id, normalize_referent): i
+    # limiti qui finirebbero con il valore nel log
     phone: str = ""
     email: str = ""
+    employee_id: str = ""
+    referent: str = ""
 
 
 class PersonUpdateIn(BaseModel):
@@ -191,6 +196,8 @@ class PersonUpdateIn(BaseModel):
     notes: str | None = None
     phone: str | None = None
     email: str | None = None
+    employee_id: str | None = None
+    referent: str | None = None
 
 
 class AccessIn(BaseModel):
@@ -544,9 +551,13 @@ FIELD_LABELS = {
     "last_name": "cognome",
     "phone": "telefono",
     "email": "email",
+    "employee_id": "matricola",
+    "referent": "referente interno",
 }
-# Campi che non finiscono nel log neanche quando sono rifiutati
-PRIVATE_INPUTS = {"phone", "email"}
+# Campi delle persone che non finiscono nel log neanche quando sono rifiutati (vedi db.PERSON_COLUMNS), a qualsiasi
+# profondità dei dati mandati
+PRIVATE_INPUTS = {"phone", "email", "employee_id", "referent"}
+HIDDEN = "…"
 VALIDATION_REASONS = {
     "missing": "valore mancante",
     "string_too_long": "al massimo {max_length} caratteri",
@@ -567,14 +578,26 @@ VALIDATION_REASONS = {
 }
 
 
+def _masked(value: Any) -> Any:
+    """Dati mandati senza i valori dei campi di PRIVATE_INPUTS, cercati per chiave in dizionari e liste a qualsiasi
+    profondità; byte (una foto) mai."""
+    if isinstance(value, dict):
+        return {k: HIDDEN if k in PRIVATE_INPUTS else _masked(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_masked(item) for item in value]
+    if isinstance(value, bytes | bytearray | memoryview):
+        return HIDDEN
+    return value
+
+
 def _loggable(error: dict) -> dict:
-    """Errore di validazione per il log, senza telefono ed email delle persone (vedi db.PERSON_COLUMNS): il valore
-    rifiutato, o i dati mandati quando l'errore è di tutta la richiesta."""
-    value = error.get("input")
+    """Errore di validazione per il log, senza telefono, email, matricola e referente delle persone: il valore
+    rifiutato di uno di quei campi, o quei campi nei dati mandati (anche in una lista o annidati) quando l'errore è di
+    tutta la richiesta o di un altro campo."""
     if any(part in PRIVATE_INPUTS for part in error.get("loc") or ()):
-        return {**error, "input": "…"}
-    if isinstance(value, dict) and PRIVATE_INPUTS & value.keys():
-        return {**error, "input": {k: "…" if k in PRIVATE_INPUTS else v for k, v in value.items()}}
+        return {**error, "input": HIDDEN}
+    if "input" in error:
+        return {**error, "input": _masked(error["input"])}
     return error
 
 
@@ -589,6 +612,27 @@ def _validation_text(errors: list[dict]) -> str:
     except (KeyError, IndexError):
         reason = "valore non valido"
     return f"dati non validi: {field}, {reason}" if field else f"dati non validi: {reason}"
+
+
+# Foto della persona chiesta con la sua versione (?v=): non cambia mai, solo nel browser di chi la guarda
+PHOTO_CACHE = "private, max-age=31536000, immutable"
+
+
+async def _photo_body(request: Request) -> bytes:
+    """Byte della foto mandata, letti al massimo fino a PHOTO_MAX: oltre si risponde subito 413 (la dimensione
+    dichiarata, se c'è, si controlla prima di leggere)."""
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > PHOTO_MAX:
+        raise HTTPException(status_code=413, detail=PHOTO_TOO_BIG)
+    data = bytearray()
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > PHOTO_MAX:
+            raise HTTPException(status_code=413, detail=PHOTO_TOO_BIG)
+    return bytes(data)
 
 
 def _moment(value: str | None) -> datetime | None:
@@ -1135,6 +1179,8 @@ def create_app(
             last_name=body.last_name,
             phone=body.phone,
             email=body.email,
+            employee_id=body.employee_id,
+            referent=body.referent,
         )
 
     @app.get("/api/persons/{person_id}", dependencies=[need("persone")])
@@ -1161,7 +1207,43 @@ def create_app(
             last_name=body.last_name,
             phone=body.phone,
             email=body.email,
+            employee_id=body.employee_id,
+            referent=body.referent,
         )
+
+    @app.get("/api/persons/{person_id}/photo", dependencies=[need("persone")])
+    async def person_photo(person_id: int, request: Request) -> Response:
+        """Foto della persona (non quelle della telecamera degli eventi), con il tipo salvato. Con la versione giusta
+        nell'URL (?v=, il campo photo della persona) il browser la tiene finché non cambia; senza, la richiede ogni
+        volta."""
+        db = request.app.state.db
+        photo = db.get_person_photo(person_id)
+        if photo is None:
+            detail = "nessuna foto" if db.get_person(person_id) else "persona non trovata"
+            return JSONResponse({"detail": detail}, status_code=404)
+        # Il + della versione (fuso orario) arriva come spazio se la pagina non lo codifica
+        current = (request.query_params.get("v") or "").replace(" ", "+") == photo["updated_at"]
+        return Response(
+            bytes(photo["data"]),
+            media_type=photo["mime"],
+            headers={
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": "inline",
+                "Content-Security-Policy": "default-src 'none'; sandbox",
+                "Cache-Control": PHOTO_CACHE if current else "private, no-cache",
+            },
+        )
+
+    @app.put("/api/persons/{person_id}/photo", dependencies=[need("persone_modifica")])
+    async def put_person_photo(person_id: int, request: Request) -> dict:
+        """Foto nuova o sostituita: il corpo della richiesta sono i byte dell'immagine (JPEG, PNG o WebP, riconosciuti
+        dai primi byte e non dal Content-Type), al massimo 512 KB. Una foto più grande non si legge neanche tutta."""
+        data = await _photo_body(request)
+        return request.app.state.service.set_person_photo(person_id, data, request_user(request))
+
+    @app.delete("/api/persons/{person_id}/photo", dependencies=[need("persone_modifica")])
+    async def delete_person_photo(person_id: int, request: Request) -> dict:
+        return request.app.state.service.delete_person_photo(person_id, request_user(request))
 
     @app.put("/api/persons/{person_id}/access", dependencies=[need("persone_modifica")])
     async def set_access(person_id: int, body: AccessIn, request: Request) -> dict:

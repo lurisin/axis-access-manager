@@ -7,6 +7,7 @@ import json
 import logging
 import shutil
 import sqlite3
+import string
 import threading
 import uuid
 from collections.abc import Iterator
@@ -201,6 +202,18 @@ CREATE TABLE IF NOT EXISTS shadow_days (
     difference_at TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (day, round)
 ) WITHOUT ROWID;
+-- Foto della persona (person_photo, dalla 0.28.3), diversa dalle foto della telecamera degli eventi (events.snapshot,
+-- file nella cartella delle istantanee): una per persona, solo nell'app, se ne va con la persona. Fuori dai backup
+-- dell'app, dentro il database (backup di Home Assistant, copie prima degli aggiornamenti). updated_at prima dei byte:
+-- la versione si legge senza scorrere la foto, e l'indice la dà per tutte le persone senza toccare le righe (l'elenco
+-- delle persone la chiede ogni 15 secondi)
+CREATE TABLE IF NOT EXISTS person_photos (
+    person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
+    mime TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    data BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS person_photos_version ON person_photos(updated_at);
 """
 
 # Fino alla 0.17 si aggiungevano solo colonne: (tabella, colonna, definizione). Sono la versione 1 dello schema.
@@ -324,8 +337,9 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
     ),
     # Solo aggiunte, il registro non si riscrive: vedi _events_controller e _new_install_id
     (9, "controller degli eventi e identità dell'installazione", []),
-    # Colonne di PERSON_COLUMNS, poi nome e cognome ricavati dal nome di ogni persona: vedi _person_columns
-    (10, "nome e cognome separati, telefono ed email delle persone", []),
+    # Colonne di PERSON_COLUMNS, poi nome e cognome ricavati dal nome di ogni persona: vedi _person_columns. La tabella
+    # delle foto sta in SCHEMA
+    (10, "nome e cognome separati, telefono, email, matricola, referente e foto delle persone", []),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 # Ultimo accesso di ogni persona e passaggi di una persona senza leggere tutto il registro (un anno: 1,5 milioni).
@@ -344,14 +358,24 @@ PRUNE_BLOCK = 2000
 # Letture lunghe del registro (vedi Database._read) che girano insieme
 READ_SLOTS = 2
 SETTING_APP_VERSION = "app_version"
-# Anagrafica della 0.28.3 (migrazione 10): nome e cognome separati, telefono ed email. persons.name resta il nome usato
-# ovunque (controller, registro, Home Assistant, attività) ed è sempre compose_name(first_name, last_name). Telefono ed
-# email restano nell'app: mai sul controller, in Home Assistant, nel registro o nei log
+# Anagrafica della 0.28.3 (migrazione 10): nome e cognome separati, telefono, email, matricola (codice interno, unica) e
+# referente interno. persons.name resta il nome usato ovunque (controller, registro, Home Assistant, attività) ed è
+# sempre compose_name(first_name, last_name). Telefono, email, matricola e referente restano nell'app: mai sul
+# controller, in Home Assistant, nel registro o nei log. Si aggiungono anche a ogni avvio, se mancano (vedi
+# _person_details): un database già allo schema 10 senza matricola e referente (le prove della 0.28.3) li riceve così
 PERSON_COLUMNS = (
     ("first_name", "TEXT NOT NULL DEFAULT ''"),
     ("last_name", "TEXT NOT NULL DEFAULT ''"),
     ("phone", "TEXT NOT NULL DEFAULT ''"),
     ("email", "TEXT NOT NULL DEFAULT ''"),
+    ("employee_id", "TEXT NOT NULL DEFAULT ''"),
+    ("referent", "TEXT NOT NULL DEFAULT ''"),
+)
+# Matricola unica tra quelle scritte, senza distinguere maiuscole (lettere senza accento, come COLLATE NOCASE): il
+# servizio lo controlla prima, con il nome di chi ce l'ha (vedi AccessService.check_employee_id)
+EMPLOYEE_ID_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS persons_employee_id ON persons(employee_id COLLATE NOCASE) "
+    "WHERE employee_id != ''"
 )
 # Numero più alto mai dato a una persona: i numeri delle persone eliminate non si riusano
 SETTING_LAST_PERSON = "persons_last_id"
@@ -389,10 +413,22 @@ SHADOW_FIELDS = (
 )
 
 
+# Versione della foto di ogni persona per l'elenco: SQLite la legge tutta dall'indice person_photos_version (SCAN USING
+# COVERING INDEX), senza toccare le righe con i byte
+PHOTO_VERSIONS = "SELECT person_id, updated_at FROM person_photos"
+
 # Campi degli eventi che servono alle pagine (il messaggio originale resta nel database)
 EVENT_COLUMNS = "id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door, recovered"
 # Origini fisse degli eventi: nel database il codice, per l'utente l'etichetta
 SOURCE_LABELS = {"lettore": "Lettore", "controller": "Controller", "porta": "Porta"}
+
+
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
+def nocase(text: str) -> str:
+    """Come COLLATE NOCASE di SQLite: maiuscole e minuscole uguali, solo per le lettere ASCII (la matricola unica)."""
+    return text.translate(_ASCII_LOWER)
 
 
 def compose_name(first_name: str, last_name: str) -> str:
@@ -547,6 +583,7 @@ class Database:
                 except Exception:
                     self._conn.execute("ROLLBACK")
                     raise
+            self._person_details()
             repaired = self._repair_person_names()
             if repaired:
                 # Persone create o rinominate da una versione precedente (dopo un ritorno indietro), o database rimesso
@@ -647,11 +684,43 @@ class Database:
     def _person_columns(self) -> None:
         """Migrazione 10: colonne di PERSON_COLUMNS (non due volte: un database riportato a mano a uno schema
         precedente le ha già) e nome e cognome di ogni persona ricavati dal nome completo, che resta com'è."""
-        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(persons)")}
-        for column, definition in PERSON_COLUMNS:
-            if column not in columns:
-                self._conn.execute(f"ALTER TABLE persons ADD COLUMN {column} {definition}")
+        self._add_person_columns()
         self._repair_person_names()
+
+    def _add_person_columns(self) -> int:
+        """Colonne di PERSON_COLUMNS che mancano, con il loro valore predefinito; restituisce quante."""
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(persons)")}
+        missing = [(column, definition) for column, definition in PERSON_COLUMNS if column not in columns]
+        for column, definition in missing:
+            self._conn.execute(f"ALTER TABLE persons ADD COLUMN {column} {definition}")
+        return len(missing)
+
+    def _person_details(self) -> None:
+        """A ogni avvio, dopo le migrazioni: le colonne di PERSON_COLUMNS che mancano a un database già allo schema 10
+        (matricola e referente si sono aggiunti dopo, nella stessa 0.28.3), le foto rimaste senza persona e l'indice
+        della matricola unica. Ogni cosa si fa una volta sola. Con due matricole uguali messe a mano nel database
+        l'indice non si crea: l'app parte lo stesso, e il controllo del servizio non ne lascia scrivere altre."""
+        if self._conn.execute("PRAGMA user_version").fetchone()[0] < 10:
+            # Schema di prima della migrazione 10 (solo nelle prove delle migrazioni)
+            return
+        self._conn.execute("BEGIN")
+        try:
+            if self._add_person_columns():
+                _LOGGER.info("Matricola e referente aggiunti all'anagrafica")
+            # Foto di persone che non ci sono più (eliminate senza i vincoli attivi): non si mostrano a nessuno
+            orphans = self._conn.execute(
+                "DELETE FROM person_photos WHERE person_id NOT IN (SELECT id FROM persons)"
+            ).rowcount
+            self._conn.execute("COMMIT")
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+        if orphans:
+            _LOGGER.info("Tolte %s foto di persone che non ci sono più", orphans)
+        try:
+            self._conn.execute(EMPLOYEE_ID_INDEX)
+        except sqlite3.IntegrityError as err:
+            _LOGGER.warning("Indice della matricola non creato (%s): si riprova al prossimo avvio", err)
 
     def _repair_person_names(self) -> int:
         """Persone il cui nome completo non è compose_name(nome, cognome): nome e cognome ricavati di nuovo dal nome
@@ -728,6 +797,27 @@ class Database:
             self._commit()
             return cursor.lastrowid
 
+    def _execute_cursor(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Come _execute, con il cursore: rowcount dice se la riga è cambiata."""
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            self._commit()
+            return cursor
+
+    @contextmanager
+    def _writing(self) -> Iterator[sqlite3.Connection]:
+        """Più istruzioni di una modifica sotto il lock e un commit (fuori da batch()). Con un errore (disco pieno) non
+        resta niente a metà, e la transazione non resta aperta: la salverebbe la scrittura dopo. Dentro batch() ci pensa
+        lui, che annulla tutto."""
+        with self._lock:
+            try:
+                yield self._conn
+                self._commit()
+            except sqlite3.Error:
+                if not self._batch:
+                    self._conn.rollback()
+                raise
+
     def _commit(self) -> None:
         if not self._batch:
             self._conn.commit()
@@ -783,16 +873,32 @@ class Database:
         )
 
     # Persone e tessere
+    #
+    # persons.updated_at è l'Ultima Modifica dei dati della persona: anagrafica, foto, tessere (aggiunte, tolte,
+    # sospese o riattivate, numero, validità, profilo) e tipologia. Cambia solo se cambia davvero un valore (vedi
+    # _touch_persons): non per i passaggi, i giri di sincronizzazione senza novità, le tessere segnate o tornate
+    # presenti sul controller (missing_since), le riscritture sul controller (token nuovi) e i salvataggi senza
+    # differenze
+
+    def _touch_persons(self, person_ids) -> None:
+        """Ultima Modifica delle persone indicate adesso (dentro il lock, senza commit)."""
+        ids = sorted({int(person_id) for person_id in person_ids if person_id is not None})
+        if ids:
+            ts = now_iso()
+            self._conn.executemany("UPDATE persons SET updated_at = ? WHERE id = ?", [(ts, i) for i in ids])
 
     def list_persons(self) -> list[dict]:
+        """Persone con le tessere e la versione della foto (photo, vedi person_photo_versions), mai i suoi byte."""
         persons = self._query("SELECT * FROM persons ORDER BY name COLLATE NOCASE")
         cards = self._query("SELECT * FROM cards ORDER BY id")
+        photos = self.person_photo_versions()
         by_person: dict[int, list[dict]] = {}
         for card in cards:
             card["enabled"] = bool(card["enabled"])
             by_person.setdefault(card["person_id"], []).append(card)
         for person in persons:
             person["cards"] = by_person.get(person["id"], [])
+            person["photo"] = photos.get(person["id"], "")
         return persons
 
     def get_person(self, person_id: int) -> dict | None:
@@ -801,10 +907,21 @@ class Database:
             return None
         person = rows[0]
         person["cards"] = self.cards_of(person_id)
+        person["photo"] = self.person_photo_version(person_id)
         return person
 
     def person_by_user_token(self, token: str) -> dict | None:
         rows = self._query("SELECT * FROM persons WHERE axis_user_token = ?", (token,))
+        return rows[0] if rows else None
+
+    def person_by_employee_id(self, employee_id: str, other_than: int | None = None) -> dict | None:
+        """Persona (diversa da other_than) che ha già la matricola, senza distinguere maiuscole come l'indice unico."""
+        if not employee_id:
+            return None
+        rows = self._query(
+            "SELECT id, name FROM persons WHERE employee_id = ? COLLATE NOCASE AND employee_id != '' AND id IS NOT ?",
+            (employee_id, other_than),
+        )
         return rows[0] if rows else None
 
     @staticmethod
@@ -829,9 +946,12 @@ class Database:
         last_name: str | None = None,
         phone: str = "",
         email: str = "",
+        employee_id: str = "",
+        referent: str = "",
     ) -> int:
         """person_id e created_at solo per rimettere una persona da un backup (stesso numero, se è libero).
-        first_name e last_name: senza, ricavati da name (vedi _name_parts).
+        first_name e last_name: senza, ricavati da name (vedi _name_parts). updated_at è adesso, anche per una persona
+        rimessa da un backup.
 
         Il numero di una persona eliminata non si riusa: i suoi eventi lo citano ancora, e una persona nuova
         con lo stesso numero ne erediterebbe passaggi e ultimo accesso.
@@ -850,54 +970,125 @@ class Database:
                     or 0
                 ) + 1
             cursor = self._conn.execute(
-                "INSERT INTO persons (id, name, first_name, last_name, phone, email, axis_user_token, created_at, "
-                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (person_id, name, first, last, phone, email, axis_user_token, created_at or ts, ts),
+                "INSERT INTO persons (id, name, first_name, last_name, phone, email, employee_id, referent, "
+                "axis_user_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    person_id,
+                    name,
+                    first,
+                    last,
+                    phone,
+                    email,
+                    employee_id,
+                    referent,
+                    axis_user_token,
+                    created_at or ts,
+                    ts,
+                ),
             )
             # Una persona rimessa con un numero più basso non abbassa il contatore
             self._remember_last_id(SETTING_LAST_PERSON, cursor.lastrowid)
+            # Una persona rimessa da un backup non ha foto, neanche una rimasta nel database con il suo numero
+            self._conn.execute("DELETE FROM person_photos WHERE person_id = ?", (cursor.lastrowid,))
             self._commit()
             return cursor.lastrowid
 
     def rename_person(
         self, person_id: int, name: str, first_name: str | None = None, last_name: str | None = None
     ) -> None:
-        """Nome completo con nome e cognome (senza, ricavati da name: vedi _name_parts)."""
+        """Nome completo con nome e cognome (senza, ricavati da name: vedi _name_parts). Uguali a quelli salvati non
+        cambiano l'Ultima Modifica."""
         first, last = self._name_parts(name, first_name, last_name)
         self._execute(
-            "UPDATE persons SET name = ?, first_name = ?, last_name = ?, updated_at = ? WHERE id = ?",
-            (name, first, last, now_iso(), person_id),
+            "UPDATE persons SET name = ?, first_name = ?, last_name = ?, updated_at = ? "
+            "WHERE id = ? AND (name IS NOT ? OR first_name IS NOT ? OR last_name IS NOT ?)",
+            (name, first, last, now_iso(), person_id, name, first, last),
         )
 
-    def set_person_user_token(self, person_id: int, token: str) -> None:
-        self._execute(
-            "UPDATE persons SET axis_user_token = ?, updated_at = ? WHERE id = ?", (token, now_iso(), person_id)
-        )
+    def set_person_user_token(self, person_id: int, token: str | None) -> None:
+        """Utente del controller della persona: un dato tecnico, che non cambia l'Ultima Modifica (la tessera aggiunta
+        o tolta insieme la cambia già)."""
+        self._execute("UPDATE persons SET axis_user_token = ? WHERE id = ?", (token, person_id))
+
+    PERSON_DETAILS = ("company", "notes", "phone", "email", "employee_id", "referent")
 
     def update_person_details(
-        self, person_id: int, company: str, notes: str, phone: str | None = None, email: str | None = None
-    ) -> None:
-        """Ditta e note; telefono ed email solo se dati."""
-        sets, params = ["company = ?", "notes = ?"], [company, notes]
-        for column, value in (("phone", phone), ("email", email)):
-            if value is not None:
-                sets.append(f"{column} = ?")
-                params.append(value)
-        self._execute(
-            f"UPDATE persons SET {', '.join(sets)}, updated_at = ? WHERE id = ?", (*params, now_iso(), person_id)
+        self,
+        person_id: int,
+        company: str,
+        notes: str,
+        phone: str | None = None,
+        email: str | None = None,
+        *,
+        employee_id: str | None = None,
+        referent: str | None = None,
+    ) -> bool:
+        """Ditta e note; telefono, email, matricola e referente solo se dati. False se non cambia niente: allora non
+        cambia neanche l'Ultima Modifica."""
+        values = dict(zip(self.PERSON_DETAILS, (company, notes, phone, email, employee_id, referent), strict=True))
+        values = {column: value for column, value in values.items() if value is not None}
+        sets = ", ".join(f"{column} = ?" for column in values)
+        differs = " OR ".join(f"{column} IS NOT ?" for column in values)
+        cursor = self._execute_cursor(
+            f"UPDATE persons SET {sets}, updated_at = ? WHERE id = ? AND ({differs})",
+            (*values.values(), now_iso(), person_id, *values.values()),
         )
+        return bool(cursor.rowcount)
 
     def set_person_category(self, person_id: int, category_id: int) -> None:
         self._execute(
-            "UPDATE persons SET category_id = ?, updated_at = ? WHERE id = ?", (category_id, now_iso(), person_id)
+            "UPDATE persons SET category_id = ?, updated_at = ? WHERE id = ? AND category_id IS NOT ?",
+            (category_id, now_iso(), person_id, category_id),
         )
 
     def delete_person(self, person_id: int) -> None:
-        """Gli eventi restano nel registro con il nome, staccati dalla persona: nessuno li può ereditare."""
+        """Gli eventi restano nel registro con il nome, staccati dalla persona: nessuno li può ereditare. La foto se ne
+        va con la persona (ON DELETE CASCADE)."""
         with self._lock:
             self._conn.execute("UPDATE events SET person_id = NULL WHERE person_id = ?", (person_id,))
             self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
             self._commit()
+
+    # Foto della persona (person_photo): solo nell'app, una per persona. Non sono le foto della telecamera degli eventi
+
+    def person_photo_versions(self) -> dict[int, str]:
+        """Versione (updated_at) della foto di ogni persona che ne ha una, dall'indice: senza leggere le foto."""
+        return {row["person_id"]: row["updated_at"] for row in self._query(PHOTO_VERSIONS)}
+
+    def person_photo_version(self, person_id: int) -> str:
+        rows = self._query("SELECT updated_at FROM person_photos WHERE person_id = ?", (person_id,))
+        return rows[0]["updated_at"] if rows else ""
+
+    def get_person_photo(self, person_id: int) -> dict | None:
+        """{mime, updated_at, data} della foto della persona, None se non ne ha."""
+        rows = self._query("SELECT mime, updated_at, data FROM person_photos WHERE person_id = ?", (person_id,))
+        return rows[0] if rows else None
+
+    def set_person_photo(self, person_id: int, mime: str, data: bytes) -> tuple[bool, str]:
+        """Foto nuova o sostituita: (True se ne sostituisce una, versione nuova). La versione ha i microsecondi ed è
+        sempre diversa dalla precedente: con la stessa la pagina mostrerebbe la foto vecchia dalla cache."""
+        with self._writing() as conn:
+            row = conn.execute("SELECT updated_at FROM person_photos WHERE person_id = ?", (person_id,)).fetchone()
+            version = datetime.now(tz=UTC).isoformat(timespec="microseconds")
+            if row is not None and version <= row["updated_at"]:
+                later = datetime.fromisoformat(row["updated_at"]) + timedelta(microseconds=1)
+                version = later.isoformat(timespec="microseconds")
+            conn.execute(
+                "INSERT INTO person_photos (person_id, mime, updated_at, data) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(person_id) DO UPDATE SET mime = excluded.mime, updated_at = excluded.updated_at, "
+                "data = excluded.data",
+                (person_id, mime, version, sqlite3.Binary(data)),
+            )
+            self._touch_persons([person_id])
+        return row is not None, version
+
+    def delete_person_photo(self, person_id: int) -> bool:
+        """False se la persona non aveva una foto (allora non cambia niente)."""
+        with self._writing() as conn:
+            removed = conn.execute("DELETE FROM person_photos WHERE person_id = ?", (person_id,)).rowcount
+            if removed:
+                self._touch_persons([person_id])
+        return bool(removed)
 
     def cards_of(self, person_id: int) -> list[dict]:
         cards = self._query("SELECT * FROM cards WHERE person_id = ? ORDER BY id", (person_id,))
@@ -928,6 +1119,10 @@ class Database:
         )
         return rows[0] if rows else None
 
+    def _card_owner(self, card_id: int) -> int | None:
+        row = self._conn.execute("SELECT person_id FROM cards WHERE id = ?", (card_id,)).fetchone()
+        return row["person_id"] if row else None
+
     def add_card(
         self,
         person_id: int,
@@ -937,48 +1132,73 @@ class Database:
         access: dict | None = None,
     ) -> int:
         access = access or {}
-        card_id = self._execute(
-            "INSERT INTO cards (person_id, number, enabled, axis_credential_token, created_at, "
-            "access_profile, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                person_id,
-                number,
-                int(enabled),
-                axis_credential_token,
-                now_iso(),
-                access.get("access_profile", ""),
-                access.get("valid_from", ""),
-                access.get("valid_to", ""),
-            ),
-        )
+        with self._writing() as conn:
+            cursor = conn.execute(
+                "INSERT INTO cards (person_id, number, enabled, axis_credential_token, created_at, "
+                "access_profile, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    person_id,
+                    number,
+                    int(enabled),
+                    axis_credential_token,
+                    now_iso(),
+                    access.get("access_profile", ""),
+                    access.get("valid_from", ""),
+                    access.get("valid_to", ""),
+                ),
+            )
+            self._touch_persons([person_id])
         self.forget_unknown_card(number)
-        return card_id
+        return cursor.lastrowid
 
     def update_card(
         self, card_id: int, *, person_id: int, number: str, enabled: bool, access: dict | None = None
     ) -> None:
+        """Tessera come la legge il controller (sincronizzazione). L'Ultima Modifica cambia, per la persona di prima e
+        per quella di adesso, solo se cambia qualcosa della tessera: non se torna solo presente (missing_since)."""
         # Una tessera ricomparsa sul controller non è più "non presente"
         sql = "UPDATE cards SET person_id = ?, number = ?, enabled = ?, missing_since = ''"
         params: tuple = (person_id, number, int(enabled))
+        wanted = {"person_id": person_id, "number": number, "enabled": int(enabled)}
         if access is not None:
             sql += ", access_profile = ?, valid_from = ?, valid_to = ?"
-            params += (access.get("access_profile", ""), access.get("valid_from", ""), access.get("valid_to", ""))
-        self._execute(f"{sql} WHERE id = ?", (*params, card_id))
+            values = (access.get("access_profile", ""), access.get("valid_from", ""), access.get("valid_to", ""))
+            params += values
+            wanted |= dict(zip(("access_profile", "valid_from", "valid_to"), values, strict=True))
+        with self._writing() as conn:
+            row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+            conn.execute(f"{sql} WHERE id = ?", (*params, card_id))
+            if row is not None and any(row[key] != value for key, value in wanted.items()):
+                self._touch_persons([row["person_id"], person_id])
 
-    def set_card_access(self, card_id: int, access: dict) -> None:
-        """Gruppo e validità della tessera: {access_profile, valid_from, valid_to}."""
-        self._execute(
-            "UPDATE cards SET access_profile = ?, valid_from = ?, valid_to = ? WHERE id = ?",
-            (access.get("access_profile", ""), access.get("valid_from", ""), access.get("valid_to", ""), card_id),
-        )
+    def set_card_access(self, card_id: int, access: dict, *, touch: bool = True) -> None:
+        """Gruppo e validità della tessera: {access_profile, valid_from, valid_to}. touch False: cambia per la tipologia
+        (il suo profilo nuovo), non per la persona, e l'Ultima Modifica resta."""
+        values = (access.get("access_profile", ""), access.get("valid_from", ""), access.get("valid_to", ""))
+        with self._writing() as conn:
+            changed = conn.execute(
+                "UPDATE cards SET access_profile = ?, valid_from = ?, valid_to = ? WHERE id = ? "
+                "AND (access_profile IS NOT ? OR valid_from IS NOT ? OR valid_to IS NOT ?)",
+                (*values, card_id, *values),
+            ).rowcount
+            if changed and touch:
+                self._touch_persons([self._card_owner(card_id)])
 
     def set_card_enabled(self, card_id: int, enabled: bool) -> None:
-        self._execute("UPDATE cards SET enabled = ? WHERE id = ?", (int(enabled), card_id))
+        with self._writing() as conn:
+            changed = conn.execute(
+                "UPDATE cards SET enabled = ? WHERE id = ? AND enabled IS NOT ?", (int(enabled), card_id, int(enabled))
+            ).rowcount
+            if changed:
+                self._touch_persons([self._card_owner(card_id)])
 
     def delete_card(self, card_id: int) -> None:
-        self._execute("DELETE FROM cards WHERE id = ?", (card_id,))
+        with self._writing() as conn:
+            self._touch_persons([self._card_owner(card_id)])
+            conn.execute("DELETE FROM cards WHERE id = ?", (card_id,))
 
     def mark_cards_missing(self, card_ids: list[int], since: str) -> None:
+        """Tessere non più sul controller: uno stato del controller, l'Ultima Modifica delle persone non cambia."""
         with self._lock:
             self._conn.executemany(
                 "UPDATE cards SET missing_since = ? WHERE id = ? AND missing_since = ''",
@@ -997,7 +1217,7 @@ class Database:
         return rows
 
     def set_card_token(self, card_id: int, token: str) -> None:
-        """Tessera riscritta sul controller: nuovo token, di nuovo presente."""
+        """Tessera riscritta sul controller: nuovo token, di nuovo presente. I dati della persona non cambiano."""
         self._execute("UPDATE cards SET axis_credential_token = ?, missing_since = '' WHERE id = ?", (token, card_id))
 
     def all_cards(self) -> list[dict]:
@@ -1110,8 +1330,12 @@ class Database:
             self._conn.commit()
 
     def delete_category(self, category_id: int) -> None:
-        self._execute("UPDATE persons SET category_id = 0 WHERE category_id = ?", (category_id,))
-        self._execute("DELETE FROM categories WHERE id = ?", (category_id,))
+        """Le persone della tipologia restano senza tipologia: per loro è una modifica (Ultima Modifica)."""
+        with self._writing() as conn:
+            conn.execute(
+                "UPDATE persons SET category_id = 0, updated_at = ? WHERE category_id = ?", (now_iso(), category_id)
+            )
+            conn.execute("DELETE FROM categories WHERE id = ?", (category_id,))
 
     def persons_of_category(self, category_id: int) -> list[dict]:
         return [p for p in self.list_persons() if p["category_id"] == category_id]

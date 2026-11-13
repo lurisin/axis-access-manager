@@ -144,11 +144,18 @@ SECTION_TITLES = {
     "profili": "Profili di Accesso",
     "ingressi": "Ingressi",
 }
-# Telefono ed email delle persone: il confronto dei backup (permesso Backup) e l'anteprima del ripristino dicono che
-# sono cambiati, mai il valore, che si vede solo in Persone
-PRIVATE_FIELDS = ("phone", "email")
+# Telefono, email, matricola e referente delle persone: il confronto dei backup (permesso Backup) e l'anteprima del
+# ripristino dicono che sono cambiati, mai il valore, che si vede solo in Persone. La foto della persona non è nei
+# backup dell'app (troppo pesante): resta nel database, quindi nei backup di Home Assistant
+PRIVATE_FIELDS = ("phone", "email", "employee_id", "referent")
 PRIVATE_SHOWN = "indicato"
-FIELD_LABELS = {**COMPARE_LABELS, "phone": "Telefono", "email": "Email"}
+FIELD_LABELS = {
+    **COMPARE_LABELS,
+    "phone": "Telefono",
+    "email": "Email",
+    "employee_id": "Matricola",
+    "referent": "Referente Interno",
+}
 COLOR_NAMES = {
     "blue": "Blu",
     "green": "Verde",
@@ -344,6 +351,8 @@ def common_snapshot(db: Database, schedules: list[dict]) -> dict:
                 "category_id": person["category_id"] or 0,
                 "phone": person["phone"],
                 "email": person["email"],
+                "employee_id": person["employee_id"],
+                "referent": person["referent"],
             }
         )
         for card in person["cards"]:
@@ -589,7 +598,8 @@ def _person_name(person: dict) -> tuple[list[str], str]:
 
 
 def shown_change(old: dict, new: dict, field: str) -> tuple[str, str]:
-    """Valore di prima e di dopo di un campo cambiato, come si mostra: telefono ed email senza il valore."""
+    """Valore di prima e di dopo di un campo cambiato, come si mostra: telefono, email, matricola e referente senza il
+    valore."""
     was, now = _shown(old, field), _shown(new, field)
     if field in PRIVATE_FIELDS and was == now:
         now = "cambiato"
@@ -602,7 +612,7 @@ def common_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
     for p in part.get("persons", []):
         category = p["category_id"]
         name, shown = _person_name(p)
-        # Telefono ed email solo se ci sono: i backup di prima della 0.28.3 non li hanno, e non risultano tolti
+        # Telefono, email, matricola e referente solo se ci sono: i backup di prima non li hanno, e non risultano tolti
         private = {f: p[f] for f in PRIVATE_FIELDS if p.get(f)}
         view["persone"][f"{p['id']}:{p['created_at']}"] = _item(
             p["name"],

@@ -740,8 +740,9 @@ class RulesService:
                 cards = person["cards"]
                 if cards and cards[0]["access_profile"] in moving and cards[0]["access_profile"] != token:
                     try:
+                        # Cambia il profilo della tipologia, non l'accesso della persona: l'Ultima Modifica resta
                         await self.access.set_person_access(
-                            person["id"], token, cards[0]["valid_from"], cards[0]["valid_to"], user
+                            person["id"], token, cards[0]["valid_from"], cards[0]["valid_to"], user, for_category=True
                         )
                     except ServiceError as err:
                         # Un problema di una persona (tessera non sul controller) non ferma le altre

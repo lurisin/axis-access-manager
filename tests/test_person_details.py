@@ -17,19 +17,29 @@ from test_page_time_zone import needs_node, run_page
 from app import db as db_module
 from app.backup import COMMON, compare_parts
 from app.compare import compare, read_strict
-from app.db import SCHEMA_VERSION, Database, compose_name, split_name
+from app.db import SCHEMA_VERSION, Database, compose_name, nocase, split_name
 from app.desired import build, load_conf
 from app.events import Event, EventMonitor
 from app.ha_mqtt import HaBridge
 from app.main import create_app
 from app.restore import Runtime, apply, plan, public
-from app.service import AccessService, ServiceError, new_credential, normalize_email, normalize_phone
+from app.service import (
+    AccessService,
+    ServiceError,
+    new_credential,
+    normalize_email,
+    normalize_employee_id,
+    normalize_phone,
+    normalize_referent,
+)
 from app.transfer import import_persons, persons_csv, read_import
 
 DB_NAME = "axis_access_manager.db"
 TS = "2026-10-01T08:00:00+00:00"
 PHONE = "+39 333 987 6543"
 EMAIL = "riservata@example.it"
+EMPLOYEE_ID = "MAT-000917"
+REFERENT = "Dott.ssa Ines Fantasia"
 GROUPS = [{"token": "profilo_sempre", "name": "Sempre"}]
 ACCESS = {"access_profile": "profilo_sempre", "valid_from": "", "valid_to": ""}
 CARDS_KINDS = ["utente", "tessera"]
@@ -221,8 +231,10 @@ async def test_the_controller_gets_the_same_names_before_and_after_the_migration
     assert {row["action"] for row in compare(before, reading)["rows"]} == {"uguale"}
     path = db.path
     db.close()
-    # Lo stesso database com'era con la 0.28.2: senza le colonne della migrazione 10
+    # Lo stesso database com'era con la 0.28.2: senza le colonne della migrazione 10, l'indice della matricola e le foto
     conn = sqlite3.connect(path)
+    conn.execute("DROP INDEX persons_employee_id")
+    conn.execute("DROP TABLE person_photos")
     for column, _ in db_module.PERSON_COLUMNS:
         conn.execute(f"ALTER TABLE persons DROP COLUMN {column}")
     conn.execute(f"PRAGMA user_version = {V0282_SCHEMA}")
@@ -779,7 +791,15 @@ def test_phone_and_email_are_seen_only_with_the_persons_permission(settings, con
 
 async def test_events_and_home_assistant_never_carry_phone_or_email(service, controller, db, settings, monkeypatch):
     person = await service.create_person(
-        "", "04aa", "admin", first_name="Mario", last_name="Rossi", phone=PHONE, email=EMAIL
+        "",
+        "04aa",
+        "admin",
+        first_name="Mario",
+        last_name="Rossi",
+        phone=PHONE,
+        email=EMAIL,
+        employee_id=EMPLOYEE_ID,
+        referent=REFERENT,
     )
     token = person["cards"][0]["axis_credential_token"]
     at = datetime(2026, 11, 13, 8, tzinfo=UTC)
@@ -805,8 +825,12 @@ async def test_events_and_home_assistant_never_carry_phone_or_email(service, con
     published = json.dumps([[t, str(p)] for t, p in sent] + [[t, str(p)] for t, p in client.published.items()])
     assert "Mario Rossi" in published
     assert PHONE not in published and EMAIL not in published
+    assert EMPLOYEE_ID not in published and REFERENT not in published
+    assert all(EMPLOYEE_ID not in json.dumps(r) and REFERENT not in json.dumps(r) for r in rows)
     # Sul controller solo il nome completo
     assert assert_no_secret([controller.users, controller.credentials])
+    assert EMPLOYEE_ID not in json.dumps([controller.users, controller.credentials])
+    assert REFERENT not in json.dumps([controller.users, controller.credentials])
     assert controller.users[person["axis_user_token"]]["Name"] == "Mario Rossi"
 
 
@@ -822,14 +846,15 @@ async def test_exported_file_has_phone_and_email_and_imports_as_before(service, 
     await service.create_person("", "", "admin", first_name="Ada", last_name="Neri", phone="(06) 123-4567")
     text = persons_csv(db.list_persons(), {"profilo_sempre": "Sempre"}, db.last_accesses())
     lines = text.lstrip("\ufeff").splitlines()
-    assert lines[0].split(";")[-3:] == ["ultimo_accesso", "telefono", "email"]
+    assert lines[0].split(";")[-5:] == ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
     # Ogni telefono come formula di testo, perché il foglio di calcolo lo mostri com'è: lo zero iniziale resta, il + non
-    # ha davanti l'apostrofo che resterebbe in vista, «06.123.456» non diventa il numero 6123456
+    # ha davanti l'apostrofo che resterebbe in vista, «06.123.456» non diventa il numero 6123456. In fondo matricola e
+    # referente, qui vuoti
     by_name = {line.split(";")[0]: line for line in lines[1:]}
-    assert by_name["Mario Rossi"].endswith(';"=""0612345678""";mario@example.it')
-    assert by_name["Anna Maria Bianchi"] == f'Anna Maria Bianchi;;;;;;;;;;"=""{PHONE}""";'
-    assert by_name["Ugo Neri"] == 'Ugo Neri;;;;;;;;;;"=""06.123.456""";'
-    assert by_name["Ada Neri"] == 'Ada Neri;;;;;;;;;;"=""(06) 123-4567""";'
+    assert by_name["Mario Rossi"].endswith(';"=""0612345678""";mario@example.it;;')
+    assert by_name["Anna Maria Bianchi"] == f'Anna Maria Bianchi;;;;;;;;;;"=""{PHONE}""";;;'
+    assert by_name["Ugo Neri"] == 'Ugo Neri;;;;;;;;;;"=""06.123.456""";;;'
+    assert by_name["Ada Neri"] == 'Ada Neri;;;;;;;;;;"=""(06) 123-4567""";;;'
     rows = {row["nome"]: row for row in read_import(text)}
     assert rows["Mario Rossi"]["telefono"] == "0612345678" and rows["Anna Maria Bianchi"]["telefono"] == PHONE
     assert (rows["Ugo Neri"]["telefono"], rows["Ada Neri"]["telefono"]) == ("06.123.456", "(06) 123-4567")
@@ -954,3 +979,412 @@ def test_mailto_link_writes_to_the_whole_address():
     assert out == {email: [email, "", ""] for email in emails}
     for email in emails:
         assert normalize_email(email) == email
+
+
+# Matricola e referente interno (0.28.3, seconda parte). Come telefono ed email: solo nell'app
+
+
+def database_first_part(path: Path) -> int:
+    """Database come lo lasciava la prima parte della 0.28.3: schema 10 con nome, cognome, telefono ed email, senza
+    matricola, referente, indice della matricola e foto."""
+    db = Database(path, "0.28.3")
+    person = db.add_person("Maria Rosa Bianchi", "u1", first_name="Maria Rosa", last_name="Bianchi", phone=PHONE)
+    db.close()
+    conn = sqlite3.connect(path)
+    conn.execute("DROP INDEX persons_employee_id")
+    conn.execute("DROP TABLE person_photos")
+    conn.execute("ALTER TABLE persons DROP COLUMN employee_id")
+    conn.execute("ALTER TABLE persons DROP COLUMN referent")
+    conn.commit()
+    conn.close()
+    return person
+
+
+def table_names(db: Database) -> set[str]:
+    return {row["name"] for row in db._query("SELECT name FROM sqlite_master")}
+
+
+def test_database_of_the_first_part_gets_employee_id_referent_and_photos(tmp_path, caplog):
+    path = tmp_path / DB_NAME
+    person = database_first_part(path)
+    with caplog.at_level(logging.INFO):
+        db = Database(path, "0.28.3")
+    try:
+        assert db.schema_version == SCHEMA_VERSION == 10
+        [row] = db.all_persons()
+        assert (row["id"], row["first_name"], row["last_name"], row["phone"]) == (
+            person,
+            "Maria Rosa",
+            "Bianchi",
+            PHONE,
+        )
+        assert (row["employee_id"], row["referent"]) == ("", "")
+        assert {"person_photos", "person_photos_version", "persons_employee_id"} <= table_names(db)
+        assert "Matricola e referente aggiunti" in caplog.text
+        db.update_person_details(person, "", "", employee_id=EMPLOYEE_ID, referent=REFERENT)
+    finally:
+        db.close()
+    # Di nuovo: niente da aggiungere, tutto com'è
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        db = Database(path, "0.28.3")
+    try:
+        [row] = db.all_persons()
+        assert (row["employee_id"], row["referent"]) == (EMPLOYEE_ID, REFERENT)
+        assert "Matricola e referente" not in caplog.text
+    finally:
+        db.close()
+
+
+def test_database_of_0_28_2_gets_every_new_column(tmp_path):
+    path = tmp_path / DB_NAME
+    database_0_28_2(path, ["Anna", "Mario Rossi"])
+    db = Database(path, "0.28.3")
+    try:
+        assert {(p["employee_id"], p["referent"]) for p in db.all_persons()} == {("", "")}
+        assert {"person_photos", "persons_employee_id"} <= table_names(db)
+        assert all(p["photo"] == "" for p in db.list_persons())
+    finally:
+        db.close()
+
+
+def test_two_equal_employee_ids_put_in_by_hand_do_not_stop_the_app(tmp_path, caplog):
+    """Due matricole uguali scritte a mano nel database: l'indice unico non si crea, l'app parte lo stesso e lo dice
+    nel log (senza la matricola); si riprova a ogni avvio."""
+    path = tmp_path / DB_NAME
+    database_first_part(path)
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE persons ADD COLUMN employee_id TEXT NOT NULL DEFAULT ''")
+    conn.execute("ALTER TABLE persons ADD COLUMN referent TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "INSERT INTO persons (name, first_name, employee_id, created_at, updated_at) VALUES "
+        "('Anna', 'Anna', 'ab-1', ?, ?), ('Bruno', 'Bruno', 'AB-1', ?, ?)",
+        (TS, TS, TS, TS),
+    )
+    conn.commit()
+    conn.close()
+    with caplog.at_level(logging.WARNING):
+        db = Database(path, "0.28.3")
+    try:
+        assert "Indice della matricola non creato" in caplog.text and "ab-1" not in caplog.text.lower()
+        assert "persons_employee_id" not in table_names(db) and len(db.all_persons()) == 3
+    finally:
+        db.close()
+
+
+def test_the_database_refuses_the_same_employee_id_in_other_letters(db):
+    anna = db.add_person("Anna", None, employee_id="Ab-12")
+    db.add_person("Bruno", None)
+    db.add_person("Carla", None)
+    with pytest.raises(sqlite3.IntegrityError):
+        db.add_person("Dario", None, employee_id="aB-12")
+    assert db.person_by_employee_id("AB-12") == {"id": anna, "name": "Anna"}
+    assert db.person_by_employee_id("ab-12", anna) is None and db.person_by_employee_id("") is None
+    assert nocase("ÀB-12") == "Àb-12"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", ""),
+        (None, ""),
+        ("  MAT  001 ", "MAT 001"),
+        ("000123", "000123"),
+        ("A\u00a0\u00a0B", "A B"),
+        ("\u200bMAT-9\u200e", "MAT-9"),
+        ("x" * 30, "x" * 30),
+    ],
+)
+def test_valid_employee_ids(value, expected):
+    assert normalize_employee_id(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [("x" * 31, r"matricola troppo lunga \(massimo 30 caratteri\)$"), ("MAT\x07001", "caratteri di controllo")],
+)
+def test_invalid_employee_ids_say_why_without_the_value(value, reason):
+    with pytest.raises(ServiceError, match=reason) as err:
+        normalize_employee_id(value)
+    assert value not in str(err.value)
+
+
+def test_referent_is_free_text_up_to_100_characters():
+    assert normalize_referent("  Ufficio   Tecnico\t(int. 12) ") == "Ufficio Tecnico (int. 12)"
+    assert normalize_referent("y" * 100) == "y" * 100
+    with pytest.raises(ServiceError, match="massimo 100"):
+        normalize_referent("y" * 101)
+    with pytest.raises(ServiceError, match="caratteri di controllo"):
+        normalize_referent("Ufficio\x00Tecnico")
+
+
+async def test_employee_id_is_unique_without_minding_letters_and_names_who_has_it(service, controller, db):
+    mario = await service.create_person(
+        "", "04aa", "admin", first_name="Mario", last_name="Rossi", employee_id="ab-12", referent=REFERENT
+    )
+    assert (mario["employee_id"], mario["referent"]) == ("ab-12", REFERENT)
+    users, credentials = dict(controller.users), dict(controller.credentials)
+    for card in ("04bb", ""):
+        with pytest.raises(ServiceError) as err:
+            await service.create_person("", card, "admin", first_name="Anna", last_name="Bianchi", employee_id="AB-12")
+        assert str(err.value) == "matricola già usata da Mario Rossi"
+    # Rifiutata prima di scrivere sul controller
+    assert (controller.users, controller.credentials) == (users, credentials)
+    anna = await service.create_person("", "", "admin", first_name="Anna", last_name="Bianchi", employee_id="AB-13")
+    with pytest.raises(ServiceError, match="^matricola già usata da Mario Rossi$"):
+        await service.update_person(anna["id"], "admin", employee_id=" Ab-12 ", company="Ditta")
+    assert db.get_person(anna["id"])["company"] == "" and db.get_person(anna["id"])["employee_id"] == "AB-13"
+    # La propria in altre lettere, e senza matricola quante si vuole
+    mario = await service.update_person(mario["id"], "admin", employee_id="AB-12")
+    assert mario["employee_id"] == "AB-12"
+    for name in ("Carla", "Dario"):
+        await service.create_person(name, "", "admin")
+    assert sorted(p["employee_id"] for p in db.all_persons()) == ["", "", "AB-12", "AB-13"]
+
+
+def test_employee_id_and_referent_through_the_api(settings, controller, tmp_path, monkeypatch, caplog):
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=tmp_path / "api.db")
+    admin = {"X-Remote-User-Name": "admin"}
+    viewer = {"X-Remote-User-Name": "consulta"}
+    log_only = {"X-Remote-User-Name": "portiere"}
+    secrets = (EMPLOYEE_ID, REFERENT, "MAT-SEGRETA", "Referente Segreto", PHONE, EMAIL)
+    with caplog.at_level(logging.DEBUG), TestClient(app) as client:
+        client.get("/api/me", headers=admin)
+        client.post("/api/users", json={"username": "consulta", "perms": ["persone"]}, headers=admin)
+        client.post("/api/users", json={"username": "portiere", "perms": ["stato", "registro"]}, headers=admin)
+        body = {"first_name": "Mario", "last_name": "Rossi", "card": "04aa", "employee_id": EMPLOYEE_ID}
+        person = client.post("/api/persons", json={**body, "referent": REFERENT}, headers=admin).json()
+        assert (person["employee_id"], person["referent"]) == (EMPLOYEE_ID, REFERENT)
+        response = client.post("/api/persons", json={**body, "first_name": "Anna", "card": ""}, headers=admin)
+        assert response.status_code == 400 and response.json()["detail"] == "matricola già usata da Mario Rossi"
+
+        [seen] = client.get("/api/persons", headers=viewer).json()
+        assert (seen["employee_id"], seen["referent"]) == (EMPLOYEE_ID, REFERENT)
+        response = client.patch(f"/api/persons/{person['id']}", json={"referent": ""}, headers=viewer)
+        assert response.status_code == 403
+        assert client.get(f"/api/persons/{person['id']}", headers=log_only).status_code == 403
+        for path, headers in (("/api/events", log_only), ("/api/dashboard", log_only), ("/api/summary", log_only)):
+            response = client.get(path, headers=headers)
+            assert response.status_code == 200
+            assert EMPLOYEE_ID not in response.text and REFERENT not in response.text, path
+
+        # Rifiutati da FastAPI (tipo sbagliato, corpo a lista, valori annidati): nel log mai i valori
+        bad = [
+            ("patch", f"/api/persons/{person['id']}", {"employee_id": ["MAT-SEGRETA"]}),
+            ("post", "/api/persons", [{"first_name": "Anna", "employee_id": "MAT-SEGRETA", "phone": PHONE}]),
+            ("post", "/api/persons", {"first_name": {"referent": "Referente Segreto", "email": EMAIL}}),
+            ("post", "/api/persons", {"first_name": [{"x": {"employee_id": "MAT-SEGRETA"}}], "referent": 3}),
+            ("post", f"/api/persons/{person['id']}/cards", {"items": [{"referent": "Referente Segreto"}]}),
+        ]
+        for method, path, payload in bad:
+            response = getattr(client, method)(path, json=payload, headers=admin)
+            assert response.status_code == 422, (path, response.text)
+        response = client.patch(f"/api/persons/{person['id']}", json={"employee_id": "x" * 31}, headers=admin)
+        assert response.status_code == 400 and "massimo 30" in response.json()["detail"]
+        response = client.patch(
+            f"/api/persons/{person['id']}", json={"employee_id": "MAT-2", "referent": "Altro"}, headers=admin
+        )
+        assert response.status_code == 200
+        audit = client.get("/api/audit", headers=admin).json()
+        assert "Mario Rossi: matricola, referente interno" in [a["detail"] for a in audit]
+        assert all(secret not in json.dumps(audit) for secret in (EMPLOYEE_ID, REFERENT, "MAT-2", "Altro"))
+    assert "Dati non validi" in caplog.text
+    for secret in secrets:
+        assert secret not in caplog.text, secret
+
+
+def test_masked_log_values_at_any_depth():
+    from app.main import _loggable
+
+    error = {
+        "type": "missing",
+        "loc": ("body", "card"),
+        "input": [{"phone": PHONE, "inner": {"email": EMAIL, "list": [{"employee_id": "M1"}]}, "referent": "R"}],
+    }
+    text = str(_loggable(error))
+    assert all(secret not in text for secret in (PHONE, EMAIL, "M1", "'R'")) and "inner" in text
+    assert _loggable({"loc": ("body", "referent"), "input": "Segreto"})["input"] == "…"
+    assert _loggable({"loc": ("body",), "input": b"\x89PNG segreto"})["input"] == "…"
+    assert _loggable({"loc": ("query", "limit"), "input": "abc"}) == {"loc": ("query", "limit"), "input": "abc"}
+
+
+async def test_exported_file_has_employee_id_and_referent_and_imports_as_before(service, db):
+    await service.create_person("Mario Rossi", "04aa", "admin", employee_id="000123", referent="=Ufficio Tecnico")
+    await service.create_person("Anna Bianchi", "", "admin", employee_id='MAT "A"', referent="Bruno Neri")
+    await service.create_person("Ugo Neri", "", "admin")
+    text = persons_csv(db.list_persons(), {"profilo_sempre": "Sempre"}, db.last_accesses())
+    lines = text.lstrip("\ufeff").splitlines()
+    assert lines[0].split(";")[-5:] == ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
+    by_name = {line.split(";")[0]: line for line in lines[1:]}
+    # La matricola come formula di testo: il foglio di calcolo tiene gli zeri; il referente non diventa una formula
+    assert by_name["Mario Rossi"].endswith(';;"=""000123""";\'=Ufficio Tecnico')
+    # Con le virgolette non si può: testo normale
+    assert by_name["Anna Bianchi"].endswith(';;"MAT ""A""";Bruno Neri')
+    assert by_name["Ugo Neri"].endswith(";;;;")
+    rows = {row["nome"]: row for row in read_import(text)}
+    assert (rows["Mario Rossi"]["matricola"], rows["Mario Rossi"]["referente"]) == ("000123", "=Ufficio Tecnico")
+    # Reimportato com'è: niente da fare, e una matricola cambiata nel file non cambia niente
+    result = await import_persons(service, text, GROUPS, "admin", apply=False)
+    assert result["riepilogo"]["saltate"] == 3 and result["riepilogo"]["errori"] == 0
+    changed = text.replace("000123", "999999").replace("Bruno Neri", "Altro")
+    result = await import_persons(service, changed, GROUPS, "admin", apply=True)
+    assert result["riepilogo"]["saltate"] == 3
+    assert {p["name"]: p["employee_id"] for p in db.all_persons()}["Mario Rossi"] == "000123"
+
+
+async def test_restore_brings_back_employee_id_and_referent_masked(plant, controller, db):
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", employee_id="M1", referent=REFERENT)
+    backup = await plant.backup()
+    raw = json.dumps(plant.backups.load(backup["id"]))
+    assert '"employee_id": "M1"' in raw and REFERENT in raw
+    await plant.access.update_person(mario["id"], "admin", employee_id="M9", referent="")
+    second = await plant.backup()
+    compared = await plant.backups.compare(second["id"], "precedente", plant.clients)
+    fields = [
+        (f["label"], f["old"], f["new"])
+        for group in compared["groups"]
+        for section in group["sections"]
+        for changed in section["changed"]
+        for f in changed["fields"]
+    ]
+    assert fields == [("Matricola", "indicato", "cambiato"), ("Referente Interno", "indicato", "—")]
+    assert "M9" not in json.dumps(compared) and REFERENT not in json.dumps(compared)
+
+    items, result = await plant.restore(backup["id"], ["persone"])
+    [item] = items
+    assert [(c["label"], c["old"], c["new"]) for c in item["changes"]] == [
+        ("Matricola", "indicato", "cambiato"),
+        ("Referente Interno", "—", "indicato"),
+    ]
+    assert not result["failed"] and REFERENT not in json.dumps(public(items))
+    restored = db.get_person(mario["id"])
+    assert (restored["employee_id"], restored["referent"]) == ("M1", REFERENT)
+
+
+async def test_old_backup_keeps_employee_id_and_referent(plant, db):
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", company="Ditta")
+    backup = await plant.backup()
+    _, saved = plant.backups.load(backup["id"])
+    for person in saved[COMMON]["persons"]:
+        del person["employee_id"], person["referent"]
+    await plant.access.update_person(mario["id"], "admin", company="Altra", employee_id="M5", referent=REFERENT)
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, ["persone"], plant.controller_id)
+    assert [c["label"] for c in items[0]["changes"]] == ["Ditta o Reparto"]
+    runtime = Runtime(db, plant.access, plant.rules, plant.programming, plant.controller_id)
+    result = await apply(items, [i["key"] for i in items], runtime, "admin")
+    assert not result["failed"]
+    restored = db.get_person(mario["id"])
+    assert (restored["company"], restored["employee_id"], restored["referent"]) == ("Ditta", "M5", REFERENT)
+
+
+async def test_restore_leaves_an_employee_id_given_to_someone_else_meanwhile(plant, controller, db):
+    """Matricola del backup data nel frattempo a un'altra persona: resta sua. Il ripristino non si ferma: la persona
+    ripristinata tiene la sua di adesso (o, ricreata, nessuna), e l'anteprima lo dice senza mostrare la matricola. Se
+    il backup ridà a quell'altra persona la matricola di prima, ripristinandole insieme tornano com'erano."""
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", employee_id="M1", company="Ditta")
+    carla = await plant.access.create_person("Carla Verdi", "", "admin", employee_id="C1")
+    anna = await plant.access.create_person("Anna Bianchi", "", "admin", employee_id="A1")
+    backup = await plant.backup()
+    await plant.access.update_person(mario["id"], "admin", employee_id="M2", company="Altra")
+    await plant.access.update_person(anna["id"], "admin", employee_id="m1")
+    await plant.access.delete_person(carla["id"], "admin")
+    # Bruno è nuovo, non è nel backup: la C1 di Carla resta sua
+    await plant.access.create_person("Bruno Neri", "", "admin", employee_id="c1")
+    _, saved = plant.backups.load(backup["id"])
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, ["persone"], plant.controller_id)
+
+    rows = {i["label"]: i for i in items}
+    assert rows["Mario Rossi"]["warnings"] == [
+        "la matricola del backup ora è di Anna Bianchi: torna a questa persona solo ripristinando anche Anna Bianchi"
+    ]
+    assert [c["label"] for c in rows["Mario Rossi"]["changes"]] == ["Ditta o Reparto", "Matricola"]
+    assert rows["Carla Verdi"]["warnings"] == [
+        "la matricola del backup ora è di Bruno Neri: resta sua, e torna senza matricola"
+    ]
+    assert not rows["Anna Bianchi"]["warnings"]
+    text = json.dumps(public(items))
+    assert all(f'"{value}"' not in text for value in ("M1", "M2", "m1", "A1", "C1", "c1"))
+
+    # Senza la riga di Anna: Anna tiene M1, Mario la sua di adesso, Carla torna senza; il ripristino va
+    runtime = Runtime(db, plant.access, plant.rules, plant.programming, plant.controller_id)
+    keys = [i["key"] for i in items if i["default"] and i["label"] != "Anna Bianchi"]
+    result = await apply(items, keys, runtime, "admin")
+    assert not result["failed"] and len(result["applied"]) == 2
+    persons = {p["name"]: p for p in db.all_persons()}
+    assert (persons["Mario Rossi"]["employee_id"], persons["Mario Rossi"]["company"]) == ("M2", "Ditta")
+    assert persons["Anna Bianchi"]["employee_id"] == "m1" and persons["Bruno Neri"]["employee_id"] == "c1"
+    assert persons["Carla Verdi"]["employee_id"] == "" and persons["Carla Verdi"]["id"] == carla["id"]
+
+
+async def test_restoring_both_gives_each_employee_id_back(plant, db):
+    """La matricola di Mario è andata ad Anna, che nel backup ne ha un'altra: ripristinandoli insieme la riga di Mario
+    va dopo quella di Anna, che la lascia, e tornano com'erano. Due matricole scambiate tra loro invece restano come
+    sono adesso, e l'anteprima lo dice: il ripristino non si ferma."""
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", employee_id="M1")
+    anna = await plant.access.create_person("Anna Bianchi", "", "admin", employee_id="A1")
+    backup = await plant.backup()
+    await plant.access.update_person(mario["id"], "admin", employee_id="M2")
+    await plant.access.update_person(anna["id"], "admin", employee_id="M1")
+
+    items, result = await plant.restore(backup["id"], ["persone"])
+
+    assert [i["label"] for i in items] == ["Mario Rossi", "Anna Bianchi"]
+    assert not result["failed"] and [a["label"] for a in result["applied"]] == ["Anna Bianchi", "Mario Rossi"]
+    assert {p["name"]: p["employee_id"] for p in db.all_persons()} == {"Mario Rossi": "M1", "Anna Bianchi": "A1"}
+
+    # Scambiate
+    await plant.access.update_person(mario["id"], "admin", employee_id="X")
+    await plant.access.update_person(anna["id"], "admin", employee_id="M1")
+    await plant.access.update_person(mario["id"], "admin", employee_id="A1")
+    items, result = await plant.restore(backup["id"], ["persone"])
+    # Nessuna delle due si libera: niente da ripristinare, e niente righe
+    assert items == [] and not result["failed"]
+    assert {p["name"]: p["employee_id"] for p in db.all_persons()} == {"Mario Rossi": "A1", "Anna Bianchi": "M1"}
+    # Con un'altra modifica la riga c'è, e dice perché la matricola non torna
+    await plant.access.update_person(mario["id"], "admin", company="Altra")
+    items, result = await plant.restore(backup["id"], ["persone"])
+    assert [(i["label"], i["warnings"]) for i in items] == [
+        ("Mario Rossi", ["la matricola del backup ora è di Anna Bianchi: resta sua, e tiene quella di adesso"])
+    ]
+    assert not result["failed"] and db.get_person(mario["id"])["employee_id"] == "A1"
+
+
+async def test_employee_id_taken_between_preview_and_restore_does_not_stop_it(plant, db):
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", employee_id="M1")
+    anna = await plant.access.create_person("Anna Bianchi", "", "admin")
+    backup = await plant.backup()
+    await plant.access.update_person(mario["id"], "admin", employee_id="", company="Altra")
+    _, saved = plant.backups.load(backup["id"])
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, ["persone"], plant.controller_id)
+    assert not items[0]["warnings"]
+    # Tra l'anteprima e Ripristina la matricola va ad Anna
+    await plant.access.update_person(anna["id"], "admin", employee_id="M1")
+    runtime = Runtime(db, plant.access, plant.rules, plant.programming, plant.controller_id)
+    result = await apply(items, [i["key"] for i in items], runtime, "admin")
+    assert not result["failed"]
+    assert db.get_person(mario["id"])["employee_id"] == "" and db.get_person(mario["id"])["company"] == ""
+    assert db.get_person(anna["id"])["employee_id"] == "M1"
+
+
+async def test_controller_and_shadow_comparison_do_not_see_the_new_fields(plant, controller, db, settings):
+    """desired.build e il confronto in ombra identici con e senza matricola, referente e foto."""
+    from test_person_photo import PNG
+
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin")
+    anna = await plant.access.create_person("Anna Bianchi", "04bb", "admin")
+    before = build(load_conf(db, settings.access_profile), 1, CARDS_KINDS)
+    reading = await read_strict(controller, CARDS_KINDS)
+    calls = list(controller.calls)
+    await plant.access.update_person(mario["id"], "admin", employee_id=EMPLOYEE_ID, referent=REFERENT)
+    await plant.access.update_person(anna["id"], "admin", employee_id="MAT-2")
+    plant.access.set_person_photo(mario["id"], PNG, "admin")
+    after = build(load_conf(db, settings.access_profile), 1, CARDS_KINDS)
+    assert after == before
+    assert compare(after, reading) == compare(before, reading)
+    assert {row["action"] for row in compare(after, reading)["rows"]} == {"uguale"}
+    # Sul controller non si è scritto niente
+    assert controller.calls == calls

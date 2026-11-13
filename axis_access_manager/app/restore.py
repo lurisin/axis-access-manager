@@ -26,7 +26,7 @@ from .backup import (
     controller_view,
     shown_change,
 )
-from .db import Database, compose_name
+from .db import Database, compose_name, nocase
 from .programming import ProgrammingService, parse_duration
 from .rules_service import RulesService
 from .service import AccessService, ServiceError, saved_parts
@@ -388,12 +388,40 @@ def _plan_persons(
     saved_cards: dict[int, list[dict]] = {}
     for card in saved.get("cards", []):
         saved_cards.setdefault(card["person_id"], []).append(card)
+    # Matricole di adesso, senza distinguere le maiuscole come il database
+    employee_ids = {nocase(p["employee_id"]): p for p in current.get("persons", []) if p.get("employee_id")}
+    saved_persons = {(p["id"], p["created_at"]): p for p in saved.get("persons", [])}
     items, matched_persons = [], set()
     for person in saved.get("persons", []):
         ident = (person["id"], person["created_at"])
         now = current_persons.get(ident)
         key = f"persona:{person['id']}:{person['created_at']}"
         item = _new(key, "persone", "riporta" if now else "ricrea", person["name"], "")
+        # Matricola del backup data nel frattempo a un'altra persona: resta sua, e il ripristino non si ferma (vedi
+        # AccessService._saved_employee_id). Se il backup ridà a quella persona un'altra matricola, libera, torna a
+        # questa quando si ripristinano insieme: la riga va dopo la sua (_after). Due matricole scambiate restano come
+        # sono. Il valore non si mostra, come in Persone
+        holder = employee_ids.get(nocase(person.get("employee_id") or ""))
+        taken = holder is not None and (now is None or holder["id"] != now["id"])
+        if taken:
+            theirs = saved_persons.get((holder["id"], holder["created_at"])) or {}
+            wanted = nocase(theirs.get("employee_id") or "")
+            busy = employee_ids.get(wanted) if wanted else None
+            freed = (
+                "employee_id" in theirs
+                and wanted != nocase(person["employee_id"])
+                and (busy is None or busy["id"] == holder["id"])
+            )
+            if freed:
+                item["_after"] = True
+                item["warnings"].append(
+                    f"la matricola del backup ora è di {holder['name']}: torna a questa persona solo ripristinando "
+                    f"anche {holder['name']}"
+                )
+                taken = False
+            else:
+                kept = "tiene quella di adesso" if now else "torna senza matricola"
+                item["warnings"].append(f"la matricola del backup ora è di {holder['name']}: resta sua, e {kept}")
         name = saved_ctx["categories"].get(person["category_id"], "") if person["category_id"] else ""
         # La tipologia di adesso: la stessa anche se rinominata, oppure quella che questo ripristino ricrea
         category = matched.get(person["category_id"]) if name else None
@@ -477,8 +505,14 @@ def _plan_persons(
             "fields": {**saved_item["fields"], "name": names},
             "show": {**saved_item["show"], "name": shown},
         }
-        # Telefono ed email solo da un backup che li ha (dalla 0.28.3): uno di prima li lascia come sono adesso
-        only = ("name", "company", "notes", *(f for f in PRIVATE_FIELDS if f in person))
+        # Telefono, email, matricola e referente solo da un backup che li ha (dalla 0.28.3): uno di prima li lascia come
+        # sono adesso. La matricola di un altro non torna
+        only = (
+            "name",
+            "company",
+            "notes",
+            *(f for f in PRIVATE_FIELDS if f in person and not (taken and f == "employee_id")),
+        )
         changes = _changes(current_item, saved_item, only=only)
         if pending or (target["id"] if target else 0) != now["category_id"]:
             changes.append(
@@ -656,7 +690,8 @@ async def apply(items: list[dict], keys: list[str], runtime: Runtime, user: str)
     prima chi è usato da altri). Una riga che non riesce non ferma le altre."""
     order = list(ALL_SECTIONS)
     chosen = [i for i in items if i["key"] in set(keys)]
-    chosen.sort(key=lambda i: order.index(i["section"]))
+    # Le persone che riprendono una matricola lasciata da un'altra riga dopo quella riga (vedi _plan_persons)
+    chosen.sort(key=lambda i: (order.index(i["section"]), bool(i.get("_after"))))
     result: dict = {"applied": [], "failed": [], "reload": False}
     for item in chosen:
         if item["blocked"]:
