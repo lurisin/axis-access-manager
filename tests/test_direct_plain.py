@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from test_direct import ADMIN, NEW_PASSWORD, SAFE, clients, enable, fast_hash, login, ready, staff  # noqa: F401
+from test_page_time_zone import needs_node, run_page
 
 from app import main
 from app.backup_copy import STARTED_EMPTY
@@ -339,3 +340,36 @@ def test_plain_text_and_source():
     assert plain_source("Home Assistant") == "Apertura Remota"
     assert plain_source("Automazione (Home Assistant)") == "Automazione (apertura remota)"
     assert plain_source("Pulsante Portineria") == "Pulsante Portineria"
+
+
+@needs_node
+def test_page_helper_follows_the_server():
+    """hideHA() nella pagina: decide il server (api/me); finché non lo si sa, il login (c'è solo nell'accesso diretto) o
+    l'indirizzo (da Home Assistant la pagina sta sotto /api/hassio_ingress/)."""
+    prelude = 'globalThis.document = {body: {dataset: {}}}; globalThis.location = {pathname: "/"};'
+
+    def check(me: str, auth: str = "", path: str = "/") -> str:
+        setup = f"document.body.dataset.auth = {auth!r}, location.pathname = {path!r}, store.me = {me}"
+        return f"({setup}, [directPage(), hideHA(), appName()])"
+
+    out = run_page(
+        "Europe/Rome",
+        {
+            "staff": check("{direct: true, hide_home_assistant: true}"),
+            "admin": check("{direct: true, hide_home_assistant: false}"),
+            "ingress": check("{direct: false, hide_home_assistant: false}", path="/api/hassio_ingress/abc/"),
+            "login": check("{perms: []}", auth="login"),
+            "unknown_ingress": check("{perms: []}", path="/api/hassio_ingress/abc/"),
+            "unknown_direct": check("{perms: []}"),
+        },
+        names=("directPage", "hideHA", "appName"),
+        prelude=prelude,
+    )
+    assert out == {
+        "staff": [True, True, "l'app"],
+        "admin": [True, False, "l'add-on"],
+        "ingress": [False, False, "l'add-on"],
+        "login": [True, True, "l'app"],
+        "unknown_ingress": [False, False, "l'add-on"],
+        "unknown_direct": [True, True, "l'app"],
+    }
