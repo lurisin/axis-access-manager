@@ -8,8 +8,10 @@ Solo dati di fantasia."""
 
 import json
 import logging
+import re
 import sqlite3
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -29,7 +31,7 @@ from app.ha_mqtt import HaBridge
 from app.main import create_app
 from app.restore import Runtime, apply, plan
 from app.service import AccessService, ServiceError, normalize_printed_code
-from app.transfer import import_persons, persons_csv, read_import
+from app.transfer import EXPORT_COLUMNS, import_persons, persons_csv, read_import
 
 DB_NAME = "axis_access_manager.db"
 ADMIN = {"X-Remote-User-Name": "admin"}
@@ -749,6 +751,16 @@ async def test_exported_file_has_the_code_last_and_imports_as_before(service, db
     changed = text.replace("0042", "9999")
     result = await import_persons(service, changed, GROUPS, "admin", apply=True)
     assert result["riepilogo"]["saltate"] == 5 and codes(db)["04aa"] == "0042"
+
+
+def test_the_page_names_every_column_the_import_ignores():
+    """L'aiuto di Esporta e Importa (Impostazioni) dice quali colonne in più ha il file esportato e che l'importazione
+    le ignora. Diceva solo ultimo_accesso, telefono ed email: chi correggeva i codici stampati nel foglio e lo
+    reimportava non trovava scritto che quella colonna non conta."""
+    page = (Path(__file__).resolve().parents[1] / "axis_access_manager" / "app" / "static" / "index.html").read_text()
+    [shown] = re.findall(r"Il file esportato ha in più <code>([^<]*)</code>, che l'importazione ignora", page)
+    assert shown.split("; ") == EXPORT_COLUMNS
+    assert "il Codice Stampato con Codice sulla riga della tessera" in page
 
 
 # Registro
