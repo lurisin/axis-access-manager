@@ -25,7 +25,7 @@ NEUTRAL_ERROR = f"operazione non riuscita: {ASK_ADMIN}"
 # Frasi dei messaggi del server che possono arrivare anche a loro, riscritte: errori imprevisti, telecamere (le foto
 # passano da Home Assistant)
 PHRASES = (
-    (re.compile(r"errore imprevisto[,:] dettagli nel log dell'add-on"), f"errore imprevisto: {ASK_ADMIN}"),
+    (re.compile(r"\b([Ee])rrore imprevisto[,:] dettagli nel log dell'add-on"), rf"\1rrore imprevisto: {ASK_ADMIN}"),
     (re.compile(r"Home Assistant non risponde"), "telecamera non raggiungibile"),
     (re.compile(r" \(risposta (\d+) di Home Assistant\)"), r" (risposta \1)"),
 )
