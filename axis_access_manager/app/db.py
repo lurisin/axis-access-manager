@@ -339,7 +339,12 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
     (9, "controller degli eventi e identità dell'installazione", []),
     # Colonne di PERSON_COLUMNS, poi nome e cognome ricavati dal nome di ogni persona: vedi _person_columns. La tabella
     # delle foto sta in SCHEMA
-    (10, "nome e cognome separati, telefono, email, matricola, referente e foto delle persone", []),
+    (
+        10,
+        "nome e cognome separati, telefono, email, matricola, referente e foto delle persone, codice stampato delle "
+        "tessere",
+        [],
+    ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 # Ultimo accesso di ogni persona e passaggi di una persona senza leggere tutto il registro (un anno: 1,5 milioni).
@@ -376,6 +381,17 @@ PERSON_COLUMNS = (
 EMPLOYEE_ID_INDEX = (
     "CREATE UNIQUE INDEX IF NOT EXISTS persons_employee_id ON persons(employee_id COLLATE NOCASE) "
     "WHERE employee_id != ''"
+)
+# Codice Stampato della tessera (0.28.3, migrazione 10): quello che c'è scritto sopra la tessera fisica («Ciccio»,
+# «1234»), messo da chi la consegna perché le tessere sono tutte bianche. Solo nell'app: mai sul controller (né utenti
+# né tessere, quindi neanche nel confronto in ombra) e mai in Home Assistant. Non è un dato personale. Si aggiunge anche
+# a ogni avvio, se manca (vedi _person_details), come matricola e referente
+CARD_COLUMNS = (("printed_code", "TEXT NOT NULL DEFAULT ''"),)
+# Codice Stampato unico tra quelli scritti, senza distinguere maiuscole come la matricola: il servizio lo controlla
+# prima, con il nome di chi ha la tessera (vedi AccessService.check_printed_code)
+PRINTED_CODE_INDEX = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS cards_printed_code ON cards(printed_code COLLATE NOCASE) "
+    "WHERE printed_code != ''"
 )
 # Numero più alto mai dato a una persona: i numeri delle persone eliminate non si riusano
 SETTING_LAST_PERSON = "persons_last_id"
@@ -682,24 +698,34 @@ class Database:
         )
 
     def _person_columns(self) -> None:
-        """Migrazione 10: colonne di PERSON_COLUMNS (non due volte: un database riportato a mano a uno schema
-        precedente le ha già) e nome e cognome di ogni persona ricavati dal nome completo, che resta com'è."""
+        """Migrazione 10: colonne di PERSON_COLUMNS e CARD_COLUMNS (non due volte: un database riportato a mano a uno
+        schema precedente le ha già) e nome e cognome di ogni persona ricavati dal nome completo, che resta com'è."""
         self._add_person_columns()
+        self._add_card_columns()
         self._repair_person_names()
+
+    def _add_columns(self, table: str, wanted: tuple[tuple[str, str], ...]) -> int:
+        """Colonne di wanted che mancano alla tabella, con il loro valore predefinito; restituisce quante."""
+        columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+        missing = [(column, definition) for column, definition in wanted if column not in columns]
+        for column, definition in missing:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        return len(missing)
 
     def _add_person_columns(self) -> int:
         """Colonne di PERSON_COLUMNS che mancano, con il loro valore predefinito; restituisce quante."""
-        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(persons)")}
-        missing = [(column, definition) for column, definition in PERSON_COLUMNS if column not in columns]
-        for column, definition in missing:
-            self._conn.execute(f"ALTER TABLE persons ADD COLUMN {column} {definition}")
-        return len(missing)
+        return self._add_columns("persons", PERSON_COLUMNS)
+
+    def _add_card_columns(self) -> int:
+        """Colonne di CARD_COLUMNS che mancano (il Codice Stampato), vuote; restituisce quante."""
+        return self._add_columns("cards", CARD_COLUMNS)
 
     def _person_details(self) -> None:
-        """A ogni avvio, dopo le migrazioni: le colonne di PERSON_COLUMNS che mancano a un database già allo schema 10
-        (matricola e referente si sono aggiunti dopo, nella stessa 0.28.3), le foto rimaste senza persona e l'indice
-        della matricola unica. Ogni cosa si fa una volta sola. Con due matricole uguali messe a mano nel database
-        l'indice non si crea: l'app parte lo stesso, e il controllo del servizio non ne lascia scrivere altre."""
+        """A ogni avvio, dopo le migrazioni: le colonne di PERSON_COLUMNS e CARD_COLUMNS che mancano a un database già
+        allo schema 10 (matricola, referente e Codice Stampato si sono aggiunti dopo, nella stessa 0.28.3), le foto
+        rimaste senza persona e gli indici della matricola e del Codice Stampato unici. Ogni cosa si fa una volta sola.
+        Con due matricole o due codici uguali messi a mano nel database il loro indice non si crea: l'app parte lo
+        stesso, e il controllo del servizio non ne lascia scrivere altri."""
         if self._conn.execute("PRAGMA user_version").fetchone()[0] < 10:
             # Schema di prima della migrazione 10 (solo nelle prove delle migrazioni)
             return
@@ -707,6 +733,8 @@ class Database:
         try:
             if self._add_person_columns():
                 _LOGGER.info("Matricola e referente aggiunti all'anagrafica")
+            if self._add_card_columns():
+                _LOGGER.info("Codice Stampato aggiunto alle tessere")
             # Foto di persone che non ci sono più (eliminate senza i vincoli attivi): non si mostrano a nessuno
             orphans = self._conn.execute(
                 "DELETE FROM person_photos WHERE person_id NOT IN (SELECT id FROM persons)"
@@ -717,10 +745,11 @@ class Database:
             raise
         if orphans:
             _LOGGER.info("Tolte %s foto di persone che non ci sono più", orphans)
-        try:
-            self._conn.execute(EMPLOYEE_ID_INDEX)
-        except sqlite3.IntegrityError as err:
-            _LOGGER.warning("Indice della matricola non creato (%s): si riprova al prossimo avvio", err)
+        for index, what in ((EMPLOYEE_ID_INDEX, "della matricola"), (PRINTED_CODE_INDEX, "del Codice Stampato")):
+            try:
+                self._conn.execute(index)
+            except sqlite3.IntegrityError as err:
+                _LOGGER.warning("Indice %s non creato (%s): si riprova al prossimo avvio", what, err)
 
     def _repair_person_names(self) -> int:
         """Persone il cui nome completo non è compose_name(nome, cognome): nome e cognome ricavati di nuovo dal nome
@@ -1123,6 +1152,40 @@ class Database:
         row = self._conn.execute("SELECT person_id FROM cards WHERE id = ?", (card_id,)).fetchone()
         return row["person_id"] if row else None
 
+    def card_by_printed_code(self, printed_code: str, other_than: int | None = None) -> dict | None:
+        """Tessera (diversa da other_than) che ha già il Codice Stampato, senza distinguere maiuscole come l'indice
+        unico, con il nome della sua persona."""
+        if not printed_code:
+            return None
+        rows = self._query(
+            "SELECT cards.id, cards.number, cards.person_id, persons.name AS person_name FROM cards "
+            "JOIN persons ON persons.id = cards.person_id WHERE cards.printed_code = ? COLLATE NOCASE "
+            "AND cards.printed_code != '' AND cards.id IS NOT ?",
+            (printed_code, other_than),
+        )
+        return rows[0] if rows else None
+
+    def printed_codes(self, numbers) -> dict[str, str]:
+        """Codice Stampato di adesso delle tessere indicate che ne hanno uno, per numero senza maiuscole (vedi nocase):
+        una query sola, con l'indice dei numeri, per tutta una pagina del registro."""
+        wanted = sorted({str(n) for n in numbers if n})
+        if not wanted:
+            return {}
+        rows = self._query(
+            f"SELECT number, printed_code FROM cards WHERE number IN ({','.join('?' * len(wanted))}) "
+            "AND printed_code != ''",
+            tuple(wanted),
+        )
+        return {nocase(row["number"]): row["printed_code"] for row in rows}
+
+    def with_printed_codes(self, events: list[dict]) -> list[dict]:
+        """Eventi del registro con il Codice Stampato che la loro tessera ha adesso (printed_code, "" se non ne ha o se
+        non è registrata): il registro salva solo il numero. Una query per tutti gli eventi (vedi printed_codes)."""
+        codes = self.printed_codes(event.get("card") for event in events)
+        for event in events:
+            event["printed_code"] = codes.get(nocase(event.get("card") or ""), "")
+        return events
+
     def add_card(
         self,
         person_id: int,
@@ -1130,12 +1193,14 @@ class Database:
         axis_credential_token: str,
         enabled: bool = True,
         access: dict | None = None,
+        printed_code: str = "",
     ) -> int:
+        """printed_code: il Codice Stampato sulla tessera fisica, solo nell'app (vedi CARD_COLUMNS)."""
         access = access or {}
         with self._writing() as conn:
             cursor = conn.execute(
                 "INSERT INTO cards (person_id, number, enabled, axis_credential_token, created_at, "
-                "access_profile, valid_from, valid_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "access_profile, valid_from, valid_to, printed_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     person_id,
                     number,
@@ -1145,6 +1210,7 @@ class Database:
                     access.get("access_profile", ""),
                     access.get("valid_from", ""),
                     access.get("valid_to", ""),
+                    printed_code,
                 ),
             )
             self._touch_persons([person_id])
@@ -1152,10 +1218,18 @@ class Database:
         return cursor.lastrowid
 
     def update_card(
-        self, card_id: int, *, person_id: int, number: str, enabled: bool, access: dict | None = None
+        self,
+        card_id: int,
+        *,
+        person_id: int,
+        number: str,
+        enabled: bool,
+        access: dict | None = None,
+        printed_code: str | None = None,
     ) -> None:
         """Tessera come la legge il controller (sincronizzazione). L'Ultima Modifica cambia, per la persona di prima e
-        per quella di adesso, solo se cambia qualcosa della tessera: non se torna solo presente (missing_since)."""
+        per quella di adesso, solo se cambia qualcosa della tessera: non se torna solo presente (missing_since).
+        printed_code None: il Codice Stampato resta com'è (il controller non lo conosce)."""
         # Una tessera ricomparsa sul controller non è più "non presente"
         sql = "UPDATE cards SET person_id = ?, number = ?, enabled = ?, missing_since = ''"
         params: tuple = (person_id, number, int(enabled))
@@ -1165,6 +1239,10 @@ class Database:
             values = (access.get("access_profile", ""), access.get("valid_from", ""), access.get("valid_to", ""))
             params += values
             wanted |= dict(zip(("access_profile", "valid_from", "valid_to"), values, strict=True))
+        if printed_code is not None:
+            sql += ", printed_code = ?"
+            params += (printed_code,)
+            wanted["printed_code"] = printed_code
         with self._writing() as conn:
             row = conn.execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
             conn.execute(f"{sql} WHERE id = ?", (*params, card_id))
@@ -1183,6 +1261,18 @@ class Database:
             ).rowcount
             if changed and touch:
                 self._touch_persons([self._card_owner(card_id)])
+
+    def set_card_printed_code(self, card_id: int, printed_code: str) -> tuple[bool, str]:
+        """Codice Stampato della tessera: (True se è cambiato, quello di prima). Uguale a quello salvato non cambia
+        niente, neanche l'Ultima Modifica della persona; diverso la cambia, come gli altri dati della tessera. Solo
+        nell'app: il controller non lo conosce."""
+        with self._writing() as conn:
+            row = conn.execute("SELECT person_id, printed_code FROM cards WHERE id = ?", (card_id,)).fetchone()
+            if row is None or row["printed_code"] == printed_code:
+                return False, row["printed_code"] if row else ""
+            conn.execute("UPDATE cards SET printed_code = ? WHERE id = ?", (printed_code, card_id))
+            self._touch_persons([row["person_id"]])
+        return True, row["printed_code"]
 
     def set_card_enabled(self, card_id: int, enabled: bool) -> None:
         with self._writing() as conn:

@@ -155,6 +155,8 @@ FIELD_LABELS = {
     "email": "Email",
     "employee_id": "Matricola",
     "referent": "Referente Interno",
+    # Il Codice Stampato della tessera non è un dato personale: si mostra com'è
+    "printed_code": "Codice Stampato",
 }
 COLOR_NAMES = {
     "blue": "Blu",
@@ -364,6 +366,7 @@ def common_snapshot(db: Database, schedules: list[dict]) -> dict:
                     "access_profile": card["access_profile"] or "",
                     "valid_from": card["valid_from"] or "",
                     "valid_to": card["valid_to"] or "",
+                    "printed_code": card["printed_code"],
                 }
             )
     settings = {
@@ -624,9 +627,11 @@ def common_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
             },
         )
     for c in part.get("cards", []):
+        # Codice Stampato solo se c'è: i backup di prima della 0.28.3 non lo hanno, e non risulta tolto
+        printed = {"printed_code": c["printed_code"]} if c.get("printed_code") else {}
         view["tessere"][c["number"]] = _item(
             c["number"],
-            {k: c[k] for k in ("person_id", "enabled", "access_profile", "valid_from", "valid_to")},
+            {k: c[k] for k in ("person_id", "enabled", "access_profile", "valid_from", "valid_to")} | printed,
             {
                 "person_id": ctx["persons"].get(c["person_id"], f"persona n. {c['person_id']}"),
                 "enabled": "attiva" if c["enabled"] else "sospesa",

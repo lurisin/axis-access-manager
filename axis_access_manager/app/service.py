@@ -38,6 +38,9 @@ EMAIL_MAX = 254
 # Matricola (codice interno, unica) e referente interno: solo nell'app come telefono ed email
 EMPLOYEE_ID_MAX = 30
 REFERENT_MAX = 100
+# Codice Stampato della tessera (quello scritto sopra la tessera fisica): solo nell'app, unico (vedi db.CARD_COLUMNS)
+PRINTED_CODE_MAX = 30
+PRINTED_CODE_LABEL = "Codice Stampato"
 # Foto della persona (person_photo): al massimo 512 KB, riconosciuta dai primi byte e mai dal tipo dichiarato. Non
 # sono le foto della telecamera degli eventi (snapshot)
 PHOTO_MAX = 512 * 1024
@@ -270,6 +273,13 @@ def normalize_employee_id(value: str | None) -> str:
 def normalize_referent(value: str | None) -> str:
     """Referente interno facoltativo: testo libero di una riga, al massimo REFERENT_MAX caratteri."""
     return _short_text(value, REFERENT_MAX, "referente interno")
+
+
+def normalize_printed_code(value: str | None) -> str:
+    """Codice Stampato facoltativo della tessera («Ciccio», «1234», «A-07»): qualsiasi testo di una riga, al massimo
+    PRINTED_CODE_MAX caratteri (vedi _short_text). Unico senza distinguere le maiuscole: lo controlla
+    AccessService.check_printed_code."""
+    return _short_text(value, PRINTED_CODE_MAX, PRINTED_CODE_LABEL)
 
 
 def photo_mime(data: bytes) -> str:
@@ -630,20 +640,32 @@ class AccessService:
                     access = access_of_credential(credential)
                     if existing is None:
                         other = self.db.card_by_number(number)
+                        printed_code = ""
                         if other is not None:
+                            # La stessa tessera fisica scritta di nuovo sul controller (per esempio passata a un altro
+                            # utente): tiene il suo Codice Stampato, che il controller non conosce
+                            printed_code = other["printed_code"]
                             self.db.delete_card(other["id"])
-                        self.db.add_card(person_id, number, token, enabled, access)
+                        self.db.add_card(person_id, number, token, enabled, access, printed_code)
                         added += 1
                     elif self._card_changed(existing, person_id, number, enabled, access):
+                        printed_code = None
                         if number != existing["number"]:
                             # Numero passato a questa tessera da un'altra (tessera riassegnata sul controller):
-                            # l'altra, rimasta nell'app come non presente, se ne va come per una tessera nuova
+                            # l'altra, rimasta nell'app come non presente, se ne va come per una tessera nuova. Il suo
+                            # Codice Stampato è scritto su quella tessera fisica, e passa con il numero
                             other = self.db.card_by_number(number)
                             if other is not None and other["id"] != existing["id"]:
+                                printed_code = other["printed_code"] or None
                                 self.db.delete_card(other["id"])
                             self.db.forget_unknown_card(number)
                         self.db.update_card(
-                            existing["id"], person_id=person_id, number=number, enabled=enabled, access=access
+                            existing["id"],
+                            person_id=person_id,
+                            number=number,
+                            enabled=enabled,
+                            access=access,
+                            printed_code=printed_code,
                         )
                     seen_cards.add(token)
                 # Tessere sparite dal controller: mai cancellate da sole. Si segnano e decide l'utente
@@ -825,6 +847,66 @@ class AccessService:
             return None
         return employee_id
 
+    def check_printed_code(self, printed_code: str, card_id: int | None = None) -> None:
+        """Il Codice Stampato non è già di un'altra tessera, senza distinguere le maiuscole (come l'indice unico del
+        database). Il messaggio dice di chi è la tessera che ce l'ha."""
+        other = self.db.card_by_printed_code(printed_code, card_id)
+        if other is not None:
+            raise ServiceError(f"{PRINTED_CODE_LABEL} già usato dalla tessera di {other['person_name']}")
+
+    def _saved_printed_code(self, card: dict, card_id: int | None = None) -> str | None:
+        """Codice Stampato di una tessera di un backup dell'app (card_id: la tessera di adesso, se c'è). None se il
+        backup non lo ha (prima della 0.28.3: resta quello di adesso) o se nel frattempo è stato dato a un'altra
+        tessera: resta suo, e il ripristino non si ferma. L'anteprima lo dice (vedi restore._plan_persons)."""
+        if card.get("printed_code") is None:
+            return None
+        try:
+            printed_code = normalize_printed_code(card["printed_code"])
+        except ServiceError:
+            _LOGGER.info("Codice Stampato della tessera %s del backup non valido: non torna", card.get("number"))
+            return None
+        if self.db.card_by_printed_code(printed_code, card_id) is not None:
+            _LOGGER.info("Codice Stampato della tessera %s del backup già di un'altra tessera", card.get("number"))
+            return None
+        return printed_code
+
+    def _restore_printed_codes(self, person_id: int, cards: list[dict], user: str, added=()) -> None:
+        """Codici Stampati del backup sulle tessere della persona (già nell'app). Più giri: un codice preso da un'altra
+        tessera della stessa persona, che nel backup ne ha un altro, torna quando quella lascia il suo; due codici
+        scambiati restano come sono. Quelli di altre tessere restano loro (vedi _saved_printed_code). added: numeri
+        delle tessere appena rimesse, che non hanno una riga di Attività per il codice (c'è già quella del
+        ripristino)."""
+        quiet = {number.upper() for number in added}
+        wanted = {c["number"].upper(): c["printed_code"] for c in cards if c.get("printed_code") is not None}
+        while wanted:
+            moved = False
+            for card in self.db.cards_of(person_id):
+                if card["number"].upper() not in wanted:
+                    continue
+                printed_code = self._saved_printed_code(
+                    {"number": card["number"], "printed_code": wanted[card["number"].upper()]}, card["id"]
+                )
+                if printed_code is None:
+                    continue
+                del wanted[card["number"].upper()]
+                changed, before = self.db.set_card_printed_code(card["id"], printed_code)
+                if changed:
+                    moved = True
+                    if card["number"].upper() not in quiet:
+                        self._audit_printed_code(user, card, before, printed_code)
+            if not moved:
+                break
+
+    def _audit_printed_code(self, user: str, card: dict, before: str, after: str) -> None:
+        """Riga di Attività del Codice Stampato cambiato, con i valori (non è un dato personale)."""
+        person = self.db.get_person(card["person_id"])
+        name = person["name"] if person else ""
+        self._audit(
+            user,
+            "codice stampato cambiato",
+            f"{name}, codice stampato della tessera {card['number']}: {before or '—'} → {after or '—'}",
+        )
+
     # Foto della persona (person_photo): solo nell'app, mai sul controller, in Home Assistant, nel registro o nel log
 
     def set_person_photo(self, person_id: int, data: bytes, user: str) -> dict:
@@ -867,11 +949,14 @@ class AccessService:
         email: str = "",
         employee_id: str = "",
         referent: str = "",
+        printed_code: str = "",
     ) -> dict:
         """card vuota: persona senza tessera, solo nell'app. enabled False: la tessera si scrive già sospesa
         (importazione con stato «sospesa»). Nome e cognome (anche uno solo) valgono al posto di name, che senza si
-        divide con split_name (vedi person_names). Telefono, email, matricola (unica) e referente restano nell'app."""
+        divide con split_name (vedi person_names). Telefono, email, matricola (unica) e referente restano nell'app,
+        come il Codice Stampato della tessera (unico, solo con la tessera)."""
         name, first, last = person_names(name, first_name, last_name)
+        printed_code = normalize_printed_code(printed_code)
         details = {
             "first_name": first,
             "last_name": last,
@@ -888,13 +973,19 @@ class AccessService:
         if not number:
             if group or valid_from or valid_to:
                 raise ServiceError("gruppo e validità valgono per le tessere: senza tessera non si possono salvare")
+            if printed_code:
+                raise ServiceError(
+                    f"il {PRINTED_CODE_LABEL} è quello scritto sulla tessera: senza tessera non si può salvare"
+                )
             self.check_employee_id(details["employee_id"])
             return self._create_without_card(name, user, company, notes, category, details)
         access = self._category_access(category, group, valid_from, valid_to)
         async with self.lock:
             self._check_card_free(number)
-            # Prima di scrivere sul controller: con la matricola di un altro la persona non si registra
+            # Prima di scrivere sul controller: con la matricola o il Codice Stampato di un altro la persona non si
+            # registra
             self.check_employee_id(details["employee_id"])
+            self.check_printed_code(printed_code)
             user_token = await self._new_user_token(name)
             await self.controller.set_user(
                 {"token": user_token, "Name": name, "Description": USER_DESCRIPTION, "Attribute": []}
@@ -918,16 +1009,18 @@ class AccessService:
                         self.db.update_person_details(person_id, company, notes)
                     if category:
                         self.db.set_person_category(person_id, category["id"])
-                    self.db.add_card(person_id, number, credential_token, enabled, access)
+                    self.db.add_card(person_id, number, credential_token, enabled, access, printed_code)
             except sqlite3.Error as err:
                 # Disco pieno: la tessera appena scritta non resta attiva sul controller senza essere nell'app. Prima
                 # restava, e riprovando se ne aggiungeva un'altra con lo stesso numero
                 await self._remove_new(credential_token, user_token)
                 if isinstance(err, sqlite3.IntegrityError):
-                    # Matricola data a un'altra persona mentre si scriveva sul controller
+                    # Matricola o Codice Stampato dati a un altro mentre si scriveva sul controller
                     self.check_employee_id(details["employee_id"])
+                    self.check_printed_code(printed_code)
                 raise ServiceError(f"{error_reason(err)}: la persona non è stata registrata") from err
             detail = f"{name}, tessera {number}" + ("" if enabled else " sospesa")
+            detail += f", codice stampato {printed_code}" if printed_code else ""
             detail += f", tipologia {category['name']}" if category else ""
             self._audit(user, "persona creata", detail)
             self._changed()
@@ -981,18 +1074,23 @@ class AccessService:
         valid_from: str = "",
         valid_to: str = "",
         category_id: int = 0,
+        printed_code: str = "",
     ) -> dict:
-        """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»).
+        """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»). printed_code: il Codice
+        Stampato sulla tessera fisica, facoltativo e unico, solo nell'app.
 
         Gruppo, validità e tipologia (0: quella della persona) valgono per la prima tessera della persona, come per
         una persona nuova con gli stessi valori (importazione): la tipologia decide gruppo e durata se non sono stati
         scelti, e la persona passa alla tipologia scelta. Le tessere dopo la prima ereditano l'accesso di quelle che la
         persona ha già: se nel frattempo ne ha avuta una, con valori scelti la tessera non si aggiunge."""
         number = normalize_card(card)
+        printed_code = normalize_printed_code(printed_code)
         chosen = self._category(category_id)
         async with self.lock:
             person = self._person(person_id)
             self._check_card_free(number)
+            # Prima di scrivere sul controller: con il Codice Stampato di un'altra tessera non si aggiunge
+            self.check_printed_code(printed_code)
             if person["cards"]:
                 if group or valid_from or valid_to or chosen:
                     # Prenderebbe l'accesso delle altre tessere, non quello chiesto: niente tessera
@@ -1015,16 +1113,20 @@ class AccessService:
             try:
                 # Tutto o niente: la tipologia cambia insieme alla tessera che ne ha l'accesso
                 with self.db.batch():
-                    self.db.add_card(person_id, number, credential_token, enabled, access)
+                    self.db.add_card(person_id, number, credential_token, enabled, access, printed_code)
                     if moved:
                         self.db.set_person_category(person_id, chosen["id"])
             except sqlite3.Error as err:
                 # Come per una persona nuova: la tessera non resta attiva sul controller senza essere nell'app, e
                 # senza tessere neanche l'utente
                 await self._remove_new(credential_token, user_token if first_card else "")
+                if isinstance(err, sqlite3.IntegrityError):
+                    # Codice Stampato dato a un'altra tessera mentre si scriveva sul controller
+                    self.check_printed_code(printed_code)
                 raise ServiceError(f"{error_reason(err)}: la tessera non è stata aggiunta") from err
             self._changed()
             detail = f"{person['name']}, tessera {number}" + ("" if enabled else " sospesa")
+            detail += f", codice stampato {printed_code}" if printed_code else ""
             self._audit(user, "tessera aggiunta", detail)
             if moved:
                 self._audit(user, "tipologia cambiata", f"{person['name']}: {chosen['name']}")
@@ -1220,6 +1322,39 @@ class AccessService:
         name = (profiles[0].get("Name") or "") if profiles else ""
         return f"profilo {name}" if name else "accesso personalizzato"
 
+    async def update_card(
+        self, card_id: int, user: str, *, enabled: bool | None = None, printed_code: str | None = None
+    ) -> dict:
+        """Modifica di una tessera dalla scheda: stato (sospesa o attiva, sul controller) e Codice Stampato (solo
+        nell'app). None: non cambia. Il codice si controlla prima di scrivere sul controller, così un codice non valido
+        o già usato non lascia mezza modifica. Restituisce la persona."""
+        if printed_code is not None:
+            printed_code = normalize_printed_code(printed_code)
+            self.check_printed_code(printed_code, self._card(card_id)["id"])
+        person = None
+        if enabled is not None:
+            person = await self.set_card_enabled(card_id, enabled, user)
+        if printed_code is not None:
+            person = self.set_card_printed_code(card_id, printed_code, user)
+        return person if person is not None else self._person(self._card(card_id)["person_id"])
+
+    def set_card_printed_code(self, card_id: int, printed_code: str, user: str) -> dict:
+        """Codice Stampato della tessera (vuoto: nessuno), solo nell'app: niente controller e niente attesa delle sue
+        operazioni (lock), quindi veloce anche con il controller spento o lento. Uguale a quello salvato non cambia
+        niente; diverso cambia l'Ultima Modifica della persona e va in Attività con i valori."""
+        printed_code = normalize_printed_code(printed_code)
+        card = self._card(card_id)
+        self.check_printed_code(printed_code, card_id)
+        try:
+            changed, before = self.db.set_card_printed_code(card_id, printed_code)
+        except sqlite3.IntegrityError as err:
+            # Dato a un'altra tessera nel frattempo
+            self.check_printed_code(printed_code, card_id)
+            raise ServiceError(f"{error_reason(err)}: il {PRINTED_CODE_LABEL} non è stato salvato") from err
+        if changed:
+            self._audit_printed_code(user, card, before, printed_code)
+        return self._person(card["person_id"])
+
     async def set_card_enabled(self, card_id: int, enabled: bool, user: str) -> dict:
         async with self.lock:
             card = self._card(card_id)
@@ -1304,9 +1439,10 @@ class AccessService:
         Se non c'è più si ricrea, con lo stesso numero e la stessa data di creazione se il numero è libero.
         cards: tessere del backup già controllate (numero libero o già della persona, profilo che esiste); le altre
         tessere della persona restano come sono. Un backup di prima della 0.28.3 non ha nome e cognome (si ricavano
-        dal nome completo) né telefono, email, matricola e referente (restano quelli di adesso). Nome e cognome uguali a
-        quelli di adesso non cambiano niente, neanche gli spazi doppi di un nome letto dal controller (vedi
-        saved_parts). Una matricola data nel frattempo a un'altra persona resta sua (vedi _saved_employee_id). La foto
+        dal nome completo) né telefono, email, matricola, referente e Codice Stampato delle tessere (restano quelli di
+        adesso). Nome e cognome uguali a quelli di adesso non cambiano niente, neanche gli spazi doppi di un nome letto
+        dal controller (vedi saved_parts). Una matricola data nel frattempo a un'altra persona resta sua (vedi
+        _saved_employee_id), e così il Codice Stampato dato a un'altra tessera (vedi _restore_printed_codes). La foto
         non è nei backup: resta quella di adesso."""
         current = self.db.get_person(saved["id"])
         if current is not None and current["created_at"] != saved["created_at"]:
@@ -1335,6 +1471,7 @@ class AccessService:
             # L'utente del controller solo con una tessera da rimettere: senza tessere la persona resta nell'app
             user_token = ""
             have = {c["number"].upper(): c for c in person["cards"]}
+            added = []
             for number, card in wanted.items():
                 access = {k: card[k] for k in ("access_profile", "valid_from", "valid_to")}
                 mine = have.get(number)
@@ -1356,6 +1493,7 @@ class AccessService:
                                 _LOGGER.warning("Tessera %s rimasta sul controller dopo un errore", token)
                             raise
                     self.db.add_card(person_id, card["number"], token, card["enabled"], access)
+                    added.append(card["number"])
                     continue
                 if {k: mine[k] for k in access} != access:
                     credentials = await self.controller.get_credentials([mine["axis_credential_token"]])
@@ -1371,6 +1509,8 @@ class AccessService:
                     else:
                         await self.controller.disable_credential(mine["axis_credential_token"])
                     self.db.set_card_enabled(mine["id"], card["enabled"])
+            # Codici Stampati alla fine, con tutte le tessere al loro posto: solo nell'app
+            self._restore_printed_codes(person_id, cards, user, added)
             # Le tessere che non sono in cards (aggiunte dopo il backup) restano: il ripristino le elimina solo
             # con la loro riga, scelta a parte nell'anteprima
             self.db.add_audit(user, "persona ripristinata da backup", person["name"])
@@ -1479,6 +1619,7 @@ class AccessService:
             person_id = self._add_saved_person(saved, name, user_token, category_id)
             for card, token, access in written:
                 self.db.add_card(person_id, card["number"], token, card["enabled"], access)
+            self._restore_printed_codes(person_id, cards, user, [card["number"] for card in cards])
             numbers = ", ".join(card["number"] for card, _, _ in written)
             self.db.add_audit(user, "persona ricreata da backup", f"{name} ({numbers})")
             self._changed()
