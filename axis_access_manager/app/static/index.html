@@ -797,10 +797,10 @@
     <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Allarga il menu" aria-expanded="false"><span data-icon="menu"></span><span class="lbl">Controllo Accessi</span></button>
     <a href="#cruscotto" data-route="cruscotto" title="Cruscotto"><span data-icon="dashboard"></span><span class="lbl">Cruscotto</span></a>
     <a href="#porte" data-route="porte" title="Porte"><span data-icon="door"></span><span class="lbl">Porte</span></a>
-    <a href="#persone" data-route="persone" title="Persone"><span data-icon="people"></span><span class="lbl">Persone</span></a>
+    <a href="#persone" data-route="persone" title="Anagrafica"><span data-icon="people"></span><span class="lbl">Anagrafica</span></a>
     <a href="#da-registrare" data-route="da-registrare" title="Da Registrare"><span data-icon="cardplus"></span><span class="lbl">Da Registrare</span><span class="count" id="nav-unknown" hidden></span></a>
     <a href="#registro" data-route="registro" title="Registro"><span data-icon="list"></span><span class="lbl">Registro</span></a>
-    <a href="#regole" data-route="regole" title="Regole"><span data-icon="clock"></span><span class="lbl">Regole</span></a>
+    <a href="#regole" data-route="regole" title="Fasce Orarie"><span data-icon="clock"></span><span class="lbl">Fasce Orarie</span></a>
     <a href="#impianti" data-route="impianti" title="Impianti"><span data-icon="building"></span><span class="lbl">Impianti</span></a>
     <!-- In basso, separate dalle pagine dell'impianto: notifiche, impostazioni dell'app e utente, come in Home Assistant -->
     <div class="nav-bottom">
@@ -1802,14 +1802,16 @@ document.addEventListener("click", async (e) => {
 window.addEventListener("scroll", () => $(".topbar").classList.toggle("scrolled", window.scrollY > 4), {passive: true});
 
 // ---------- Navigazione ----------
-// Pagina: titolo, vista, permesso necessario per vederla
+// Pagina: titolo, vista, permesso necessario per vederla. Gli indirizzi restano quelli di prima anche quando il nome
+// della pagina cambia (#persone è Anagrafica, #regole Fasce Orarie e Festività): segnalibri e collegamenti delle
+// notifiche continuano a funzionare
 const ROUTES = {
   cruscotto: ["Cruscotto", viewDashboard, "stato"],
   porte: ["Porte", viewDoorsPage, "stato"],
-  persone: ["Persone", viewPersons, "persone"],
-  "da-registrare": ["Da Registrare", viewUnknown, "persone"],
+  persone: ["Anagrafica", viewPersons, "persone"],
+  "da-registrare": ["Tessere da Registrare", viewUnknown, "persone"],
   registro: ["Registro Accessi", viewLog, "registro"],
-  regole: ["Regole di Accesso", viewRules, "regole"],
+  regole: ["Fasce Orarie e Festività", viewRules, "regole"],
   impianti: ["Impianti", viewInstallation, ["impianti", "backup"]],
   notifiche: ["Notifiche", viewNotifications, "stato"],
   impostazioni: ["Impostazioni", viewSettings, ["import_export", "impianti", "utenti"]],
@@ -2015,7 +2017,7 @@ const WIDGET_BODY = {
   },
   negati_oggi: ({d: {today: t}}) => kpi("Negati Oggi", t.denied, t.unknown ? plural(t.unknown, "tessera sconosciuta", "tessere sconosciute") : "nessuna tessera sconosciuta", t.denied ? "var(--warn)" : ""),
   allarmi_oggi: ({d: {today: t}}) => kpi("Allarmi Oggi", t.alarms, t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme", t.alarms ? "var(--err)" : ""),
-  persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">Persone</a>' : ""}`),
+  persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">Anagrafica</a>' : ""}`),
   porte: ({doors}) => !doors ? '<h2>Porte<span class="spacer"></span><a class="small-text" href="#porte">Tutte le Porte</a></h2><div class="empty">Porte non leggibili: riprovo tra poco.</div>'
     : `<h2>${doors.length > 1 ? "Porte" : "Porta"}<span class="spacer"></span>${doors.length > 1 ? '<a class="small-text" href="#porte">Tutte le Porte</a>' : ""}</h2>
     ${doors.length ? doorGroups(doors) : `<div class="empty">Nessuna porta configurata.</div>`}`,
@@ -2036,7 +2038,7 @@ const WIDGET_BODY = {
   },
   ultimi_eventi: ({d}) => `<h2>Ultimi Eventi<span class="spacer"></span><a class="small-text" href="#registro" data-log-all>Registro Completo</a></h2>
     <div class="list compact" data-dash-events>${d.recent.length ? logRows(d.recent) : '<div class="empty">Nessun evento registrato.</div>'}</div>`,
-  scadenze: ({d}) => `<h2>Tessere in Scadenza<span class="spacer"></span><a class="small-text" href="#persone">Persone</a></h2>
+  scadenze: ({d}) => `<h2>Tessere in Scadenza<span class="spacer"></span><a class="small-text" href="#persone">Anagrafica</a></h2>
     ${d.expiring.length ? `<div class="list">${d.expiring.slice(0, 6).map((e) => `<a class="item" href="#persone/${e.id}"><div class="ev-icon k-warn">${icon("clock")}</div><div class="grow"><div class="title">${esc(e.name)}</div><div class="meta">scade il ${esc(fmtDateTime(e.valid_to))}</div></div></a>`).join("")}</div>${d.expiring.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">${d.expiring.length === 7 ? "e un'altra" : `e altre ${d.expiring.length - 6}`}</p>` : ""}`
       : '<div class="empty">Nessuna tessera scade nei prossimi 7 giorni.</div>'}`,
   // Come nella pagina Da Registrare: stessa icona, stesse parole
@@ -2532,7 +2534,7 @@ function searchedCards(p, q) {
 // il numero. Nella cella, con poco spazio, i puntini e tutto nel title
 const cardTag = (c) => `<div class="p-card">${c.printed_code ? `<div class="p-code">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="mono">${esc(c.number)}</div>`}</div>`;
 const cardTitle = (cards) => cards.map((c) => c.printed_code ? `${c.printed_code} · ${c.number}` : c.number).join("\n");
-// Le tipologie stanno in Persone; chi ha il permesso Regole ma non Persone le trova in Regole
+// Le tipologie stanno in Anagrafica; chi ha il permesso Fasce Orarie ma non Anagrafica le trova in Fasce Orarie
 const categoriesLink = () => can("persone") ? "#persone/tipologie" : "#regole/tipologie";
 const personTabs = (tab) => `<div class="segmented">${[["", "Persone"], ["tipologie", "Tipologie"]].map(([k, label]) => `<a href="#persone${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`;
 async function viewPersons(el, sub) {
@@ -2861,7 +2863,7 @@ async function newPerson(card = "") {
       ${idFields()}
       ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
       <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField("", "Quello che hai scritto sopra la tessera, es. Ciccio o 1234. Resta solo nell'app.")}</div>
-      ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Persone → Tipologie.")}
+      ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Anagrafica → Tipologie.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}
       <p class="hint">La Foto della Persona si aggiunge dalla sua scheda, dopo averla registrata. Telefono, email, matricola, referente e foto restano solo nell'app.</p>`,
@@ -3492,7 +3494,7 @@ function weekPreview(rules) {
 }
 const showHidden = {group: false, schedule: false};
 async function viewRules(el, sub) {
-  // Le tipologie (con i vecchi gruppi) sono passate in Persone: qui solo per chi non vede le persone
+  // Le tipologie (con i vecchi gruppi) sono passate in Anagrafica: qui solo per chi non vede l'anagrafica
   if (sub === "gruppi") sub = "tipologie";
   if (sub === "tipologie" && can("persone")) { location.replace("#persone/tipologie"); return; }
   const tabs = [["fasce", "Fasce Orarie"], ["festivita", "Festività"], ...(can("persone") ? [] : [["tipologie", "Tipologie"]])];
@@ -3510,7 +3512,7 @@ async function viewRules(el, sub) {
   store.groupsError = "";
   if (!body.isConnected) return;
   if (stale && !store.groups.length) {
-    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Regole Non Leggibili dal Controller</b>${esc(cap(stale))}</div></div>`;
+    body.innerHTML = `<div class="alert err">${icon("alert")}<div class="grow"><b>Fasce Orarie Non Leggibili dal Controller</b>${esc(cap(stale))}</div></div>`;
     return;
   }
   viewSchedules(body, stale);
@@ -4142,7 +4144,7 @@ function identityAlert(ctrl) {
   return `<div class="alert err stack">${icon("alert")}<div class="grow"><b>Controller Cambiato</b>All'indirizzo <code>${esc(ctrl.host)}</code> risponde un apparecchio diverso da quello memorizzato. Finché non confermi, l'app non scrive niente sul controller e non rilegge le tessere.
       <div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th></th><th>Memorizzato</th><th>Trovato</th></tr></thead><tbody>
         ${row("Numero di Serie", k.serial, h.serial)}${row("Modello", k.model, h.model)}${row("Certificato", (k.cert_fingerprint || "").slice(0, 23), (h.cert_fingerprint || "").slice(0, 23))}</tbody></table></div>
-      <p class="hint" style="margin-bottom:0">Conferma solo se il controller è stato davvero sostituito o resettato. Dopo la conferma le tessere che non trova restano segnate in Persone, da riscrivere o togliere.</p></div>
+      <p class="hint" style="margin-bottom:0">Conferma solo se il controller è stato davvero sostituito o resettato. Dopo la conferma le tessere che non trova restano segnate in Anagrafica, da riscrivere o togliere.</p></div>
     ${store.me.admin ? `<button type="button" class="small primary" data-accept-identity="${ctrl.id}">Conferma Nuovo Controller</button>` : '<span class="small-text muted">Serve un amministratore</span>'}</div>`;
 }
 function bindIdentityAlert(root, ctrl) {
@@ -5645,7 +5647,7 @@ async function viewSettings(el, sub) {
   // Controllo del database all'avvio ({at, text}) e copia per il backup di Home Assistant: i motivi arrivano in minuscolo
   const dbRecovered = s.database.recovered?.text ? s.database.recovered : null;
   const capFirst = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
-  // Le tipologie solo a chi le vede (permesso Persone o Regole): per gli altri il server le rifiuta
+  // Le tipologie solo a chi le vede (permesso Anagrafica o Fasce Orarie): per gli altri il server le rifiuta
   const seesCategories = can("persone") || can("regole");
   // Dal database dell'app: la pagina non aspetta il controller
   if (seesCategories) await loadCategories();
@@ -5663,7 +5665,7 @@ async function viewSettings(el, sub) {
           ...(seesCategories ? [["Tipologia Predefinita", esc(categoryOf(store.me.default_category)?.name || "—")]] : []),
           ["Conservazione Registro", plural(o.event_retention_days, "giorno", "giorni")],
           ["Broker MQTT", !m.configured ? `${statusDot("warn")} Nessun Broker: installa l'add-on Mosquitto, l'app lo trova da sola` : o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
-        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Persone" : "Regole"} → Tipologie.` : ""}</p></div>
+        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.` : ""}</p></div>
       </div>
       <div>
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>

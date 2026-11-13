@@ -33,7 +33,7 @@ CLEAN = {
     "unread": [],
     "pending": [],
 }
-HIDDEN = "serve il permesso «Vedere persone, tessere e tipologie»"
+HIDDEN = "serve il permesso «Vedere l'anagrafica: persone, tessere e tipologie»"
 H24_DIFFERENCE = "Profilo di Accesso H24: Riporterebbe com'è nell'app · Valida fino al 2040-12-31T00:00:00Z → —"
 
 
@@ -576,6 +576,7 @@ def test_last_7_days_in_the_comparison_tab(client, controller):  # noqa: F811
     )
     hidden = client.get("/api/shadow?days=7", headers={"X-Remote-User-Name": "tecnico"}).json()
     html = page_html("shadowHistoryHtml(DATA)", hidden)
-    shown = escape(HIDDEN[0].upper() + HIDDEN[1:])
+    # Come esc() della pagina: l'apostrofo di «l'anagrafica» diventa &#39;
+    shown = escape(HIDDEN[0].upper() + HIDDEN[1:]).replace("&#x27;", "&#39;")
     assert f"Ultima differenza alle {rome(f'{day[0]}T09:15:00+01:00')}: {shown}" in html
     assert "Anna" not in html

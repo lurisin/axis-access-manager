@@ -674,7 +674,7 @@ def common_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
         view["utenti"][u["username"]] = _item(
             u["name"] or u["username"],
             {"name": u["name"], "perms": u["perms"]},
-            # Come nella pagina Utenti: "Operatore" o "Personalizzato: Stato, Persone", non le chiavi dei permessi
+            # Come nella pagina Utenti: "Operatore" o "Personalizzato: Stato, Anagrafica", non le chiavi dei permessi
             {"perms": role_label(list(u["perms"] or []))},
         )
     for key, value in (part.get("settings") or {}).items():

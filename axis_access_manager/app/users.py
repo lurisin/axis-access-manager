@@ -16,25 +16,26 @@ _LOGGER = logging.getLogger(__name__)
 # Permesso → descrizione mostrata nella pagina Utenti
 PERMISSIONS = {
     "stato": "Vedere cruscotto, porte e notifiche",
-    "persone": "Vedere persone, tessere e tipologie",
-    "persone_modifica": "Registrare, modificare, sospendere ed eliminare persone e tessere",
+    "persone": "Vedere l'anagrafica: persone, tessere e tipologie",
+    "persone_modifica": "Modificare l'anagrafica: registrare, cambiare, sospendere ed eliminare persone e tessere",
     "registro": "Vedere il registro accessi e le foto",
-    "regole": "Vedere tipologie, fasce orarie e festività",
-    "regole_modifica": "Modificare tipologie, fasce orarie e festività",
+    "regole": "Vedere fasce orarie, festività e tipologie",
+    "regole_modifica": "Modificare fasce orarie, festività e tipologie",
     "import_export": "Esportare e importare file CSV",
     "impianti": "Configurare controller, porte, videocitofoni e telecamere e programmare il controller",
     "backup": "Vedere, creare, bloccare e confrontare i backup (sbloccare, ripristinare ed eliminare restano agli "
     "amministratori)",
     "utenti": "Gestire gli utenti dell'app e vedere le attività (amministratore)",
 }
-# Nome breve di ogni permesso, per Registro Attività e confronto dei backup
+# Nome breve di ogni permesso, per Registro Attività e confronto dei backup: quello della pagina del menu (Anagrafica e
+# Fasce Orarie dalla 0.28.3). Le chiavi restano quelle di prima: sono salvate nel database e nei backup
 PERMISSION_NAMES = {
     "stato": "Stato",
-    "persone": "Persone",
-    "persone_modifica": "Modifica Persone",
+    "persone": "Anagrafica",
+    "persone_modifica": "Modifica Anagrafica",
     "registro": "Registro",
-    "regole": "Regole",
-    "regole_modifica": "Modifica Regole",
+    "regole": "Fasce Orarie",
+    "regole_modifica": "Modifica Fasce Orarie",
     "import_export": "Importa ed Esporta",
     "impianti": "Impianti",
     "backup": "Backup",

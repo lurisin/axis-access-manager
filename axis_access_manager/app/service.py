@@ -810,7 +810,7 @@ class AccessService:
         """Gruppo (vuoto = quello predefinito) e validità controllati."""
         profile = (group or "").strip() or self.default_group
         if not profile:
-            raise ServiceError("nessuna tipologia scelta e nessuna predefinita: impostala in Persone → Tipologie")
+            raise ServiceError("nessuna tipologia scelta e nessuna predefinita: impostala in Anagrafica → Tipologie")
         try:
             access = {
                 "access_profile": profile,
@@ -1516,7 +1516,7 @@ class AccessService:
                     credentials = await self.controller.get_credentials([mine["axis_credential_token"]])
                     if not credentials:
                         raise ServiceError(
-                            f"la tessera {mine['number']} non è più sul controller: riscrivila prima da Persone"
+                            f"la tessera {mine['number']} non è più sul controller: riscrivila prima dall'Anagrafica"
                         )
                     await self.controller.set_credential(self._apply_access(credentials[0], access))
                     self.db.set_card_access(mine["id"], access)

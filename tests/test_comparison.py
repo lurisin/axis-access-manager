@@ -130,7 +130,7 @@ def test_comparison_needs_the_plant_permission(client, controller):
     groups = by_kind(data)
     for kind in ("tessera", "utente"):
         assert groups[kind]["rows"] == [] and groups[kind]["counts"] == {"uguale": 1}
-        assert groups[kind]["hidden"] == "serve il permesso «Vedere persone, tessere e tipologie»"
+        assert groups[kind]["hidden"] == "serve il permesso «Vedere l'anagrafica: persone, tessere e tipologie»"
     assert "04aa" not in str(groups) and "Anna" not in str(groups)
     assert groups["porta"]["rows"]
     assert client.get("/api/controllers/99/comparison", headers=ADMIN).status_code == 404
