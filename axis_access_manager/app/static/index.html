@@ -513,6 +513,7 @@
   .sort-pick { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); min-width: 0; }
   .p-tools input[type=search] { flex: 1 1 260px; }
   .p-tools select { max-width: 230px; }
+  .p-tools .sort-pick select { max-width: 270px; }
   /* Tabella delle Persone sul computer: colonne fisse, testi lunghi con i puntini (e il testo intero nel title), mai
      più larga della pagina. Le colonne meno importanti spariscono quando il riquadro è stretto (menu aperto, finestra
      piccola), tranne quella dell'ordine scelto (data-sorted) */
@@ -527,9 +528,11 @@
   table.table.p-table th:last-child, table.table.p-table td:last-child { padding-right: 18px; }
   .p-table tbody tr:last-child td { border-bottom: none; }
   .p-table .c-photo { width: 64px; }
-  .p-table .c-emp { width: 92px; }
+  .p-table .c-emp { width: 104px; }
   .p-table .c-cards { width: 72px; }
-  .p-table .c-access, .p-table .c-extra { width: 128px; }
+  .p-table .c-access, .p-table .c-extra { width: 140px; }
+  /* Con la colonna della data di inserimento o di modifica, Tessere lascia il posto */
+  .p-table[data-sorted="inserimento"] .c-cards, .p-table[data-sorted="modifica"] .c-cards { display: none; }
   .p-table .c-state { width: 168px; }
   .p-table .avatar { display: inline-grid; vertical-align: middle; }
   .p-table .c-last, .p-table .c-first { font-weight: 600; }
@@ -2503,12 +2506,17 @@ function setPersonSort(sort) {
   try { localStorage.setItem("aam-persone-ordine", personFilters.sort); } catch (err) { /* facoltativo */ }
   renderPersonList();
 }
-// Aggiornamento periodico della pagina: l'avviso delle tessere non presenti segue le riletture dal controller
+// Aggiornamento periodico della pagina: l'avviso delle tessere non presenti segue le riletture dal controller. Senza
+// novità l'elenco si ridisegna solo una volta al minuto, per l'Ultimo Accesso («5 min fa», «ieri»): le righe uguali
+// restano com'erano (morph), cambia solo quel testo
+let personsDrawn = 0;
 async function refreshPersons() {
   if (!$("#p-list")) return;
   const persons = await api("api/persons").catch(() => null);
-  if (!persons || !$("#p-list") || JSON.stringify(persons) === JSON.stringify(store.persons)) return;
-  store.persons = persons;
+  if (!persons || !$("#p-list")) return;
+  const same = JSON.stringify(persons) === JSON.stringify(store.persons);
+  if (same && Date.now() - personsDrawn < 60000) return;
+  if (!same) store.persons = persons;
   renderPersonList();
 }
 const missingCards = () => store.persons.flatMap((p) => p.cards.filter((c) => c.missing_since));
@@ -2538,6 +2546,7 @@ function personFlag(p) {
 function renderPersonList() {
   const list = $("#p-list");
   if (!list) return;
+  personsDrawn = Date.now();
   const rows = store.persons.filter((p) => {
     const a = personAccess(p);
     if (!personMatches(p, personFilters.q)) return false;
