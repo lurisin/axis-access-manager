@@ -1053,13 +1053,16 @@ def create_app(
         # Solo quelle che l'utente vede: la presa visione vale per tutti, e ognuna resta nel registro attività
         visible = {i["id"] for i in listing["items"]}
         ids = [i for i in body.ids if i in visible] if body.ids is not None else list(visible)
+        # Nel registro attività titolo e testo veri della notifica, uguali per chiunque prenda visione: non quelli
+        # senza Home Assistant mostrati al personale dall'accesso diretto (le Attività le legge solo l'Amministratore)
+        real = _notification_listing(request, plain=False) if hides_home_assistant(request) else listing
         state = request.app.state
         state.notifications.mark_seen(ids, _current_notifications(state), body.weights, _unknown_faults(state))
         after = _notification_listing(request)
         # Chi ha preso visione di cosa: nel registro attività, come le altre modifiche. Solo quelle ora viste: una
         # peggiorata dopo l'ultimo aggiornamento della pagina resta da gestire, e nessuno l'ha ancora vista così
         chosen = {i["id"] for i in after["items"] if i["seen"]} & set(ids)
-        marked = [i for i in listing["items"] if i["id"] in chosen and not i["seen"]]
+        marked = [i for i in real["items"] if i["id"] in chosen and not i["seen"]]
         if marked:
             titles = ", ".join(f"{i['title']} ({i['text']})" if i["text"] else i["title"] for i in marked[:3])
             more = f" e altre {len(marked) - 3}" if len(marked) > 3 else ""
@@ -3127,14 +3130,15 @@ def _low_space(state) -> tuple[int, int] | None:
     return None
 
 
-def _notification_listing(request: Request) -> dict:
+def _notification_listing(request: Request, plain: bool | None = None) -> dict:
+    """Notifiche per l'utente della richiesta; plain None: senza Home Assistant se non lo deve leggere."""
     user = current_user(request)
     state = request.app.state
     return state.notifications.listing(
         _current_notifications(state),
         None if user.can("utenti") else user.perms,
         _unknown_faults(state),
-        plain=hides_home_assistant(request),
+        plain=hides_home_assistant(request) if plain is None else plain,
     )
 
 

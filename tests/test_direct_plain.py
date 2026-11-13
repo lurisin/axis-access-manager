@@ -162,6 +162,29 @@ def test_seen_from_staff_leaves_home_assistant_notifications_to_the_others(plant
     assert all("Broker" not in detail for detail in actions)
 
 
+def test_seen_from_staff_saves_the_real_titles_in_the_activity(plant, monkeypatch):
+    """La presa visione del personale finisce in Attività (database, letta solo dall'Amministratore) con titolo e testo
+    veri della notifica, come quella di chiunque altro: non con «Orologio del Server» o «Videocitofoni Senza
+    Collegamento», che per l'Amministratore non esistono."""
+    ingress, site, admin, app = plant
+    faults(app, monkeypatch)
+    shown = {i["id"]: i for i in site.get("/api/notifications").json()["items"]}
+    real = {i["id"]: i for i in ingress.get("/api/notifications", headers=ADMIN).json()["items"]}
+    ids = [k for k, i in shown.items() if i["title"] in ("Orologio del Server", "Videocitofoni Senza Collegamento")]
+    assert sorted(real[k]["title"] for k in ids) == ["Nessun Broker MQTT", "Orologio di Home Assistant"]
+    assert site.post("/api/notifications/seen", json={"ids": ids}, headers=SAFE).json()["open"] >= 0
+    [row] = [
+        a for a in ingress.get("/api/audit", headers=ADMIN).json() if a["action"] == "notifiche segnate come viste"
+    ]
+    assert row["detail"].startswith("2 notifiche: ")
+    for k in ids:
+        assert f"{real[k]['title']} ({real[k]['text']})" in row["detail"]
+    assert "Orologio del Server" not in row["detail"] and "Videocitofoni Senza Collegamento" not in row["detail"]
+    # Per il personale e per l'Amministratore le stesse notifiche risultano viste
+    assert all(i["seen"] for i in site.get("/api/notifications").json()["items"] if i["id"] in ids)
+    assert all(i["seen"] for i in ingress.get("/api/notifications", headers=ADMIN).json()["items"] if i["id"] in ids)
+
+
 def test_mqtt_lost_and_events_not_arriving(plant, monkeypatch):
     ingress, site, admin, app = plant
     state = app.state
