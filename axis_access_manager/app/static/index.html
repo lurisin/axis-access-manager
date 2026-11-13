@@ -515,7 +515,7 @@
   .p-tools select { max-width: 230px; }
   /* Tabella delle Persone sul computer: colonne fisse, testi lunghi con i puntini (e il testo intero nel title), mai
      più larga della pagina. Le colonne meno importanti spariscono quando il riquadro è stretto (menu aperto, finestra
-     piccola), tranne quella dell'ordine scelto */
+     piccola), tranne quella dell'ordine scelto (data-sorted) */
   .p-table-wrap { container: persone / inline-size; }
   table.p-table { table-layout: fixed; }
   /* table.table.p-table: più peso di table.table, che viene dopo (vertical-align: top) */
@@ -546,10 +546,10 @@
   .p-table tbody tr[data-person]:hover td, .p-table tbody tr[data-person]:focus-visible td { background: var(--surface-2); }
   .p-table tbody tr:focus-visible { outline-offset: -2px; }
   table.table.p-table tr.sec td { background: var(--surface-2); font-size: 12px; font-weight: 700; color: var(--muted); padding-top: 4px; padding-bottom: 4px; height: auto; overflow: visible; }
-  @container persone (max-width: 979px) { .p-table .c-cards:not(.sorted) { display: none; } }
-  @container persone (max-width: 859px) { .p-table .c-emp:not(.sorted) { display: none; } .p-table .c-state { width: 156px; } }
-  @container persone (max-width: 759px) { .p-table .c-company:not(.sorted) { display: none; } }
-  @container persone (max-width: 599px) { .p-table .c-access:not(.sorted) { display: none; } }
+  @container persone (max-width: 979px) { .p-table .c-cards { display: none; } }
+  @container persone (max-width: 859px) { .p-table:not([data-sorted="matricola"]) .c-emp { display: none; } .p-table .c-state { width: 156px; } }
+  @container persone (max-width: 759px) { .p-table:not([data-sorted="ditta"]) .c-company { display: none; } }
+  @container persone (max-width: 599px) { .p-table:not([data-sorted="accesso"]) .c-access { display: none; } }
   .chip svg.icon { width: 14px; height: 14px; }
   .ev-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none; font-size: 16px; }
   .ev-icon svg { width: 18px; height: 18px; fill: currentColor; }
@@ -898,6 +898,9 @@ function morphChildren(from, to) {
 function morphNode(cur, next) {
   if (cur.nodeType !== next.nodeType || cur.nodeName !== next.nodeName) { cur.replaceWith(next); return; }
   if (cur.nodeType !== 1) { if (cur.nodeValue !== next.nodeValue) cur.nodeValue = next.nodeValue; return; }
+  // Uguale in tutto (attributi e contenuto): niente da toccare. Il confronto lo fa il browser, molto più in fretta
+  // che nodo per nodo qui sotto: con 2000 persone l'elenco si ridisegna in decine di millisecondi, non in centinaia
+  if (cur.isEqualNode(next)) return;
   [...cur.attributes].forEach((a) => { if (!next.hasAttribute(a.name)) cur.removeAttribute(a.name); });
   [...next.attributes].forEach((a) => { if (cur.getAttribute(a.name) !== a.value) cur.setAttribute(a.name, a.value); });
   // Quello che l'utente sta scrivendo o scegliendo non si tocca
@@ -996,13 +999,24 @@ function shiftDay(day, n) {
 }
 // Giorno di calendario (aaaa-mm-gg, senza ora: festività, colonne della settimana) come testo: lo stesso in ogni fuso
 const fmtDay = (day, options) => day ? new Date(day + "T12:00:00Z").toLocaleDateString("it-IT", {...options, timeZone: "UTC"}) : "";
+// Formati delle date pronti, uno per opzioni e fuso: toLocaleString ne crea uno nuovo a ogni chiamata, e negli elenchi
+// lunghi (2000 persone con l'ultimo accesso, il registro) si sentiva. Stesso testo di toLocale*String
+const dateFormats = new Map();
+function fmtWith(options, iso) {
+  const when = new Date(iso);
+  if (!iso || Number.isNaN(when.getTime())) return "";
+  const key = JSON.stringify(zoned(options));
+  let format = dateFormats.get(key);
+  if (!format) dateFormats.set(key, format = new Intl.DateTimeFormat("it-IT", zoned(options)));
+  return format.format(when);
+}
 // "24/10/2026 13:34", senza la virgola che toLocaleString mette tra data e ora
-const fmtDateTime = (iso) => iso ? `${new Date(iso).toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit", year: "numeric"}))} ${fmtTime(iso)}` : "";
-const fmtFull = (iso) => iso ? new Date(iso).toLocaleString("it-IT", zoned({dateStyle: "medium", timeStyle: "medium"})) : "";
-const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", zoned({day: "numeric", month: "short", year: "numeric"})) : "";
-// Solo il giorno, in cifre (12/11/2026): Inserita il e Modificata il dell'elenco Persone
-const fmtNumDay = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit", year: "numeric"})) : "";
-const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("it-IT", zoned({hour: "2-digit", minute: "2-digit"})) : "";
+const fmtDateTime = (iso) => iso ? `${fmtNumDay(iso)} ${fmtTime(iso)}` : "";
+const fmtFull = (iso) => fmtWith({dateStyle: "medium", timeStyle: "medium"}, iso);
+const fmtDate = (iso) => fmtWith({day: "numeric", month: "short", year: "numeric"}, iso);
+// Solo il giorno, in cifre (12/11/2026): anche Inserita il e Modificata il dell'elenco Persone
+const fmtNumDay = (iso) => fmtWith({day: "2-digit", month: "2-digit", year: "numeric"}, iso);
+const fmtTime = (iso) => fmtWith({hour: "2-digit", minute: "2-digit"}, iso);
 // "adesso", "5 min fa", poi come dayTime: "oggi 13:34", "ieri 13:34" (dal calendario) o "24/10/2026 13:34".
 // Più avanti di adesso (orologio del controller avanti): l'ora vera, non "adesso"
 function relTime(iso) {
@@ -2575,34 +2589,35 @@ function personRows(sorted) {
   }).join("");
 }
 // Computer: tabella con le intestazioni che ordinano (un pulsante in ogni intestazione, aria-sort su quella scelta).
-// Con l'ordine per data di inserimento o di modifica compare anche la colonna con quella data
+// Con l'ordine per data di inserimento o di modifica compare anche la colonna con quella data. Le righe non dipendono
+// dall'ordine scelto (la colonna da tenere in vista la dice data-sorted della tabella): cambiando ordine si spostano e
+// basta, senza ridisegnarle
 function personTable(sorted) {
   const [key, dir] = personFilters.sort.split(":");
   const extra = key === "inserimento" ? "Data di Inserimento" : key === "modifica" ? "Ultima Modifica" : "";
   const columns = [["c-photo", "Foto", ""], ["c-last", "Cognome", "cognome"], ["c-first", "Nome", "nome"], ["c-emp", "Matricola", "matricola"],
     ["c-company", "Ditta", "ditta"], ["c-cat", "Tipologia", "tipologia"], ["c-cards", "Tessere", ""], ["c-access", "Ultimo Accesso", "accesso"],
     ...(extra ? [["c-extra", extra, key]] : []), ["c-state", "Stato", ""]];
-  const on = (k) => k && k === key ? " sorted" : "";
   const head = columns.map(([cls, label, k]) => !k ? `<th class="${cls}" scope="col">${label}</th>`
-    : `<th class="${cls}${on(k)}" scope="col"${on(k) ? ` aria-sort="${dir === "desc" ? "descending" : "ascending"}"` : ""}><button type="button" class="th-sort" data-sort="${k}" title="Ordina per ${label}"><span>${label}</span><span class="arrow" aria-hidden="true">${on(k) ? (dir === "desc" ? "↓" : "↑") : ""}</span></button></th>`).join("");
+    : `<th class="${cls}" scope="col"${k === key ? ` aria-sort="${dir === "desc" ? "descending" : "ascending"}"` : ""}><button type="button" class="th-sort" data-sort="${k}" title="Ordina per ${label}"><span>${label}</span><span class="arrow" aria-hidden="true">${k === key ? (dir === "desc" ? "↓" : "↑") : ""}</span></button></th>`).join("");
   const dash = '<span class="muted">—</span>';
-  const text = (cls, value, k) => `<td class="${cls}${on(k)}"${value ? ` title="${esc(value)}"` : ""}>${value ? esc(value) : dash}</td>`;
-  const when = (cls, iso, k, shown) => `<td class="${cls}${on(k)}"${iso ? ` title="${esc(fmtFull(iso))}"` : ""}>${iso ? esc(shown(iso)) : dash}</td>`;
+  const text = (cls, value) => `<td class="${cls}"${value ? ` title="${esc(value)}"` : ""}>${value ? esc(value) : dash}</td>`;
+  const when = (cls, iso, shown) => `<td class="${cls}"${iso ? ` title="${esc(fmtFull(iso))}"` : ""}>${iso ? esc(shown(iso)) : dash}</td>`;
   let letter = "";
   const body = sorted.map((p) => {
     const first = sorted.length > 12 ? personLetter(p, key) : "";
     // Una cella per colonna, con le classi delle colonne: un colspan contato su tutte le colonne, con quelle nascoste
     // dal riquadro stretto, lascerebbe colonne vuote in fondo
-    const section = first && first !== letter ? `<tr class="sec" data-key="h${esc(first)}">${columns.map(([cls], i) => `<td class="${cls}${on(columns[i][2])}">${i ? "" : esc(first)}</td>`).join("")}</tr>` : "";
+    const section = first && first !== letter ? `<tr class="sec" data-key="h${esc(first)}">${columns.map(([cls], i) => `<td class="${cls}">${i ? "" : esc(first)}</td>`).join("")}</tr>` : "";
     letter = first;
     const c = categoryOf(p.category_id);
     return `${section}<tr data-person="${p.id}" data-key="p${p.id}" tabindex="0">
-      <td class="c-photo">${personAvatar(p, "sm")}</td>${text("c-last", p.last_name, "cognome")}${text("c-first", p.first_name, "nome")}${text("c-emp", p.employee_id, "matricola")}${text("c-company", p.company, "ditta")}
-      <td class="c-cat${on("tipologia")}"${c ? ` title="${esc(c.name)}"` : ""}>${c ? `<span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}` : dash}</td>
-      <td class="c-cards">${p.cards.length || dash}</td>${when("c-access", p.last_access, "accesso", relTime)}${extra ? when("c-extra", key === "inserimento" ? p.created_at : p.updated_at, key, fmtNumDay) : ""}
+      <td class="c-photo">${personAvatar(p, "sm")}</td>${text("c-last", p.last_name)}${text("c-first", p.first_name)}${text("c-emp", p.employee_id)}${text("c-company", p.company)}
+      <td class="c-cat"${c ? ` title="${esc(c.name)}"` : ""}>${c ? `<span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}` : dash}</td>
+      <td class="c-cards">${p.cards.length || dash}</td>${when("c-access", p.last_access, relTime)}${extra ? when("c-extra", key === "inserimento" ? p.created_at : p.updated_at, fmtNumDay) : ""}
       <td class="c-state">${personFlag(p)}</td></tr>`;
   }).join("");
-  return `<table class="table p-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  return `<table class="table p-table" data-sorted="${key}"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 // Telefono girato o finestra allargata oltre gli 860 px (o il contrario): righe o tabella
 window.matchMedia("(max-width: 860px)").addEventListener("change", () => renderPersonList());
@@ -3619,8 +3634,7 @@ let notifData = null, notifEvents = [];
 // "oggi 13:34", "ieri 13:34" o "24/10/2026 13:34"
 function dayTime(iso) {
   const day = plantDay(iso), today = plantDay();
-  const label = day === today ? "oggi" : day === shiftDay(today, -1) ? "ieri"
-    : new Date(iso).toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit", year: "numeric"}));
+  const label = day === today ? "oggi" : day === shiftDay(today, -1) ? "ieri" : fmtNumDay(iso);
   return `${label} ${fmtTime(iso)}`;
 }
 const notifSince = () => new Date(Date.now() - 86400000).toISOString();
