@@ -1350,6 +1350,21 @@ function retryBox(message) {
 const BUSY_DELAY = 500;
 const BUSY_SLOW = 5000;
 const busyState = {ops: [], timers: [], due: false, slow: false, held: false, focus: null, keep: null};
+// Ultimo elemento che ha perso il fuoco senza darlo a un altro. Un pulsante disattivato da chi l'ha premuto subito
+// prima di run() (Rileggi dal Controller, Usa il Fuso, Accedi, i pulsanti delle finestre) lo perde così, e busy() deve
+// sapere che il fuoco era lì per rimetterlo alla fine
+const focusLeft = {el: null, at: 0};
+function noteFocusLeft(e) {
+  if (!e.relatedTarget) Object.assign(focusLeft, {el: e.target, at: Date.now()});
+}
+document.addEventListener("focusout", noteFocusLeft, true);
+// Dov'è il fuoco all'inizio di un'operazione: l'elemento attivo, o il pulsante appena disattivato che l'aveva
+function focusOrigin() {
+  const active = document.activeElement;
+  if (active && active !== document.body) return active;
+  const {el, at} = focusLeft;
+  return el?.isConnected && Date.now() - at < 1000 && el.matches(":disabled") ? el : null;
+}
 // label: cosa sta facendo («Eliminazione della tipologia sul controller»), "" per il solo «Attendere…», false per
 // nessun riquadro (le letture e le operazioni con un loro segno di avanzamento). work: una funzione o una promessa
 async function busy(label, work) {
@@ -1357,6 +1372,7 @@ async function busy(label, work) {
   const op = {label: label || ""};
   busyState.ops.push(op);
   if (busyState.ops.length === 1) {
+    busyState.focus = focusOrigin();
     busyState.timers = [setTimeout(() => { busyState.due = true; busyPaint(); }, BUSY_DELAY),
       setTimeout(() => { busyState.slow = true; busyPaint(); }, BUSY_SLOW)];
     $(".main").setAttribute("aria-busy", "true");
@@ -1394,20 +1410,21 @@ function busyDone() {
   busyPaint();
   $(".main").removeAttribute("aria-busy");
   if (shown) busyRefocus(back);
-  busyKeepFocus();
+  // Senza riquadro il fuoco resta dov'era, salvo su un pulsante disattivato da chi l'ha premuto: torna lì
+  else if (back && back !== document.body) busyRefocus(back, true, false);
+  busyKeepFocus(back);
 }
 // Subito dopo, chi ha avviato l'operazione di solito ridisegna la pagina o la scheda, e il fuoco da tastiera finirebbe
 // in cima alla pagina: per qualche secondo, se l'elemento con il fuoco sparisce, il fuoco va su quello uguale della
-// pagina nuova (stesso id o stesso data-) appena compare. Sul telefono non su un campo: aprirebbe la tastiera
-function busyKeepFocus() {
+// pagina nuova (vedi sameElement) appena compare. Sul telefono non su un campo: aprirebbe la tastiera. back: dov'era il
+// fuoco all'inizio, se adesso non è su niente (un pulsante disattivato che torna attivo un momento dopo)
+function busyKeepFocus(back = null) {
   busyState.keep?.();
-  let last = document.activeElement;
+  let last = document.activeElement && document.activeElement !== document.body ? document.activeElement : back;
   const mark = (e) => { last = e.target; };
   const observer = new MutationObserver(() => {
     if (document.activeElement && document.activeElement !== document.body) return;
-    const attr = last?.attributes && [...last.attributes].find((a) => a.name === "id" || (a.name.startsWith("data-") && a.value));
-    if (!attr) return;
-    const same = $$(`${last.localName}[${attr.name}="${CSS.escape(attr.value)}"]`).find((el) => el.getClientRects().length && !el.closest("[inert]"));
+    const same = sameElement(last);
     if (same && !(same.matches("input, select, textarea") && "ontouchstart" in window)) same.focus({preventScroll: true});
   });
   const stop = () => { observer.disconnect(); document.removeEventListener("focusin", mark); clearTimeout(timer); busyState.keep = null; };
@@ -1416,17 +1433,33 @@ function busyKeepFocus() {
   document.addEventListener("focusin", mark);
   busyState.keep = stop;
 }
+// L'elemento uguale a old nella pagina ridisegnata, visibile e non inert: con lo stesso id, o lo stesso attributo data-
+// con il suo valore (data-toggle="13"), o senza valore (i pulsanti della scheda: data-add-card, data-edit-data,
+// data-photo-pick…), cercato prima nella finestra aperta. Se non c'è più, quello indicato dal suo data-refocus (Togli
+// Foto → Aggiungi Foto, Elimina Tessera → Aggiungi)
+function sameElement(old) {
+  if (!old?.attributes) return null;
+  const attrs = [...old.attributes].filter((a) => a.name !== "data-refocus");
+  const attr = attrs.find((a) => a.name === "id") || attrs.find((a) => a.name.startsWith("data-") && a.value)
+    || attrs.find((a) => a.name.startsWith("data-"));
+  const top = $$("dialog[open]:not(#busy)").pop();
+  const pick = (sel) => [...(top ? $$(sel, top) : []), ...$$(sel)].find((el) => el.getClientRects().length && !el.closest("[inert]"));
+  const same = attr && pick(`${old.localName}[${attr.name}${attr.value ? `="${CSS.escape(attr.value)}"` : ""}]`);
+  return same || (old.dataset?.refocus ? pick(old.dataset.refocus) : null) || null;
+}
 // Alla chiusura il browser lo rimette da solo; se non può, perché l'elemento di prima non c'è più (pagina ridisegnata,
 // finestra chiusa), va sulla finestra aperta sotto, se no sulla pagina, o sul primo campo della pagina di accesso.
-// Un pulsante disattivato da chi l'ha premuto, che lo riattiva subito dopo la fine, si riprova un momento dopo
-function busyRefocus(back, again = true) {
+// Un pulsante disattivato da chi l'ha premuto, che lo riattiva subito dopo la fine, si riprova un momento dopo.
+// fallback false: solo back (operazione veloce, senza riquadro)
+function busyRefocus(back, again = true, fallback = true) {
   const lost = () => !document.activeElement || document.activeElement === document.body || document.activeElement.id === "busy";
   if (!lost()) return;
   if (back && back !== document.body && back.isConnected) {
-    if (back.disabled && again) { setTimeout(() => busyRefocus(back, false)); return; }
+    if (back.disabled && again) { setTimeout(() => busyRefocus(back, false, fallback)); return; }
     back.focus({preventScroll: true});
     if (!lost()) return;
   }
+  if (!fallback) return;
   const top = $$("dialog[open]:not(#busy)").pop();
   const target = top ? $("[autofocus]", top) || $("input:not([type=hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled), [href]", top) || top
     : document.body.dataset.auth ? $("#auth input:not([hidden])") : $("#view");
@@ -2887,7 +2920,7 @@ async function openPerson(id) {
   // vista, aperto dal pulsante: dal telefono fotocamera o galleria
   const editPhoto = can("persone_modifica");
   const photoCell = `<div class="row">${p.photo ? `<button type="button" class="avatar" data-photo-view aria-label="Ingrandisci la foto di ${esc(p.name)}" title="Ingrandisci la foto"><img src="${esc(photoUrl(p))}" alt=""></button>` : editPhoto ? "" : "—"}
-    ${editPhoto ? `<span class="row w-persone">${p.photo ? `<button type="button" class="small" data-photo-pick>${icon("camera")}Cambia Foto</button><button type="button" class="small danger" data-photo-del>Togli Foto</button>`
+    ${editPhoto ? `<span class="row w-persone">${p.photo ? `<button type="button" class="small" data-photo-pick>${icon("camera")}Cambia Foto</button><button type="button" class="small danger" data-photo-del data-refocus="[data-photo-pick]">Togli Foto</button>`
       : `<button type="button" class="small" data-photo-pick>${icon("camera")}Aggiungi Foto</button>`}<input type="file" accept="image/*" class="file-pick" data-photo-file tabindex="-1" aria-hidden="true"></span>` : ""}</div>`;
   sheet.innerHTML = `<div class="dlg">
     <div class="dlg-head">${p.photo ? `<button type="button" class="avatar big" data-photo-view aria-label="Ingrandisci la foto di ${esc(p.name)}" title="Ingrandisci la foto"><img src="${esc(photoUrl(p))}" alt=""></button>` : `<div class="avatar big">${esc(initials(p.name))}</div>`}
@@ -2907,7 +2940,7 @@ async function openPerson(id) {
           <div class="ev-icon ${cardActive(c) ? "k-accent" : "k-muted"}">${icon("card")}</div>
           <div class="grow"><div class="title mono">${esc(c.number)}</div><div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
-          <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
+          <button type="button" class="small danger" data-del-card="${c.id}" data-refocus="[data-add-card]">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
         <dl class="props"><dt>Foto</dt><dd>${photoCell}</dd>
           <dt>Nome</dt><dd>${esc(p.first_name || "—")}</dd><dt>Cognome</dt><dd>${esc(p.last_name || "—")}</dd>

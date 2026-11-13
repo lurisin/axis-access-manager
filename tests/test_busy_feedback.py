@@ -16,11 +16,15 @@ NAMES = (
     "BUSY_DELAY",
     "BUSY_SLOW",
     "busyState",
+    "focusLeft",
+    "noteFocusLeft",
+    "focusOrigin",
     "busy",
     "busyPaint",
     "busyDone",
     "busyRefocus",
     "busyKeepFocus",
+    "sameElement",
     "busyHold",
     "busyBlock",
     "run",
@@ -52,7 +56,7 @@ PRELUDE = r"""
 let log = [];
 const node = (id) => ({id, hidden: true, textContent: "", disabled: false, isConnected: true, attrs: {},
   setAttribute(k, v) { this.attrs[k] = String(v); }, removeAttribute(k) { delete this.attrs[k]; },
-  hasAttribute(k) { return k in this.attrs; }, matches() { return false; },
+  hasAttribute(k) { return k in this.attrs; }, matches(sel) { return sel === ":disabled" && this.disabled; },
   set tabIndex(v) { this.attrs.tabindex = String(v); },
   focus() { if (this.isConnected && !this.disabled) document.activeElement = this; }});
 const document = {body: {dataset: {}}, activeElement: null, addEventListener() {}, removeEventListener() {}};
@@ -486,6 +490,109 @@ def test_focus_goes_back_where_it_was_or_to_the_page():
         "disabled": {"right": "pagina", "after": "rileggi"},
         "quick": "sospendi",
         "redrawn": {"empty": True, "found": "nuovo", "kept": "altro", "watching": 0},
+    }
+
+
+@needs_node
+def test_focus_comes_back_to_the_sheet_buttons_and_to_a_button_disabled_before_run():
+    """Rilievi della verifica: i pulsanti della scheda hanno attributi data- senza valore (data-add-card,
+    data-edit-data, data-photo-pick…) e dopo il ridisegno il fuoco finiva sulla pagina; quelli che spariscono (Togli
+    Foto) lo passano al pulsante indicato da data-refocus; il pulsante uguale si cerca prima nella finestra aperta. Un
+    pulsante disattivato prima di run() (Rileggi dal Controller), che il browser lascia senza fuoco, lo riavuto alla
+    fine, anche senza riquadro; un campo lasciato da tempo e non disattivato no."""
+    redraw = """
+        const d = later();
+        const done = busy("Scrittura della tessera sul controller", () => d.promise);
+        await advance(600);
+        d.resolve();
+        await done;
+        old.isConnected = false;
+        document.activeElement = document.body;
+    """
+    fresh = "(id) => Object.assign(node(id), {getClientRects: () => [1], closest: () => null})"
+    out = run_busy(
+        {
+            "empty": f"""
+                const attributes = [{{name: "type", value: "button"}}, {{name: "data-add-card", value: ""}}];
+                const old = Object.assign(node("aggiungi"), {{localName: "button", attributes}});
+                old.focus();
+                {redraw}
+                const make = {fresh};
+                const again = make("aggiungi nuovo");
+                $$ = (sel) => sel === "button[data-add-card]" ? [again] : [];
+                mutate();
+                return document.activeElement.id;
+            """,
+            "refocus": f"""
+                const attributes = [{{name: "data-photo-del", value: ""}},
+                  {{name: "data-refocus", value: "[data-photo-pick]"}}];
+                const old = Object.assign(node("togli foto"), {{localName: "button", attributes,
+                  dataset: {{refocus: "[data-photo-pick]"}}}});
+                old.focus();
+                {redraw}
+                const make = {fresh};
+                const pick = make("aggiungi foto");
+                $$ = (sel) => sel === "[data-photo-pick]" ? [pick] : [];
+                mutate();
+                return document.activeElement.id;
+            """,
+            "dialog": f"""
+                const attributes = [{{name: "data-close", value: ""}}];
+                const old = Object.assign(node("chiudi"), {{localName: "button", attributes}});
+                old.focus();
+                {redraw}
+                const make = {fresh};
+                const top = make("scheda"), inside = make("chiudi della scheda"), page = make("chiudi della pagina");
+                $$ = (sel, root) => sel === "dialog[open]:not(#busy)" ? [top]
+                  : sel === "button[data-close]" ? (root === top ? [inside] : [page, inside]) : [];
+                mutate();
+                return document.activeElement.id;
+            """,
+            "disabled": """
+                const button = node("rileggi");
+                button.focus();
+                // Come Chrome: il pulsante disattivato perde il fuoco, che va sulla pagina
+                button.disabled = true;
+                noteFocusLeft({target: button, relatedTarget: null});
+                document.activeElement = document.body;
+                const d = later();
+                const done = busy("Rilettura dal controller", () => d.promise);
+                await advance(1500);
+                d.resolve();
+                await done;
+                button.disabled = false;
+                await advance(0);
+                return document.activeElement.id || "pagina";
+            """,
+            "quick": """
+                const button = node("usa il fuso");
+                button.focus();
+                button.disabled = true;
+                noteFocusLeft({target: button, relatedTarget: null});
+                document.activeElement = document.body;
+                const done = busy("Scrittura del fuso orario sul controller", () => Promise.resolve());
+                await done;
+                button.disabled = false;
+                await advance(0);
+                return {focus: document.activeElement.id || "pagina", log};
+            """,
+            "stale": """
+                const search = node("cerca");
+                noteFocusLeft({target: search, relatedTarget: null});
+                document.activeElement = document.body;
+                await busy("Salvataggio", () => Promise.resolve());
+                await advance(0);
+                return document.activeElement.id || "pagina";
+            """,
+        }
+    )
+    assert out == {
+        "empty": "aggiungi nuovo",
+        "refocus": "aggiungi foto",
+        "dialog": "chiudi della scheda",
+        "disabled": "rileggi",
+        "quick": {"focus": "usa il fuso", "log": []},
+        "stale": "pagina",
     }
 
 
