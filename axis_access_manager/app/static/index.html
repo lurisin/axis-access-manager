@@ -1153,6 +1153,8 @@ document.addEventListener("close", (e) => {
   if (!$("dialog[open]:not(#busy)")) $("#toast").classList.remove("over");
 }, true);
 
+// L'app nei messaggi che non vengono dal server: «l'add-on», o «l'app» per chi non deve leggere di Home Assistant
+const appName = () => hideHA() ? "l'app" : "l'add-on";
 // Prova del collegamento e rilettura dal controller: POST che non modificano niente, quindi senza Riprova
 const NO_RETRY = ["api/controllers/test", "api/sync"];
 async function api(path, options = {}) {
@@ -1169,8 +1171,8 @@ async function api(path, options = {}) {
     });
   } catch (err) {
     // Rete o add-on caduti a metà richiesta: il browser direbbe solo "Failed to fetch", e una modifica può essere arrivata
-    throw new Error(method === "GET" ? "collegamento con l'add-on non riuscito: controlla la rete e riprova tra qualche secondo"
-      : "collegamento con l'add-on interrotto: la modifica potrebbe essere stata fatta lo stesso, controlla prima di riprovare");
+    throw new Error(method === "GET" ? `collegamento con ${appName()} non riuscito: controlla la rete e riprova tra qualche secondo`
+      : `collegamento con ${appName()} interrotto: la modifica potrebbe essere stata fatta lo stesso, controlla prima di riprovare`);
   }
   const data = await res.json().catch(() => ({}));
   // Accesso diretto: sessione chiusa o mai aperta, oppure password provvisoria ancora da cambiare
@@ -1181,7 +1183,7 @@ async function api(path, options = {}) {
     const fromApp = typeof data?.detail === "string";
     // Il messaggio resta com'è: la maiuscola la mette chi lo mostra da solo, non chi lo mette dentro una frase
     const message = fromApp ? data.detail : res.status >= 502 && res.status <= 504
-      ? `l'add-on non risponde (errore ${res.status}): riprova tra qualche secondo` : `richiesta non riuscita (errore ${res.status})`;
+      ? `${appName()} non risponde (errore ${res.status}): riprova tra qualche secondo` : `richiesta non riuscita (errore ${res.status})`;
     // Il controller non ha risposto a una modifica: si può riprovare senza rifare tutto da capo. Gli altri errori del
     // controller (credenziali, richiesta rifiutata, scritture sospese) riprovando tornerebbero uguali
     const unreachable = data?.unreachable ?? (fromApp && data.detail.startsWith("il controller non risponde"));
@@ -1285,8 +1287,7 @@ async function userMenu() {
   if (me.admin && !me.direct) actions.push({label: "Utenti", value: "users"});
   if (me.has_password) actions.push({label: "Cambia Password", value: "password"});
   if (me.direct) actions.push({label: "Esci", kind: "primary", value: "logout"});
-  const choice = await modal({title: me.user, body: props([["Ruolo", esc(me.role || "Personalizzato")], ["Nome Utente", `<code>${esc(me.username)}</code>`],
-    ...(me.direct ? [["Accesso", "Diretto, fuori da Home Assistant"]] : [])]), actions});
+  const choice = await modal({title: me.user, body: props([["Ruolo", esc(me.role || "Personalizzato")], ["Nome Utente", `<code>${esc(me.username)}</code>`]]), actions});
   if (choice === "logout") logout();
   else if (choice === "password") changePassword();
   else if (choice === "users") location.hash = "#impostazioni/utenti";
@@ -1578,6 +1579,13 @@ function showImage(src, title) {
 // ---------- Stato condiviso ----------
 const store = {me: {perms: [], admin: false}, persons: [], groups: null, schedules: null, categories: [], summary: {}};
 const can = (perm) => Boolean(store.me.admin || store.me.perms.includes(perm));
+// Pagina dell'accesso diretto, fuori da Home Assistant: lo dice api/me. Finché non si sa, il login (c'è solo lì) o
+// l'indirizzo: da Home Assistant la pagina sta sempre sotto /api/hassio_ingress/
+const directPage = () => store.me.direct ?? (Boolean(document.body.dataset.auth) || !location.pathname.includes("/hassio_ingress/"));
+// Chi entra dall'accesso diretto senza i permessi tecnici (Impianti o Backup) non legge mai Home Assistant, MQTT,
+// broker e add-on: lo decide il server (api/me, come per i suoi messaggi), e finché non si sa vale l'accesso diretto.
+// Resta solo il registro, dove Home Assistant è chi ha aperto la porta a distanza
+const hideHA = () => store.me.hide_home_assistant ?? directPage();
 const ALL_PERMS = ["stato", "persone", "persone_modifica", "registro", "regole", "regole_modifica", "import_export", "impianti", "backup", "utenti"];
 // Profili e fasce stanno sul controller, le tipologie nell'app. Se il controller non risponde restano i profili di
 // prima (store.groupsError dice perché, store.groupsLoaded resta falso) e le tipologie si leggono lo stesso dall'app.
@@ -1720,6 +1728,8 @@ async function loadSummary() {
     $("#nav [data-route=notifiche]").title = s.notifications ? `Notifiche: ${s.notifications} da gestire` : "Notifiche";
     renderTopStatus();
   } catch (err) {
+    // Dall'accesso diretto, per tutti, l'app e non l'add-on
+    $("#offline-pill").textContent = directPage() ? "App Non Raggiungibile" : "Add-on Non Raggiungibile";
     $("#offline-pill").hidden = false;
   }
 }
@@ -1815,7 +1825,7 @@ function parseHash() {
 function viewNoAccess(el) {
   el.innerHTML = store.me.user
     ? `<div class="card"><div class="empty">${icon("block")}<br><b>Nessuna Sezione Disponibile</b><br>Il tuo utente non ha permessi in questa app: chiedi a un amministratore di assegnarti un ruolo.</div></div>`
-    : `<div class="alert err">L'add-on non risponde: ricarica la pagina tra qualche secondo.</div>`;
+    : `<div class="alert err">${cap(appName())} non risponde: ricarica la pagina tra qualche secondo.</div>`;
   paintIcons(el);
 }
 let viewBox = null;  // contenitore della pagina aperta, dentro #view
@@ -1938,7 +1948,7 @@ const WIDGETS = {
   ultimi_eventi: {title: "Ultimi Eventi", desc: "Gli ultimi passaggi del registro.", size: 2, height: 5, minSize: 2, minHeight: 2, perm: "registro"},
   scadenze: {title: "Tessere in Scadenza", desc: "Persone con tessere che scadono nei prossimi 7 giorni.", size: 2, height: 3, minHeight: 2, perm: "persone"},
   da_registrare: {title: "Tessere da Registrare", desc: "Tessere passate sul lettore ma non ancora di nessuno.", size: 2, height: 3, minHeight: 2, perm: "persone"},
-  impianto: {title: "Stato Impianto", desc: "Controller, eventi MQTT, coperchio e ultimo evento.", size: 2, height: 3, minHeight: 3},
+  impianto: {title: "Stato Impianto", get desc() { return `Controller, eventi ${hideHA() ? "in diretta" : "MQTT"}, coperchio e ultimo evento.`; }, size: 2, height: 3, minHeight: 3},
   backup: {title: "Backup", desc: "Ultimo backup, backup automatico e verifica dei file.", size: 2, height: 3, minHeight: 3, perm: "backup"},
 };
 const MAX_HEIGHT = 12;
@@ -2039,7 +2049,7 @@ const WIDGET_BODY = {
     const why = mqtt ? `${mqtt.title}: ${mqtt.text}` : s.controller_online === false ? "Il controller non è raggiungibile." : "";
     return `<h2>Stato Impianto${can("impianti") ? '<span class="spacer"></span><a class="small-text" href="#impianti/stato">Dettagli</a>' : ""}</h2>
       ${row(s.controller_online === false ? "err" : s.controller_online ? "ok" : "", "Controller", s.controller_online === false ? "Non Raggiungibile" : s.controller_online ? "Raggiungibile" : "Stato Sconosciuto")}
-      ${s.controller_online === false ? "" : s.events_waiting ? row("", "Eventi in Diretta", "In Collegamento") : row(s.events_source ? "ok" : "warn", "Eventi in Diretta", s.events_source === "websocket" ? "WebSocket" : s.events_source === "mqtt" ? "MQTT" : "Non in Arrivo", s.events_source ? "" : why)}
+      ${s.controller_online === false ? "" : s.events_waiting ? row("", "Eventi in Diretta", "In Collegamento") : row(s.events_source ? "ok" : "warn", "Eventi in Diretta", hideHA() && s.events_source ? "In Arrivo" : s.events_source === "websocket" ? "WebSocket" : s.events_source === "mqtt" ? "MQTT" : "Non in Arrivo", s.events_source ? "" : why)}
       ${s.casing_open === null ? row("warn", "Coperchio del Controller", "Sconosciuto") : row(s.casing_open ? "err" : "ok", "Coperchio del Controller", s.casing_open ? "Aperto" : "Chiuso")}
       ${row("", "Ultimo Evento", s.last_event ? esc(relTime(s.last_event)) : "nessuno")}`;
   },
@@ -2383,8 +2393,7 @@ async function viewDoorDetail(el, id, doors) {
       ${d.state?.known ? "" : '<p class="hint" style="margin-bottom:0">Il controller non risponde, o non è ancora stato letto: lo stato compare appena risponde.</p>'}</div>
     <div class="grid two">
       <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") && d.controller.id ? `<a class="small-text" href="#impianti/c${d.controller.id}">Configura</a>` : ""}</h2>
-        <div class="list" style="margin-top:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div>
-        <p class="hint" style="padding:0 18px 14px">L'apertura della porta resta nei pulsanti di Home Assistant.</p></div>
+        <div class="list" style="margin-top:8px;padding-bottom:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div></div>
       ${d.groups ? `<div class="card flush"><h2>Chi Può Entrare<span class="spacer"></span>${can("persone") || can("regole") ? `<a class="small-text" href="${categoriesLink()}">Tipologie</a>` : ""}</h2>
         <div class="list" style="margin-top:8px">${d.groups.length ? d.groups.map((g) => `<div class="item"><div class="grow"><div class="title"><span class="swatch c-${esc(g.color)}"></span> ${esc(g.name)}${g.default ? ' <span class="pill accent">Predefinita</span>' : ""}${g.enabled ? "" : ' <span class="pill">Disattivata</span>'}</div><div class="meta">${esc(g.schedule_names.join(", ") || "sempre")}</div></div><div class="side">${plural(g.persons, "persona", "persone")}</div></div>`).join("") : '<div class="empty">Nessuna tipologia apre questa porta.</div>'}</div></div>` : ""}
     </div>
@@ -3223,7 +3232,8 @@ function eventDetail(e) {
     e.printed_code ? ["Codice Stampato", `${esc(e.printed_code)} <span class="muted small-text">· quello di adesso della tessera</span>`] : null,
     e.detail ? ["Dettaglio", `${esc(e.detail)}${DETAIL_HINTS[e.detail] ? ` <span class="muted">· ${esc(DETAIL_HINTS[e.detail])}</span>` : ""}`] : null,
     e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
-    e.recovered ? ["Recuperato", "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
+    e.recovered ? ["Recuperato", hideHA() ? "Arrivato in ritardo dal registro interno del controller: senza foto"
+      : "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(LOG_SOURCES[e.source] || e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
@@ -5612,18 +5622,33 @@ async function viewSettings(el, sub) {
   try { s = await api("api/status?controller=false"); } catch (err) { body.innerHTML = errorBox("Stato Non Leggibile", err); return; }
   const m = s.mqtt, ha = s.home_assistant, o = s.options;
   // Controllo del database all'avvio ({at, text}) e copia per il backup di Home Assistant: i motivi arrivano in minuscolo
-  const dbRecovered = s.database.recovered?.text ? s.database.recovered : null;
+  const dbRecovered = s.database?.recovered?.text ? s.database.recovered : null;
   const capFirst = (text) => text ? text[0].toUpperCase() + text.slice(1) : "";
   // Le tipologie solo a chi le vede (permesso Persone o Regole): per gli altri il server le rifiuta
   const seesCategories = can("persone") || can("regole");
   // Dal database dell'app: la pagina non aspetta il controller
   if (seesCategories) await loadCategories();
-  const haCard = props([
+  const haCard = !ha ? "" : props([
     ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} Attive, dispositivo "Controllo Accessi"` : `${statusDot("")} Disattivate nelle opzioni`],
     ...(ha.integration ? [["Entità", esc(ha.entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
     ["API di Home Assistant", ha.api ? `${statusDot("ok")} Disponibile` : `${statusDot("warn")} Non Disponibile`],
   ]) + `<p class="hint">L'evento "Eventi Accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, uscita, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni. I pulsanti di apertura si attivano per ogni porta nella pagina del controller.</p>`;
-  body.innerHTML = `
+  const ioCard = `<div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
+          <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
+          <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio, «Nome Cognome» in una colonna, diviso al primo spazio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. Il file esportato ha in più <code>ultimo_accesso; telefono; email</code>, che l'importazione ignora: telefono ed email si scrivono nella scheda della persona. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>`;
+  // Dall'accesso diretto senza permessi tecnici: le opzioni dell'app ed Esporta e Importa, senza Home Assistant, broker
+  // e database dell'add-on (il server non li manda)
+  if (hideHA()) body.innerHTML = `
+    <div class="grid two">
+      <div><div class="card"><h2>${icon("cog")}Opzioni dell'App</h2>${props([
+        ...(seesCategories ? [["Tipologia Predefinita", esc(categoryOf(store.me.default_category)?.name || "—")]] : []),
+        ["Conservazione Registro", plural(o.event_retention_days, "giorno", "giorni")],
+      ])}<p class="hint">La conservazione del registro la sceglie l'amministratore dell'impianto.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.` : ""}</p></div></div>
+      <div>${ioCard}</div>
+    </div>
+    <p class="muted small-text" style="text-align:center">Axis Access Manager ${esc(store.me.version || "")}</p>`;
+  else body.innerHTML = `
     ${store.summary.configured === false && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b>Controller, porte, videocitofono e telecamera si impostano nella pagina Impianti.</div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
     <div class="grid two">
       <div>
@@ -5635,10 +5660,7 @@ async function viewSettings(el, sub) {
         ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Persone" : "Regole"} → Tipologie.` : ""}</p></div>
       </div>
       <div>
-        <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
-          <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
-          <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio, «Nome Cognome» in una colonna, diviso al primo spazio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. Il file esportato ha in più <code>ultimo_accesso; telefono; email</code>, che l'importazione ignora: telefono ed email si scrivono nella scheda della persona. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>
+        ${ioCard}
         <div class="card"><h2>${icon("history")}Database dell'Add-on</h2>${dbRecovered ? `<div class="alert err">${icon("alert")}<div class="grow"><b>${esc(dbRecovered.title || (dbRecovered.text.includes("ripristinata la copia") ? "Database Ripristinato dalla Copia" : "Database Non Ripristinato"))}</b>${esc(capFirst(dbRecovered.text))} · ${esc(relTime(dbRecovered.at))}${dbRecovered.hint ? `<br>${esc(dbRecovered.hint)}` : ""}</div></div>` : ""}${props([
           ["Versione dello Schema", esc(s.database.schema)],
           // Il motivo dice già che la copia non è aggiornata ("copia non aggiornata (…)", "… resta la copia precedente")
