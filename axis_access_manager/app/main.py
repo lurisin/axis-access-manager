@@ -1254,7 +1254,8 @@ def create_app(
         if person is None:
             raise ServiceError("persona non trovata")
         can_log = current_user(request).can("registro")
-        person["events"] = await asyncio.to_thread(db.list_events, person_id=person_id, limit=50) if can_log else []
+        events = await asyncio.to_thread(db.list_events, person_id=person_id, limit=50) if can_log else []
+        person["events"] = _events_out(request, events)
         # Solo quella persona: prima si calcolavano gli ultimi accessi di tutti
         person["last_access"] = db.last_access(person_id)
         return person

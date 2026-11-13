@@ -246,6 +246,17 @@ def test_log_keeps_home_assistant_as_who_opened(plant, monkeypatch):
     assert [e["detail"] for e in door["events"] if e["id"] == failed["id"]] == [failed["detail"]]
     for event in events:
         assert not says(event["detail"]) and not says(event["snapshot_error"])
+    # Anche gli eventi nella scheda della persona
+    person = ingress.post("/api/persons", json={"first_name": "Anna", "last_name": "Verdi"}, headers=ADMIN).json()
+    app.state.db.add_event(
+        ts=failed["ts"], kind="negato", door=failed["door"], person_id=person["id"], person_name="Anna Verdi",
+        detail=HA_FAILED,
+    )  # fmt: skip
+    sheet = site.get(f"/api/persons/{person['id']}").json()["events"]
+    assert [e["detail"] for e in sheet] == [failed["detail"]]
+    assert [e["detail"] for e in ingress.get(f"/api/persons/{person['id']}", headers=OPERATOR).json()["events"]] == [
+        HA_FAILED
+    ]
     # Con i permessi tecnici e da Home Assistant, come è salvato
     for client, headers in ((admin, {}), (ingress, OPERATOR)):
         original = client.get(f"/api/events/{failed['id']}", headers=headers).json()
