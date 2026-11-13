@@ -12,6 +12,7 @@ from test_backup import Plant
 from test_person_photo import JPEG, PNG
 
 from app import db as db_module
+from app import service as service_module
 from app.compare import compare, read_strict
 from app.desired import build, load_conf
 from app.restore import plan
@@ -197,6 +198,35 @@ async def test_cards_and_access_of_the_person_change_it(plant, db, clock, contro
             await action()
         assert step.changed() == ({pid} if expected else set()), label
     assert db.get_person(anna["id"])["updated_at"] == anna["updated_at"]
+
+
+async def test_validity_of_the_category_duration_is_to_the_minute_like_the_access_form(plant, db, clock, monkeypatch):
+    """La durata della tipologia (Ospiti, 3 giorni) vale da adesso al minuto, come il modulo Accesso: prima la
+    validità aveva i secondi (12:00:39), il modulo la rimandava al minuto e Salva senza toccare niente cambiava la
+    validità, l'Ultima Modifica e la tessera sul controller."""
+
+    class Now(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 13, 12, 0, 39, 512000, tzinfo=UTC)
+
+    monkeypatch.setattr(service_module, "datetime", Now)
+    ospiti = await plant.rules.save_category(None, {"name": "Ospiti", "valid_days": 3, "rules": [rule(plant)]}, "admin")
+    chiara = await plant.access.create_person("Chiara Colombo", "04cc", "admin", category_id=ospiti["id"])
+    anna = await plant.access.create_person("Anna Bianchi", "", "admin", category_id=ospiti["id"])
+    await plant.access.add_card(anna["id"], "04dd", "admin")
+    expected = ("2026-11-13T12:00:00Z", "2026-11-16T12:00:00Z")
+    for person in (chiara, anna):
+        card = db.get_person(person["id"])["cards"][0]
+        assert (card["valid_from"], card["valid_to"]) == expected
+    # Salva nel modulo Accesso senza toccare niente: la tipologia e le date come le ricostruisce il modulo, al minuto
+    with watch(db, clock) as step:
+        await plant.access.set_person_access(
+            chiara["id"], "", "2026-11-13T12:00:00.000Z", "2026-11-16T12:00:00.000Z", "admin", ospiti["id"]
+        )
+    assert step.changed() == set()
+    card = db.get_person(chiara["id"])["cards"][0]
+    assert (card["valid_from"], card["valid_to"]) == expected
 
 
 async def _toggle(plant, card_id, number, enabled):

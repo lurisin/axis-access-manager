@@ -801,7 +801,9 @@ class AccessService:
         if category:
             group = group or category["group_token"]
             if category["valid_days"] and not valid_to:
-                start = datetime.now(tz=UTC).replace(microsecond=0)
+                # Al minuto, come il modulo Accesso (datetime-local): con i secondi, Salva senza toccare niente
+                # cambierebbe la validità e l'Ultima Modifica della persona
+                start = datetime.now(tz=UTC).replace(second=0, microsecond=0)
                 valid_from = valid_from or start.isoformat()
                 valid_to = (start + timedelta(days=category["valid_days"])).isoformat()
         return self._access(group, valid_from, valid_to)
