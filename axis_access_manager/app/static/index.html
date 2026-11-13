@@ -2926,17 +2926,19 @@ async function openPerson(id) {
     if (await run(() => api(`api/persons/${id}/align`, {method: "POST"}), "Accesso riportato a quello della tipologia", "Allineamento dell'accesso sul controller")) reload();
   };
   $$("[data-photo-view]", sheet).forEach((b) => { b.onclick = () => showImage(photoUrl(p), `Foto di ${p.name}`); });
+  // Elenco, scheda e Foto in Anagrafica del registro (che non aspetta i suoi 15 secondi) con la foto nuova
+  const photoChanged = () => { faceVersions.at = 0; reload(); };
   const picker = $("[data-photo-file]", sheet);
   $$("[data-photo-pick]", sheet).forEach((b) => { b.onclick = () => { picker.value = ""; picker.click(); }; });
   if (picker) picker.onchange = async () => {
     const file = picker.files[0];
     if (!file) return;
     // Preparata nel browser (photoBlob) e mandata, tutto dentro il riquadro di attesa
-    if (await run(async () => api(`api/persons/${id}/photo`, {method: "PUT", raw: await photoBlob(file)}), p.photo ? "Foto cambiata" : "Foto aggiunta", "Caricamento della foto")) reload();
+    if (await run(async () => api(`api/persons/${id}/photo`, {method: "PUT", raw: await photoBlob(file)}), p.photo ? "Foto cambiata" : "Foto aggiunta", "Caricamento della foto")) photoChanged();
   };
   if ($("[data-photo-del]", sheet)) $("[data-photo-del]", sheet).onclick = async () => {
     if (!await confirmBox("Togli Foto", `Togliere la foto di <b>${esc(p.name)}</b> dall'app?`, "Togli", true)) return;
-    if (await run(() => api(`api/persons/${id}/photo`, {method: "DELETE"}), "Foto tolta", "Rimozione della foto")) reload();
+    if (await run(() => api(`api/persons/${id}/photo`, {method: "DELETE"}), "Foto tolta", "Rimozione della foto")) photoChanged();
   };
   $("[data-edit-data]", sheet).onclick = async () => {
     const ok = await modal({
