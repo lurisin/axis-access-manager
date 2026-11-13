@@ -108,3 +108,16 @@ def test_menu_and_titles_with_the_old_addresses():
         'La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.' in page
     )
     assert page.count('href="#persone">Anagrafica</a>') == 2
+
+
+def test_documentation_uses_the_new_names():
+    docs = (ROOT / "DOCS.md").read_text(encoding="utf-8")
+    for old in ("Regole → Festività", "**Persone → Tipologie**", "permesso Persone", "pagina Persone", "**Regole**:"):
+        assert old not in docs, old
+    assert "**Anagrafica → Tipologie**" in docs and "**Fasce Orarie → Festività**" in docs
+    assert "Tessere da Registrare" in docs and "Fasce Orarie e Festività" in docs
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    current = changelog.split("\n## 0.28.2")[0]
+    assert "**Menu: Anagrafica e Fasce Orarie.**" in current
+    # Le versioni passate restano com'erano
+    assert "Persone → Tipologie" in changelog.split("\n## 0.28.2")[1]
