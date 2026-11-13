@@ -576,7 +576,28 @@
   .spinner { width: 18px; height: 18px; border: 2px solid var(--border-strong); border-top-color: var(--accent); border-radius: 50%;
              animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* Con il movimento ridotto la rotellina non gira: pulsa piano */
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: pulse 2s ease-in-out infinite; } }
   .loading { padding: 40px; text-align: center; color: var(--muted); }
+  /* Riquadro «Attendere…» di una modifica che dura più di mezzo secondo: piccolo e al centro, sopra un velo leggero
+     che lascia vedere la pagina. Nel top layer come le finestre, quindi anche sopra una finestra aperta */
+  dialog#busy { width: auto; max-width: min(360px, calc(100vw - 32px)); padding: 16px 20px; border-radius: 14px;
+                box-shadow: 0 12px 32px rgba(0, 0, 0, .25); outline: none; }
+  dialog#busy::backdrop { background: rgba(10, 14, 20, .18); }
+  @media (prefers-color-scheme: dark) {
+    dialog#busy { background: var(--surface-2); border-color: var(--border-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .6); }
+    dialog#busy::backdrop { background: rgba(0, 0, 0, .35); }
+  }
+  .busy-box { display: flex; align-items: flex-start; gap: 12px; }
+  .busy-box .spinner { width: 22px; height: 22px; flex: none; margin-top: 1px; }
+  .busy-text { min-width: 0; overflow-wrap: anywhere; }
+  .busy-text b { display: block; font-size: 16px; }
+  #busy-status { color: var(--muted); font-size: 14px; }
+  #busy-status > span { display: block; margin-top: 2px; }
+  #busy-slow { color: var(--warn); font-weight: 500; }
+  /* Fuoco rimesso sulla pagina dopo il riquadro, quando l'elemento di prima non c'è più */
+  #view:focus { outline: none; }
   /* Pulsanti e sezioni visibili solo con il permesso giusto */
   body.no-persone_modifica .w-persone, body.no-regole_modifica .w-regole, body.no-import_export .w-io { display: none !important; }
   .swatch { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex: none; background: var(--muted); }
@@ -720,6 +741,12 @@
 <dialog id="sheet" class="sheet"></dialog>
 <dialog id="modal"></dialog>
 <dialog id="retry"></dialog>
+<!-- Riquadro di attesa delle modifiche (busy): nessun pulsante, si chiude da solo alla fine dell'operazione -->
+<dialog id="busy" aria-labelledby="busy-title" aria-describedby="busy-status">
+  <div class="busy-box"><span class="spinner" aria-hidden="true"></span>
+    <div class="busy-text"><b id="busy-title">Attendere…</b>
+      <div id="busy-status" role="status" aria-live="polite"><span id="busy-what" hidden></span><span id="busy-slow" hidden>Il controller risponde lentamente: l'operazione continua</span></div></div></div>
+</dialog>
 <div id="toast" role="status" popover="manual"></div>
 
 <script>
@@ -964,7 +991,8 @@ function toast(message, error = false) {
   // Un errore con una finestra aperta va dentro la finestra, in cima al contenuto, e resta fino al prossimo avviso.
   // Sopra la finestra, sul telefono, copriva per 7 secondi titolo e × (un tocco sull'avviso chiudeva la finestra)
   $$(".dlg-error").forEach((box) => box.remove());
-  const open = $$("dialog[open]").pop();
+  // Il riquadro di attesa (#busy) non è una finestra: l'avviso va sopra il suo velo, non dentro
+  const open = $$("dialog[open]:not(#busy)").pop();
   const body = error && open ? $(".dlg-body", open) : null;
   if (body) {
     const box = document.createElement("div");
@@ -981,7 +1009,7 @@ function toast(message, error = false) {
   el.textContent = cap(message);
   el.className = error ? "error" : "";
   // Sopra una finestra l'avviso non riceve i clic (che vanno alla finestra): non deve nasconderne i pulsanti
-  el.classList.toggle("over", Boolean($("dialog[open]")));
+  el.classList.toggle("over", Boolean($("dialog[open]:not(#busy)")));
   el.style.display = "block";
   // Le finestre aperte stanno nel top layer, sopra qualsiasi z-index: riaperto, l'avviso va sopra l'ultima
   if (el.showPopover) {
@@ -1001,7 +1029,7 @@ document.addEventListener("close", (e) => {
   // vista come avviso, nella finestra sotto o in basso
   const box = e.target instanceof Element ? $(".dlg-error", e.target) : null;
   if (box && Date.now() - Number(box.dataset.at) < 7000) toast(box.dataset.message, true);
-  if (!$("dialog[open]")) $("#toast").classList.remove("over");
+  if (!$("dialog[open]:not(#busy)")) $("#toast").classList.remove("over");
 }, true);
 
 // Prova del collegamento e rilettura dal controller: POST che non modificano niente, quindi senza Riprova
@@ -1083,7 +1111,7 @@ function showAuth(mode, current = "", message = "") {
     button.disabled = true;
     try {
       if (login) {
-        const result = await api("api/login", {method: "POST", body: {username: $("[name=username]", form).value, password}});
+        const result = await busy("Accesso", api("api/login", {method: "POST", body: {username: $("[name=username]", form).value, password}}));
         if (result.must_change) {
           store.me = await api("api/me");
           showAuth("change", password);
@@ -1092,7 +1120,7 @@ function showAuth(mode, current = "", message = "") {
       } else {
         const fresh = checkNewPassword(form);
         if (fresh === null) return;
-        await api("api/password", {method: "POST", body: {current: password, new: fresh}});
+        await busy("Salvataggio della password", api("api/password", {method: "POST", body: {current: password, new: fresh}}));
       }
       location.reload();
     } catch (err) {
@@ -1124,7 +1152,7 @@ function checkNewPassword(form) {
 }
 
 async function logout() {
-  try { await api("api/logout", {method: "POST"}); } catch (err) { /* si ricarica comunque */ }
+  try { await busy("Uscita", api("api/logout", {method: "POST"})); } catch (err) { /* si ricarica comunque */ }
   location.reload();
 }
 
@@ -1144,7 +1172,7 @@ async function userMenu() {
 
 async function changePassword() {
   const body = `${field("Password Attuale", `<input name="password" type="password" autocomplete="current-password" maxlength="512" required>`)}${passwordFields()}<p class="auth-err" id="pw-err" role="alert" hidden></p>`;
-  const done = await modal({title: "Cambia Password", body, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+  const done = await modal({title: "Cambia Password", body, actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, busy: "Salvataggio della password", onClick: async (dlg) => {
     const error = $("#pw-err", dlg);
     error.hidden = true;
     const fresh = checkNewPassword(dlg);
@@ -1183,17 +1211,132 @@ function retryBox(message) {
       <div class="dlg-body"><p style="margin:0 0 8px">La modifica non è stata completata.</p><p class="muted small-text" style="margin:0">${esc(cap(message))}</p>
         <p class="hint">Controlla che il controller sia acceso e in rete, poi riprova. Riprovare non crea doppioni.</p></div>
       <div class="dlg-foot"><button type="button" data-r="0">Annulla</button><button type="button" class="primary" data-r="1">Riprova</button></div></div>`;
-    const finish = (value) => { dlg.close(); resolve(value); };
+    // Arriva a metà di una modifica: il riquadro di attesa si toglie finché non si risponde, poi torna
+    const finish = (value) => { dlg.close(); busyHold(false); resolve(value); };
     $$("[data-r]", dlg).forEach((b) => { b.onclick = () => finish(b.dataset.r === "1"); });
     dlg.oncancel = (e) => { e.preventDefault(); finish(false); };
+    busyHold(true);
     dlg.showModal();
     $("[data-r='1']", dlg).focus();
   });
 }
 
-async function run(action, success) {
+// ---------- Attesa delle modifiche ----------
+// Ogni modifica avviata dall'utente passa da busy (run, runPerson e le azioni delle finestre lo fanno da sole). Se
+// dura più di mezzo secondo, di solito perché aspetta il controller, compare il riquadro «Attendere…» con cosa sta
+// facendo; dopo 5 secondi aggiunge che il controller risponde lentamente. Il riquadro non ferma mai l'operazione e
+// non ha un tempo massimo suo: si chiude alla fine, anche dopo un errore, e poi arriva l'avviso di sempre. Dall'inizio
+// alla fine la pagina non prende clic né tasti (niente doppio clic, niente seconda modifica a metà), anche nel primo
+// mezzo secondo, quando il riquadro non c'è ancora. Più operazioni insieme o una dentro l'altra: il riquadro resta
+// finché finiscono tutte e mostra il testo dell'ultima avviata. Mai per gli aggiornamenti automatici, le ricerche e
+// il caricamento delle pagine, che non passano da qui
+const BUSY_DELAY = 500;
+const BUSY_SLOW = 5000;
+const busyState = {ops: [], timers: [], due: false, slow: false, held: false, focus: null, keep: null};
+// label: cosa sta facendo («Eliminazione della tipologia sul controller»), "" per il solo «Attendere…», false per
+// nessun riquadro (le letture e le operazioni con un loro segno di avanzamento). work: una funzione o una promessa
+async function busy(label, work) {
+  if (label === false) return typeof work === "function" ? work() : work;
+  const op = {label: label || ""};
+  busyState.ops.push(op);
+  if (busyState.ops.length === 1) {
+    busyState.timers = [setTimeout(() => { busyState.due = true; busyPaint(); }, BUSY_DELAY),
+      setTimeout(() => { busyState.slow = true; busyPaint(); }, BUSY_SLOW)];
+    $(".main").setAttribute("aria-busy", "true");
+  }
+  busyPaint();
   try {
-    const result = await action();
+    return await (typeof work === "function" ? work() : work);
+  } finally {
+    busyState.ops.splice(busyState.ops.indexOf(op), 1);
+    if (busyState.ops.length) busyPaint();
+    else busyDone();
+  }
+}
+// Testo e apertura del riquadro: aperto dopo il mezzo secondo, ma non mentre c'è la finestra Riprova (held)
+function busyPaint() {
+  const dlg = $("#busy"), line = $("#busy-what");
+  const what = [...busyState.ops].reverse().find((op) => op.label)?.label || "";
+  // Lo stesso testo non si riscrive: il lettore di schermo lo ripeterebbe
+  if (line.textContent !== what) line.textContent = what;
+  line.hidden = !what;
+  $("#busy-slow").hidden = !busyState.slow;
+  const show = busyState.ops.length > 0 && busyState.due && !busyState.held;
+  if (show && !dlg.open) {
+    busyState.focus ||= document.activeElement;
+    dlg.showModal();
+  } else if (!show && dlg.open) dlg.close();
+}
+// Finita l'ultima operazione: il riquadro si chiude e il fuoco torna dov'era
+function busyDone() {
+  busyState.timers.forEach(clearTimeout);
+  busyState.timers = [];
+  busyState.due = busyState.slow = false;
+  const shown = $("#busy").open, back = busyState.focus;
+  busyState.focus = null;
+  busyPaint();
+  $(".main").removeAttribute("aria-busy");
+  if (shown) busyRefocus(back);
+  busyKeepFocus();
+}
+// Subito dopo, chi ha avviato l'operazione di solito ridisegna la pagina o la scheda, e il fuoco da tastiera finirebbe
+// in cima alla pagina: per qualche secondo, se l'elemento con il fuoco sparisce, il fuoco va su quello uguale della
+// pagina nuova (stesso id o stesso data-) appena compare. Sul telefono non su un campo: aprirebbe la tastiera
+function busyKeepFocus() {
+  busyState.keep?.();
+  let last = document.activeElement;
+  const mark = (e) => { last = e.target; };
+  const observer = new MutationObserver(() => {
+    if (document.activeElement && document.activeElement !== document.body) return;
+    const attr = last?.attributes && [...last.attributes].find((a) => a.name === "id" || (a.name.startsWith("data-") && a.value));
+    if (!attr) return;
+    const same = $$(`${last.localName}[${attr.name}="${CSS.escape(attr.value)}"]`).find((el) => el.getClientRects().length && !el.closest("[inert]"));
+    if (same && !(same.matches("input, select, textarea") && "ontouchstart" in window)) same.focus({preventScroll: true});
+  });
+  const stop = () => { observer.disconnect(); document.removeEventListener("focusin", mark); clearTimeout(timer); busyState.keep = null; };
+  const timer = setTimeout(stop, 10000);
+  observer.observe(document.body, {childList: true, subtree: true});
+  document.addEventListener("focusin", mark);
+  busyState.keep = stop;
+}
+// Alla chiusura il browser lo rimette da solo; se non può, perché l'elemento di prima non c'è più (pagina ridisegnata,
+// finestra chiusa), va sulla finestra aperta sotto, se no sulla pagina, o sul primo campo della pagina di accesso.
+// Un pulsante disattivato da chi l'ha premuto, che lo riattiva subito dopo la fine, si riprova un momento dopo
+function busyRefocus(back, again = true) {
+  const lost = () => !document.activeElement || document.activeElement === document.body || document.activeElement.id === "busy";
+  if (!lost()) return;
+  if (back && back !== document.body && back.isConnected) {
+    if (back.disabled && again) { setTimeout(() => busyRefocus(back, false)); return; }
+    back.focus({preventScroll: true});
+    if (!lost()) return;
+  }
+  const top = $$("dialog[open]:not(#busy)").pop();
+  const target = top ? $("[autofocus]", top) || $("input:not([type=hidden]):not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled), [href]", top) || top
+    : document.body.dataset.auth ? $("#auth input:not([hidden])") : $("#view");
+  if (!target) return;
+  if (!top && !target.hasAttribute("tabindex") && !target.matches("input")) target.tabIndex = -1;
+  target.focus({preventScroll: true});
+}
+// La finestra Riprova (dentro api) chiede una risposta a metà operazione: il riquadro si toglie e poi torna
+function busyHold(on) {
+  busyState.held = on;
+  busyPaint();
+}
+// Clic e tasti fermi per tutta l'operazione: anche il doppio clic dei primi 500 ms, prima del riquadro, ed Esc, che
+// chiuderebbe il riquadro o la finestra sotto. Restano la finestra Riprova e i tasti del browser (Ctrl, Alt, Cmd, F5)
+function busyBlock(e) {
+  if (!busyState.ops.length || e.target?.closest?.("#retry")) return;
+  if (e.type.startsWith("key") && (e.ctrlKey || e.metaKey || e.altKey || /^F\d+$/.test(e.key))) return;
+  e.preventDefault();
+  e.stopImmediatePropagation();
+}
+["click", "dblclick", "auxclick", "mousedown", "keydown", "keypress", "submit", "beforeinput", "paste", "drop"].forEach((type) => window.addEventListener(type, busyBlock, true));
+$("#busy").oncancel = (e) => e.preventDefault();
+
+// wait: il testo del riquadro di attesa (vedi busy); false per le letture che non devono mostrarlo
+async function run(action, success, wait = "") {
+  try {
+    const result = await busy(wait, action);
     if (success) toast(success);
     return result ?? true;
   } catch (err) {
@@ -1204,9 +1347,9 @@ async function run(action, success) {
 // Come run, per le modifiche dalla scheda di una persona. Se intanto la persona è cambiata (per esempio una tessera
 // assegnata da un'altra scheda, dalla pagina Da Registrare o da un'importazione) il server rifiuta con 409 senza
 // modificare niente: il risultato è {stale: motivo}, e chi chiama rilegge la scheda e lo mostra
-async function runPerson(action, success) {
+async function runPerson(action, success, wait = "") {
   try {
-    const result = await action();
+    const result = await busy(wait, action);
     if (success) toast(success);
     return result ?? true;
   } catch (err) {
@@ -1219,7 +1362,8 @@ async function runPerson(action, success) {
 // ---------- Finestre ----------
 // Chiude la finestra aperta come la ×, se non sta salvando: serve al cambio di pagina
 let cancelModal = () => {};
-// Apre una finestra: body è HTML, actions [{label, kind, onClick(dialogEl) → false per lasciarla aperta}]
+// Apre una finestra: body è HTML, actions [{label, kind, onClick(dialogEl) → false per lasciarla aperta, busy}].
+// onClick passa dal riquadro di attesa: busy è il suo testo (se no quello delle operazioni dentro, o «Attendere…»)
 function modal({title, body = "", actions = [], wide = false, cls = "", onOpen}) {
   return new Promise((resolve) => {
     const dlg = $("#modal");
@@ -1229,27 +1373,31 @@ function modal({title, body = "", actions = [], wide = false, cls = "", onOpen})
       <div class="dlg-body">${body}</div>
       ${actions.length ? `<div class="dlg-foot">${actions.map((a, i) => `<button type="${a.submit ? "submit" : "button"}" class="${a.kind || ""}" data-a="${i}">${esc(a.label)}</button>`).join("")}</div>` : ""}
     </form>`;
-    let done = false, busy = false;
+    let done = false, working = false;
     const finish = (value) => { if (done) return; done = true; dlg.close(); resolve(value); };
     // Mentre l'azione è in corso × ed Esc non chiudono: il chiamante la crederebbe annullata e non aggiornerebbe la pagina
-    const cancel = () => { if (!busy) finish(null); };
+    const cancel = () => { if (!working) finish(null); };
     cancelModal = cancel;
     $("[data-x]", dlg).onclick = cancel;
     dlg.oncancel = (e) => { e.preventDefault(); cancel(); };
     const invoke = async (i) => {
       const action = actions[i];
-      if (busy) return;
+      if (working) return;
       if (!action.onClick) return finish("value" in action ? action.value : i);
       const btns = $$(".dlg-foot button, [data-x]", dlg);
-      busy = true;
+      working = true;
       btns.forEach((b) => { b.disabled = true; });
-      try {
-        const result = await action.onClick(dlg);
-        if (result !== false) finish(result ?? true);
-      } finally {
-        busy = false;
-        btns.forEach((b) => { b.disabled = false; });
-      }
+      // Pulsanti riattivati prima della fine dell'attesa, e finestra chiusa dopo: il fuoco torna sul pulsante premuto
+      // e poi, alla chiusura, dove era prima della finestra
+      const result = await busy(action.busy ?? "", async () => {
+        try {
+          return await action.onClick(dlg);
+        } finally {
+          working = false;
+          btns.forEach((b) => { b.disabled = false; });
+        }
+      });
+      if (result !== false) finish(result ?? true);
     };
     $$(".dlg-foot button", dlg).forEach((b) => { if (!actions[b.dataset.a].submit) b.onclick = () => invoke(Number(b.dataset.a)); });
     $("form", dlg).onsubmit = (e) => {
@@ -1422,10 +1570,10 @@ async function loadSummary() {
 }
 
 // Add-on aggiornato mentre la pagina era aperta (Home Assistant tiene viva la scheda): si ricarica appena
-// non c'è niente in sospeso, cioè nessuna finestra aperta e nessuna modifica da salvare
+// non c'è niente in sospeso, cioè nessuna finestra aperta, nessuna modifica da salvare e nessuna in corso
 function reloadIfUpdated(version) {
   if (!version || !store.me?.version || version === store.me.version) return;
-  if ($("#modal").open || $("#sheet").open || $("#retry").open || pageGuard?.dirty()) return;
+  if ($("#modal").open || $("#sheet").open || $("#retry").open || busyState.ops.length || pageGuard?.dirty()) return;
   location.reload();
 }
 
@@ -1470,7 +1618,7 @@ document.addEventListener("click", async (e) => {
   if (chip) { if (!pop.hidden && pop.dataset.kind === chip.dataset.pop) { pop.hidden = true; markTopChips(); } else showTopPop(chip.dataset.pop); return; }
   if (e.target.closest("[data-pop-seen]")) {
     const ids = (store.summary.alarms || []).map((i) => i.id);
-    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids}}))) {
+    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids}}), "", "Aggiornamento delle notifiche")) {
       pop.hidden = true;
       await loadSummary();
       // Solo i dati, senza ridisegnare: una modifica del cruscotto in corso non si perde
@@ -1586,9 +1734,10 @@ window.addEventListener("hashchange", async () => {
   render();
 });
 window.addEventListener("beforeunload", (e) => { if (pageGuard?.dirty()) { e.preventDefault(); e.returnValue = ""; } });
-// Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta
+// Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta né una modifica in corso (chi
+// l'ha avviata ridisegna la pagina alla fine)
 async function refreshView() {
-  if ($("#modal").open || $("#sheet").open || $("#retry").open) return;
+  if ($("#modal").open || $("#sheet").open || $("#retry").open || busyState.ops.length) return;
   if (route.name === "cruscotto" && dash.editing) return;
   // Solo i dati, senza ridisegnare la pagina: prima ogni 15 secondi la pagina lampeggiava e perdeva scroll e focus
   if (route.name === "cruscotto") await (dash.reload && $("#dash") ? dash.reload() : render());
@@ -1830,7 +1979,7 @@ async function viewDashboard(el) {
     };
   };
   const saveDash = async () => {
-    const res = await run(() => api("api/dashboard/layout", {method: "PUT", body: {widgets: dash.draft}}), "Cruscotto salvato");
+    const res = await run(() => api("api/dashboard/layout", {method: "PUT", body: {widgets: dash.draft}}), "Cruscotto salvato", "Salvataggio del cruscotto");
     if (!res) return false;
     dash.layout = res.widgets;
     dash.editing = false;
@@ -1854,7 +2003,7 @@ function bindDashEdit(el, draw, missing) {
   $("#dash-cancel").onclick = leave;
   $("#dash-reset").onclick = async () => {
     if (!await confirmBox("Ripristina Predefinito", "Rimettere i riquadri e le larghezze di partenza? Le tue modifiche al cruscotto si perdono.", "Ripristina")) return;
-    if (await run(() => api("api/dashboard/layout", {method: "DELETE"}), "Cruscotto ripristinato")) leave();
+    if (await run(() => api("api/dashboard/layout", {method: "DELETE"}), "Cruscotto ripristinato", "Ripristino del cruscotto predefinito")) leave();
   };
   $("#dash-add").onclick = async () => {
     let type = "";
@@ -2159,7 +2308,7 @@ async function viewPersons(el, sub) {
     // Il pulsante e non l'icona su cui si è cliccato: resta disabilitato fino alla fine della rilettura
     const button = e.currentTarget;
     button.disabled = true;
-    const r = await run(() => api("api/sync", {method: "POST"}));
+    const r = await run(() => api("api/sync", {method: "POST"}), "", "Rilettura dal controller");
     button.disabled = false;
     if (r) { toast(`Riletto dal controller: ${plural(r.cards, "tessera", "tessere")} (${plural(r.added, "nuova", "nuove")}${r.missing ? `, ${plural(r.missing, "non presente", "non presenti")} sul controller` : ""})`); await loadPersons(); renderPersonList(); }
   });
@@ -2251,7 +2400,8 @@ function renderMissingBanner() {
   $("#m-forget").onclick = () => forgetMissing();
 }
 async function restoreMissing(ids) {
-  const r = await run(() => api("api/missing-cards/restore", {method: "POST", body: {ids}}));
+  const r = await run(() => api("api/missing-cards/restore", {method: "POST", body: {ids}}), "",
+    ids.length === 1 ? "Riscrittura della tessera sul controller" : "Riscrittura delle tessere sul controller");
   if (!r) return false;
   if (r.failed.length) {
     await modal({title: "Tessere Non Riscritte", body: `<p style="margin-top:0">${plural(r.restored, "tessera riscritta", "tessere riscritte")}, ${plural(r.failed.length, "non riuscita", "non riuscite")}:</p>
@@ -2274,7 +2424,8 @@ async function forgetMissing() {
   const total = store.persons.reduce((k, p) => k + p.cards.length, 0);
   const reset = n * 2 > total ? " Manca più della metà delle tessere: se il controller è stato resettato o sostituito, serve invece il Ripristino Completo, che le rimette." : "";
   if (!await confirmBox("Togli dall'App", `Togliere dall'app ${n === 1 ? "la tessera non presente" : `le ${n} tessere non presenti`} sul controller? Le persone restano in anagrafica, anche senza tessere. Il registro dei passaggi resta.${reset}`, "Togli", true)) return false;
-  const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids: cards.map((c) => c.id)}}));
+  const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids: cards.map((c) => c.id)}}), "",
+    n === 1 ? "Rimozione della tessera dall'app" : "Rimozione delle tessere dall'app");
   if (!r) return false;
   toast(`${plural(r.cards, "tessera tolta", "tessere tolte")} dall'app`);
   loadSummary();
@@ -2350,7 +2501,8 @@ async function newPerson(card = "") {
       // La validità è della tessera: senza, la durata della tipologia parte dalla prima tessera
       if (body.card) Object.assign(body, readValidity(dlg));
       if (!body.first_name && !body.last_name) { toast("Serve il nome o il cognome", true); return false; }
-      const person = await run(() => api("api/persons", {method: "POST", body}), body.card ? "Persona registrata: la tessera è attiva sul controller" : "Persona registrata senza tessera");
+      const person = await run(() => api("api/persons", {method: "POST", body}), body.card ? "Persona registrata: la tessera è attiva sul controller" : "Persona registrata senza tessera",
+        body.card ? "Registrazione della persona e scrittura della tessera sul controller" : "Registrazione della persona");
       return person || false;
     }}],
     onOpen: (dlg) => {
@@ -2448,7 +2600,8 @@ async function openPerson(id) {
         // Senza tessere la validità non si manda: se intanto la persona ne ha avuta una, il server rifiuta invece di
         // toglierle la scadenza
         const body = {...(category || chosen ? {category_id: chosen} : {group: a.group}), ...(p.cards.length ? readValidity(dlg) : {})};
-        const result = await runPerson(() => api(`api/persons/${id}/access`, {method: "PUT", body}), p.cards.length ? "Accesso aggiornato sul controller" : "Tipologia aggiornata");
+        const result = await runPerson(() => api(`api/persons/${id}/access`, {method: "PUT", body}), p.cards.length ? "Accesso aggiornato sul controller" : "Tipologia aggiornata",
+          p.cards.length ? "Salvataggio dell'accesso sul controller" : "Salvataggio della tipologia");
         // Scheda vecchia: la finestra si chiude e la scheda si rilegge
         if (result?.stale) { stale = result.stale; return true; }
         return result || false;
@@ -2467,7 +2620,7 @@ async function openPerson(id) {
     else if (ok) reload();
   };
   if ($("[data-align]", sheet)) $("[data-align]", sheet).onclick = async () => {
-    if (await run(() => api(`api/persons/${id}/align`, {method: "POST"}), "Accesso riportato a quello della tipologia")) reload();
+    if (await run(() => api(`api/persons/${id}/align`, {method: "POST"}), "Accesso riportato a quello della tipologia", "Allineamento dell'accesso sul controller")) reload();
   };
   $("[data-edit-data]", sheet).onclick = async () => {
     const ok = await modal({
@@ -2484,7 +2637,7 @@ async function openPerson(id) {
         // Nome e cognome solo se cambiati: com'erano non riscrivono il nome sul controller (anche con gli spazi doppi
         // di un nome letto dal controller)
         if (first !== (p.first_name || "").trim() || last !== (p.last_name || "").trim()) Object.assign(body, {first_name: first, last_name: last});
-        return (await run(() => api(`api/persons/${id}`, {method: "PATCH", body}), "Dati aggiornati")) || false;
+        return (await run(() => api(`api/persons/${id}`, {method: "PATCH", body}), "Dati aggiornati", "Salvataggio della persona")) || false;
       }}],
     });
     if (ok) reload();
@@ -2494,7 +2647,7 @@ async function openPerson(id) {
       title: "Aggiungi Tessera a " + p.name,
       body: `${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`, `${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.`)}`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card")}}), "Tessera aggiunta")) || false}],
+        (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false}],
     });
     if (ok) reload();
   };
@@ -2503,20 +2656,23 @@ async function openPerson(id) {
   });
   $$("[data-toggle]", sheet).forEach((b) => b.onclick = async () => {
     const enable = b.dataset.enabled !== "1";
-    if (await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable}}), enable ? "Tessera riattivata" : "Tessera sospesa")) reload();
+    if (await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable}}), enable ? "Tessera riattivata" : "Tessera sospesa",
+      enable ? "Riattivazione della tessera sul controller" : "Sospensione della tessera sul controller")) reload();
   });
   $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
     const last = p.cards.length === 1;
     if (!await confirmBox("Elimina Tessera", `Eliminare la tessera <code>${esc(card.number)}</code> ${card.missing_since ? "dall'app? Sul controller non c'è già più." : "dal controller?"}` + (last ? ` È l'unica tessera: <b>${esc(p.name)}</b> resta in anagrafica senza tessere, e si elimina solo con Elimina Persona.` : ""), "Elimina", true)) return;
-    if (await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), last ? "Tessera eliminata: la persona resta in anagrafica" : "Tessera eliminata")) reload();
+    if (await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), last ? "Tessera eliminata: la persona resta in anagrafica" : "Tessera eliminata",
+      card.missing_since ? "Eliminazione della tessera dall'app" : "Eliminazione della tessera dal controller")) reload();
   });
   $("[data-del-person]", sheet).onclick = async () => {
     const what = p.cards.length ? `<b>${esc(p.name)}</b> e ${plural(p.cards.length, "tessera", "tessere")} dal controller? Non apriranno più la porta.` : `<b>${esc(p.name)}</b> dall'anagrafica? Non ha tessere.`;
     if (!await confirmBox("Elimina Persona", `Eliminare ${what} Il registro dei passaggi resta.`, "Elimina", true)) return;
     // Con le tessere contate nella conferma: se intanto sono cambiate (per esempio «Non ha tessere» e una appena
     // assegnata) il server non elimina niente
-    const result = await runPerson(() => api(`api/persons/${id}?cards=${p.cards.map(c => c.id).join(",")}`, {method: "DELETE"}), "Persona eliminata");
+    const result = await runPerson(() => api(`api/persons/${id}?cards=${p.cards.map(c => c.id).join(",")}`, {method: "DELETE"}), "Persona eliminata",
+      p.cards.length ? "Eliminazione della persona e delle tessere dal controller" : "Eliminazione della persona");
     if (result?.stale) reloadStale(result.stale);
     else if (result) { close(); await loadPersons(); renderPersonList(); }
   };
@@ -2560,11 +2716,11 @@ async function viewUnknown(el) {
         title: "Assegna Tessera " + number,
         body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.") : '<p class="muted">Nessuna persona registrata.</p>',
         actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
-          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number}}), "Tessera assegnata")) || false}] : [])],
+          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
       });
       if (ok) { loadSummary(); render(); }
     } else if (b.dataset.ignore) {
-      if (await run(() => api(`api/unknown-cards/${encodeURIComponent(b.dataset.ignore)}`, {method: "DELETE"}))) { loadSummary(); render(); }
+      if (await run(() => api(`api/unknown-cards/${encodeURIComponent(b.dataset.ignore)}`, {method: "DELETE"}), "", "Rimozione della tessera dall'elenco")) { loadSummary(); render(); }
     }
   };
 }
@@ -2748,7 +2904,7 @@ async function loadLog(more = false) {
   // Un doppio clic su "Carica Altri" chiederebbe due volte la stessa pagina
   if (more && $("#l-more")) $("#l-more").disabled = true;
   logBusy = true;
-  const data = await run(() => api("api/events?" + params));
+  const data = await run(() => api("api/events?" + params), "", false);
   if (seq !== logSeq) return;
   logBusy = false;
   if ($("#l-more")) $("#l-more").disabled = false;
@@ -2877,7 +3033,7 @@ function bindHiddenToggle(kind) {
   if (box) box.onchange = () => { showHidden[kind] = box.checked; render(); };
 }
 async function setHidden(kind, token, hidden) {
-  return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosta: la ritrovi con Mostra Nascoste" : "Di nuovo visibile");
+  return run(() => api("api/hidden", {method: "PUT", body: {kind, token, hidden}}), hidden ? "Nascosta: la ritrovi con Mostra Nascoste" : "Di nuovo visibile", "Aggiornamento dell'elenco");
 }
 
 // Tipologie: chi è la persona, dove e quando entra, quanto dura la tessera. L'app tiene il profilo sul controller.
@@ -2966,7 +3122,8 @@ async function viewCategories(el, tabs = personTabs("tipologie")) {
         // Tutte le righe a video: una riga senza luogo la rifiuta il server, invece di sparire in silenzio
         const rules = rows.map((r) => { const [target, id] = r.place.split(":"); return {target, target_id: Number(id) || 0, schedule: r.schedule}; });
         const payload = {name: val(dlg, "name"), color: $("[name=color]:checked", dlg)?.value || "blue", valid_days: Number(val(dlg, "valid_days") || 0), description: val(dlg, "description"), rules};
-        const r = await run(() => api(c ? `api/categories/${c.id}` : "api/categories", {method: c ? "PUT" : "POST", body: payload}));
+        const r = await run(() => api(c ? `api/categories/${c.id}` : "api/categories", {method: c ? "PUT" : "POST", body: payload}), "",
+          c ? "Salvataggio della tipologia sul controller" : "Creazione della tipologia sul controller");
         if (!r) return false;
         toast(r.updated ? `Tipologia salvata sul controller: ${plural(r.updated, "persona aggiornata", "persone aggiornate")}` : "Tipologia salvata sul controller");
         return true;
@@ -2980,11 +3137,11 @@ async function viewCategories(el, tabs = personTabs("tipologie")) {
     if (b.dataset.cEdit) {
       if (await editor(c)) render();
     } else if (b.dataset.cDefault) {
-      if (await run(() => api("api/default-category", {method: "PUT", body: {category_id: c.id}}), `${c.name} è la nuova tipologia predefinita`)) { store.me.default_category = c.id; render(); }
+      if (await run(() => api("api/default-category", {method: "PUT", body: {category_id: c.id}}), `${c.name} è la nuova tipologia predefinita`, "Salvataggio della tipologia predefinita")) { store.me.default_category = c.id; render(); }
     } else if (b.dataset.cDel) {
       if (c.persons) { toast(`${c.name} ha ${plural(c.persons, "persona", "persone")}: ${c.persons === 1 ? "spostala" : "spostale"} prima in un'altra tipologia`, true); return; }
       if (await confirmBox("Elimina Tipologia", `Eliminare la tipologia <b>${esc(c.name)}</b> e il suo profilo sul controller?`, "Elimina", true) &&
-          await run(() => api(`api/categories/${c.id}`, {method: "DELETE"}), "Tipologia eliminata")) render();
+          await run(() => api(`api/categories/${c.id}`, {method: "DELETE"}), "Tipologia eliminata", "Eliminazione della tipologia sul controller")) render();
     }
   };
 }
@@ -3020,11 +3177,11 @@ function viewSchedules(body, stale = "") {
     if (b.dataset.sEdit) scheduleEditor(s);
     else if (b.dataset.sRestore) {
       const payload = {name: s.name, description: s.description, holidays: false, rules: SCHEDULE_ALWAYS};
-      if (await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "PUT", body: payload}), "Fascia ripristinata sul controller")) render();
+      if (await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "PUT", body: payload}), "Fascia ripristinata sul controller", "Ripristino della fascia sul controller")) render();
     } else if (b.dataset.sHide) { if (await setHidden("schedule", s.token, b.dataset.hidden !== "1")) render(); }
     else if (b.dataset.sDel) {
       if (await confirmBox("Elimina Fascia Oraria", `Eliminare <b>${esc(s.name)}</b> dal controller?${s.standard ? " È una fascia predefinita del controller: se ti serve di nuovo dovrai ricrearla." : ""}`, "Elimina", true) &&
-          await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "DELETE"}), "Fascia eliminata")) render();
+          await run(() => api(`api/schedules/${encodeURIComponent(s.token)}`, {method: "DELETE"}), "Fascia eliminata", "Eliminazione della fascia sul controller")) render();
     }
   };
 }
@@ -3058,7 +3215,8 @@ async function scheduleEditor(s) {
       const payload = {name: val(dlg, "name"), description: val(dlg, "description"), holidays: fixed ? false : val(dlg, "holidays"),
         rules: fixed ? SCHEDULE_ALWAYS : rules.map((r) => ({...r, end: r.end === "23:59" ? "24:00" : r.end}))};
       const path = s ? `api/schedules/${encodeURIComponent(s.token)}` : "api/schedules";
-      return (await run(() => api(path, {method: s ? "PUT" : "POST", body: payload}), s ? "Fascia aggiornata sul controller" : "Fascia creata sul controller")) || false;
+      return (await run(() => api(path, {method: s ? "PUT" : "POST", body: payload}), s ? "Fascia aggiornata sul controller" : "Fascia creata sul controller",
+        s ? "Salvataggio della fascia sul controller" : "Creazione della fascia sul controller")) || false;
     }}],
     onOpen: (dlg) => {
       if (fixed) return;
@@ -3105,14 +3263,14 @@ async function viewHolidays(body) {
   $("#h-form").onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target;
-    if (await run(() => api("api/holidays", {method: "POST", body: {day: f.day.value, name: f.name.value.trim(), yearly: f.yearly.checked}}), "Festività aggiunta")) viewHolidays(body);
+    if (await run(() => api("api/holidays", {method: "POST", body: {day: f.day.value, name: f.name.value.trim(), yearly: f.yearly.checked}}), "Festività aggiunta", "Aggiunta della festività sul controller")) viewHolidays(body);
   };
   $("#h-it").onclick = async () => {
-    if (await run(() => api("api/holidays/italia", {method: "POST", body: {year}}), "Festività nazionali aggiunte")) viewHolidays(body);
+    if (await run(() => api("api/holidays/italia", {method: "POST", body: {year}}), "Festività nazionali aggiunte", "Aggiunta delle festività nazionali sul controller")) viewHolidays(body);
   };
   body.onclick = async (e) => {
     const b = e.target.closest("[data-h-del]");
-    if (b && await run(() => api(`api/holidays/${encodeURIComponent(b.dataset.hDel)}`, {method: "DELETE"}), "Festività eliminata")) viewHolidays(body);
+    if (b && await run(() => api(`api/holidays/${encodeURIComponent(b.dataset.hDel)}`, {method: "DELETE"}), "Festività eliminata", "Eliminazione della festività sul controller")) viewHolidays(body);
   };
 }
 
@@ -3288,7 +3446,7 @@ async function viewNotifications(el) {
   // Con il peso che la scheda mostrava: un guasto peggiorato prima dell'aggiornamento della pagina resta da gestire
   const mark = async (ids) => {
     const weights = Object.fromEntries(notifData.items.filter((i) => ids.includes(i.id)).map((i) => [i.id, i.weight || 0]));
-    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids, weights}}))) { await loadSummary(); render(); }
+    if (await run(() => api("api/notifications/seen", {method: "POST", body: {ids, weights}}), "", "Aggiornamento delle notifiche")) { await loadSummary(); render(); }
   };
   $("#n-all").onclick = () => mark(notifData.items.filter((i) => !i.seen && notifMatches(i)).map((i) => i.id));
   let timer;
@@ -3341,7 +3499,7 @@ async function viewNotificationSettings(body) {
   paintIcons(body);
   body.onchange = async (e) => {
     const sel = e.target.closest("[data-level]");
-    if (sel && await run(() => api("api/notifications/settings", {method: "PUT", body: {[sel.dataset.level]: sel.value}}), "Notifiche aggiornate")) loadSummary();
+    if (sel && await run(() => api("api/notifications/settings", {method: "PUT", body: {[sel.dataset.level]: sel.value}}), "Notifiche aggiornate", "Salvataggio delle impostazioni delle notifiche")) loadSummary();
   };
 }
 
@@ -3498,7 +3656,7 @@ function bindIdentityAlert(root, ctrl) {
   if (!b) return;
   b.onclick = async () => {
     if (!await confirmBox("Conferma Nuovo Controller", `Da ora <b>${esc(ctrl.name)}</b> è l'apparecchio con numero di serie <code>${esc(ctrl.health.serial)}</code>. Le scritture ripartono e le tessere vengono rilette.`, "Conferma")) return;
-    if (await run(() => api(`api/controllers/${ctrl.id}/identity/accept`, {method: "POST"}), "Nuovo controller confermato")) { loadSummary(); render(); }
+    if (await run(() => api(`api/controllers/${ctrl.id}/identity/accept`, {method: "POST"}), "Nuovo controller confermato", "Conferma del nuovo controller")) { loadSummary(); render(); }
   };
 }
 
@@ -3579,7 +3737,7 @@ async function controllerEditor() {
     title: "Nuovo Controller", wide: true,
     body: controllerFields(null, sites),
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async () =>
-      (await run(() => api("api/controllers", {method: "POST", body: read()}), "Controller aggiunto: collegamento avviato")) || false}],
+      (await run(() => api("api/controllers", {method: "POST", body: read()}), "Controller aggiunto: collegamento avviato", "Aggiunta del controller")) || false}],
     onOpen: (dlg) => { read = bindControllerFields(dlg, null); },
   });
   if (result?.id) { loadSummary(); location.hash = `#impianti/c${result.id}`; }
@@ -3637,14 +3795,14 @@ async function viewConnection(el, ctrl) {
   const initial = JSON.stringify(read());
   pageGuard = {dirty: () => JSON.stringify(read()) !== initial, save: () => saveConnection(false)};
   async function saveConnection(navigate = true) {
-    const ok = await run(() => api(`api/controllers/${ctrl.id}`, {method: "PUT", body: read()}), "Controller salvato: collegamento riavviato");
+    const ok = await run(() => api(`api/controllers/${ctrl.id}`, {method: "PUT", body: read()}), "Controller salvato: collegamento riavviato", "Salvataggio del controller");
     if (ok) { pageGuard = null; loadSummary(); if (navigate) location.hash = `#impianti/c${ctrl.id}`; }
     return Boolean(ok);
   }
   form.onsubmit = (e) => { e.preventDefault(); saveConnection(); };
   $("#ctrl-del").onclick = async () => {
     if (await confirmBox("Togli Controller", `Togliere <b>${esc(ctrl.name)}</b> e le sue porte dall'app? Sul controller non cambia niente: tessere, profili di accesso e programmazione restano dove sono.`, "Togli", true) &&
-        await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller tolto dall'app")) { pageGuard = null; loadSummary(); location.hash = "#impianti"; }
+        await run(() => api(`api/controllers/${ctrl.id}`, {method: "DELETE"}), "Controller tolto dall'app", "Rimozione del controller dall'app")) { pageGuard = null; loadSummary(); location.hash = "#impianti"; }
   };
 }
 
@@ -3684,20 +3842,16 @@ async function viewController(el, ctrl, tab) {
   const errors = unmanaged + rexMissing + rewrite + (p.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${p.errors.map((x) => esc(cap(x))).join("<br>")}</div></div>` : "");
   // Le due riparazioni passano dalla stessa richiesta: ogni pulsante le fa tutte e due
   if (unmanaged || rexMissing) setTimeout(() => body.querySelectorAll("[data-manage]").forEach((button) => {
-    const label = button.textContent;
     button.onclick = async () => {
-      // Più letture e una scrittura sul controller: qualche secondo, e senza segno sembrava non succedere niente
+      // Più letture e una scrittura sul controller: qualche secondo, e senza segno sembrava non succedere niente. Il
+      // segno è il riquadro di attesa (prima la scritta «Sto Scrivendo…» sul pulsante)
       body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = true; });
-      button.textContent = "Sto Scrivendo…";
-      const r = await run(() => api("api/programming/manage", {method: "POST"}));
+      const r = await run(() => api("api/programming/manage", {method: "POST"}), "", "Scrittura della programmazione sul controller");
       if (r) {
         const done = [r.managed && `${plural(r.managed, "punto di accesso gestito", "punti di accesso gestiti")} dal controller`, r.permitted && `permesso di apertura a ${plural(r.permitted, "ingresso", "ingressi")}`].filter(Boolean);
         toast(done.length ? done.join(", ") : "Già tutto a posto");
         render();
-      } else {
-        body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = false; });
-        button.textContent = label;
-      }
+      } else body.querySelectorAll("[data-manage]").forEach((b) => { b.disabled = false; });
     };
   }));
   const appDoor = (token) => ctrl.doors.find((d) => d.door_token === token);
@@ -3973,7 +4127,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
         };
       },
       actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await saveProgramming(`api/programming/inputs/${encodeURIComponent(i.io)}`, {name: val(dlg, "name"), role: val(dlg, "role"), door: val(dlg, "door"), contact: val(dlg, "contact"), supervised: val(dlg, "supervised")}, "Ingresso salvato")) || false}]});
+        (await saveProgramming(`api/programming/inputs/${encodeURIComponent(i.io)}`, {name: val(dlg, "name"), role: val(dlg, "role"), door: val(dlg, "door"), contact: val(dlg, "contact"), supervised: val(dlg, "supervised")}, "Ingresso salvato", "Scrittura dell'ingresso sul controller")) || false}]});
     if (ok) { keep(); render(); }
   }
 
@@ -4018,7 +4172,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     if (!list.length) return true;
     const ok = await confirmBox("Scrivi sul Controller", `Queste modifiche cambiano quale lettore apre quale porta:<ul style="margin:8px 0 0;padding-left:20px">${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul><p class="hint">Se dopo il salvataggio le tessere non aprono più, annulla dallo Storico Modifiche.</p>`, "Scrivi sul Controller");
     if (!ok) return false;
-    const result = await run(() => api("api/programming/links", {method: "PUT", body: {links: pending}}), "Collegamenti scritti sul controller");
+    const result = await run(() => api("api/programming/links", {method: "PUT", body: {links: pending}}), "Collegamenti scritti sul controller", "Scrittura dei collegamenti sul controller");
     if (!result) return false;
     pageGuard = null;
     if (rerender) render();
@@ -4045,7 +4199,7 @@ const DOOR_TIME_FIELDS = [
 ];
 const configDetails = (items) => items.length ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici (${items.length})</summary>
   <div class="table-wrap"><table class="table"><tbody>${items.map((c) => `<tr><td><code>${esc(c.name)}</code></td><td><code>${esc(c.value)}</code></td></tr>`).join("")}</tbody></table></div></details>` : "";
-const saveProgramming = (path, payload, message) => run(() => api(path, {method: "PUT", body: payload}), message);
+const saveProgramming = (path, payload, message, wait) => run(() => api(path, {method: "PUT", body: payload}), message, wait);
 
 // Tempi che il controller ha per la porta (una porta appena creata può averne solo alcuni)
 const doorTimes = (d) => DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] !== undefined);
@@ -4089,7 +4243,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
     else if (b.dataset.appDel) {
       const door = appDoor(b.dataset.appDel);
       if (await confirmBox("Togli dall'App", `Togliere <b>${esc(door.name)}</b> dall'app? Spariscono anche i suoi pulsanti in Home Assistant e il collegamento al videocitofono. Sul controller non cambia niente.`, "Togli", true) &&
-          await run(() => api(`api/doors/${door.id}`, {method: "DELETE"}), "Porta tolta dall'app")) { loadSummary(); render(); }
+          await run(() => api(`api/doors/${door.id}`, {method: "DELETE"}), "Porta tolta dall'app", "Rimozione della porta dall'app")) { loadSummary(); render(); }
     } else if (b.dataset.pd) {
       const d = p.doors.find((x) => x.token === b.dataset.pd);
       const times = doorTimes(d);
@@ -4100,7 +4254,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
           const payload = {name: val(dlg, "name"), description: val(dlg, "description")};
           // Un campo vuoto lascia il tempo com'è: Number("") darebbe 0, cioè niente preallarme
           times.forEach(([k]) => { if (val(dlg, k) !== "") payload[k] = Number(val(dlg, k)); });
-          return (await saveProgramming(`api/programming/doors/${encodeURIComponent(d.token)}`, payload, "Porta aggiornata sul controller")) || false;
+          return (await saveProgramming(`api/programming/doors/${encodeURIComponent(d.token)}`, payload, "Porta aggiornata sul controller", "Scrittura della porta sul controller")) || false;
         }}]});
       if (ok) render();
     }
@@ -4134,7 +4288,7 @@ function controllerReaders(body, p, errors, doorName) {
     const ok = await modal({title: named("Lettore", r.name || r.token), body: `${field("Nome sul Controller", `<input name="name" maxlength="64" value="${esc(r.name)}">`)}
       ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(r.description)}">`)}`,
       actions: [{label: "Annulla", value: null}, {label: "Scrivi sul Controller", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await saveProgramming(`api/programming/readers/${encodeURIComponent(r.token)}`, {name: val(dlg, "name"), description: val(dlg, "description")}, "Lettore aggiornato sul controller")) || false}]});
+        (await saveProgramming(`api/programming/readers/${encodeURIComponent(r.token)}`, {name: val(dlg, "name"), description: val(dlg, "description")}, "Lettore aggiornato sul controller", "Scrittura del lettore sul controller")) || false}]});
     if (ok) render();
   };
 }
@@ -4239,7 +4393,7 @@ async function controllerStatus(body, ctrl) {
   if (zoneButton) zoneButton.onclick = async () => {
     if (!await confirmBox("Usa il Fuso di Home Assistant", `Scrivere nel controller il fuso orario di Home Assistant (<b>${esc(h.ha_time_zone)}</b>)? Fasce orarie e festività scatteranno con l'ora locale di Home Assistant.`, "Scrivi sul Controller")) return;
     zoneButton.disabled = true;
-    if (await run(() => api(`api/controllers/${ctrl.id}/time-zone`, {method: "POST"}), "Fuso orario scritto sul controller")) render();
+    if (await run(() => api(`api/controllers/${ctrl.id}/time-zone`, {method: "POST"}), "Fuso orario scritto sul controller", "Scrittura del fuso orario sul controller")) render();
     else zoneButton.disabled = false;
   };
 }
@@ -4398,7 +4552,7 @@ function controllerHistory(body, p) {
     if (!b) return;
     const c = p.changes.find((x) => x.id === Number(b.dataset.undo));
     if (await confirmBox("Annulla Modifica", `Riportare <b>${esc(c.summary)}</b> com'era prima della modifica del ${esc(fmtDateTime(c.ts))}?`, "Riporta Com'era") &&
-        await run(() => api(`api/programming/changes/${c.id}/undo`, {method: "POST"}), "Modifica annullata sul controller")) render();
+        await run(() => api(`api/programming/changes/${c.id}/undo`, {method: "POST"}), "Modifica annullata sul controller", "Annullamento della modifica sul controller")) render();
   };
 }
 
@@ -4431,7 +4585,7 @@ async function viewSites(body, data) {
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: (dlg) => ({name: val(dlg, "name"), description: val(dlg, "description")})}]});
   $("#site-new").onclick = async () => {
     const r = await nameDialog("Nuova Struttura", "Nome", "", field("Descrizione", '<input name="description" maxlength="200" placeholder="facoltativa">'));
-    if (r && await run(() => api("api/sites", {method: "POST", body: r}), "Struttura aggiunta")) { store.places = null; await loadSummary(); render(); }
+    if (r && await run(() => api("api/sites", {method: "POST", body: r}), "Struttura aggiunta", "Aggiunta della struttura")) { store.places = null; await loadSummary(); render(); }
   };
   const inside = (a) => a.controllers.length ? ` ${plural(a.controllers.length, "controller resterà", "controller resteranno")} senza area.` : "";
   body.onclick = async (e) => {
@@ -4442,20 +4596,20 @@ async function viewSites(body, data) {
     let done;
     if (b.dataset.areaNew) {
       const r = await nameDialog(`Nuova Area in ${site.name}`, "Nome dell'Area", "");
-      done = r && await run(() => api(`api/sites/${site.id}/areas`, {method: "POST", body: {name: r.name}}), "Area aggiunta");
+      done = r && await run(() => api(`api/sites/${site.id}/areas`, {method: "POST", body: {name: r.name}}), "Area aggiunta", "Aggiunta dell'area");
     } else if (b.dataset.siteEdit) {
       const r = await nameDialog("Modifica Struttura", "Nome", site.name, field("Descrizione", `<input name="description" maxlength="200" value="${esc(site.description)}">`));
-      done = r && await run(() => api(`api/sites/${site.id}`, {method: "PUT", body: r}), "Struttura salvata");
+      done = r && await run(() => api(`api/sites/${site.id}`, {method: "PUT", body: r}), "Struttura salvata", "Salvataggio della struttura");
     } else if (b.dataset.siteDel) {
       const n = site.areas.reduce((k, a) => k + a.controllers.length, 0);
       done = await confirmBox("Elimina Struttura", `Eliminare <b>${esc(site.name)}</b> con le sue aree?${n ? ` ${plural(n, "controller resterà", "controller resteranno")} senza area.` : ""} Sul controller non cambia niente.`, "Elimina", true) &&
-        await run(() => api(`api/sites/${site.id}`, {method: "DELETE"}), "Struttura eliminata");
+        await run(() => api(`api/sites/${site.id}`, {method: "DELETE"}), "Struttura eliminata", "Eliminazione della struttura");
     } else if (b.dataset.areaEdit) {
       const r = await nameDialog("Rinomina Area", "Nome dell'Area", area.name);
-      done = r && await run(() => api(`api/areas/${area.id}`, {method: "PUT", body: {name: r.name}}), "Area salvata");
+      done = r && await run(() => api(`api/areas/${area.id}`, {method: "PUT", body: {name: r.name}}), "Area salvata", "Salvataggio dell'area");
     } else if (b.dataset.areaDel) {
       done = await confirmBox("Elimina Area", `Eliminare l'area <b>${esc(area.name)}</b>?${inside(area)}`, "Elimina", true) &&
-        await run(() => api(`api/areas/${area.id}`, {method: "DELETE"}), "Area eliminata");
+        await run(() => api(`api/areas/${area.id}`, {method: "DELETE"}), "Area eliminata", "Eliminazione dell'area");
     }
     // Nomi e aree cambiati: le righe Dove e Quando delle tipologie le rileggono
     if (done) { store.places = null; await loadSummary(); render(); }
@@ -4508,13 +4662,13 @@ async function controllerCameras(body, ctrl) {
     if (b.dataset.camEdit === "ctrl") return cameraEditor(ctrl, cameras, null, true);
     if (b.dataset.camDel === "ctrl") {
       if (await confirmBox("Togli Telecamera", `Togliere la telecamera del coperchio del controller <b>${esc(ctrl.name)}</b>? Le foto già salvate restano nel registro.`, "Togli", true) &&
-          await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera: ""}}), "Telecamera tolta")) { loadSummary(); render(); }
+          await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera: ""}}), "Telecamera tolta", "Rimozione della telecamera")) { loadSummary(); render(); }
       return;
     }
     const door = ctrl.doors.find((d) => String(d.id) === (b.dataset.camEdit || b.dataset.camDel));
     if (b.id === "cam-new" || b.dataset.camEdit) return cameraEditor(ctrl, cameras, door);
     if (b.dataset.camDel && await confirmBox("Togli Telecamera", `Togliere la telecamera dalla porta <b>${esc(door.name)}</b>? Le foto già salvate restano nel registro.`, "Togli", true) &&
-        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}), "Telecamera tolta")) { loadSummary(); render(); }
+        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}), "Telecamera tolta", "Rimozione della telecamera")) { loadSummary(); render(); }
   };
 }
 async function cameraEditor(ctrl, cameras, door, forController = false) {
@@ -4539,7 +4693,7 @@ async function cameraEditor(ctrl, cameras, door, forController = false) {
       $("[name=door]", dlg).addEventListener("change", sync);
       sync();
     },
-    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, busy: "Salvataggio della telecamera", onClick: async (dlg) => {
       const choice = val(dlg, "door");
       const target = ctrl.doors.find((d) => String(d.id) === choice);
       const camera = val(dlg, "camera").trim();
@@ -4584,7 +4738,7 @@ async function controllerIntercoms(body, ctrl) {
     const door = ctrl.doors.find((d) => String(d.id) === (b.dataset.icEdit || b.dataset.icDel));
     if (b.id === "ic-new" || b.dataset.icEdit) return intercomEditor(ctrl, door);
     if (b.dataset.icDel && await confirmBox("Togli Videocitofono", `Togliere il videocitofono dalla porta <b>${esc(door.name)}</b>? Le chiamate non finiranno più nel registro.`, "Togli", true) &&
-        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}), "Videocitofono tolto")) { loadSummary(); render(); }
+        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}), "Videocitofono tolto", "Rimozione del videocitofono")) { loadSummary(); render(); }
   };
 }
 async function intercomEditor(ctrl, door) {
@@ -4600,7 +4754,7 @@ async function intercomEditor(ctrl, door) {
       <p class="hint" style="margin-top:-8px">"Apri" dal monitor o da Hik-Connect: l'app manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Disattivata: le chiamate finiscono solo nel registro.</p>
       <div class="fields-2">${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}
       ${field("Prefisso MQTT del Videocitofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}</div>`,
-    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+    actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, busy: "Salvataggio del videocitofono", onClick: async (dlg) => {
       const target = ctrl.doors.find((x) => String(x.id) === val(dlg, "door"));
       const name = val(dlg, "intercom_name").trim();
       if (!name) { toast("Scrivi il nome del videocitofono", true); return false; }
@@ -4637,7 +4791,7 @@ async function doorEditor(ctrl, door, token = "", controllerName = "") {
       <p class="hint">Telecamera e videocitofono della porta si scelgono nelle schede <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a> e <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a> del controller.</p>`,
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
       const body = doorBody(d, {name: val(dlg, "name"), ha_buttons: val(dlg, "ha_buttons")});
-      return (await run(() => api(door ? `api/doors/${door.id}` : `api/controllers/${ctrl.id}/doors`, {method: door ? "PUT" : "POST", body}), "Porta salvata")) || false;
+      return (await run(() => api(door ? `api/doors/${door.id}` : `api/controllers/${ctrl.id}/doors`, {method: door ? "PUT" : "POST", body}), "Porta salvata", "Salvataggio della porta")) || false;
     }}],
   });
   if (result) { loadSummary(); render(); }
@@ -4738,7 +4892,7 @@ async function viewBackups(body, part = "") {
   paintIcons(body);
   $("#bk-new").onclick = () => createBackup();
   if ($("#bk-verify")) $("#bk-verify").onclick = async () => {
-    const result = await run(() => api("api/backups/verify", {method: "POST"}));
+    const result = await run(() => api("api/backups/verify", {method: "POST"}), "", "Verifica dei backup");
     if (!result) return;
     toast(result.ok ? `Backup verificati: ${plural(result.backups, "backup leggibile", "backup leggibili")}` : `Verifica: ${plural(result.damaged, "backup rovinato", "backup rovinati")}`, !result.ok);
     loadSummary();
@@ -4748,8 +4902,8 @@ async function viewBackups(body, part = "") {
   $$("[data-del-index]", body).forEach((btn) => btn.onclick = async () => {
     const when = idTime(btn.dataset.delIndex);
     if (!await confirmBox("Elimina Backup", `Eliminare il backup del <b>${esc(when)}</b>? Il suo indice non si legge, quindi non si può ripristinare. Non si può annullare.`, "Elimina", true)) return;
-    if (!await run(() => api(`api/backups/${encodeURIComponent(btn.dataset.delIndex)}`, {method: "DELETE"}), "Backup eliminato")) return;
-    await run(() => api("api/backups/verify", {method: "POST"}));
+    if (!await run(() => api(`api/backups/${encodeURIComponent(btn.dataset.delIndex)}`, {method: "DELETE"}), "Backup eliminato", "Eliminazione del backup")) return;
+    await run(() => api("api/backups/verify", {method: "POST"}), "", "Verifica dei backup");
     loadSummary();
     render();
   });
@@ -4760,10 +4914,11 @@ async function viewBackups(body, part = "") {
     if ("cmp" in btn.dataset) compareBackup(b, data.backups, part);
     else if ("restore" in btn.dataset) restoreBackup(b, data, part);
     else if ("lock" in btn.dataset) {
-      if (await run(() => api(`api/backups/${b.id}/lock`, {method: "PUT", body: {locked: !b.locked}}), b.locked ? "Backup sbloccato" : "Backup bloccato: non si elimina finché non lo sblocchi")) render();
+      if (await run(() => api(`api/backups/${b.id}/lock`, {method: "PUT", body: {locked: !b.locked}}), b.locked ? "Backup sbloccato" : "Backup bloccato: non si elimina finché non lo sblocchi",
+        b.locked ? "Sblocco del backup" : "Blocco del backup")) render();
     } else if ("del" in btn.dataset) {
       if (await confirmBox("Elimina Backup", `Eliminare il backup <b>${esc(backupTitle(b))}</b> del ${esc(fmtDateTime(b.created_at))}? Non si può annullare.`, "Elimina", true) &&
-          await run(() => api(`api/backups/${b.id}`, {method: "DELETE"}), "Backup eliminato")) render();
+          await run(() => api(`api/backups/${b.id}`, {method: "DELETE"}), "Backup eliminato", "Eliminazione del backup")) render();
     }
   };
 }
@@ -4808,7 +4963,7 @@ async function viewBackupSettings(body) {
       if (!Number.isInteger(value) || value < Number(input.min) || value > Number(input.max)) { toast(`Scrivi un numero tra ${input.min} e ${input.max}`, true); undo(); return; }
     } else if (input.type === "time" && !value) { undo(); return; }
     if (value === p[key]) return;
-    const save = (confirm) => run(() => api("api/backups/policy", {method: "PUT", body: {[key]: value, confirm}}));
+    const save = (confirm) => run(() => api("api/backups/policy", {method: "PUT", body: {[key]: value, confirm}}), "", "Salvataggio delle impostazioni dei backup");
     let result = await save(false);
     if (result && !result.saved) {
       const n = result.would_remove;
@@ -4843,7 +4998,7 @@ async function viewBackupSettings(body) {
 async function createBackup() {
   const created = await modal({title: "Crea Backup Ora",
     body: field("Nome", '<input name="name" maxlength="80" placeholder="es. Prima dei lavori al piano 2">', "Facoltativo. Il backup comprende Dati Comuni e configurazione di ogni controller."),
-    actions: [{label: "Annulla", value: null}, {label: "Crea Backup", kind: "primary", submit: true, onClick: async (dlg) => (await run(() => api("api/backups", {method: "POST", body: {name: val(dlg, "name")}}))) || false}]});
+    actions: [{label: "Annulla", value: null}, {label: "Crea Backup", kind: "primary", submit: true, onClick: async (dlg) => (await run(() => api("api/backups", {method: "POST", body: {name: val(dlg, "name")}}), "", "Creazione del backup")) || false}]});
   if (!created) return;
   toast(created.errors?.length ? `Backup incompleto: ${created.errors[0]}` : `Backup creato · ${created.summary}`, Boolean(created.errors?.length));
   render();
@@ -4931,7 +5086,7 @@ async function restoreBackup(b, data, part = "") {
     actions: [{label: "Annulla", value: null}, {label: "Mostra Cosa Cambierà", kind: "primary", submit: true, onClick: async (dlg) => {
       sections = part ? RESTORE_MODES[$('[name="mode"]:checked', dlg)?.value || "porte"].sections : $$('[name="sec"]:checked', dlg).map((x) => x.value);
       if (!sections.length) { toast("Scegli almeno una voce", true); return false; }
-      return (await run(() => api(`api/backups/${b.id}/preview`, {method: "POST", body: {sections, part}}))) || false;
+      return (await run(() => api(`api/backups/${b.id}/preview`, {method: "POST", body: {sections, part}}), "", "Confronto del backup con lo stato attuale")) || false;
     }}]});
   if (!preview) return;
   const items = preview.items;
@@ -4964,8 +5119,8 @@ async function restoreBackup(b, data, part = "") {
       update();
     }});
   if (!keys) return;
-  toast(full ? "Ripristino Completo in corso: può volerci qualche decina di secondi…" : "Ripristino in corso…");
-  const result = await run(() => api(`api/backups/${b.id}/restore`, {method: "POST", body: {sections, part, keys, mqtt_password: mqttPassword}}));
+  const result = await run(() => api(`api/backups/${b.id}/restore`, {method: "POST", body: {sections, part, keys, mqtt_password: mqttPassword}}), "",
+    full ? "Ripristino Completo in corso: può volerci qualche decina di secondi" : "Ripristino dal backup in corso");
   if (!result) return;
   const title = !result.failed.length ? "Ripristino Fatto" : result.applied.length ? "Ripristino Parziale" : "Ripristino Non Riuscito";
   await modal({title, body: restoreResultHtml(result), actions: [{label: "Chiudi", value: null}]});
@@ -5076,7 +5231,7 @@ async function viewUsers(body) {
   };
   const save = (u) => async (dlg) => {
     const payload = {username: u ? u.username : val(dlg, "username"), name: val(dlg, "name"), perms: $$("[name=perm]:checked", dlg).map((x) => x.value)};
-    return (await run(() => api(u ? `api/users/${encodeURIComponent(u.username)}` : "api/users", {method: u ? "PUT" : "POST", body: payload}), "Utente salvato")) || false;
+    return (await run(() => api(u ? `api/users/${encodeURIComponent(u.username)}` : "api/users", {method: u ? "PUT" : "POST", body: payload}), "Utente salvato", "Salvataggio dell'utente")) || false;
   };
   $("#u-new").onclick = async () => {
     if (await modal({title: "Nuovo Utente", body: form(null), onOpen: bind, actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: save(null)}]})) render();
@@ -5094,7 +5249,7 @@ async function viewUsers(body) {
         if (u.username === store.me.username) location.reload(); else render();
       }
     } else if (await confirmBox("Elimina Utente", `Eliminare <b>${esc(u.name || u.username)}</b>? Se riapre l'app verrà aggiunto di nuovo con "Solo Stato".`, "Elimina", true) &&
-        await run(() => api(`api/users/${encodeURIComponent(u.username)}`, {method: "DELETE"}), "Utente eliminato")) render();
+        await run(() => api(`api/users/${encodeURIComponent(u.username)}`, {method: "DELETE"}), "Utente eliminato", "Eliminazione dell'utente")) render();
   };
 }
 // Accesso diretto di un utente: stato, computer collegati, password provvisoria, chiusura delle sessioni
@@ -5114,7 +5269,7 @@ async function directAccessBox(u, enabled) {
   const choice = await modal({title: `Accesso Diretto di ${name}`, body: info + off, actions});
   if (choice === "temporary") {
     if (d && !d.temporary && !await confirmBox("Nuova Password Provvisoria", `La password di <b>${esc(name)}</b> smette di valere e i suoi computer escono.`, "Crea")) return false;
-    const result = await run(() => api(`${path}/password`, {method: "POST"}));
+    const result = await run(() => api(`${path}/password`, {method: "POST"}), "", "Creazione della password provvisoria");
     if (!result) return false;
     await modal({title: `Password Provvisoria di ${name}`, body: `<code class="temp-pass">${esc(result.password)}</code><p class="hint" style="margin:0">Si vede solo ora. Al primo accesso va cambiata. Scade ${esc(fmtDateTime(result.expires))}.</p><p class="hint" id="tp-copy" style="margin:6px 0 0" hidden></p>`,
       actions: [{label: "Copia", onClick: async (dlg) => {
@@ -5125,9 +5280,9 @@ async function directAccessBox(u, enabled) {
       }}, {label: "Fatto", kind: "primary", value: true}]});
     return true;
   }
-  if (choice === "close") return Boolean(await run(() => api(`${path}/sessions`, {method: "DELETE"}), "Sessioni chiuse"));
+  if (choice === "close") return Boolean(await run(() => api(`${path}/sessions`, {method: "DELETE"}), "Sessioni chiuse", "Chiusura delle sessioni"));
   if (choice === "remove" && await confirmBox("Togli Accesso Diretto", `<b>${esc(name)}</b> non potrà più entrare dall'accesso diretto e i suoi computer escono.`, "Togli", true)) {
-    return Boolean(await run(() => api(`${path}/password`, {method: "DELETE"}), "Accesso diretto tolto"));
+    return Boolean(await run(() => api(`${path}/password`, {method: "DELETE"}), "Accesso diretto tolto", "Rimozione dell'accesso diretto"));
   }
   return false;
 }
@@ -5155,14 +5310,14 @@ async function viewDirectAccess(body) {
   paintIcons(body);
   const save = async () => {
     const next = {enabled: $('[data-da="enabled"]', body).value === "true"};
-    const result = await run(() => api("api/direct-access", {method: "PUT", body: next}));
+    const result = await run(() => api("api/direct-access", {method: "PUT", body: next}), "", "Salvataggio dell'accesso diretto");
     if (result && result.settings.enabled && !result.status.running) toast(`Accesso diretto non avviato: ${result.status.error}`, true);
     render();
   };
   $$("[data-da]", body).forEach((el) => { el.onchange = save; });
   if ($("#da-close", body)) $("#da-close", body).onclick = async () => {
     if (await confirmBox("Chiudi Tutte le Sessioni", "Tutti i computer dell'accesso diretto dovranno rientrare.", "Chiudi", true) &&
-        await run(() => api("api/direct-access/sessions", {method: "DELETE"}), "Sessioni chiuse")) render();
+        await run(() => api("api/direct-access/sessions", {method: "DELETE"}), "Sessioni chiuse", "Chiusura delle sessioni")) render();
   };
 }
 
@@ -5199,7 +5354,7 @@ async function importCsv(e) {
   const bytes = await file.arrayBuffer();
   let text;
   try { text = new TextDecoder("utf-8", {fatal: true}).decode(bytes); } catch (err) { text = new TextDecoder("windows-1252").decode(bytes); }
-  const preview = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: false}}));
+  const preview = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: false}}), "", "Lettura del file CSV");
   if (!preview) return;
   const table = (res) => {
     const s = res.riepilogo, ok = s.ok, updated = s.aggiornate || 0;
@@ -5209,7 +5364,7 @@ async function importCsv(e) {
   const go = await modal({title: "Anteprima Importazione", wide: true, body: table(preview),
     actions: [{label: "Annulla", value: false}, ...(preview.riepilogo.ok || preview.riepilogo.aggiornate ? [{label: [preview.riepilogo.ok ? `Importa ${preview.riepilogo.ok}` : "", preview.riepilogo.aggiornate ? `Aggiorna ${preview.riepilogo.aggiornate}` : ""].filter(Boolean).join(" e "), kind: "primary", value: true}] : [])]});
   if (!go) return;
-  const result = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: true}}));
+  const result = await run(() => api("api/import/persons", {method: "POST", body: {csv: text, apply: true}}), "", "Importazione delle persone");
   if (result) await modal({title: "Importazione Completata", wide: true, body: table(result), actions: [{label: "Chiudi", kind: "primary", value: true}]});
 }
 
