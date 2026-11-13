@@ -10,14 +10,20 @@ chi ha i permessi tecnici i testi restano quelli di sempre.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable
 
 # Permessi tecnici: chi ne ha uno configura l'impianto o i backup, e legge i testi di sempre
 TECHNICAL = ("impianti", "backup")
-# Parole che chi entra così non deve leggere. «HA» solo maiuscolo («ha» è il verbo), «ingress» non «ingresso»
+# Parole che chi entra così non deve leggere, solo come parole intere: «Supervisore» e «ingresso» sono altro. «HA»
+# solo maiuscolo («ha» è il verbo)
 FORBIDDEN = re.compile(
-    r"home[ -]?assistant|(?-i:\bHA\b)|mqtt|broker|mosquitto|\badd-?on\b|supervisor|\bingress\b|\bintegrazion[ei]\b",
+    r"\bhome[ -]?assistant\b|(?-i:\bHA\b)|\bmqtt\b|\bbroker\b|\bmosquitto\b|\badd-?on\b|\bsupervisor\b|\bingress\b"
+    r"|\bintegrazion[ei]\b",
     re.IGNORECASE,
 )
+# Testi scritti dagli utenti (nomi di persone, ditte, tipologie, porte…) che possono comparire in un messaggio: una
+# lista, o una funzione che la legge solo quando serve
+Names = Iterable[str] | Callable[[], Iterable[str]]
 # Soluzione tecnica: per loro c'è l'amministratore
 ASK_ADMIN = "avvisa l'amministratore dell'impianto"
 # Errore che anche così parlerebbe di Home Assistant (un testo nuovo, non previsto qui sotto)
@@ -36,15 +42,47 @@ def technical(user) -> bool:
     return any(user.can(perm) for perm in TECHNICAL)
 
 
-def forbidden(text: str) -> bool:
-    return bool(FORBIDDEN.search(text or ""))
+def forbidden(text: str, names: Names = ()) -> bool:
+    """Il testo nomina Home Assistant e simili. Una parola vietata dentro un testo scritto dagli utenti (names) non
+    conta: «la tessera è già registrata a nome VAN NAM HA», «esiste già la tipologia Broker Assicurazioni». I nomi si
+    leggono solo se nel testo c'è una parola vietata."""
+    text = text or ""
+    if not FORBIDDEN.search(text):
+        return False
+    for name in _masks(names() if callable(names) else names):
+        text = text.replace(name, " ")
+    return bool(FORBIDDEN.search(text))
 
 
-def plain_text(text: str, fallback: str = NEUTRAL_ERROR) -> str:
-    """Il testo senza Home Assistant: le frasi note riscritte; se ne resta una parola, fallback al posto di tutto."""
+def _masks(names: Iterable[str]) -> list[str]:
+    """I nomi da non contare, dal più lungo: solo quelli con una parola vietata e anche altro. Un nome fatto solo di
+    una parola vietata («MQTT», «HA») non si distingue dalla parola tecnica, e resta vietato."""
+    found = {n for n in names if n and FORBIDDEN.search(n) and re.search(r"\w", FORBIDDEN.sub("", n))}
+    return sorted(found, key=len, reverse=True)
+
+
+def once(read: Callable[[], Iterable[str]]) -> Callable[[], list[str]]:
+    """I nomi scritti dagli utenti letti al primo bisogno e poi tenuti, per una risposta; se non si leggono, nessuno
+    (il testo con una parola vietata resta sostituito)."""
+    kept: list[list[str]] = []
+
+    def names() -> list[str]:
+        if not kept:
+            try:
+                kept.append([n for n in read() if n])
+            except Exception:  # noqa: BLE001 - senza nomi il testo si sostituisce come prima
+                kept.append([])
+        return kept[0]
+
+    return names
+
+
+def plain_text(text: str, fallback: str = NEUTRAL_ERROR, names: Names = ()) -> str:
+    """Il testo senza Home Assistant: le frasi note riscritte; se ne resta una parola (fuori dai nomi scritti dagli
+    utenti), fallback al posto di tutto."""
     for pattern, replacement in PHRASES:
         text = pattern.sub(replacement, text)
-    return fallback if forbidden(text) else text
+    return fallback if forbidden(text, names) else text
 
 
 def plain_source(source: str) -> str:

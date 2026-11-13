@@ -18,7 +18,7 @@ from app.backup_copy import STARTED_EMPTY
 from app.config import MqttSettings
 from app.direct import mark_direct
 from app.notifications import EVENTS_PLAIN, recovery_hint, recovery_title
-from app.plain import ASK_ADMIN, NEUTRAL_ERROR, plain_source, plain_text
+from app.plain import ASK_ADMIN, NEUTRAL_ERROR, once, plain_source, plain_text
 from app.service import ServiceError
 from app.vapix import VapixError
 
@@ -338,6 +338,76 @@ def test_error_messages_without_home_assistant(plant, monkeypatch):
     assert not says(detail)
 
 
+def test_names_written_by_users_are_not_home_assistant(plant, monkeypatch):
+    """«Supervisore», «VAN NAM HA», «Broker Assicurazioni», «Corso di Integrazione»: nomi scritti dagli utenti, non Home
+    Assistant. Per il personale dall'accesso diretto messaggi d'errore, notifiche e registro restano quelli veri, come
+    da Home Assistant. Prima il filtro trovava «supervisor» dentro «Supervisore» e «HA» dentro il cognome: l'errore
+    diventava «operazione non riuscita: avvisa l'amministratore dell'impianto» e la Tessera in Scadenza restava senza
+    testo."""
+    ingress, site, admin, app = plant
+    soon = (datetime.now(tz=UTC) + timedelta(days=3)).isoformat(timespec="seconds")
+    people = (
+        {"first_name": "Supervisore", "last_name": "Notte", "card": "04aa11bb", "valid_to": soon},
+        {"first_name": "VAN NAM", "last_name": "HA", "card": "04cc22dd", "valid_to": soon, "company": "Broker Srl"},
+    )
+    for body in people:
+        assert ingress.post("/api/persons", json=body, headers=ADMIN).status_code == 200
+
+    def both(method: str, url: str, body: dict) -> tuple[str, str]:
+        staff = site.request(method, url, json=body, headers=SAFE).json()["detail"]
+        home = ingress.request(method, url, json=body, headers={**OPERATOR, **SAFE}).json()["detail"]
+        return staff, home
+
+    # Tessera già registrata: il motivo vero, con il nome
+    staff, home = both("POST", "/api/persons", {"first_name": "Mario", "card": "04aa11bb"})
+    assert staff == home == "la tessera 04aa11bb è già registrata a nome Supervisore Notte"
+    staff, home = both("POST", "/api/persons", {"first_name": "Mario", "card": "04cc22dd"})
+    assert staff == home == "la tessera 04cc22dd è già registrata a nome VAN NAM HA"
+    # Tipologia che esiste già
+    door = app.state.doors[0]["id"]
+    rule = {"target": "door", "target_id": door, "schedule": "standard_always"}
+    for name in ("Supervisori", "Corso di Integrazione", "Corso HA Base"):
+        body = {"name": name, "color": "blue", "valid_days": 0, "description": "", "rules": [rule]}
+        assert ingress.post("/api/categories", json=body, headers=ADMIN).status_code == 200
+        staff, home = both("POST", "/api/categories", body)
+        assert staff == home == f"esiste già la tipologia {name}"
+    # Notifiche: Tessera in Scadenza con il nome della persona
+    expiring = sorted(i["text"] for i in site.get("/api/notifications").json()["items"] if i["type"] == "expiring")
+    assert [t.split(" · ")[0] for t in expiring] == ["Supervisore Notte", "VAN NAM HA"]
+    full = ingress.get("/api/notifications", headers=OPERATOR).json()["items"]
+    assert expiring == sorted(i["text"] for i in full if i["type"] == "expiring")
+    # Del testo di una notifica si toglie solo la parte che nomina Home Assistant, non il nome del controller
+    state = app.state
+    state.db._execute("UPDATE controllers SET name = 'Quadro HA Nord'")
+    row = {"id": 1, "name": "Quadro HA Nord", "unreachable": True, "error": "errore di Home Assistant"}
+    monkeypatch.setattr(main, "_controllers_health", lambda state: [row])
+    [down] = [i for i in site.get("/api/notifications").json()["items"] if i["type"] == "controller"]
+    assert down["text"] == "Quadro HA Nord"
+    [home] = [
+        i for i in ingress.get("/api/notifications", headers=OPERATOR).json()["items"] if i["type"] == "controller"
+    ]
+    assert home["text"] == "Quadro HA Nord · errore di Home Assistant"
+    # Registro: un dettaglio con il nome di una porta resta com'è
+    state.db._execute("UPDATE doors SET name = 'Ingresso HA Ovest' WHERE id = ?", (door,))
+    now = datetime.now(tz=UTC).isoformat(timespec="seconds")
+    token = state.doors[0]["door_token"]
+    state.db.add_event(ts=now, kind="allarme", door=token, detail="porta Ingresso HA Ovest aperta troppo a lungo")
+    state.db.add_event(ts=now, kind="allarme", door=token, detail="pulsante Supervisore premuto")
+    details = [e["detail"] for e in site.get("/api/events").json() if e["kind"] == "allarme"]
+    assert details == ["pulsante Supervisore premuto", "porta Ingresso HA Ovest aperta troppo a lungo"]
+    # Le parole di Home Assistant scritte dall'app restano coperte anche accanto a un nome
+    for error in (
+        ServiceError("tessera di VAN NAM HA non scritta: broker non collegato"),
+        ServiceError("tessera non scritta: broker MQTT di Home Assistant non collegato"),
+    ):
+
+        async def fail(*args, error=error, **kwargs):
+            raise error
+
+        monkeypatch.setattr(state.service, "create_person", fail)
+        assert site.post("/api/persons", json={"first_name": "X"}, headers=SAFE).json()["detail"] == NEUTRAL_ERROR
+
+
 def test_direct_access_pages_without_home_assistant(plant, monkeypatch):
     ingress, site, admin, app = plant
     stranger = TestClient(mark_direct(app), base_url="http://hotel.lan:8100")
@@ -388,6 +458,30 @@ def test_plain_text_and_source():
     assert plain_text("serve il broker", "") == ""
     assert plain_text("ha suonato") == "ha suonato"
     assert plain_text("HA spento") == NEUTRAL_ERROR
+    # Parole intere: «Supervisore», «ingresso», «brokeraggio» non sono Home Assistant
+    assert (
+        plain_text("pulsante Supervisore, ingresso del brokeraggio") == "pulsante Supervisore, ingresso del brokeraggio"
+    )
+    assert plain_text("Supervisor di Home Assistant") == NEUTRAL_ERROR
+    assert plain_text("core-mosquitto spento") == NEUTRAL_ERROR
+    # Un nome scritto dagli utenti non conta, le parole dell'app fuori dal nome sì
+    names = ["VAN NAM HA", "Broker Srl", "HA", "on", "MQTT"]
+    assert (
+        plain_text("registrata a nome VAN NAM HA (Broker Srl)", names=names)
+        == "registrata a nome VAN NAM HA (Broker Srl)"
+    )
+    assert plain_text("VAN NAM HA: broker spento", names=names) == NEUTRAL_ERROR
+    # Un nome fatto solo di una parola vietata non si distingue dalla parola tecnica; un nome corto non spezza add-on
+    assert plain_text("Tipologia HA", names=names) == NEUTRAL_ERROR
+    assert plain_text("MQTT spento", names=names) == NEUTRAL_ERROR
+    assert plain_text("riavvia l'add-on", names=names) == NEUTRAL_ERROR
+    # I nomi si leggono solo se c'è una parola vietata, una volta sola
+    reads = []
+    lazy = once(lambda: reads.append(1) or ["VAN NAM HA"])
+    assert plain_text("tutto bene", names=lazy) == "tutto bene" and reads == []
+    assert plain_text("VAN NAM HA", names=lazy) == "VAN NAM HA"
+    assert plain_text("Ciao VAN NAM HA", names=lazy) == "Ciao VAN NAM HA"
+    assert reads == [1]
     assert plain_source("Home Assistant") == "Apertura Remota"
     assert plain_source("Automazione (Home Assistant)") == "Automazione (apertura remota)"
     assert plain_source("Pulsante Portineria") == "Pulsante Portineria"

@@ -20,7 +20,7 @@ from .backup_copy import RESTORED, STARTED_EMPTY
 from .db import Database
 from .ha import MIN_FREE_SPACE
 from .live_events import FAULT_AFTER
-from .plain import ASK_ADMIN, forbidden, plain_source, plain_text
+from .plain import ASK_ADMIN, Names, forbidden, once, plain_source, plain_text
 from .service import CASING_OPEN, TILTED, ServiceError, plural
 
 _LOGGER = logging.getLogger(__name__)
@@ -825,6 +825,8 @@ class NotificationService:
         seen = self.forget_resolved(current, unknown)
         hidden = {k for k, perm in VISIBILITY.items() if perms is not None and perm not in perms}
         no_log = perms is not None and "registro" not in perms
+        # Nomi di persone, porte e controller nei testi: letti solo se un testo ha una parola vietata
+        names = once(self.db.written_names)
         items = []
         for i in current:
             if i["type"] in hidden:
@@ -835,7 +837,7 @@ class NotificationService:
                 fault=i.get("fault", i["type"] in FAULT_TYPES),
             )
             if plain:
-                item = _plain_item(item, i.get("plain"))
+                item = _plain_item(item, i.get("plain"), names)
                 if item is None:
                     continue
             if no_log:
@@ -849,15 +851,18 @@ class NotificationService:
         }
 
 
-def _plain_item(item: dict, alternative: dict | bool | None) -> dict | None:
+def _plain_item(item: dict, alternative: dict | bool | None, names: Names = ()) -> dict | None:
     """La notifica per chi entra dall'accesso diretto senza permessi tecnici; None se non la deve vedere. alternative:
-    False la nasconde, un dizionario ne cambia titolo e testo. Un testo che nomina ancora Home Assistant (un errore del
-    controller o della telecamera mai visto) si toglie, un titolo nasconde la notifica."""
+    False la nasconde, un dizionario ne cambia titolo e testo. Del testo si toglie solo la parte che nomina ancora Home
+    Assistant (un errore del controller o della telecamera mai visto), non il nome della persona, della porta o del
+    controller che la precede («Quadro · …»): i nomi scritti dagli utenti (names) non contano mai, anche con «HA» o
+    «Broker» dentro. Un titolo che nomina Home Assistant nasconde la notifica."""
     if alternative is False:
         return None
     item = {**item, **(alternative or {})}
     for key in ("text", "door", "snapshot_error"):
-        item[key] = plain_text(item.get(key) or "", "")
+        parts = (plain_text(part, "", names) for part in (item.get(key) or "").split(" · "))
+        item[key] = " · ".join(part for part in parts if part)
     return None if forbidden(item["title"]) else item
 
 

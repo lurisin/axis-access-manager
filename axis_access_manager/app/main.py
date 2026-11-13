@@ -11,6 +11,7 @@ import os
 import sqlite3
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -85,7 +86,7 @@ from .notifications import (
     recovery_hint,
     recovery_title,
 )
-from .plain import ASK_ADMIN, plain_text, technical
+from .plain import ASK_ADMIN, once, plain_text, technical
 from .presa_in_carico import confronto
 from .programming import (
     CONTACTS,
@@ -505,8 +506,18 @@ def hides_home_assistant(request: Request) -> bool:
 
 
 def _say(request: Request, text: str) -> str:
-    """Messaggio del server per questa richiesta: senza Home Assistant per chi non lo deve leggere."""
-    return plain_text(text) if hides_home_assistant(request) else text
+    """Messaggio del server per questa richiesta: senza Home Assistant per chi non lo deve leggere. I nomi scritti
+    dagli utenti («la tessera è già registrata a nome VAN NAM HA») restano come sono."""
+    return plain_text(text, names=_written_names(request)) if hides_home_assistant(request) else text
+
+
+def _written_names(request: Request) -> Callable[[], list[str]]:
+    """Nomi scritti dagli utenti (vedi Database.written_names), letti dal database solo se un testo della risposta ha
+    una parola vietata, e una volta sola per richiesta."""
+    names = getattr(request.state, "written_names", None)
+    if names is None:
+        names = request.state.written_names = once(lambda: request.app.state.db.written_names())
+    return names
 
 
 def need(*perms: str, any_of: bool = False) -> Any:
@@ -3148,13 +3159,16 @@ def _events_out(request: Request, events: list[dict]) -> list[dict]:
     chi ha aperto o provato ad aprire (source) resta com'è, come nel registro di tutti."""
     if not hides_home_assistant(request):
         return events
+    # Anche i nomi delle persone salvati negli eventi, di chi nel frattempo è stato eliminato
+    saved = _written_names(request)
+    names = once(lambda: [*saved(), *(e.get("person_name") or "" for e in events)])
     result = []
     for event in events:
         event = dict(event)
         if event.get("detail"):
-            event["detail"] = plain_text(event["detail"], f"dettaglio tecnico: {ASK_ADMIN}")
+            event["detail"] = plain_text(event["detail"], f"dettaglio tecnico: {ASK_ADMIN}", names)
         if event.get("snapshot_error"):
-            event["snapshot_error"] = plain_text(event["snapshot_error"], "foto non riuscita")
+            event["snapshot_error"] = plain_text(event["snapshot_error"], "foto non riuscita", names)
         result.append(event)
     return result
 

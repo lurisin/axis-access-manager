@@ -1332,6 +1332,32 @@ class Database:
     def all_persons(self) -> list[dict]:
         return self._query("SELECT * FROM persons")
 
+    def written_names(self) -> list[str]:
+        """Testi scritti dagli utenti che compaiono nei messaggi: persone (nome, cognome, ditta, referente, matricola),
+        Codici Stampati, tipologie, festività, porte, citofoni, controller, strutture, aree, ingressi e utenti. Per
+        plain.py: una parola come «HA» o «Broker» dentro un nome non è Home Assistant."""
+        columns = (
+            ("persons", "name"),
+            ("persons", "first_name"),
+            ("persons", "last_name"),
+            ("persons", "company"),
+            ("persons", "referent"),
+            ("persons", "employee_id"),
+            ("cards", "printed_code"),
+            ("categories", "name"),
+            ("holidays", "name"),
+            ("doors", "name"),
+            ("doors", "intercom_name"),
+            ("controllers", "name"),
+            ("sites", "name"),
+            ("areas", "name"),
+            ("controller_inputs", "name"),
+            ("app_users", "name"),
+            ("app_users", "username"),
+        )
+        sql = " UNION ".join(f"SELECT {column} AS v FROM {table} WHERE {column} != ''" for table, column in columns)
+        return [row["v"] for row in self._query(sql)]
+
     def profile_usage(self) -> dict[str, int]:
         """Numero di persone per gruppo."""
         rows = self._query(
