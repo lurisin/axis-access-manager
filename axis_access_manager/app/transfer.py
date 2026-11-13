@@ -86,10 +86,13 @@ def _card_text(number: str) -> str:
 
 
 def _contacts(person: dict) -> list[str]:
-    """Telefono ed email per il file esportato: un telefono di sole cifre come formula di testo, come le tessere, se no
-    il foglio di calcolo toglie lo zero iniziale."""
+    """Telefono ed email per il file esportato. Il telefono sempre come formula di testo (="..."), come le tessere,
+    perché il foglio di calcolo lo mostri com'è: se no toglie lo zero iniziale, prende «06.123.456» per un numero con
+    il punto delle migliaia e lascia in vista l'apostrofo davanti a «+39 …». Il telefono non ha virgolette (vedi
+    service.normalize_phone), che chiuderebbero il testo della formula."""
     phone = person.get("phone") or ""
-    return [f'="{phone}"' if phone.isdigit() else _text(phone), _text(person.get("email") or "")]
+    shown = f'="{phone}"' if phone and '"' not in phone else _text(phone)
+    return [shown, _text(person.get("email") or "")]
 
 
 def events_csv(events: list[dict], doors: dict[str, str] | None = None) -> str:

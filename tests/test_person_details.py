@@ -818,27 +818,34 @@ async def test_exported_file_has_phone_and_email_and_imports_as_before(service, 
         "", "04aa", "admin", first_name="Mario", last_name="Rossi", phone="0612345678", email="mario@example.it"
     )
     anna = await service.create_person("", "", "admin", first_name="Anna", last_name="Maria Bianchi", phone=PHONE)
+    await service.create_person("", "", "admin", first_name="Ugo", last_name="Neri", phone="06.123.456")
+    await service.create_person("", "", "admin", first_name="Ada", last_name="Neri", phone="(06) 123-4567")
     text = persons_csv(db.list_persons(), {"profilo_sempre": "Sempre"}, db.last_accesses())
-    lines = text.lstrip("﻿").splitlines()
+    lines = text.lstrip("\ufeff").splitlines()
     assert lines[0].split(";")[-3:] == ["ultimo_accesso", "telefono", "email"]
-    # Telefono di sole cifre come testo (lo zero iniziale resta), quello con il + protetto con l'apostrofo
-    assert lines[2].endswith(';"=""0612345678""";mario@example.it')
-    assert lines[1] == f"Anna Maria Bianchi;;;;;;;;;;'{PHONE};"
+    # Ogni telefono come formula di testo, perché il foglio di calcolo lo mostri com'è: lo zero iniziale resta, il + non
+    # ha davanti l'apostrofo che resterebbe in vista, «06.123.456» non diventa il numero 6123456
+    by_name = {line.split(";")[0]: line for line in lines[1:]}
+    assert by_name["Mario Rossi"].endswith(';"=""0612345678""";mario@example.it')
+    assert by_name["Anna Maria Bianchi"] == f'Anna Maria Bianchi;;;;;;;;;;"=""{PHONE}""";'
+    assert by_name["Ugo Neri"] == 'Ugo Neri;;;;;;;;;;"=""06.123.456""";'
+    assert by_name["Ada Neri"] == 'Ada Neri;;;;;;;;;;"=""(06) 123-4567""";'
     rows = {row["nome"]: row for row in read_import(text)}
     assert rows["Mario Rossi"]["telefono"] == "0612345678" and rows["Anna Maria Bianchi"]["telefono"] == PHONE
+    assert (rows["Ugo Neri"]["telefono"], rows["Ada Neri"]["telefono"]) == ("06.123.456", "(06) 123-4567")
 
     # Reimportato com'è: niente da fare; telefono ed email del file non contano
     result = await import_persons(service, text, GROUPS, "admin", apply=False)
-    assert result["riepilogo"] == {"righe": 2, "ok": 0, "aggiornate": 0, "saltate": 2, "errori": 0}
+    assert result["riepilogo"] == {"righe": 4, "ok": 0, "aggiornate": 0, "saltate": 4, "errori": 0}
     changed = text.replace("mario@example.it", "altro@example.it").replace("0612345678", "0698765432")
     result = await import_persons(service, changed, GROUPS, "admin", apply=True)
-    assert result["riepilogo"]["saltate"] == 2
+    assert result["riepilogo"]["saltate"] == 4
     mario = next(p for p in db.all_persons() if p["name"] == "Mario Rossi")
     assert (mario["phone"], mario["email"]) == ("0612345678", "mario@example.it")
     # Una persona nuova dal file: il nome completo diviso al primo spazio, telefono ed email non si importano
     await service.delete_person(anna["id"], "admin")
     result = await import_persons(service, text, GROUPS, "admin", apply=True)
-    assert [r["esito"] for r in result["righe"]] == ["ok", "saltata"]
+    assert sorted(r["esito"] for r in result["righe"]) == ["ok", "saltata", "saltata", "saltata"]
     again = next(p for p in db.all_persons() if p["name"] == "Anna Maria Bianchi")
     assert (again["first_name"], again["last_name"], again["phone"]) == ("Anna", "Maria Bianchi", "")
     assert_invariant(db)

@@ -257,7 +257,7 @@ File con separatore `;` o `,`, in UTF-8 o nel formato ANSI (Windows-1252) che Ex
 
 Il modo più semplice per una modifica in blocco: esporta le persone con **Persone CSV** (Impostazioni → Generale), cambia le colonne nel foglio di calcolo e reimporta il file. Una persona con più tessere ha una riga per tessera, e le righe devono avere gli stessi valori; una persona senza tessere ha una riga con la tessera vuota. Il nome non si cambia dal file.
 
-Il file esportato ha le colonne dell'importazione e in fondo `ultimo_accesso; telefono; email` (un telefono di sole cifre scritto come `="0612345678"`, per non perdere lo zero iniziale). L'importazione ignora queste tre colonne: il file esportato si reimporta com'è, e un telefono o un'email cambiati nel file non cambiano niente nell'app.
+Il file esportato ha le colonne dell'importazione e in fondo `ultimo_accesso; telefono; email` (il telefono scritto come `="+39 333 1234567"`, perché il foglio di calcolo lo mostri com'è: altrimenti toglierebbe lo zero iniziale, leggerebbe «06.123.456» come un numero e lascerebbe un apostrofo davanti al +). L'importazione ignora queste tre colonne: il file esportato si reimporta com'è, e un telefono o un'email cambiati nel file non cambiano niente nell'app.
 
 ## Eventi in diretta
 
