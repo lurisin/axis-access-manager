@@ -17,9 +17,11 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
@@ -83,6 +85,7 @@ from .notifications import (
     recovery_hint,
     recovery_title,
 )
+from .plain import ASK_ADMIN, plain_text, technical
 from .presa_in_carico import confronto
 from .programming import (
     CONTACTS,
@@ -491,13 +494,29 @@ def request_user(request: Request) -> str:
     return current_user(request).label
 
 
+def hides_home_assistant(request: Request) -> bool:
+    """Chi entra dall'accesso diretto senza i permessi tecnici (Impianti o Backup) non legge mai di Home Assistant, MQTT
+    e add-on (vedi plain.py). Lo dice la richiesta stessa: il server da cui arriva e l'utente della sua sessione, mai
+    un'intestazione o un parametro del browser. Prima del login (nessun utente) vale per tutti."""
+    if not is_direct(request):
+        return False
+    user = getattr(request.state, "user", None)
+    return user is None or not technical(user)
+
+
+def _say(request: Request, text: str) -> str:
+    """Messaggio del server per questa richiesta: senza Home Assistant per chi non lo deve leggere."""
+    return plain_text(text) if hides_home_assistant(request) else text
+
+
 def need(*perms: str, any_of: bool = False) -> Any:
     """Dipendenza: l'utente deve avere tutti i permessi indicati (o almeno uno con any_of)."""
 
     def check(request: Request) -> AppUser:
         user = current_user(request)
         allowed = any(user.can(p) for p in perms) if any_of else user.can(*perms)
-        if not allowed and ADMIN in perms and is_direct(request):
+        # Senza permessi tecnici il messaggio di sempre sul permesso che manca, senza Home Assistant
+        if not allowed and ADMIN in perms and is_direct(request) and not hides_home_assistant(request):
             raise HTTPException(status_code=403, detail="si fa solo dall'app dentro Home Assistant")
         if not allowed:
             # Le descrizioni contengono virgole: ognuna tra virgolette, separate dal punto e virgola
@@ -845,22 +864,30 @@ def create_app(
     async def login_required(request: Request, err: LoginRequired) -> JSONResponse:
         return JSONResponse({"detail": DIRECT_LOGIN, "login": True}, status_code=401)
 
+    # Tutti i messaggi d'errore passano da _say: senza Home Assistant per chi entra dall'accesso diretto senza
+    # permessi tecnici
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, err: StarletteHTTPException) -> Response:
+        if isinstance(err.detail, str) and hides_home_assistant(request):
+            err = StarletteHTTPException(err.status_code, _say(request, err.detail), err.headers)
+        return await http_exception_handler(request, err)
+
     @app.exception_handler(DirectError)
     async def direct_error(request: Request, err: DirectError) -> JSONResponse:
-        return JSONResponse({"detail": str(err)}, status_code=err.status)
+        return JSONResponse({"detail": _say(request, str(err))}, status_code=err.status)
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, err: ServiceError) -> JSONResponse:
-        return JSONResponse({"detail": str(err)}, status_code=400)
+        return JSONResponse({"detail": _say(request, str(err))}, status_code=400)
 
     @app.exception_handler(PersonChanged)
     async def person_changed(request: Request, err: PersonChanged) -> JSONResponse:
         # Niente è stato modificato: l'interfaccia rilegge la scheda della persona e mostra il motivo
-        return JSONResponse({"detail": str(err)}, status_code=409)
+        return JSONResponse({"detail": _say(request, str(err))}, status_code=409)
 
     @app.exception_handler(UserError)
     async def user_error(request: Request, err: UserError) -> JSONResponse:
-        return JSONResponse({"detail": str(err)}, status_code=400)
+        return JSONResponse({"detail": _say(request, str(err))}, status_code=400)
 
     @app.exception_handler(VapixError)
     async def vapix_error(request: Request, err: VapixError) -> JSONResponse:
@@ -868,7 +895,9 @@ def create_app(
         # "il controller non risponde", "credenziali del controller…": il controller è già nominato.
         # unreachable: nessuna risposta, l'interfaccia propone di riprovare
         detail = text if "controller" in text else f"errore del controller: {text}"
-        return JSONResponse({"detail": detail, "unreachable": isinstance(err, ControllerUnreachable)}, 502)
+        return JSONResponse(
+            {"detail": _say(request, detail), "unreachable": isinstance(err, ControllerUnreachable)}, 502
+        )
 
     @app.exception_handler(sqlite3.Error)
     async def database_error(request: Request, err: sqlite3.Error) -> JSONResponse:
@@ -880,11 +909,15 @@ def create_app(
         detail = f"{error_reason(err)}: libera spazio"
         if request.method != "GET":
             detail = f"{error_reason(err)}: la modifica non è stata salvata, libera spazio e riprova"
+        if hides_home_assistant(request):
+            # Liberare spazio è un lavoro tecnico: senza permessi tecnici si avvisa l'amministratore
+            saved = "" if request.method == "GET" else "la modifica non è stata salvata, "
+            detail = f"{error_reason(err)}: {saved}{ASK_ADMIN}"
         return JSONResponse({"detail": detail}, status_code=503)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, err: RequestValidationError) -> JSONResponse:
-        return JSONResponse({"detail": _validation_text(list(err.errors()))}, status_code=422)
+        return JSONResponse({"detail": _say(request, _validation_text(list(err.errors())))}, status_code=422)
 
     @app.get("/")
     async def index() -> FileResponse:
@@ -910,6 +943,8 @@ def create_app(
             "time_zone": ha_time_zone(),
             # Accesso diretto: pagina aperta fuori da Home Assistant, password dell'utente e se è provvisoria
             "direct": is_direct(request),
+            # Senza permessi tecnici dall'accesso diretto la pagina non nomina Home Assistant, MQTT e add-on (plain.py)
+            "hide_home_assistant": hides_home_assistant(request),
             "has_password": password is not None,
             "must_change": bool(password and password["must_change"]) and is_direct(request),
         }
@@ -919,6 +954,16 @@ def create_app(
         """Stato di collegamenti e integrazioni; controller=false evita di interrogare il controller."""
         state = request.app.state
         cfg = state.settings
+        if hides_home_assistant(request):
+            # Impostazioni → Generale dall'accesso diretto con il solo permesso Importa ed Esporta: le opzioni che la
+            # pagina mostra, senza Home Assistant, broker e database dell'add-on
+            return {
+                "options": {
+                    "default_group": state.service.default_group,
+                    "event_retention_days": cfg.event_retention_days,
+                },
+                "now": _now(),
+            }
         return {
             "controller": await _controller_status(state.controller, cfg, state.db.all_controller_inputs())
             if controller
@@ -1085,7 +1130,9 @@ def create_app(
             # Nomi e passaggi solo a chi può vedere anagrafica e registro
             "expiring": expiring if user.can("persone") else [],
             # Con il Codice Stampato di adesso delle tessere, per il Dettaglio Evento
-            "recent": db.with_printed_codes(db.list_events(limit=8)) if user.can("registro") else [],
+            "recent": _events_out(request, db.with_printed_codes(db.list_events(limit=8)))
+            if user.can("registro")
+            else [],
             "backup": await asyncio.to_thread(state.backups.overview) if user.can("backup") else None,
             "system": {
                 # Controller raggiungibile dall'add-on (None: non ancora noto)
@@ -1346,7 +1393,7 @@ def create_app(
             door=door,
         )
         # Codice Stampato di adesso delle tessere della pagina: una query per tutta la pagina
-        return db.with_printed_codes(events)
+        return _events_out(request, db.with_printed_codes(events))
 
     @app.get("/api/events/count", dependencies=[need("registro")])
     async def count_events(
@@ -1375,7 +1422,7 @@ def create_app(
         event = request.app.state.db.event_row(event_id)
         if not event:
             raise HTTPException(404, "evento non trovato")
-        return request.app.state.db.with_printed_codes([event])[0]
+        return _events_out(request, request.app.state.db.with_printed_codes([event]))[0]
 
     @app.get("/api/events/{event_id}/snapshot", dependencies=[need("registro")])
     async def snapshot(event_id: int, request: Request) -> Response:
@@ -1698,7 +1745,10 @@ def create_app(
             # manomissione senza porta (coperchio aperto, controller inclinato): riguarda il controller
             door_filter = config["door_token"] + ("," if len(state.doors) == 1 else "")
             listed = state.db.list_events(door=door_filter, limit=50)
-            events = state.db.with_printed_codes([e for e in listed if e["door"] or e["kind"] != "manomissione"][:15])
+            events = _events_out(
+                request,
+                state.db.with_printed_codes([e for e in listed if e["door"] or e["kind"] != "manomissione"][:15]),
+            )
         return {
             **door,
             "controller": {
@@ -1711,7 +1761,7 @@ def create_app(
             "readers": readers,
             "groups": groups,
             "events": events,
-            "errors": errors,
+            "errors": [_say(request, e) for e in errors],
         }
 
     @app.post("/api/sites", dependencies=[need("impianti")])
@@ -3078,8 +3128,28 @@ def _notification_listing(request: Request) -> dict:
     user = current_user(request)
     state = request.app.state
     return state.notifications.listing(
-        _current_notifications(state), None if user.can("utenti") else user.perms, _unknown_faults(state)
+        _current_notifications(state),
+        None if user.can("utenti") else user.perms,
+        _unknown_faults(state),
+        plain=hides_home_assistant(request),
     )
+
+
+def _events_out(request: Request, events: list[dict]) -> list[dict]:
+    """Eventi del registro per questa richiesta. Senza permessi tecnici dall'accesso diretto dettaglio e motivo della
+    foto mancante senza Home Assistant (un'apertura da Home Assistant non eseguita, una telecamera che non risponde):
+    chi ha aperto o provato ad aprire (source) resta com'è, come nel registro di tutti."""
+    if not hides_home_assistant(request):
+        return events
+    result = []
+    for event in events:
+        event = dict(event)
+        if event.get("detail"):
+            event["detail"] = plain_text(event["detail"], f"dettaglio tecnico: {ASK_ADMIN}")
+        if event.get("snapshot_error"):
+            event["snapshot_error"] = plain_text(event["snapshot_error"], "foto non riuscita")
+        result.append(event)
+    return result
 
 
 def _intercom_status(intercom: IntercomBridge) -> dict:

@@ -350,7 +350,8 @@ def host_problem(host: str) -> str:
         pass
     if "." not in name or name.lower().endswith(LOCAL_SUFFIXES):
         return ""
-    return "indirizzo non accettato: apri l'app con l'indirizzo IP di Home Assistant"
+    # Si legge prima del login, da chiunque: senza Home Assistant (vedi plain.py)
+    return "indirizzo non accettato: apri l'app con l'indirizzo IP del server"
 
 
 # ---------- Sessioni ----------

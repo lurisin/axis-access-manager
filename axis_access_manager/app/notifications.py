@@ -20,6 +20,7 @@ from .backup_copy import RESTORED, STARTED_EMPTY
 from .db import Database
 from .ha import MIN_FREE_SPACE
 from .live_events import FAULT_AFTER
+from .plain import ASK_ADMIN, forbidden, plain_source, plain_text
 from .service import CASING_OPEN, TILTED, ServiceError, plural
 
 _LOGGER = logging.getLogger(__name__)
@@ -62,6 +63,22 @@ TYPES = {
         "urgent",
     ),
 }
+# Nome e descrizione per chi entra dall'accesso diretto senza permessi tecnici (vedi plain.py): senza Home Assistant,
+# MQTT e add-on
+PLAIN_TYPES = {
+    "mqtt": (
+        "Eventi in Diretta e Videocitofoni",
+        "Eventi del controller non in arrivo in diretta o videocitofoni senza collegamento all'app.",
+    ),
+    "clock": ("Orologio Sbagliato", "Ora o fuso orario diversi tra controller e server."),
+    "database": ("Database dell'App", TYPES["database"][1]),
+}
+# Eventi del controller che non arrivano, detto senza WebSocket e MQTT: il recupero dal registro del controller li porta
+# lo stesso, in ritardo e senza foto
+EVENTS_PLAIN = (
+    "Gli eventi non arrivano in diretta: passaggi e allarmi entrano nel registro in ritardo e senza foto. "
+    f"{ASK_ADMIN[0].upper()}{ASK_ADMIN[1:]}."
+)
 # Guasti dell'impianto: restano finché non si risolvono, anche dopo la presa visione
 FAULT_TYPES = (
     "controller",
@@ -173,12 +190,17 @@ class NotificationService:
         )
         return levels
 
-    def types(self) -> list[dict]:
+    def types(self, plain: bool = False) -> list[dict]:
+        """Tipi di notifica con il livello scelto. plain: nomi e descrizioni senza Home Assistant (vedi plain.py)."""
         levels = self.levels()
-        return [
-            {"key": k, "name": name, "description": desc, "default": default, "level": levels[k]}
-            for k, (name, desc, default) in TYPES.items()
-        ]
+        result = []
+        for k, (name, desc, default) in TYPES.items():
+            if plain:
+                name, desc = PLAIN_TYPES.get(k, (name, desc))
+                if forbidden(name) or forbidden(desc):
+                    continue
+            result.append({"key": k, "name": name, "description": desc, "default": default, "level": levels[k]})
+        return result
 
     # Notifiche attive
 
@@ -220,7 +242,11 @@ class NotificationService:
         write_error: registro non scrivibile ({"since", "error"}, vedi AccessService.write_error).
         ws: stato del WebSocket degli eventi (LiveEvents.status), None se l'app non lo usa.
         ha_integration: l'integrazione con Home Assistant, che passa dal broker MQTT, è attiva.
-        intercoms: ci sono videocitofoni, i cui eventi arrivano dal broker MQTT."""
+        intercoms: ci sono videocitofoni, i cui eventi arrivano dal broker MQTT.
+
+        plain: come la notifica si mostra a chi entra dall'accesso diretto senza permessi tecnici (vedi plain.py e
+        listing): False la nasconde (riguarda solo Home Assistant o MQTT e non ci possono fare niente), un dizionario
+        ne cambia titolo e testo. Senza, valgono quelli di sempre se non nominano Home Assistant."""
         now = now or datetime.now(tz=UTC)
         levels = self.levels()
         since = (now - RECENT).astimezone(UTC).isoformat(timespec="seconds")
@@ -295,6 +321,15 @@ class NotificationService:
         impact = " e ".join(
             name for name, needed in (("Home Assistant", ha_integration), ("videocitofoni", intercoms)) if needed
         )
+        # Senza permessi tecnici: solo i videocitofoni, che anche loro usano. Di Home Assistant non sanno niente
+        broker_plain = (
+            {
+                "title": "Videocitofoni Senza Collegamento",
+                "text": f"Videocitofoni senza collegamento all'app: {ASK_ADMIN}.",
+            }
+            if intercoms
+            else False
+        )
         if controller_configured and impact:
             if not mqtt_configured:
                 # Il broker si cerca di nuovo ogni minuto (main._wait_for_broker): la notifica sparisce da sola
@@ -306,6 +341,7 @@ class NotificationService:
                     f"{_capital(impact)} senza collegamento all'app. Installa Mosquitto.",
                     now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
+                    plain=broker_plain,
                 )
             elif not mqtt_connected:
                 add(
@@ -317,6 +353,7 @@ class NotificationService:
                     mqtt_disconnected_since or now.isoformat(timespec="seconds"),
                     link="#impianti/stato",
                     weight=_reminder_weight(mqtt_disconnected_since, now),
+                    plain=broker_plain,
                 )
         controllers = controllers or []
         by_name = {c["name"]: c for c in controllers}
@@ -367,15 +404,17 @@ class NotificationService:
             if reachable and events_since:
                 # Il controller risponde all'app ma i suoi eventi non arrivano: né WebSocket né MQTT
                 why = _events_why(ws, mqtt_configured, mqtt_connected, controller_online)
+                which = f"{primary['name']} · " if primary and len(controllers) > 1 else ""
                 add(
                     "mqtt",
                     _episode_id("events", events_since),
                     "crit",
                     "Eventi del Controller Non Arrivano",
-                    f"{primary['name']} · {why}" if primary and len(controllers) > 1 else why,
+                    f"{which}{why}",
                     events_since,
                     link="#impianti/stato",
                     weight=_reminder_weight(events_since, now),
+                    plain={"text": f"{which}{EVENTS_PLAIN}"},
                 )
             elif not unreachable and (sync_failed or (controller_online is False and not controllers)):
                 detail = sync.get("error") if sync_failed else "il controller non è raggiungibile"
@@ -477,6 +516,7 @@ class NotificationService:
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link="#impianti",
                         weight=_offset_weight(offset),
+                        plain={"text": f"{c['name']} · {_offset_text(offset)} rispetto al server: {ASK_ADMIN}"},
                     )
                 elif c.get("clock_fault") == "home_assistant" and not ha_clock:
                     # Il controller è sincronizzato via NTP: è l'ora di Home Assistant a essere sbagliata
@@ -490,6 +530,10 @@ class NotificationService:
                         c.get("checked_at") or now.isoformat(timespec="seconds"),
                         link="#impianti",
                         weight=_offset_weight(offset),
+                        plain={
+                            "title": "Orologio del Server",
+                            "text": f"{_capital(_offset_text(-offset))} rispetto a {c['name']}: {ASK_ADMIN}",
+                        },
                     )
             pending = _json_dict(self.db.get_setting(SETTING_CATEGORIES_PENDING))
             if pending is not None:
@@ -654,7 +698,18 @@ class NotificationService:
                     # Senza tessera: un pulsante o il relè del citofono che il controller non fa aprire
                     source = last.get("source") or ""
                     text = " · ".join(x for x in ("" if source == "controller" else source, reason) if x)
-                    add_group("denied", "low", "Accesso Negato", text or "Accesso negato senza tessera", group)
+                    # Apertura da Home Assistant non eseguita: senza permessi tecnici è un'apertura remota
+                    shown = " · ".join(
+                        x for x in ("" if source == "controller" else plain_source(source), plain_text(reason, "")) if x
+                    )
+                    add_group(
+                        "denied",
+                        "low",
+                        "Accesso Negato",
+                        text or "Accesso negato senza tessera",
+                        group,
+                        plain={"text": shown or "Accesso negato senza tessera"},
+                    )
                 else:
                     # Tessera non registrata: ripetuta è un tentativo insistito
                     text = f"Tessera {last['card']}"
@@ -759,8 +814,14 @@ class NotificationService:
                 _LOGGER.warning("Notifiche viste non salvate: %s", err)
         return seen
 
-    def listing(self, current: list[dict], perms: set[str] | None = None, unknown: Collection[str] = ()) -> dict:
-        """Notifiche per un utente: nomi, tessere ed eventi solo a chi ha il permesso di vederli."""
+    def listing(
+        self, current: list[dict], perms: set[str] | None = None, unknown: Collection[str] = (), plain: bool = False
+    ) -> dict:
+        """Notifiche per un utente: nomi, tessere ed eventi solo a chi ha il permesso di vederli.
+
+        plain: chi entra dall'accesso diretto senza permessi tecnici (vedi plain.py). Le notifiche solo di Home
+        Assistant e MQTT non le vede (né nel conto né tra quelle da segnare come viste), le altre senza Home
+        Assistant, MQTT e add-on. Le viste restano quelle di tutti."""
         seen = self.forget_resolved(current, unknown)
         hidden = {k for k, perm in VISIBILITY.items() if perms is not None and perm not in perms}
         no_log = perms is not None and "registro" not in perms
@@ -768,20 +829,36 @@ class NotificationService:
         for i in current:
             if i["type"] in hidden:
                 continue
-            item = {
-                **i,
-                "seen": i["id"] in seen and i.get("weight", 0) <= (seen[i["id"]] or 0),
-                "fault": i.get("fault", i["type"] in FAULT_TYPES),
-            }
+            item = {k: v for k, v in i.items() if k != "plain"}
+            item.update(
+                seen=i["id"] in seen and i.get("weight", 0) <= (seen[i["id"]] or 0),
+                fault=i.get("fault", i["type"] in FAULT_TYPES),
+            )
+            if plain:
+                item = _plain_item(item, i.get("plain"))
+                if item is None:
+                    continue
             if no_log:
                 item.update(events=[], event=None, snapshot=None)
             items.append(item)
         return {
             "items": items,
             "open": sum(1 for i in items if not i["seen"]),
-            "types": self.types(),
+            "types": self.types(plain),
             "levels": LEVELS,
         }
+
+
+def _plain_item(item: dict, alternative: dict | bool | None) -> dict | None:
+    """La notifica per chi entra dall'accesso diretto senza permessi tecnici; None se non la deve vedere. alternative:
+    False la nasconde, un dizionario ne cambia titolo e testo. Un testo che nomina ancora Home Assistant (un errore del
+    controller o della telecamera mai visto) si toglie, un titolo nasconde la notifica."""
+    if alternative is False:
+        return None
+    item = {**item, **(alternative or {})}
+    for key in ("text", "door", "snapshot_error"):
+        item[key] = plain_text(item.get(key) or "", "")
+    return None if forbidden(item["title"]) else item
 
 
 def _offset_text(seconds: float) -> str:
