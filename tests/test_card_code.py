@@ -641,6 +641,49 @@ async def test_a_code_left_by_the_other_row_comes_back_when_both_are_restored(pl
     assert [a["label"] for a in result["applied"]] == ["Anna Bianchi", "Mario Rossi"]
 
 
+RESTORE_PAGE_NAMES = (*NAMES, "esc", "icon", "RESTORE_ACTIONS", "restoreItemHtml", "restoreGroupsHtml")
+
+
+@needs_node
+async def test_every_row_of_what_will_change_can_be_ticked(plant, db):
+    """Cosa Cambierà nella pagina, con le righe vere dell'anteprima: il codice conteso torna solo ripristinando le due
+    righe insieme, come dice l'avviso, e tutte e due si devono poter spuntare. Prima solo la prima riga di ogni sezione
+    aveva la casella (.map(restoreItemHtml) passava l'indice della riga come readonly): «Ripristina Selezionati (1)»
+    ripristinava solo Mario, e il suo codice non tornava."""
+    await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio")
+    await plant.access.create_person("Giulia Bianchi", "04bb", "admin", printed_code="1234")
+    backup = await plant.backup()
+    plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "Ciccio Nuovo", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "ciccio", "admin")
+    _, saved = plant.backups.load(backup["id"])
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, ["persone"], plant.controller_id)
+    assert {i["label"] for i in items} == {"Giulia Bianchi", "Mario Rossi"} and {i["section"] for i in items} == {
+        "persone"
+    }
+    assert any("solo ripristinando anche Giulia Bianchi" in w for i in items for w in i["warnings"])
+
+    out = run_page(
+        "Europe/Rome",
+        {
+            "mapped": "ITEMS.map(restoreItemHtml).join('')",
+            "page": "restoreGroupsHtml([['persone', 'Persone']], ITEMS)",
+            "readonly": "restoreItemHtml(ITEMS[1], {readonly: true})",
+        },
+        names=RESTORE_PAGE_NAMES,
+        prelude=f"const ICONS = {{}}; const ITEMS = {json.dumps(items, default=str)};",
+    )
+    for key in ("mapped", "page"):
+        html = out[key]
+        assert html.count('<input type="checkbox" name="rs"') == len(items) == 2, (key, html)
+        assert all(f'value="{i["key"]}" checked' in html for i in items), key
+    assert "checkbox" not in out["readonly"] and 'class="rs-item readonly"' in out["readonly"]
+
+    # Le righe spuntate dalla pagina, insieme: il codice conteso torna
+    _, result = await restore_with(plant, saved, keys=[i["key"] for i in items])
+    assert not result["failed"] and codes(db) == {"04aa": "Ciccio", "04bb": "1234"}
+
+
 async def test_codes_of_the_same_person_moved_around_come_back_and_swapped_ones_stay(plant, db):
     mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="X1")
     await plant.access.add_card(mario["id"], "04ab", "admin", printed_code="Y1")

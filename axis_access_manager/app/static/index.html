@@ -4445,7 +4445,7 @@ const COMPARE_COUNTS = [["prende", "da prendere in carico", "da prendere in cari
 const compareCounts = (counts) => COMPARE_COUNTS.filter(([k]) => counts[k]).map(([k, one, many]) => plural(counts[k], one, many)).join(" · ");
 function cappedRows(rows) {
   const rest = rows.length - 40;
-  return rows.slice(0, 40).map((i) => restoreItemHtml(i, true)).join("") + (rest > 0 ? `<p class="muted small-text" style="margin:4px 0 0">${rest === 1 ? "E un'altra riga." : `E altre ${rest} righe.`}</p>` : "");
+  return rows.slice(0, 40).map((i) => restoreItemHtml(i, {readonly: true})).join("") + (rest > 0 ? `<p class="muted small-text" style="margin:4px 0 0">${rest === 1 ? "E un'altra riga." : `E altre ${rest} righe.`}</p>` : "");
 }
 function shadowHtml(sh) {
   const rounds = sh?.rounds || {};
@@ -5087,8 +5087,9 @@ function compareBackup(b, backups, part = "") {
       load();
     }});
 }
-// readonly: riga del Confronto, senza casella e con le sorprese in evidenza
-function restoreItemHtml(i, readonly = false) {
+// readonly: riga del Confronto, senza casella e con le sorprese in evidenza. In un oggetto: con .map(restoreItemHtml)
+// l'indice della riga faceva da readonly, e in Cosa Cambierà solo la prima riga di ogni sezione si poteva spuntare
+function restoreItemHtml(i, {readonly = false} = {}) {
   const [cls, ic] = RESTORE_ACTIONS[i.action] || ["k-muted", "refresh"];
   const tag = readonly ? "div" : "label";
   return `<${tag} class="rs-item${i.blocked ? " blocked" : ""}${readonly ? " readonly" : ""}">
@@ -5101,6 +5102,10 @@ function restoreItemHtml(i, readonly = false) {
       ${i.blocked ? `<div class="rs-note err">${icon("block")}<span>Non si può: ${esc(i.blocked)}</span></div>` : ""}
       ${i.password ? `<div class="rs-pass"><input type="password" name="mqtt_password" autocomplete="new-password" placeholder="Password di ${esc(i.username)}"><small class="muted">Nei backup le password non ci sono: scrivila qui, non viene salvata.</small></div>` : ""}
     </div></${tag}>`;
+}
+// Righe di Cosa Cambierà per sezione, ognuna con la sua casella
+function restoreGroupsHtml(groups, items) {
+  return groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map((i) => restoreItemHtml(i)).join("")}</div>`).join("");
 }
 const RESTORE_MODES = {
   porte: {sections: ["porte"], title: "Porte e Lettori", text: "Riporta nomi e tempi delle porte, le impostazioni dell'app sulle porte e i nomi dei lettori, per un controller che funziona."},
@@ -5144,7 +5149,7 @@ async function restoreBackup(b, data, part = "") {
       <p class="muted small-text" style="margin-top:0">${full
         ? "Si scrive nell'ordine dell'elenco, le tessere per ultime. Quello che sul controller c'è ma nel backup no è spuntato solo se il controller è appena stato resettato. La programmazione oraria delle porte non si ripristina: niente sblocchi programmati."
         : "Spunta cosa riportare com'era. Le righe che toglierebbero ciò che è stato aggiunto dopo il backup non sono spuntate: di solito è lavoro fatto nel frattempo, da tenere."} Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
-      ${groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map(restoreItemHtml).join("")}</div>`).join("")}`,
+      ${restoreGroupsHtml(groups, items)}`,
     actions: [{label: "Annulla", value: null}, {label: "Ripristina Selezionati", kind: "primary", onClick: (dlg) => {
       const chosen = $$('[name="rs"]:checked', dlg).map((x) => x.value);
       if (!chosen.length) { toast("Spunta almeno una riga", true); return false; }
