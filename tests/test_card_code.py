@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 from test_backup import Plant
 from test_ha_mqtt import FakeClient
+from test_page_time_zone import NAMES, needs_node, run_page
 from test_person_details import database_0_28_2
 from test_person_last_change import Clock, watch
 
@@ -665,6 +666,53 @@ def test_the_log_shows_the_current_code_with_one_query_per_page(client):
     # Anche nel cruscotto, per il Dettaglio Evento
     recent = client.get("/api/dashboard", headers=ADMIN).json()["recent"]
     assert recent and all("printed_code" in e for e in recent)
+
+
+# Le righe e il Dettaglio Evento della pagina, com'è: il codice è testo scritto da chi usa l'app, sempre come testo
+PAGE_NAMES = (
+    *NAMES,
+    "esc",
+    "LOG_ROW_WHAT",
+    "LOG_SOURCES",
+    "DETAIL_HINTS",
+    "KIND_DOT",
+    "props",
+    "logRow",
+    "eventDetail",
+)
+PAGE_STUBS = """
+const KINDS = {concesso: ["Accesso Concesso", "k-ok", "check"], sconosciuta: ["Tessera Sconosciuta", "k-warn", "q"]};
+let logSelected = 0;
+const multiDoor = () => false, inputDenied = () => false, icon = () => "", can = () => true, doorByToken = () => null;
+const allDoors = () => [], controllerEvent = () => false, placeOf = () => "", eventPlace = () => "";
+"""
+
+
+@needs_node
+def test_the_page_shows_the_code_next_to_the_card_in_the_log_as_text():
+    named = {"id": 1, "ts": TS, "kind": "concesso", "card": "04aa", "person_id": 3, "person_name": "Mario Rossi"}
+    unknown = {"id": 2, "ts": TS, "kind": "sconosciuta", "card": "04ff", "person_name": ""}
+    out = run_page(
+        "Europe/Rome",
+        {
+            "row": f"logRow({json.dumps({**named, 'printed_code': '<b>Ciccio</b>'})})",
+            "plain": f"logRow({json.dumps({**named, 'printed_code': ''})})",
+            "card": f"logRow({json.dumps({**unknown, 'printed_code': '1234'})})",
+            "detail": f"eventDetail({json.dumps({**named, 'printed_code': '<b>Ciccio</b>'})})",
+            "without": f"eventDetail({json.dumps(named)})",
+        },
+        names=PAGE_NAMES,
+        prelude=PAGE_STUBS,
+    )
+    assert (
+        '<span class="pcode" title="Codice Stampato della tessera 04aa">&lt;b&gt;Ciccio&lt;/b&gt;</span>' in out["row"]
+    )
+    assert "<b>Ciccio" not in out["row"] and "pcode" not in out["plain"]
+    # Accanto al numero di una tessera senza persona
+    chip = '<span class="pcode" title="Codice Stampato della tessera 04ff">1234</span>'
+    assert f"<b>Tessera 04ff</b> {chip}" in out["card"]
+    assert "<dt>Codice Stampato</dt><dd>&lt;b&gt;Ciccio&lt;/b&gt; <span" in out["detail"]
+    assert "quello di adesso della tessera" in out["detail"] and "Codice Stampato" not in out["without"]
 
 
 # Controller e Home Assistant
