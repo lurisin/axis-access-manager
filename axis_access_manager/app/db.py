@@ -324,6 +324,8 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
     ),
     # Solo aggiunte, il registro non si riscrive: vedi _events_controller e _new_install_id
     (9, "controller degli eventi e identità dell'installazione", []),
+    # Colonne di PERSON_COLUMNS, poi nome e cognome ricavati dal nome di ogni persona: vedi _person_columns
+    (10, "nome e cognome separati, telefono ed email delle persone", []),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
 # Ultimo accesso di ogni persona e passaggi di una persona senza leggere tutto il registro (un anno: 1,5 milioni).
@@ -342,6 +344,15 @@ PRUNE_BLOCK = 2000
 # Letture lunghe del registro (vedi Database._read) che girano insieme
 READ_SLOTS = 2
 SETTING_APP_VERSION = "app_version"
+# Anagrafica della 0.28.3 (migrazione 10): nome e cognome separati, telefono ed email. persons.name resta il nome usato
+# ovunque (controller, registro, Home Assistant, attività) ed è sempre compose_name(first_name, last_name). Telefono ed
+# email restano nell'app: mai sul controller, in Home Assistant, nel registro o nei log
+PERSON_COLUMNS = (
+    ("first_name", "TEXT NOT NULL DEFAULT ''"),
+    ("last_name", "TEXT NOT NULL DEFAULT ''"),
+    ("phone", "TEXT NOT NULL DEFAULT ''"),
+    ("email", "TEXT NOT NULL DEFAULT ''"),
+)
 # Numero più alto mai dato a una persona: i numeri delle persone eliminate non si riusano
 SETTING_LAST_PERSON = "persons_last_id"
 # Identità di questa installazione (uuid4): sta nel database, quindi un ripristino di Home Assistant la riporta uguale
@@ -382,6 +393,25 @@ SHADOW_FIELDS = (
 EVENT_COLUMNS = "id, ts, kind, card, person_id, person_name, detail, source, snapshot, snapshot_error, door, recovered"
 # Origini fisse degli eventi: nel database il codice, per l'utente l'etichetta
 SOURCE_LABELS = {"lettore": "Lettore", "controller": "Controller", "porta": "Porta"}
+
+
+def compose_name(first_name: str, last_name: str) -> str:
+    """Nome completo di una persona: nome e cognome separati da uno spazio, senza le parti vuote. persons.name è
+    sempre questo (vedi split_name)."""
+    return " ".join(part for part in (first_name, last_name) if part)
+
+
+def split_name(name: str) -> tuple[str, str]:
+    """Nome e cognome ricavati dal nome completo: l'unica regola dell'app (migrazione, riparazione all'avvio, persone
+    lette dal controller, importazione, backup senza nome e cognome). Al primo spazio la prima parola è il nome e il
+    resto il cognome, solo se ricomponendoli (compose_name) torna esattamente il nome completo. Un nome con spazi
+    doppi, tabulazioni o spazi ai lati (dal controller arriva solo senza spazi ai lati) e un segnaposto tra parentesi
+    come «(Senza nome)» restano interi nel nome, con il cognome vuoto: il nome completo non cambia mai."""
+    placeholder = name.startswith("(") and name.endswith(")")
+    if " " in name and name == " ".join(name.split()) and not placeholder:
+        first, last = name.split(" ", 1)
+        return first, last
+    return name, ""
 
 
 def events_of_controller(controller_id: int, primary: bool) -> tuple[str, tuple]:
@@ -508,6 +538,8 @@ class Database:
                     if step == 9:
                         self._events_controller()
                         self._new_install_id()
+                    if step == 10:
+                        self._person_columns()
                     for sql in statements:
                         self._conn.execute(sql)
                     self._conn.execute(f"PRAGMA user_version = {step}")
@@ -515,6 +547,11 @@ class Database:
                 except Exception:
                     self._conn.execute("ROLLBACK")
                     raise
+            repaired = self._repair_person_names()
+            if repaired:
+                # Persone create o rinominate da una versione precedente (dopo un ritorno indietro), o database rimesso
+                # da un backup vecchio: nome e cognome di nuovo dal nome completo, che non cambia
+                _LOGGER.warning("Nome e cognome di %s persone ricavati di nuovo dal nome completo", repaired)
             if app_version:
                 self._conn.execute(
                     "INSERT INTO app_settings (key, value) VALUES (?, ?) "
@@ -606,6 +643,32 @@ class Database:
             "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
             (SETTING_INSTALL_ID, str(uuid.uuid4())),
         )
+
+    def _person_columns(self) -> None:
+        """Migrazione 10: colonne di PERSON_COLUMNS (non due volte: un database riportato a mano a uno schema
+        precedente le ha già) e nome e cognome di ogni persona ricavati dal nome completo, che resta com'è."""
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(persons)")}
+        for column, definition in PERSON_COLUMNS:
+            if column not in columns:
+                self._conn.execute(f"ALTER TABLE persons ADD COLUMN {column} {definition}")
+        self._repair_person_names()
+
+    def _repair_person_names(self) -> int:
+        """Persone il cui nome completo non è compose_name(nome, cognome): nome e cognome ricavati di nuovo dal nome
+        completo con split_name, senza mai cambiarlo. Restituisce quante. Succede con la migrazione (colonne vuote),
+        dopo un ritorno a una versione precedente che ha creato o rinominato persone senza nome e cognome, e con un
+        database rimesso da un backup di prima."""
+        columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(persons)")}
+        if not {"first_name", "last_name"} <= columns:
+            # Schema di prima della migrazione 10 (solo nelle prove delle migrazioni)
+            return 0
+        rows = self._conn.execute("SELECT id, name, first_name, last_name FROM persons").fetchall()
+        wrong = [row for row in rows if compose_name(row["first_name"], row["last_name"]) != row["name"]]
+        self._conn.executemany(
+            "UPDATE persons SET first_name = ?, last_name = ? WHERE id = ?",
+            [(*split_name(row["name"]), row["id"]) for row in wrong],
+        )
+        return len(wrong)
 
     def _add_legacy_columns(self) -> None:
         for table, column, definition in LEGACY_COLUMNS:
@@ -744,14 +807,36 @@ class Database:
         rows = self._query("SELECT * FROM persons WHERE axis_user_token = ?", (token,))
         return rows[0] if rows else None
 
+    @staticmethod
+    def _name_parts(name: str, first_name: str | None, last_name: str | None) -> tuple[str, str]:
+        """Nome e cognome da salvare con il nome completo name: quelli dati, che devono ricomporlo esattamente, o se
+        mancano tutti e due quelli ricavati da name con split_name."""
+        if first_name is None and last_name is None:
+            return split_name(name)
+        first, last = first_name or "", last_name or ""
+        if compose_name(first, last) != name:
+            raise ValueError("nome e cognome non corrispondono al nome completo")
+        return first, last
+
     def add_person(
-        self, name: str, axis_user_token: str | None, person_id: int | None = None, created_at: str | None = None
+        self,
+        name: str,
+        axis_user_token: str | None,
+        person_id: int | None = None,
+        created_at: str | None = None,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        phone: str = "",
+        email: str = "",
     ) -> int:
         """person_id e created_at solo per rimettere una persona da un backup (stesso numero, se è libero).
+        first_name e last_name: senza, ricavati da name (vedi _name_parts).
 
         Il numero di una persona eliminata non si riusa: i suoi eventi lo citano ancora, e una persona nuova
         con lo stesso numero ne erediterebbe passaggi e ultimo accesso.
         """
+        first, last = self._name_parts(name, first_name, last_name)
         ts = now_iso()
         with self._lock:
             if person_id is None:
@@ -765,26 +850,41 @@ class Database:
                     or 0
                 ) + 1
             cursor = self._conn.execute(
-                "INSERT INTO persons (id, name, axis_user_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (person_id, name, axis_user_token, created_at or ts, ts),
+                "INSERT INTO persons (id, name, first_name, last_name, phone, email, axis_user_token, created_at, "
+                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (person_id, name, first, last, phone, email, axis_user_token, created_at or ts, ts),
             )
             # Una persona rimessa con un numero più basso non abbassa il contatore
             self._remember_last_id(SETTING_LAST_PERSON, cursor.lastrowid)
             self._commit()
             return cursor.lastrowid
 
-    def rename_person(self, person_id: int, name: str) -> None:
-        self._execute("UPDATE persons SET name = ?, updated_at = ? WHERE id = ?", (name, now_iso(), person_id))
+    def rename_person(
+        self, person_id: int, name: str, first_name: str | None = None, last_name: str | None = None
+    ) -> None:
+        """Nome completo con nome e cognome (senza, ricavati da name: vedi _name_parts)."""
+        first, last = self._name_parts(name, first_name, last_name)
+        self._execute(
+            "UPDATE persons SET name = ?, first_name = ?, last_name = ?, updated_at = ? WHERE id = ?",
+            (name, first, last, now_iso(), person_id),
+        )
 
     def set_person_user_token(self, person_id: int, token: str) -> None:
         self._execute(
             "UPDATE persons SET axis_user_token = ?, updated_at = ? WHERE id = ?", (token, now_iso(), person_id)
         )
 
-    def update_person_details(self, person_id: int, company: str, notes: str) -> None:
+    def update_person_details(
+        self, person_id: int, company: str, notes: str, phone: str | None = None, email: str | None = None
+    ) -> None:
+        """Ditta e note; telefono ed email solo se dati."""
+        sets, params = ["company = ?", "notes = ?"], [company, notes]
+        for column, value in (("phone", phone), ("email", email)):
+            if value is not None:
+                sets.append(f"{column} = ?")
+                params.append(value)
         self._execute(
-            "UPDATE persons SET company = ?, notes = ?, updated_at = ? WHERE id = ?",
-            (company, notes, now_iso(), person_id),
+            f"UPDATE persons SET {', '.join(sets)}, updated_at = ? WHERE id = ?", (*params, now_iso(), person_id)
         )
 
     def set_person_category(self, person_id: int, category_id: int) -> None:

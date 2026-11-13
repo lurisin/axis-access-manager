@@ -1221,8 +1221,12 @@ def database_0_26_1(path: Path, events: int = 0) -> None:
         patch.setattr(db_module, "SCHEMA_STEPS", [s for s in db_module.SCHEMA_STEPS if s[0] <= V0261_SCHEMA])
         patch.setattr(db_module, "SCHEMA_VERSION", V0261_SCHEMA)
         old = Database(path, "0.26.1")
-    person = old.add_person("Anna Rossi", "utente_anna_rossi_261101120000")
     with old._lock:
+        # Come la scriveva la 0.26.1: senza le colonne della migrazione 10
+        person = old._conn.execute(
+            "INSERT INTO persons (name, axis_user_token, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            ("Anna Rossi", "utente_anna_rossi_261101120000", "2026-10-01T08:00:00+00:00", "2026-10-01T08:00:00+00:00"),
+        ).lastrowid
         old._conn.executemany(
             "INSERT INTO events (ts, kind, person_id, door, raw) VALUES (?, 'concesso', ?, 'porta', ?)",
             [(f"2026-10-01T08:{n // 60 % 60:02d}:{n % 60:02d}+00:00", person, "x" * 1000) for n in range(events)],

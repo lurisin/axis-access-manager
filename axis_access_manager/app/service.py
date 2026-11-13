@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from .backup_copy import error_reason
 from .config import Settings
-from .db import Database, now_iso
+from .db import Database, compose_name, now_iso, split_name
 from .events import Event, EventMonitor, door_of_topic, event_from_log
 from .rules import RuleError, check_validity, normalize_validity, validity_state
 from .vapix import A1210Client, ControllerUnreachable, VapixError
@@ -25,6 +25,11 @@ MAX_CLOCK_CORRECTION = 24 * 3600
 GRANT_LOG_TAIL = 30
 
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
+# Telefono ed email delle persone: solo nell'app (vedi db.PERSON_COLUMNS)
+PHONE_PATTERN = re.compile(r"[0-9 +\-./()]+")
+PHONE_DIGITS = 6
+PHONE_MAX = 30
+EMAIL_MAX = 254
 # Descrizione degli utenti che l'app crea sul controller
 USER_DESCRIPTION = "Registrato da Axis Access Manager"
 # Elenco degli utenti letto vuoto dalla sincronizzazione (senza strict): per il confronto in ombra non è letto
@@ -138,6 +143,72 @@ def normalize_name(value: str) -> str:
     if len(name) > 100:
         raise ServiceError("nome troppo lungo (massimo 100 caratteri)")
     return name
+
+
+def person_names(
+    name: str | None = None, first_name: str | None = None, last_name: str | None = None
+) -> tuple[str, str, str]:
+    """Nome completo, nome e cognome di una persona da salvare. Con nome o cognome (anche uno solo) vale quello che
+    c'è, con gli spazi interni compattati come normalize_name; altrimenti il nome completo name, diviso con
+    split_name (importazione, richieste delle versioni precedenti). Il nome completo è sempre compose_name(nome,
+    cognome), al massimo 100 caratteri come prima."""
+    if first_name is None and last_name is None:
+        full = normalize_name(name or "")
+        return (full, *split_name(full))
+    first, last = " ".join((first_name or "").split()), " ".join((last_name or "").split())
+    if not first and not last:
+        raise ServiceError("mancano il nome e il cognome: serve almeno uno dei due")
+    full = compose_name(first, last)
+    if len(full) > 100:
+        raise ServiceError("nome e cognome troppo lunghi (massimo 100 caratteri insieme)")
+    return full, first, last
+
+
+def saved_parts(saved: dict) -> tuple[str, str]:
+    """Nome e cognome di una persona di un backup dell'app, come sono salvati. I backup di prima della 0.28.3 non li
+    hanno: si ricavano dal nome completo con split_name, come nella migrazione e nel confronto dei backup."""
+    if saved.get("first_name") is None and saved.get("last_name") is None:
+        return split_name(saved["name"])
+    return saved.get("first_name") or "", saved.get("last_name") or ""
+
+
+def saved_names(saved: dict) -> tuple[str, str, str]:
+    """Nome completo, nome e cognome per ricreare una persona di un backup dell'app, con gli spazi compattati come per
+    una persona nuova. Da un backup di prima della 0.28.3 il nome completo, diviso con split_name."""
+    if saved.get("first_name") is None and saved.get("last_name") is None:
+        return person_names(saved["name"])
+    return person_names(first_name=saved.get("first_name") or "", last_name=saved.get("last_name") or "")
+
+
+def normalize_phone(value: str | None) -> str:
+    """Telefono facoltativo: cifre, spazi e + - . / ( ), almeno PHONE_DIGITS cifre. Il messaggio non ripete il valore,
+    che non deve finire nei log."""
+    phone = (value or "").strip()
+    if not phone:
+        return ""
+    if len(phone) > PHONE_MAX:
+        raise ServiceError(f"telefono troppo lungo (massimo {PHONE_MAX} caratteri)")
+    if not PHONE_PATTERN.fullmatch(phone):
+        raise ServiceError("telefono non valido: sono ammessi cifre, spazi e i segni + - . / ( )")
+    if sum(char.isdigit() for char in phone) < PHONE_DIGITS:
+        raise ServiceError(f"telefono non valido: servono almeno {PHONE_DIGITS} cifre")
+    return phone
+
+
+def normalize_email(value: str | None) -> str:
+    """Email facoltativa: senza spazi, una sola @, dopo la @ un dominio con almeno un punto. Il messaggio non ripete
+    il valore, che non deve finire nei log."""
+    email = (value or "").strip()
+    if not email:
+        return ""
+    if len(email) > EMAIL_MAX:
+        raise ServiceError(f"email troppo lunga (massimo {EMAIL_MAX} caratteri)")
+    if any(char.isspace() or not char.isprintable() for char in email):
+        raise ServiceError("email non valida: non può contenere spazi")
+    local, _, domain = email.partition("@")
+    if email.count("@") != 1 or not local or "." not in domain or "" in domain.split("."):
+        raise ServiceError("email non valida: serve un indirizzo come nome@esempio.it")
+    return email
 
 
 def user_token_for(name: str, now: datetime | None = None) -> str:
@@ -669,10 +740,22 @@ class AccessService:
         notes: str = "",
         category_id: int = 0,
         enabled: bool = True,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        phone: str = "",
+        email: str = "",
     ) -> dict:
         """card vuota: persona senza tessera, solo nell'app. enabled False: la tessera si scrive già sospesa
-        (importazione con stato «sospesa»)."""
-        name = normalize_name(name)
+        (importazione con stato «sospesa»). Nome e cognome (anche uno solo) valgono al posto di name, che senza si
+        divide con split_name (vedi person_names). Telefono ed email restano nell'app."""
+        name, first, last = person_names(name, first_name, last_name)
+        details = {
+            "first_name": first,
+            "last_name": last,
+            "phone": normalize_phone(phone),
+            "email": normalize_email(email),
+        }
         number = normalize_card(card) if (card or "").strip() else ""
         company = normalize_text(company, 100, "ditta o reparto")
         notes = normalize_text(notes, 1000, "testo delle note")
@@ -681,7 +764,7 @@ class AccessService:
         if not number:
             if group or valid_from or valid_to:
                 raise ServiceError("gruppo e validità valgono per le tessere: senza tessera non si possono salvare")
-            return self._create_without_card(name, user, company, notes, category)
+            return self._create_without_card(name, user, company, notes, category, details)
         access = self._category_access(category, group, valid_from, valid_to)
         async with self.lock:
             self._check_card_free(number)
@@ -703,7 +786,7 @@ class AccessService:
             try:
                 # Tutto o niente: una persona senza la sua tessera non resta nell'app
                 with self.db.batch():
-                    person_id = self.db.add_person(name, user_token)
+                    person_id = self.db.add_person(name, user_token, **details)
                     if company or notes:
                         self.db.update_person_details(person_id, company, notes)
                     if category:
@@ -720,12 +803,15 @@ class AccessService:
             self._changed()
             return self.db.get_person(person_id)
 
-    def _create_without_card(self, name: str, user: str, company: str, notes: str, category: dict | None) -> dict:
+    def _create_without_card(
+        self, name: str, user: str, company: str, notes: str, category: dict | None, details: dict
+    ) -> dict:
         """Persona senza tessera: solo nel database, nessuna chiamata al controller (anche spento o con le scritture
-        sospese). Il suo utente del controller nasce con la prima tessera, e la durata della tipologia vale da lì."""
+        sospese). Il suo utente del controller nasce con la prima tessera, e la durata della tipologia vale da lì.
+        details: nome, cognome, telefono ed email (vedi Database.add_person)."""
         try:
             with self.db.batch():
-                person_id = self.db.add_person(name, None)
+                person_id = self.db.add_person(name, None, **details)
                 if company or notes:
                     self.db.update_person_details(person_id, company, notes)
                 if category:
@@ -821,21 +907,55 @@ class AccessService:
         name: str | None = None,
         company: str | None = None,
         notes: str | None = None,
+        *,
+        first_name: str | None = None,
+        last_name: str | None = None,
+        phone: str | None = None,
+        email: str | None = None,
     ) -> dict:
-        """Nome (scritto anche sul controller), ditta e note (solo nell'add-on)."""
+        """Nome completo (scritto anche sul controller), ditta, note, telefono ed email (solo nell'add-on). None: il
+        campo non cambia. Nome e cognome (anche uno solo, l'altro resta) valgono al posto di name; name da solo, se
+        cambia il nome completo, si divide con split_name. Nell'attività i campi cambiati, mai i valori di telefono
+        ed email."""
         person = self._person(person_id)
-        if company is not None or notes is not None:
-            new_company = normalize_text(company, 100, "ditta o reparto") if company is not None else person["company"]
-            new_notes = normalize_text(notes, 1000, "testo delle note") if notes is not None else person["notes"]
-            if (new_company, new_notes) != (person["company"], person["notes"]):
-                self.db.update_person_details(person_id, new_company, new_notes)
-                self.db.add_audit(user, "dati persona modificati", person["name"])
-        if name is not None and normalize_name(name) != person["name"]:
-            return await self.rename_person(person_id, name, user)
+        # Tutto controllato prima di salvare qualcosa: un valore non valido non lascia mezza modifica
+        full = None
+        first, last = person["first_name"], person["last_name"]
+        wanted = (first if first_name is None else first_name, last if last_name is None else last_name)
+        if first_name is not None or last_name is not None:
+            # Uguali a quelli salvati: niente da cambiare, neanche compattando gli spazi di un nome letto dal
+            # controller (sarebbe un cambio di nome sul controller che nessuno ha chiesto)
+            if wanted != (first, last):
+                full, first, last = person_names(first_name=wanted[0], last_name=wanted[1])
+        elif name is not None:
+            full = normalize_name(name)
+            if full != person["name"]:
+                first, last = split_name(full)
+        values = {
+            "ditta": normalize_text(company, 100, "ditta o reparto") if company is not None else person["company"],
+            "note": normalize_text(notes, 1000, "testo delle note") if notes is not None else person["notes"],
+            "telefono": normalize_phone(phone) if phone is not None else person["phone"],
+            "email": normalize_email(email) if email is not None else person["email"],
+        }
+        before = dict(zip(values, (person["company"], person["notes"], person["phone"], person["email"]), strict=True))
+        changed = [label for label in values if values[label] != before[label]]
+        if changed:
+            self.db.update_person_details(person_id, *values.values())
+        if full == person["name"] and (first, last) != (person["first_name"], person["last_name"]):
+            # Stesso nome completo diviso in un altro modo: solo nell'app, sul controller il nome è già questo
+            self.db.rename_person(person_id, full, first, last)
+            changed.append("nome e cognome")
+        if changed:
+            self.db.add_audit(user, "dati persona modificati", f"{person['name']}: {', '.join(changed)}")
+        if full is not None and full != person["name"]:
+            return await self.rename_person(person_id, full, user, first_name=first, last_name=last)
         return self.db.get_person(person_id)
 
-    async def rename_person(self, person_id: int, name: str, user: str) -> dict:
-        name = normalize_name(name)
+    async def rename_person(
+        self, person_id: int, name: str, user: str, *, first_name: str | None = None, last_name: str | None = None
+    ) -> dict:
+        """Nome completo nuovo, sul controller e nell'app; nome e cognome come in person_names."""
+        name, first, last = person_names(name, first_name, last_name)
         async with self.lock:
             person = self._person(person_id)
             token = person["axis_user_token"] or ""
@@ -850,7 +970,7 @@ class AccessService:
                 for credential in await self.controller.get_credentials([card["axis_credential_token"]]):
                     credential["Description"] = name
                     await self.controller.set_credential(credential)
-            self.db.rename_person(person_id, name)
+            self.db.rename_person(person_id, name, first, last)
             self.db.add_audit(user, "persona rinominata", f"{person['name']} → {name}")
             return self.db.get_person(person_id)
 
@@ -1038,15 +1158,25 @@ class AccessService:
         """Riporta una persona com'era in un backup: nome, ditta, note, tipologia e tessere con accesso e stato.
         Se non c'è più si ricrea, con lo stesso numero e la stessa data di creazione se il numero è libero.
         cards: tessere del backup già controllate (numero libero o già della persona, profilo che esiste); le altre
-        tessere della persona restano come sono."""
+        tessere della persona restano come sono. Un backup di prima della 0.28.3 non ha nome e cognome (si ricavano
+        dal nome completo, vedi saved_parts) né telefono ed email (restano quelli di adesso). Nome e cognome uguali a
+        quelli di adesso non cambiano niente, neanche gli spazi doppi di un nome letto dal controller."""
         current = self.db.get_person(saved["id"])
         if current is not None and current["created_at"] != saved["created_at"]:
             current = None
         if current is None:
             return await self._recreate_person(saved, cards, category_id, user)
         person_id = current["id"]
+        first, last = saved_parts(saved)
         await self.update_person(
-            person_id, user, name=saved["name"], company=saved["company"] or "", notes=saved["notes"] or ""
+            person_id,
+            user,
+            company=saved["company"] or "",
+            notes=saved["notes"] or "",
+            first_name=first,
+            last_name=last,
+            phone=saved.get("phone"),
+            email=saved.get("email"),
         )
         if category_id != current["category_id"]:
             self.db.set_person_category(person_id, category_id)
@@ -1160,7 +1290,7 @@ class AccessService:
         return token
 
     async def _recreate_person(self, saved: dict, cards: list[dict], category_id: int, user: str) -> dict:
-        name = normalize_name(saved["name"])
+        name = saved_names(saved)[0]
         if not cards:
             # Senza tessere (nel backup, o passate ad altri): solo nell'app, come una persona nuova senza tessera
             try:
@@ -1206,10 +1336,19 @@ class AccessService:
             return self.db.get_person(person_id)
 
     def _add_saved_person(self, saved: dict, name: str, user_token: str | None, category_id: int) -> int:
-        """Persona del backup di nuovo nell'app, con lo stesso numero se è libero e la stessa data di creazione."""
+        """Persona del backup di nuovo nell'app, con lo stesso numero se è libero e la stessa data di creazione. Nome e
+        cognome dal backup, o ricavati dal nome completo se è di prima della 0.28.3 (vedi saved_names)."""
         free = self.db.get_person(saved["id"]) is None
+        _, first, last = saved_names(saved)
         person_id = self.db.add_person(
-            name, user_token, person_id=saved["id"] if free else None, created_at=saved["created_at"]
+            name,
+            user_token,
+            person_id=saved["id"] if free else None,
+            created_at=saved["created_at"],
+            first_name=first,
+            last_name=last,
+            phone=str(saved.get("phone") or ""),
+            email=str(saved.get("email") or ""),
         )
         if saved.get("company") or saved.get("notes"):
             self.db.update_person_details(person_id, saved.get("company") or "", saved.get("notes") or "")

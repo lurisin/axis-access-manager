@@ -13,7 +13,18 @@ import dataclasses
 from dataclasses import dataclass
 
 from . import full_restore
-from .backup import COMMON, DOOR_TIMES, FIELD_LABELS, _item, _shown, common_view, context_of, controller_view
+from .backup import (
+    COMMON,
+    DOOR_TIMES,
+    FIELD_LABELS,
+    PRIVATE_FIELDS,
+    _item,
+    _shown,
+    common_view,
+    context_of,
+    controller_view,
+    shown_change,
+)
 from .db import Database
 from .programming import ProgrammingService, parse_duration
 from .rules_service import RulesService
@@ -61,7 +72,7 @@ def _changes(current: dict | None, saved: dict, only=None) -> list[dict]:
         return []
     names = list(dict.fromkeys([*saved["fields"], *current["fields"]]))
     return [
-        {"label": FIELD_LABELS.get(f, f), "old": _shown(current, f), "new": _shown(saved, f)}
+        {"label": FIELD_LABELS.get(f, f), **dict(zip(("old", "new"), shown_change(current, saved, f), strict=True))}
         for f in names
         if current["fields"].get(f) != saved["fields"].get(f) and (only is None or f in only)
     ]
@@ -455,7 +466,9 @@ def _plan_persons(
             continue
         matched_persons.add(ident)
         current_item = current_view[f"{now['id']}:{now['created_at']}"]
-        changes = _changes(current_item, saved_view[f"{ident[0]}:{ident[1]}"], only=("name", "company", "notes"))
+        # Telefono ed email solo da un backup che li ha (dalla 0.28.3): uno di prima li lascia come sono adesso
+        only = ("name", "company", "notes", *(f for f in PRIVATE_FIELDS if f in person))
+        changes = _changes(current_item, saved_view[f"{ident[0]}:{ident[1]}"], only=only)
         if pending or (target["id"] if target else 0) != now["category_id"]:
             changes.append(
                 {

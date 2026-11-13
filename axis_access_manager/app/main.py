@@ -165,7 +165,10 @@ BACKUP_TICK = 60
 
 
 class PersonIn(BaseModel):
-    name: str
+    # Nome e cognome (almeno uno dei due); senza, il nome completo name, diviso al primo spazio (versioni precedenti)
+    first_name: str | None = None
+    last_name: str | None = None
+    name: str = ""
     # Vuota: persona senza tessera, solo nell'app
     card: str = ""
     group: str = ""
@@ -174,12 +177,20 @@ class PersonIn(BaseModel):
     company: str = ""
     notes: str = ""
     category_id: int = 0
+    # Controllati da AccessService (normalize_phone, normalize_email): i limiti qui finirebbero con il valore nel log
+    phone: str = ""
+    email: str = ""
 
 
 class PersonUpdateIn(BaseModel):
+    # None: il campo non cambia
+    first_name: str | None = None
+    last_name: str | None = None
     name: str | None = None
     company: str | None = None
     notes: str | None = None
+    phone: str | None = None
+    email: str | None = None
 
 
 class AccessIn(BaseModel):
@@ -529,7 +540,13 @@ FIELD_LABELS = {
     "schedule": "fascia oraria",
     "host": "indirizzo del controller",
     "category_id": "tipologia",
+    "first_name": "nome",
+    "last_name": "cognome",
+    "phone": "telefono",
+    "email": "email",
 }
+# Campi che non finiscono nel log neanche quando sono rifiutati
+PRIVATE_INPUTS = {"phone", "email"}
 VALIDATION_REASONS = {
     "missing": "valore mancante",
     "string_too_long": "al massimo {max_length} caratteri",
@@ -550,9 +567,20 @@ VALIDATION_REASONS = {
 }
 
 
+def _loggable(error: dict) -> dict:
+    """Errore di validazione per il log, senza telefono ed email delle persone (vedi db.PERSON_COLUMNS): il valore
+    rifiutato, o i dati mandati quando l'errore è di tutta la richiesta."""
+    value = error.get("input")
+    if any(part in PRIVATE_INPUTS for part in error.get("loc") or ()):
+        return {**error, "input": "…"}
+    if isinstance(value, dict) and PRIVATE_INPUTS & value.keys():
+        return {**error, "input": {k: "…" if k in PRIVATE_INPUTS else v for k, v in value.items()}}
+    return error
+
+
 def _validation_text(errors: list[dict]) -> str:
     """Primo errore di validazione in parole; quello tecnico (campo, tipo, valore) resta nel log."""
-    _LOGGER.info("Dati non validi: %s", errors)
+    _LOGGER.info("Dati non validi: %s", [_loggable(error) for error in errors])
     first = errors[0] if errors else {}
     names = [str(p) for p in first.get("loc") or () if not isinstance(p, int) and p not in ("body", "query", "path")]
     field = FIELD_LABELS.get(names[-1], "") if names else ""
@@ -1103,6 +1131,10 @@ def create_app(
             body.company,
             body.notes,
             body.category_id,
+            first_name=body.first_name,
+            last_name=body.last_name,
+            phone=body.phone,
+            email=body.email,
         )
 
     @app.get("/api/persons/{person_id}", dependencies=[need("persone")])
@@ -1120,7 +1152,15 @@ def create_app(
     @app.patch("/api/persons/{person_id}", dependencies=[need("persone_modifica")])
     async def update_person(person_id: int, body: PersonUpdateIn, request: Request) -> dict:
         return await request.app.state.service.update_person(
-            person_id, request_user(request), name=body.name, company=body.company, notes=body.notes
+            person_id,
+            request_user(request),
+            name=body.name,
+            company=body.company,
+            notes=body.notes,
+            first_name=body.first_name,
+            last_name=body.last_name,
+            phone=body.phone,
+            email=body.email,
         )
 
     @app.put("/api/persons/{person_id}/access", dependencies=[need("persone_modifica")])

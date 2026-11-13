@@ -2098,6 +2098,28 @@ async function loadPersons() {
   store.persons = await api("api/persons");
   return store.persons;
 }
+// Elenco per cognome e poi nome, senza distinguere maiuscole e accenti; chi non ha il cognome sta al suo nome. Si mostra
+// sempre il nome completo, «Nome Cognome», come sul controller, nel registro e in Home Assistant
+const personSortKey = (p) => p.last_name || p.first_name || p.name || "";
+function comparePersons(a, b) {
+  const opts = {sensitivity: "base"};
+  const given = (p) => p.last_name ? p.first_name || "" : "";
+  return personSortKey(a).localeCompare(personSortKey(b), "it", opts) || given(a).localeCompare(given(b), "it", opts)
+    || (a.name || "").localeCompare(b.name || "", "it", opts) || a.id - b.id;
+}
+// Testo per la ricerca: minuscolo e senza accenti
+const foldText = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+// Separatori di un numero di telefono: la ricerca lo trova anche scritto senza spazi
+const PHONE_MARKS = /[\s.\-\/()]/g;
+// Ricerca dell'elenco: nome completo, nome, cognome (anche «Cognome Nome»), ditta, numero tessera, telefono ed email
+function personMatches(p, q) {
+  const text = foldText(q).trim();
+  if (!text) return true;
+  const fields = [p.name, p.first_name, p.last_name, `${p.last_name || ""} ${p.first_name || ""}`, p.company, p.email, p.phone, ...(p.cards || []).map((c) => c.number)];
+  if (fields.some((f) => foldText(f).includes(text))) return true;
+  const digits = text.replace(PHONE_MARKS, "");
+  return Boolean(digits && p.phone && p.phone.replace(PHONE_MARKS, "").includes(digits));
+}
 // Le tipologie stanno in Persone; chi ha il permesso Regole ma non Persone le trova in Regole
 const categoriesLink = () => can("persone") ? "#persone/tipologie" : "#regole/tipologie";
 const personTabs = (tab) => `<div class="segmented">${[["", "Persone"], ["tipologie", "Tipologie"]].map(([k, label]) => `<a href="#persone${k ? "/" + k : ""}" class="${tab === k ? "active" : ""}">${label}</a>`).join("")}</div>`;
@@ -2110,7 +2132,7 @@ async function viewPersons(el, sub) {
   if (!el.isConnected) return;
   el.innerHTML = `${personTabs("")}
     <div class="toolbar">
-      <input type="search" id="p-q" placeholder="Cerca nome, ditta o numero tessera" value="${esc(personFilters.q)}">
+      <input type="search" id="p-q" placeholder="Cerca nome, ditta, tessera o telefono" title="Cerca per nome, cognome, ditta, numero tessera, telefono (anche senza spazi) o email" value="${esc(personFilters.q)}">
       <select id="p-state">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
         <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
@@ -2165,10 +2187,9 @@ const cardActive = (c) => c.enabled && !c.missing_since && !["scaduta", "futura"
 function renderPersonList() {
   const list = $("#p-list");
   if (!list) return;
-  const q = personFilters.q.trim().toLowerCase();
   const rows = store.persons.filter((p) => {
     const a = personAccess(p);
-    if (q && !(p.name.toLowerCase().includes(q) || (p.company || "").toLowerCase().includes(q) || p.cards.some((c) => c.number.toLowerCase().includes(q)))) return false;
+    if (!personMatches(p, personFilters.q)) return false;
     if (personFilters.category !== "" && (p.category_id || 0) !== Number(personFilters.category)) return false;
     const st = personFilters.state;
     if (st === "attive" && !p.cards.some(cardActive)) return false;
@@ -2188,7 +2209,7 @@ function renderPersonList() {
   // Con morph e non innerHTML: l'aggiornamento ogni 15 secondi (refreshPersons) lascia il fuoco sulla riga o sul filtro
   morph($("#p-cats"), store.categories.length ? chip("", "Tutte", store.persons.length) + store.categories.map((c) => chip(String(c.id), c.name, count(c.id), c.color)).join("") + (none ? chip("0", "Senza Tipologia", none) : "") : "");
   // Elenco essenziale: nome e tipologia, un'etichetta solo se c'è qualcosa da sistemare; il resto è nella scheda
-  const sorted = [...rows].sort((a, b) => a.name.localeCompare(b.name, "it", {sensitivity: "base"}));
+  const sorted = [...rows].sort(comparePersons);
   let letter = "";
   morph(list, sorted.length ? sorted.map((p) => {
     const a = personAccess(p);
@@ -2197,7 +2218,8 @@ function renderPersonList() {
     const flag = p.cards.some((c) => c.missing_since) ? '<span class="pill err" title="Tessera sparita dal controller: riscrivila o toglila dall\'app">Non sul Controller</span>'
       : !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
     const c = categoryOf(p.category_id);
-    const first = (p.name.trim()[0] || "#").toLocaleUpperCase("it");
+    // Iniziale del cognome (o del nome, senza cognome), come l'ordine dell'elenco
+    const first = (foldText(personSortKey(p)).trim()[0] || "#").toLocaleUpperCase("it");
     const head = sorted.length > 12 && first !== letter ? `<div class="day" data-key="h${esc(first)}">${esc(first)}</div>` : "";
     letter = first;
     return `${head}<div class="person-row" data-person="${p.id}" data-key="p${p.id}" role="button" tabindex="0">
@@ -2289,21 +2311,28 @@ function readValidity(dlg) {
   return {valid_from: fromLocalInput(val(dlg, "valid_from")), valid_to: fromLocalInput(val(dlg, "valid_to"))};
 }
 
+// Nome e cognome della persona (almeno uno dei due), nella Nuova Persona e nei suoi Dati
+const nameFields = (p = {}) => `<div class="fields-2">${field("Nome", `<input name="first_name" autocomplete="off" maxlength="100" value="${esc(p.first_name || "")}">`)}
+  ${field("Cognome", `<input name="last_name" autocomplete="off" maxlength="100" value="${esc(p.last_name || "")}">`)}</div>`;
+// Telefono ed email: solo nell'app, mai sul controller, in Home Assistant o nel registro
+const contactFields = (p = {}) => `<div class="fields-2">${field("Telefono", `<input type="tel" name="phone" inputmode="tel" autocomplete="tel" maxlength="30" value="${esc(p.phone || "")}" placeholder="facoltativo">`)}
+  ${field("Email", `<input type="email" name="email" autocomplete="email" maxlength="254" value="${esc(p.email || "")}" placeholder="facoltativa">`)}</div>`;
 async function newPerson(card = "") {
   await loadCategories();
   const created = await modal({
     title: "Nuova Persona",
-    body: `${field("Nome e Cognome", `<input name="name" autocomplete="off" maxlength="100" required>`)}
+    body: `${nameFields()}
       ${field("Ditta o Reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
+      ${contactFields()}
       ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
       ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Persone → Tipologie.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}`,
     actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
-      const body = {name: val(dlg, "name"), card: val(dlg, "card"), company: val(dlg, "company"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0)};
+      const body = {first_name: val(dlg, "first_name"), last_name: val(dlg, "last_name"), card: val(dlg, "card"), company: val(dlg, "company"), phone: val(dlg, "phone"), email: val(dlg, "email"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0)};
       // La validità è della tessera: senza, la durata della tipologia parte dalla prima tessera
       if (body.card) Object.assign(body, readValidity(dlg));
-      if (!body.name) { toast("Serve il nome", true); return false; }
+      if (!body.first_name && !body.last_name) { toast("Serve il nome o il cognome", true); return false; }
       const person = await run(() => api("api/persons", {method: "POST", body}), body.card ? "Persona registrata: la tessera è attiva sul controller" : "Persona registrata senza tessera");
       return person || false;
     }}],
@@ -2364,7 +2393,10 @@ async function openPerson(id) {
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
           <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
-        <dl class="props"><dt>Nome</dt><dd>${esc(p.name)}</dd><dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
+        <dl class="props"><dt>Nome</dt><dd>${esc(p.first_name || "—")}</dd><dt>Cognome</dt><dd>${esc(p.last_name || "—")}</dd>
+          <dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
+          <dt>Telefono</dt><dd>${p.phone ? `<a href="tel:${esc(p.phone.replace(/[^\d+]/g, ""))}">${esc(p.phone)}</a>` : "—"}</dd>
+          <dt>Email</dt><dd>${p.email ? `<a href="mailto:${esc(encodeURI(p.email))}">${esc(p.email)}</a>` : "—"}</dd>
           <dt>Note</dt><dd style="white-space:pre-wrap">${esc(p.notes || "—")}</dd></dl>
         ${p.axis_user_token ? `<details style="margin-top:10px"><summary class="small-text muted" style="cursor:pointer">Dettagli Tecnici</summary>
           <dl class="props" style="margin-top:8px"><dt>Codice sul Controller</dt><dd><code>${esc(p.axis_user_token)}</code></dd></dl></details>` : ""}</div>
@@ -2423,11 +2455,20 @@ async function openPerson(id) {
   $("[data-edit-data]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Dati di " + p.name,
-      body: `${field("Nome e Cognome", `<input name="name" value="${esc(p.name)}" maxlength="100">`)}
+      body: `${nameFields(p)}
         ${field("Ditta o Reparto", `<input name="company" value="${esc(p.company || "")}" maxlength="100">`)}
-        ${field("Note", `<textarea name="notes" maxlength="1000">${esc(p.notes || "")}</textarea>`)}`,
-      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await run(() => api(`api/persons/${id}`, {method: "PATCH", body: {name: val(dlg, "name"), company: val(dlg, "company"), notes: val(dlg, "notes")}}), "Dati aggiornati")) || false}],
+        ${contactFields(p)}
+        ${field("Note", `<textarea name="notes" maxlength="1000">${esc(p.notes || "")}</textarea>`)}
+        <p class="hint">Sul controller la persona ha il nome completo, «Nome Cognome»: se cambia, cambia anche lì. Telefono ed email restano solo nell'app.</p>`,
+      actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+        const body = {company: val(dlg, "company"), phone: val(dlg, "phone"), email: val(dlg, "email"), notes: val(dlg, "notes")};
+        const first = val(dlg, "first_name"), last = val(dlg, "last_name");
+        if (!first && !last) { toast("Serve il nome o il cognome", true); return false; }
+        // Nome e cognome solo se cambiati: com'erano non riscrivono il nome sul controller (anche con gli spazi doppi
+        // di un nome letto dal controller)
+        if (first !== (p.first_name || "").trim() || last !== (p.last_name || "").trim()) Object.assign(body, {first_name: first, last_name: last});
+        return (await run(() => api(`api/persons/${id}`, {method: "PATCH", body}), "Dati aggiornati")) || false;
+      }}],
     });
     if (ok) reload();
   };
@@ -2496,7 +2537,8 @@ async function viewUnknown(el) {
       if (await newPerson(b.dataset.new)) render();
     } else if (b.dataset.assign) {
       const number = b.dataset.assign;
-      const options = store.persons.map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
+      // Nello stesso ordine dell'elenco Persone: per cognome
+      const options = [...store.persons].sort(comparePersons).map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
       const ok = await modal({
         title: "Assegna Tessera " + number,
         body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.") : '<p class="muted">Nessuna persona registrata.</p>',
@@ -4956,7 +4998,7 @@ async function viewSettings(el, sub) {
         <div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio, «Nome Cognome» in una colonna, diviso al primo spazio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. Il file esportato ha in più <code>ultimo_accesso; telefono; email</code>, che l'importazione ignora: telefono ed email si scrivono nella scheda della persona. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>
         <div class="card"><h2>${icon("history")}Database dell'Add-on</h2>${dbRecovered ? `<div class="alert err">${icon("alert")}<div class="grow"><b>${esc(dbRecovered.title || (dbRecovered.text.includes("ripristinata la copia") ? "Database Ripristinato dalla Copia" : "Database Non Ripristinato"))}</b>${esc(capFirst(dbRecovered.text))} · ${esc(relTime(dbRecovered.at))}${dbRecovered.hint ? `<br>${esc(dbRecovered.hint)}` : ""}</div></div>` : ""}${props([
           ["Versione dello Schema", esc(s.database.schema)],
           // Il motivo dice già che la copia non è aggiornata ("copia non aggiornata (…)", "… resta la copia precedente")
