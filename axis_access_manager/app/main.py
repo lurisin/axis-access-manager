@@ -1163,6 +1163,14 @@ def create_app(
             person["last_access"] = last.get(person["id"], "")
         return result
 
+    # Prima di /api/persons/{person_id}, che altrimenti prenderebbe «photos» per un numero di persona
+    @app.get("/api/persons/photos", dependencies=[need("persone")])
+    async def person_photos(request: Request) -> dict[str, str]:
+        """Versione della foto di ogni persona che ne ha una, {numero: versione}: il Dettaglio Evento del registro
+        mostra la Foto in Anagrafica senza leggere tutte le persone né fare una richiesta per evento. Dall'indice,
+        senza i byte."""
+        return {str(person_id): version for person_id, version in request.app.state.db.person_photo_versions().items()}
+
     @app.post("/api/persons", dependencies=[need("persone_modifica")])
     async def create_person(body: PersonIn, request: Request) -> dict:
         return await request.app.state.service.create_person(

@@ -914,7 +914,16 @@ def test_persons_are_sorted_by_last_name_and_found_by_phone_and_email():
     out = run_page(
         "Europe/Rome",
         calls,
-        names=("personSortKey", "comparePersons", "foldText", "PHONE_MARKS", "personMatches"),
+        names=(
+            "personSortKey",
+            "nameCollator",
+            "comparePersons",
+            "foldText",
+            "PHONE_MARKS",
+            "personTexts",
+            "personHaystack",
+            "personMatches",
+        ),
         prelude=f"const persons = {json.dumps(persons)};",
     )
     # Abate, Àlvarez, bianchi anna, Bianchi Bruno, «Luca  Verdi» al nome, Ospite al nome, Rossi (solo cognome), Rossi

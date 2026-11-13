@@ -473,6 +473,19 @@
             display: grid; place-items: center; font-weight: 700; font-size: 14px; }
   .avatar.big { width: 52px; height: 52px; font-size: 18px; }
   .avatar.off { background: var(--surface-2); color: var(--muted); }
+  /* Foto della persona al posto delle iniziali (elenco, scheda, dettaglio evento) */
+  .avatar { overflow: hidden; }
+  .avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .avatar.sm { width: 32px; height: 32px; font-size: 12px; }
+  button.avatar { padding: 0; border: 1px solid var(--border); cursor: zoom-in; }
+  button.avatar:hover { filter: brightness(1.05); background: var(--accent-soft); }
+  /* Campo della foto: nascosto alla vista ma non display:none, che su alcuni telefoni non si apre dal pulsante */
+  .file-pick { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  /* Dettaglio Evento: Foto in Anagrafica, distinta da quella della telecamera */
+  .ev-photo-label { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  .ev-face { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+  .ev-face-img { width: 84px; height: 104px; padding: 0; border-radius: 10px; overflow: hidden; flex: none; cursor: zoom-in; background: var(--surface); }
+  .ev-face-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   /* Etichette piccole (controller e porte di un'area); i bollini della barra in alto sono .top-chip */
   .chip { display: inline-flex; align-items: center; gap: 4px; background: var(--surface-2); border: 1px solid var(--border);
@@ -489,6 +502,54 @@
   #p-list > .person-row:first-child { border-top: none; }
   .person-row:hover { background: var(--surface-2); }
   .person-row .name { flex: 1; min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+  /* Riga del telefono: foto (o iniziali) con il pallino della tipologia, nome e, se l'ordine non è per nome, il valore
+     usato per ordinare */
+  .p-face { position: relative; flex: none; display: inline-flex; }
+  .p-face > .swatch { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; box-shadow: 0 0 0 2px var(--surface); }
+  .person-row .p-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .person-row .p-main .name { flex: none; }
+  .p-sub { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Barra delle Persone: ricerca, stato, ordine, Nuova Persona */
+  .sort-pick { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); min-width: 0; }
+  .p-tools input[type=search] { flex: 1 1 260px; }
+  .p-tools select { max-width: 230px; }
+  /* Tabella delle Persone sul computer: colonne fisse, testi lunghi con i puntini (e il testo intero nel title), mai
+     più larga della pagina. Le colonne meno importanti spariscono quando il riquadro è stretto (menu aperto, finestra
+     piccola), tranne quella dell'ordine scelto */
+  .p-table-wrap { container: persone / inline-size; }
+  table.p-table { table-layout: fixed; }
+  /* table.table.p-table: più peso di table.table, che viene dopo (vertical-align: top) */
+  table.table.p-table th, table.table.p-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+  table.table.p-table td { padding-top: 6px; padding-bottom: 6px; height: 46px; }
+  table.table.p-table th { padding-top: 10px; }
+  table.table.p-table td.c-photo { text-overflow: clip; }
+  table.table.p-table th:first-child, table.table.p-table td:first-child { padding-left: 18px; }
+  table.table.p-table th:last-child, table.table.p-table td:last-child { padding-right: 18px; }
+  .p-table tbody tr:last-child td { border-bottom: none; }
+  .p-table .c-photo { width: 64px; }
+  .p-table .c-emp { width: 92px; }
+  .p-table .c-cards { width: 72px; }
+  .p-table .c-access, .p-table .c-extra { width: 128px; }
+  .p-table .c-state { width: 168px; }
+  .p-table .avatar { display: inline-grid; vertical-align: middle; }
+  .p-table .c-last, .p-table .c-first { font-weight: 600; }
+  .p-table td.c-emp { font-variant-numeric: tabular-nums; }
+  .p-table .c-cat .swatch { vertical-align: -1px; margin-right: 7px; }
+  .p-table td.c-state .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle; }
+  .th-sort { border: none; background: none; padding: 2px 6px; margin: -2px -6px; border-radius: 6px; color: inherit; font: inherit; gap: 4px;
+             max-width: calc(100% + 12px); justify-content: flex-start; }
+  .th-sort:hover { background: var(--surface-2); color: var(--text); }
+  .th-sort > span:first-child { overflow: hidden; text-overflow: ellipsis; }
+  .p-table th[aria-sort] { color: var(--text); font-weight: 600; }
+  .th-sort .arrow { font-size: 12px; }
+  .p-table tbody tr[data-person] { cursor: pointer; }
+  .p-table tbody tr[data-person]:hover td, .p-table tbody tr[data-person]:focus-visible td { background: var(--surface-2); }
+  .p-table tbody tr:focus-visible { outline-offset: -2px; }
+  table.table.p-table tr.sec td { background: var(--surface-2); font-size: 12px; font-weight: 700; color: var(--muted); padding-top: 4px; padding-bottom: 4px; height: auto; overflow: visible; }
+  @container persone (max-width: 979px) { .p-table .c-cards:not(.sorted) { display: none; } }
+  @container persone (max-width: 859px) { .p-table .c-emp:not(.sorted) { display: none; } .p-table .c-state { width: 156px; } }
+  @container persone (max-width: 759px) { .p-table .c-company:not(.sorted) { display: none; } }
+  @container persone (max-width: 599px) { .p-table .c-access:not(.sorted) { display: none; } }
   .chip svg.icon { width: 14px; height: 14px; }
   .ev-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none; font-size: 16px; }
   .ev-icon svg { width: 18px; height: 18px; fill: currentColor; }
@@ -695,6 +756,11 @@
     .topbar { position: relative; }
     .top-pop { right: 8px; }
     .toolbar input[type=date], .toolbar select { flex: 1 1 40%; }
+    /* Persone: ricerca su una riga, stato e ordine sotto, Nuova Persona in fondo a tutta larghezza */
+    .p-tools .sort-pick { flex: 1 1 40%; }
+    .p-tools select { max-width: none; }
+    .p-tools .sort-pick select { flex: 1 1 auto; width: 100%; }
+    .p-tools #p-new { flex: 1 1 100%; }
     .fields-2 { grid-template-columns: 1fr; }
     dialog { width: calc(100vw - 16px); }
   }
@@ -795,6 +861,7 @@ const ICONS = {
   user: "M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,14C16.42,14 20,15.79 20,18V20H4V18C4,15.79 7.58,14 12,14Z",
   lock: "M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z",
   lockopen: "M18,1C15.24,1 13,3.24 13,6V8H4C2.9,8 2,8.89 2,10V20C2,21.11 2.9,22 4,22H16C17.11,22 18,21.11 18,20V10C18,8.9 17.11,8 16,8H15V6C15,4.34 16.34,3 18,3C19.66,3 21,4.34 21,6V8H23V6C23,3.24 20.76,1 18,1M10,13C11.1,13 12,13.89 12,15C12,16.1 11.1,17 10,17C8.9,17 8,16.11 8,15C8,13.9 8.9,13 10,13Z",
+  sort: "M18,21L14,17H17V7H14L18,3L22,7H19V17H22M2,19V17H12V19M2,13V11H9V13M2,7V5H6V7H2Z",
   history: "M13.5,8H12V13L16.28,15.54L17,14.33L13.5,12.25V8M13,3A9,9 0 0,0 4,12H1L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3",
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ""}"/></svg>`;
@@ -933,6 +1000,8 @@ const fmtDay = (day, options) => day ? new Date(day + "T12:00:00Z").toLocaleDate
 const fmtDateTime = (iso) => iso ? `${new Date(iso).toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit", year: "numeric"}))} ${fmtTime(iso)}` : "";
 const fmtFull = (iso) => iso ? new Date(iso).toLocaleString("it-IT", zoned({dateStyle: "medium", timeStyle: "medium"})) : "";
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", zoned({day: "numeric", month: "short", year: "numeric"})) : "";
+// Solo il giorno, in cifre (12/11/2026): Inserita il e Modificata il dell'elenco Persone
+const fmtNumDay = (iso) => iso ? new Date(iso).toLocaleDateString("it-IT", zoned({day: "2-digit", month: "2-digit", year: "numeric"})) : "";
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("it-IT", zoned({hour: "2-digit", minute: "2-digit"})) : "";
 // "adesso", "5 min fa", poi come dayTime: "oggi 13:34", "ieri 13:34" (dal calendario) o "24/10/2026 13:34".
 // Più avanti di adesso (orologio del controller avanti): l'ora vera, non "adesso"
@@ -1039,11 +1108,12 @@ async function api(path, options = {}) {
   let res;
   try {
     // X-AAM-Request: dall'accesso diretto le modifiche senza questa intestazione si rifiutano (un altro sito non può
-    // mandarla)
+    // mandarla). raw: un Blob mandato com'è (la foto della persona), body: dati in JSON
+    const type = options.raw ? options.raw.type || "application/octet-stream" : options.body !== undefined ? "application/json" : "";
     res = await fetch(path, {
       method,
-      headers: options.body !== undefined ? {"Content-Type": "application/json", "X-AAM-Request": "1"} : {"X-AAM-Request": "1"},
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+      headers: type ? {"Content-Type": type, "X-AAM-Request": "1"} : {"X-AAM-Request": "1"},
+      body: options.raw || (options.body !== undefined ? JSON.stringify(options.body) : undefined),
     });
   } catch (err) {
     // Rete o add-on caduti a metà richiesta: il browser direbbe solo "Failed to fetch", e una modifica può essere arrivata
@@ -2242,7 +2312,27 @@ async function viewDoorDetail(el, id, doors) {
 }
 
 // ---------- Persone ----------
-const personFilters = {q: "", state: "", category: ""};
+// Ordini dell'elenco, «chiave:direzione», nell'ordine della tendina Ordina per; le intestazioni della tabella usano le
+// stesse chiavi. Predefinito: per cognome, come prima
+const PERSON_SORTS = [
+  ["cognome:asc", "Cognome A→Z"], ["cognome:desc", "Cognome Z→A"], ["nome:asc", "Nome A→Z"], ["nome:desc", "Nome Z→A"],
+  ["matricola:asc", "Matricola A→Z"], ["matricola:desc", "Matricola Z→A"], ["ditta:asc", "Ditta A→Z"], ["ditta:desc", "Ditta Z→A"],
+  ["tipologia:asc", "Tipologia A→Z"], ["tipologia:desc", "Tipologia Z→A"],
+  ["accesso:desc", "Ultimo Accesso Più Recente"], ["accesso:asc", "Ultimo Accesso Meno Recente"],
+  ["inserimento:desc", "Data di Inserimento Più Recente"], ["inserimento:asc", "Data di Inserimento Meno Recente"],
+  ["modifica:desc", "Ultima Modifica Più Recente"], ["modifica:asc", "Ultima Modifica Meno Recente"],
+];
+const PERSON_SORT_DEFAULT = "cognome:asc";
+// Chiavi con una data: il primo clic sull'intestazione mette in cima la più recente
+const PERSON_SORT_DATES = ["accesso", "inserimento", "modifica"];
+// Ordine scelto, ricordato nel browser. Senza localStorage (navigazione privata, dati bloccati) o con un valore che
+// non c'è più resta il predefinito
+function savedPersonSort() {
+  let saved = "";
+  try { saved = localStorage.getItem("aam-persone-ordine") || ""; } catch (err) { /* facoltativo */ }
+  return PERSON_SORTS.some(([value]) => value === saved) ? saved : PERSON_SORT_DEFAULT;
+}
+const personFilters = {q: "", state: "", category: "", sort: savedPersonSort()};
 async function loadPersons() {
   store.persons = await api("api/persons");
   return store.persons;
@@ -2250,22 +2340,83 @@ async function loadPersons() {
 // Elenco per cognome e poi nome, senza distinguere maiuscole e accenti; chi non ha il cognome sta al suo nome. Si mostra
 // sempre il nome completo, «Nome Cognome», come sul controller, nel registro e in Home Assistant
 const personSortKey = (p) => p.last_name || p.first_name || p.name || "";
+// Confronti fatti una volta sola per il browser, non uno nuovo per ogni coppia (con 2000 persone si sentirebbe). Le
+// matricole con i numeri in ordine di valore: 2 prima di 10
+const nameCollator = new Intl.Collator("it", {sensitivity: "base"});
+const codeCollator = new Intl.Collator("it", {sensitivity: "base", numeric: true});
 function comparePersons(a, b) {
-  const opts = {sensitivity: "base"};
   const given = (p) => p.last_name ? p.first_name || "" : "";
-  return personSortKey(a).localeCompare(personSortKey(b), "it", opts) || given(a).localeCompare(given(b), "it", opts)
-    || (a.name || "").localeCompare(b.name || "", "it", opts) || a.id - b.id;
+  return nameCollator.compare(personSortKey(a), personSortKey(b)) || nameCollator.compare(given(a), given(b))
+    || nameCollator.compare(a.name || "", b.name || "") || a.id - b.id;
+}
+// Valore della persona per l'ordine scelto: testo, numero (le date) o "" se manca. Per nome chi non ha il nome sta al
+// suo cognome, come per cognome chi non ha il cognome sta al suo nome
+function personSortValue(p, key) {
+  switch (key) {
+    case "nome": return p.first_name || p.last_name || p.name || "";
+    case "matricola": return p.employee_id || "";
+    case "ditta": return p.company || "";
+    case "tipologia": return categoryOf(p.category_id)?.name || "";
+    case "accesso": return Date.parse(p.last_access || "") || "";
+    case "inserimento": return Date.parse(p.created_at || "") || "";
+    case "modifica": return Date.parse(p.updated_at || "") || "";
+    default: return personSortKey(p);
+  }
+}
+// Persone nell'ordine scelto. I valori vuoti (senza matricola, senza ditta, nessun accesso…) stanno sempre in fondo,
+// anche nell'ordine inverso; a parità di valore vale l'ordine per cognome. Ogni valore si calcola una volta sola
+function sortPersons(rows, sort) {
+  const [key, dir] = sort.split(":");
+  const sign = dir === "desc" ? -1 : 1;
+  const text = key === "matricola" ? codeCollator : nameCollator;
+  const base = [...rows].sort(comparePersons);
+  const rank = new Map(base.map((p, i) => [p, i]));
+  const value = new Map(base.map((p) => [p, personSortValue(p, key)]));
+  return base.sort((a, b) => {
+    const x = value.get(a), y = value.get(b);
+    if (x === "" || y === "") return (x === "") - (y === "") || rank.get(a) - rank.get(b);
+    return sign * (typeof x === "number" ? x - y : text.compare(x, y)) || rank.get(a) - rank.get(b);
+  });
+}
+// Lettera di sezione (con più di 12 persone), solo con l'ordine per cognome o per nome: l'iniziale del campo usato
+function personLetter(p, key) {
+  if (key !== "cognome" && key !== "nome") return "";
+  return (foldText(personSortValue(p, key)).trim()[0] || "#").toLocaleUpperCase("it");
+}
+// Sul telefono, sotto il nome, il valore usato per ordinare (niente con l'ordine per cognome o per nome)
+function personSortNote(p, key) {
+  switch (key) {
+    case "matricola": return p.employee_id ? `Matricola ${p.employee_id}` : "Senza matricola";
+    case "ditta": return p.company || "Senza ditta";
+    case "tipologia": return categoryOf(p.category_id)?.name || "Senza tipologia";
+    case "accesso": return p.last_access ? `Ultimo accesso ${relTime(p.last_access)}` : "Nessun accesso registrato";
+    case "inserimento": return p.created_at ? `Inserita il ${fmtNumDay(p.created_at)}` : "";
+    case "modifica": return p.updated_at ? `Modificata il ${fmtNumDay(p.updated_at)}` : "";
+    default: return "";
+  }
 }
 // Testo per la ricerca: minuscolo e senza accenti
 const foldText = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
 // Separatori di un numero di telefono: la ricerca lo trova anche scritto senza spazi
 const PHONE_MARKS = /[\s.\-\/()]/g;
-// Ricerca dell'elenco: nome completo, nome, cognome (anche «Cognome Nome»), ditta, numero tessera, telefono ed email
+// Testo in cui cercare, preparato una volta per persona (l'elenco nuovo, ogni 15 secondi, sono oggetti nuovi): nome
+// completo, nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono, email, numeri delle tessere e note.
+// Un campo per riga: una ricerca non trova la fine di un campo unita all'inizio del successivo
+const personTexts = new WeakMap();
+function personHaystack(p) {
+  let text = personTexts.get(p);
+  if (text === undefined) {
+    text = foldText([p.name, p.first_name, p.last_name, `${p.last_name || ""} ${p.first_name || ""}`, p.employee_id, p.company, p.referent,
+      p.phone, p.email, ...(p.cards || []).map((c) => c.number), p.notes].map((f) => String(f || "").replace(/\s+/g, " ")).join("\n"));
+    personTexts.set(p, text);
+  }
+  return text;
+}
+// Ricerca dell'elenco su tutti i campi della persona; il telefono anche scritto senza spazi né trattini
 function personMatches(p, q) {
-  const text = foldText(q).trim();
+  const text = foldText(q).trim().replace(/\s+/g, " ");
   if (!text) return true;
-  const fields = [p.name, p.first_name, p.last_name, `${p.last_name || ""} ${p.first_name || ""}`, p.company, p.email, p.phone, ...(p.cards || []).map((c) => c.number)];
-  if (fields.some((f) => foldText(f).includes(text))) return true;
+  if (personHaystack(p).includes(text)) return true;
   const digits = text.replace(PHONE_MARKS, "");
   return Boolean(digits && p.phone && p.phone.replace(PHONE_MARKS, "").includes(digits));
 }
@@ -2280,18 +2431,19 @@ async function viewPersons(el, sub) {
   // Nel frattempo si è aperta un'altra pagina: niente elenco né scheda sopra di lei
   if (!el.isConnected) return;
   el.innerHTML = `${personTabs("")}
-    <div class="toolbar">
-      <input type="search" id="p-q" placeholder="Cerca nome, ditta, tessera o telefono" title="Cerca per nome, cognome, ditta, numero tessera, telefono (anche senza spazi) o email" value="${esc(personFilters.q)}">
-      <select id="p-state">
+    <div class="toolbar p-tools">
+      <input type="search" id="p-q" placeholder="Cerca nome, tessera, matricola…" aria-label="Cerca persone" title="Cerca per nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono (anche senza spazi), email, numero tessera o note" value="${esc(personFilters.q)}">
+      <select id="p-state" aria-label="Mostra">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
         <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
         <option value="mancanti">Non Presenti sul Controller</option><option value="senza">Senza Tessera</option>
       </select>
+      <label class="sort-pick" title="Ordina per">${icon("sort")}<select id="p-sort" aria-label="Ordina per">${PERSON_SORTS.map(([value, label]) => `<option value="${value}">${esc(label)}</option>`).join("")}</select></label>
       <button type="button" class="primary w-persone" id="p-new">${icon("plus")}Nuova Persona</button>
     </div>
     <div id="p-missing"></div>
     <div class="chips" id="p-cats" style="margin:-6px 0 14px"></div>
-    <div class="card flush"><h2 style="padding-bottom:12px"><span id="p-count" class="muted small-text"></span><span class="spacer"></span>
+    <div class="card flush p-table-wrap"><h2 style="padding-bottom:12px"><span id="p-count" class="muted small-text"></span><span class="spacer"></span>
       <button type="button" class="small ghost w-persone" id="p-sync" title="Rilegge tessere e utenti dal controller">${icon("refresh")}Rileggi dal Controller</button></h2>
       <div class="list" id="p-list"></div></div>`;
   $("#p-cats").addEventListener("click", (e) => {
@@ -2301,8 +2453,10 @@ async function viewPersons(el, sub) {
     renderPersonList();
   });
   $("#p-state").value = personFilters.state;
+  $("#p-sort").value = personFilters.sort;
   $("#p-q").addEventListener("input", (e) => { personFilters.q = e.target.value; renderPersonList(); });
   $("#p-state").addEventListener("change", (e) => { personFilters.state = e.target.value; renderPersonList(); });
+  $("#p-sort").addEventListener("change", (e) => setPersonSort(e.target.value));
   $("#p-new").addEventListener("click", () => newPerson());
   $("#p-sync").addEventListener("click", async (e) => {
     // Il pulsante e non l'icona su cui si è cliccato: resta disabilitato fino alla fine della rilettura
@@ -2313,14 +2467,27 @@ async function viewPersons(el, sub) {
     if (r) { toast(`Riletto dal controller: ${plural(r.cards, "tessera", "tessere")} (${plural(r.added, "nuova", "nuove")}${r.missing ? `, ${plural(r.missing, "non presente", "non presenti")} sul controller` : ""})`); await loadPersons(); renderPersonList(); }
   });
   $("#p-list").addEventListener("click", (e) => {
+    // Intestazione della tabella: stessa colonna, ordine inverso; un'altra colonna, il suo ordine di partenza
+    const head = e.target.closest("[data-sort]");
+    if (head) {
+      const [key, dir] = personFilters.sort.split(":"), next = head.dataset.sort;
+      setPersonSort(next === key ? `${key}:${dir === "asc" ? "desc" : "asc"}` : `${next}:${PERSON_SORT_DATES.includes(next) ? "desc" : "asc"}`);
+      return;
+    }
     const item = e.target.closest("[data-person]");
     if (!item) return;
     history.pushState(null, "", `#persone/${item.dataset.person}`);
     openPerson(Number(item.dataset.person));
   });
-  $("#p-list").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.closest("[data-person]")) { e.preventDefault(); e.target.click(); } });
+  $("#p-list").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-person]")) { e.preventDefault(); e.target.click(); } });
   renderPersonList();
   if (sub) openPerson(Number(sub));
+}
+// Ordine scelto dalla tendina o dalle intestazioni: ricordato nel browser, se si può
+function setPersonSort(sort) {
+  personFilters.sort = PERSON_SORTS.some(([value]) => value === sort) ? sort : PERSON_SORT_DEFAULT;
+  try { localStorage.setItem("aam-persone-ordine", personFilters.sort); } catch (err) { /* facoltativo */ }
+  renderPersonList();
 }
 // Aggiornamento periodico della pagina: l'avviso delle tessere non presenti segue le riletture dal controller
 async function refreshPersons() {
@@ -2333,6 +2500,27 @@ async function refreshPersons() {
 const missingCards = () => store.persons.flatMap((p) => p.cards.filter((c) => c.missing_since));
 // Tessera che oggi apre: abilitata, presente sul controller e nel suo periodo di validità
 const cardActive = (c) => c.enabled && !c.missing_since && !["scaduta", "futura"].includes(validityState(c.valid_from, c.valid_to));
+// Foto della persona con la sua versione nell'indirizzo: il browser la tiene finché non cambia, e l'aggiornamento
+// dell'elenco ogni 15 secondi non la scarica di nuovo. Non è la foto della telecamera degli eventi
+const photoUrl = (p) => `api/persons/${p.id}/photo?v=${encodeURIComponent(p.photo)}`;
+// Foto rotonda della persona, o le sue iniziali se non ne ha (o se intanto è stata tolta: vedi l'ascoltatore di error)
+const personAvatar = (p, cls = "") => `<span class="avatar ${cls}">${p.photo ? `<img src="${esc(photoUrl(p))}" alt="" loading="lazy" decoding="async" data-initials="${esc(initials(p.name))}">` : esc(initials(p.name))}</span>`;
+// Foto tolta da un'altra scheda prima dell'aggiornamento dell'elenco: al posto dell'immagine rotta le iniziali
+document.addEventListener("error", (e) => {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  const face = img.closest("[data-face]");
+  if (face) face.hidden = true;
+  else if (img.dataset.initials !== undefined) img.replaceWith(img.dataset.initials);
+}, true);
+// Etichetta dello stato, solo se c'è qualcosa da sistemare o da sapere; il resto è nella scheda
+function personFlag(p) {
+  const a = personAccess(p);
+  const suspended = p.cards.length && !p.cards.some((c) => c.enabled);
+  return p.cards.some((c) => c.missing_since) ? '<span class="pill err" title="Tessera sparita dal controller: riscrivila o toglila dall\'app">Non sul Controller</span>'
+    : !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>'
+    : VALIDITY_PILL[validityState(a.from, a.to)] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
+}
 function renderPersonList() {
   const list = $("#p-list");
   if (!list) return;
@@ -2352,31 +2540,72 @@ function renderPersonList() {
   const cards = store.persons.reduce((n, p) => n + p.cards.length, 0);
   $("#p-count").textContent = `${plural(store.persons.length, "persona", "persone")} · ${plural(cards, "tessera", "tessere")}` + (rows.length !== store.persons.length ? ` · ${plural(rows.length, "mostrata", "mostrate")}` : "");
   // Tipologie come filtri rapidi, con il numero di persone di ognuna
-  const count = (id) => store.persons.filter((p) => (p.category_id || 0) === id).length;
+  const counts = new Map();
+  store.persons.forEach((p) => counts.set(p.category_id || 0, (counts.get(p.category_id || 0) || 0) + 1));
   const chip = (value, label, n, color = "") => `<button type="button" class="chip-btn ${personFilters.category === value ? "on" : ""}" data-cat="${value}" data-key="cat${value}">${color ? `<span class="swatch c-${esc(color)}"></span>` : ""}${esc(label)} <span class="muted">${n}</span></button>`;
-  const none = count(0);
+  const none = counts.get(0) || 0;
   // Con morph e non innerHTML: l'aggiornamento ogni 15 secondi (refreshPersons) lascia il fuoco sulla riga o sul filtro
-  morph($("#p-cats"), store.categories.length ? chip("", "Tutte", store.persons.length) + store.categories.map((c) => chip(String(c.id), c.name, count(c.id), c.color)).join("") + (none ? chip("0", "Senza Tipologia", none) : "") : "");
-  // Elenco essenziale: nome e tipologia, un'etichetta solo se c'è qualcosa da sistemare; il resto è nella scheda
-  const sorted = [...rows].sort(comparePersons);
-  let letter = "";
-  morph(list, sorted.length ? sorted.map((p) => {
-    const a = personAccess(p);
-    const vs = validityState(a.from, a.to);
-    const suspended = p.cards.length && !p.cards.some((c) => c.enabled);
-    const flag = p.cards.some((c) => c.missing_since) ? '<span class="pill err" title="Tessera sparita dal controller: riscrivila o toglila dall\'app">Non sul Controller</span>'
-      : !p.cards.length ? '<span class="pill">Senza Tessera</span>' : suspended ? '<span class="pill">Sospesa</span>' : VALIDITY_PILL[vs] || (customAccess(p) ? '<span class="pill warn" title="Accesso diverso da quello della tipologia">Accesso Personalizzato</span>' : "");
-    const c = categoryOf(p.category_id);
-    // Iniziale del cognome (o del nome, senza cognome), come l'ordine dell'elenco
-    const first = (foldText(personSortKey(p)).trim()[0] || "#").toLocaleUpperCase("it");
-    const head = sorted.length > 12 && first !== letter ? `<div class="day" data-key="h${esc(first)}">${esc(first)}</div>` : "";
-    letter = first;
-    return `${head}<div class="person-row" data-person="${p.id}" data-key="p${p.id}" role="button" tabindex="0">
-      <span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span>
-      <span class="name">${esc(p.name)}</span>${flag}
-    </div>`;
-  }).join("") : `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : can("persone_modifica") ? "Nessuna persona registrata: aggiungila con Nuova Persona, anche senza tessera, oppure passa una tessera sul lettore e registrala dalla pagina Da Registrare." : "Nessuna persona registrata."}</div>`);
+  morph($("#p-cats"), store.categories.length ? chip("", "Tutte", store.persons.length) + store.categories.map((c) => chip(String(c.id), c.name, counts.get(c.id) || 0, c.color)).join("") + (none ? chip("0", "Senza Tipologia", none) : "") : "");
+  // La tendina segue anche le intestazioni della tabella
+  const pick = $("#p-sort");
+  if (pick && pick.value !== personFilters.sort) pick.value = personFilters.sort;
+  if (!rows.length) {
+    morph(list, `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : can("persone_modifica") ? "Nessuna persona registrata: aggiungila con Nuova Persona, anche senza tessera, oppure passa una tessera sul lettore e registrala dalla pagina Da Registrare." : "Nessuna persona registrata."}</div>`);
+    return;
+  }
+  const sorted = sortPersons(rows, personFilters.sort);
+  // Sul telefono righe essenziali, sul computer una tabella con le colonne
+  morph(list, phoneLayout() ? personRows(sorted) : personTable(sorted));
 }
+// Telefono: foto o iniziali con il pallino della tipologia, «Nome Cognome», l'etichetta dello stato e, se l'ordine
+// non è per cognome o per nome, il valore usato per ordinare
+function personRows(sorted) {
+  const key = personFilters.sort.split(":")[0];
+  let letter = "";
+  return sorted.map((p) => {
+    const first = sorted.length > 12 ? personLetter(p, key) : "";
+    const head = first && first !== letter ? `<div class="day" data-key="h${esc(first)}">${esc(first)}</div>` : "";
+    letter = first;
+    const c = categoryOf(p.category_id);
+    const note = personSortNote(p, key);
+    return `${head}<div class="person-row" data-person="${p.id}" data-key="p${p.id}" role="button" tabindex="0">
+      <span class="p-face">${personAvatar(p, "sm")}<span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span></span>
+      <span class="p-main"><span class="name">${esc(p.name)}</span>${note ? `<span class="p-sub">${esc(note)}</span>` : ""}</span>${personFlag(p)}
+    </div>`;
+  }).join("");
+}
+// Computer: tabella con le intestazioni che ordinano (un pulsante in ogni intestazione, aria-sort su quella scelta).
+// Con l'ordine per data di inserimento o di modifica compare anche la colonna con quella data
+function personTable(sorted) {
+  const [key, dir] = personFilters.sort.split(":");
+  const extra = key === "inserimento" ? "Data di Inserimento" : key === "modifica" ? "Ultima Modifica" : "";
+  const columns = [["c-photo", "Foto", ""], ["c-last", "Cognome", "cognome"], ["c-first", "Nome", "nome"], ["c-emp", "Matricola", "matricola"],
+    ["c-company", "Ditta", "ditta"], ["c-cat", "Tipologia", "tipologia"], ["c-cards", "Tessere", ""], ["c-access", "Ultimo Accesso", "accesso"],
+    ...(extra ? [["c-extra", extra, key]] : []), ["c-state", "Stato", ""]];
+  const on = (k) => k && k === key ? " sorted" : "";
+  const head = columns.map(([cls, label, k]) => !k ? `<th class="${cls}" scope="col">${label}</th>`
+    : `<th class="${cls}${on(k)}" scope="col"${on(k) ? ` aria-sort="${dir === "desc" ? "descending" : "ascending"}"` : ""}><button type="button" class="th-sort" data-sort="${k}" title="Ordina per ${label}"><span>${label}</span><span class="arrow" aria-hidden="true">${on(k) ? (dir === "desc" ? "↓" : "↑") : ""}</span></button></th>`).join("");
+  const dash = '<span class="muted">—</span>';
+  const text = (cls, value, k) => `<td class="${cls}${on(k)}"${value ? ` title="${esc(value)}"` : ""}>${value ? esc(value) : dash}</td>`;
+  const when = (cls, iso, k, shown) => `<td class="${cls}${on(k)}"${iso ? ` title="${esc(fmtFull(iso))}"` : ""}>${iso ? esc(shown(iso)) : dash}</td>`;
+  let letter = "";
+  const body = sorted.map((p) => {
+    const first = sorted.length > 12 ? personLetter(p, key) : "";
+    // Una cella per colonna, con le classi delle colonne: un colspan contato su tutte le colonne, con quelle nascoste
+    // dal riquadro stretto, lascerebbe colonne vuote in fondo
+    const section = first && first !== letter ? `<tr class="sec" data-key="h${esc(first)}">${columns.map(([cls], i) => `<td class="${cls}${on(columns[i][2])}">${i ? "" : esc(first)}</td>`).join("")}</tr>` : "";
+    letter = first;
+    const c = categoryOf(p.category_id);
+    return `${section}<tr data-person="${p.id}" data-key="p${p.id}" tabindex="0">
+      <td class="c-photo">${personAvatar(p, "sm")}</td>${text("c-last", p.last_name, "cognome")}${text("c-first", p.first_name, "nome")}${text("c-emp", p.employee_id, "matricola")}${text("c-company", p.company, "ditta")}
+      <td class="c-cat${on("tipologia")}"${c ? ` title="${esc(c.name)}"` : ""}>${c ? `<span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}` : dash}</td>
+      <td class="c-cards">${p.cards.length || dash}</td>${when("c-access", p.last_access, "accesso", relTime)}${extra ? when("c-extra", key === "inserimento" ? p.created_at : p.updated_at, key, fmtNumDay) : ""}
+      <td class="c-state">${personFlag(p)}</td></tr>`;
+  }).join("");
+  return `<table class="table p-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+// Telefono girato o finestra allargata oltre gli 860 px (o il contrario): righe o tabella
+window.matchMedia("(max-width: 860px)").addEventListener("change", () => renderPersonList());
 
 // Tessere sparite dal controller (reset, sostituzione, cancellate a mano): l'app non le cancella da sola
 function renderMissingBanner() {
@@ -2499,7 +2728,8 @@ async function newPerson(card = "") {
       ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
       ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Persone → Tipologie.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
-      ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}`,
+      ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}
+      <p class="hint">La Foto della Persona si aggiunge dalla sua scheda, dopo averla registrata. Telefono, email, matricola, referente e foto restano solo nell'app.</p>`,
     actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
       const body = {first_name: val(dlg, "first_name"), last_name: val(dlg, "last_name"), card: val(dlg, "card"), company: val(dlg, "company"), phone: val(dlg, "phone"), email: val(dlg, "email"), employee_id: val(dlg, "employee_id"), referent: val(dlg, "referent"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0)};
       // La validità è della tessera: senza, la durata della tipologia parte dalla prima tessera
@@ -2520,6 +2750,52 @@ async function newPerson(card = "") {
     if (route.name === "persone") { await loadPersons(); renderPersonList(); } else await render();
   }
   return created;
+}
+
+// Foto della persona scelta dal telefono (fotocamera o galleria: niente capture, il browser offre tutte e due) o dal
+// computer. Letta nel browser, girata come quando è stata scattata, al massimo 600 px sul lato lungo, in JPEG sotto i
+// 512 KB del server. Un'immagine che il browser non sa leggere (HEIC su Chrome per computer, un file che non è
+// un'immagine) non parte neanche
+const PHOTO_SIDE = 600;
+const PHOTO_BYTES = 512 * 1024;
+const PHOTO_UNREADABLE = "questa immagine non si può leggere: usa una foto JPEG o PNG";
+async function decodePhoto(file) {
+  try {
+    const bitmap = await createImageBitmap(file, {imageOrientation: "from-image"});
+    return {image: bitmap, width: bitmap.width, height: bitmap.height, done: () => bitmap.close()};
+  } catch (err) { /* sotto, con un'immagine della pagina (browser senza imageOrientation) */ }
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  try {
+    img.src = url;
+    await img.decode();
+  } catch (err) {
+    URL.revokeObjectURL(url);
+    throw new Error(PHOTO_UNREADABLE);
+  }
+  return {image: img, width: img.naturalWidth, height: img.naturalHeight, done: () => URL.revokeObjectURL(url)};
+}
+async function photoBlob(file) {
+  const source = await decodePhoto(file);
+  try {
+    if (!source.width || !source.height) throw new Error(PHOTO_UNREADABLE);
+    const scale = Math.min(1, PHOTO_SIDE / Math.max(source.width, source.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(source.width * scale));
+    canvas.height = Math.max(1, Math.round(source.height * scale));
+    const ctx = canvas.getContext("2d");
+    // Fondo bianco: le parti trasparenti di un PNG in JPEG diventerebbero nere
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(source.image, 0, 0, canvas.width, canvas.height);
+    // Qualità 0,85; più bassa solo se supera i 512 KB (a 600 px non succede quasi mai)
+    for (const quality of [0.85, 0.75, 0.6, 0.45]) {
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+      if (!blob) break;
+      if (blob.size <= PHOTO_BYTES) return blob;
+    }
+    throw new Error(PHOTO_UNREADABLE);
+  } finally { source.done(); }
 }
 
 // Scheda persona
@@ -2546,8 +2822,14 @@ async function openPerson(id) {
     const state = validityState(c.valid_from, c.valid_to);
     return state === "scaduta" || state === "futura" ? VALIDITY_PILL[state] : '<span class="pill ok">Attiva</span>';
   };
+  // Foto della persona: la vede chi vede le persone, la cambia chi le modifica. Scelta da un campo file nascosto alla
+  // vista, aperto dal pulsante: dal telefono fotocamera o galleria
+  const editPhoto = can("persone_modifica");
+  const photoCell = `<div class="row">${p.photo ? `<button type="button" class="avatar" data-photo-view aria-label="Ingrandisci la foto di ${esc(p.name)}" title="Ingrandisci la foto"><img src="${esc(photoUrl(p))}" alt=""></button>` : editPhoto ? "" : "—"}
+    ${editPhoto ? `<span class="row w-persone">${p.photo ? `<button type="button" class="small" data-photo-pick>${icon("camera")}Cambia Foto</button><button type="button" class="small danger" data-photo-del>Togli Foto</button>`
+      : `<button type="button" class="small" data-photo-pick>${icon("camera")}Aggiungi Foto</button>`}<input type="file" accept="image/*" class="file-pick" data-photo-file tabindex="-1" aria-hidden="true"></span>` : ""}</div>`;
   sheet.innerHTML = `<div class="dlg">
-    <div class="dlg-head"><div class="avatar big">${esc(initials(p.name))}</div>
+    <div class="dlg-head">${p.photo ? `<button type="button" class="avatar big" data-photo-view aria-label="Ingrandisci la foto di ${esc(p.name)}" title="Ingrandisci la foto"><img src="${esc(photoUrl(p))}" alt=""></button>` : `<div class="avatar big">${esc(initials(p.name))}</div>`}
       <div style="flex:1;min-width:0"><h2 style="margin:0">${esc(p.name)}</h2><div class="muted small-text">${esc(p.company || "")}${p.company ? " · " : ""}${p.last_access ? "ultimo accesso " + esc(relTime(p.last_access)) : "nessun accesso registrato"}</div></div>
       <button type="button" class="ghost icon-only" data-close aria-label="Chiudi">${icon("close")}</button></div>
     <div class="dlg-body" tabindex="-1" autofocus style="outline:none">
@@ -2566,7 +2848,8 @@ async function openPerson(id) {
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
           <button type="button" class="small danger" data-del-card="${c.id}">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
-        <dl class="props"><dt>Nome</dt><dd>${esc(p.first_name || "—")}</dd><dt>Cognome</dt><dd>${esc(p.last_name || "—")}</dd>
+        <dl class="props"><dt>Foto</dt><dd>${photoCell}</dd>
+          <dt>Nome</dt><dd>${esc(p.first_name || "—")}</dd><dt>Cognome</dt><dd>${esc(p.last_name || "—")}</dd>
           <dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
           <dt>Telefono</dt><dd>${p.phone ? `<a href="tel:${esc(p.phone.replace(/[^\d+]/g, ""))}">${esc(p.phone)}</a>` : "—"}</dd>
           <dt>Email</dt><dd>${p.email ? `<a href="${esc(mailtoHref(p.email))}">${esc(p.email)}</a>` : "—"}</dd>
@@ -2626,6 +2909,19 @@ async function openPerson(id) {
   };
   if ($("[data-align]", sheet)) $("[data-align]", sheet).onclick = async () => {
     if (await run(() => api(`api/persons/${id}/align`, {method: "POST"}), "Accesso riportato a quello della tipologia", "Allineamento dell'accesso sul controller")) reload();
+  };
+  $$("[data-photo-view]", sheet).forEach((b) => { b.onclick = () => showImage(photoUrl(p), `Foto di ${p.name}`); });
+  const picker = $("[data-photo-file]", sheet);
+  $$("[data-photo-pick]", sheet).forEach((b) => { b.onclick = () => { picker.value = ""; picker.click(); }; });
+  if (picker) picker.onchange = async () => {
+    const file = picker.files[0];
+    if (!file) return;
+    // Preparata nel browser (photoBlob) e mandata, tutto dentro il riquadro di attesa
+    if (await run(async () => api(`api/persons/${id}/photo`, {method: "PUT", raw: await photoBlob(file)}), p.photo ? "Foto cambiata" : "Foto aggiunta", "Caricamento della foto")) reload();
+  };
+  if ($("[data-photo-del]", sheet)) $("[data-photo-del]", sheet).onclick = async () => {
+    if (!await confirmBox("Togli Foto", `Togliere la foto di <b>${esc(p.name)}</b> dall'app?`, "Togli", true)) return;
+    if (await run(() => api(`api/persons/${id}/photo`, {method: "DELETE"}), "Foto tolta", "Rimozione della foto")) reload();
   };
   $("[data-edit-data]", sheet).onclick = async () => {
     const ok = await modal({
@@ -2799,7 +3095,8 @@ function eventDetail(e) {
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(LOG_SOURCES[e.source] || e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
-    ${e.snapshot ? `<img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    ${e.snapshot ? `<div class="ev-photo-label" data-snap-label hidden>Foto della Telecamera</div><img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    ${e.person_id && can("persone") ? `<div class="ev-face" data-face="${e.person_id}" data-face-name="${esc(e.person_name || "")}" hidden></div>` : ""}
     ${props(rows)}
     <div class="row" style="margin-top:14px">
       ${e.person_id && can("persone") ? `<a class="btn small" href="#persone/${e.person_id}">${icon("user")}Scheda Persona</a>` : ""}
@@ -2829,14 +3126,43 @@ function showEvent(e) {
     $(".log-layout").classList.add("split");
     $("#l-detail-x").onclick = () => { panel.hidden = true; $(".log-layout").classList.remove("split"); logSelected = 0; $$(".list.compact > .ev.sel").forEach((r) => r.classList.remove("sel")); };
     bind(panel, () => {});
+    fillFaces(panel);
   } else {
     modal({title: "Dettaglio Evento", body: eventDetail(e), onOpen: (dlg) => {
       bindSnapshots(dlg);
+      fillFaces(dlg);
       bind(dlg, () => dlg.close());
       // Porta, Scheda Persona e Registra Tessera aprono un'altra pagina: la finestra non deve restarle sopra
       $$('a[href^="#"]', dlg).forEach((a) => a.addEventListener("click", () => dlg.close()));
     }});
   }
+}
+// Foto in Anagrafica nel Dettaglio Evento (solo per chi vede le persone), accanto a quella della telecamera per
+// confrontarle. La versione della foto di ogni persona arriva con una richiesta sola, tenuta per 15 secondi: niente
+// richieste per evento, niente elenco delle persone
+const faceVersions = {at: 0, map: {}, pending: null};
+function loadFaceVersions() {
+  if (faceVersions.pending) return faceVersions.pending;
+  if (Date.now() - faceVersions.at < 15000) return Promise.resolve(faceVersions.map);
+  faceVersions.pending = api("api/persons/photos").then((map) => Object.assign(faceVersions, {map, at: Date.now()}).map, () => faceVersions.map)
+    .finally(() => { faceVersions.pending = null; });
+  return faceVersions.pending;
+}
+async function fillFaces(root) {
+  const slots = $$("[data-face]", root);
+  if (!slots.length) return;
+  const map = await loadFaceVersions();
+  slots.forEach((slot) => {
+    const version = map[slot.dataset.face];
+    if (!version || !slot.isConnected) return;
+    const url = photoUrl({id: slot.dataset.face, photo: version}), name = slot.dataset.faceName;
+    const camera = $("[data-snap-label]", root);
+    slot.innerHTML = `<button type="button" class="ev-face-img" aria-label="Ingrandisci la Foto in Anagrafica di ${esc(name)}" title="Ingrandisci la foto"><img src="${esc(url)}" alt=""></button>
+      <div class="grow"><b>Foto in Anagrafica</b><div class="muted small-text">${camera ? "Quella della scheda della persona: confrontala con la foto della telecamera." : "Quella della scheda della persona."}</div></div>`;
+    $("button", slot).onclick = (e) => { e.stopPropagation(); showImage(url, `Foto in Anagrafica · ${name}`); };
+    slot.hidden = false;
+    if (camera) camera.hidden = false;
+  });
 }
 async function viewLog(el) {
   const doors = allDoors();

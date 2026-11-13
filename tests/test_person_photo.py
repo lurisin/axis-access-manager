@@ -227,6 +227,26 @@ def test_versions_for_the_list_come_from_the_index_without_the_photos(db):
     assert all(isinstance(p["photo"], str) for p in persons.values())
 
 
+def test_photo_versions_for_the_event_detail(client):
+    """Il Dettaglio Evento del registro mostra la Foto in Anagrafica accanto a quella della telecamera: una richiesta
+    sola con la versione della foto di ogni persona che ne ha una, per chi vede le persone; mai i byte. Il percorso
+    non si confonde con la scheda di una persona (/api/persons/{numero})."""
+    person = new_person(client)
+    other = new_person(client, first_name="Anna", last_name="Bianchi", card="04bb")
+    assert client.get("/api/persons/photos", headers=VIEWER).json() == {}
+    version = put_photo(client, person["id"], PNG).json()["photo"]
+    response = client.get("/api/persons/photos", headers=VIEWER)
+    assert response.status_code == 200
+    assert response.json() == {str(person["id"]): version}
+    assert "data" not in response.text and len(response.content) < 200
+    # Chi non vede le persone non sa neanche chi ha una foto
+    assert client.get("/api/persons/photos", headers=LOG_ONLY).status_code == 403
+    # La scheda della persona resta dov'era
+    assert client.get(f"/api/persons/{other['id']}", headers=VIEWER).json()["photo"] == ""
+    client.delete(f"/api/persons/{person['id']}/photo", headers=ADMIN)
+    assert client.get("/api/persons/photos", headers=VIEWER).json() == {}
+
+
 def test_a_photo_left_without_its_person_is_removed_at_startup(tmp_path):
     path = tmp_path / "foto.db"
     db = Database(path)
