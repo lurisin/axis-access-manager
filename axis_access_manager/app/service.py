@@ -1534,6 +1534,20 @@ class AccessService:
             self._changed()
             return self.db.get_person(person_id)
 
+    async def restore_freed_values(self, saved: dict, cards: list[dict], user: str) -> None:
+        """Seconda passata del ripristino per una persona già riportata com'era nel backup: due righe si aspettavano a
+        vicenda (vedi restore._in_order), e ora che l'altra li ha lasciati la matricola e i Codici Stampati del backup
+        sono liberi. Si scrivono solo loro, nell'app; il resto è già com'era, e in Attività non si ripete «persona
+        ripristinata da backup»."""
+        current = self.db.get_person(saved["id"])
+        if current is None or current["created_at"] != saved["created_at"]:
+            return
+        employee_id = self._saved_employee_id(saved, current["id"])
+        if employee_id is not None:
+            await self.update_person(current["id"], user, employee_id=employee_id)
+        self._restore_printed_codes(current["id"], cards, user)
+        self._changed()
+
     async def _new_user_token(self, name: str) -> str:
         """Token per un utente nuovo del controller che nessuno ha: due persone con lo stesso nome (o lo stesso
         inizio di un nome lungo) nello stesso secondo finivano sullo stesso utente, e con lui le tessere."""

@@ -643,6 +643,93 @@ async def test_a_code_left_by_the_other_row_comes_back_when_both_are_restored(pl
     assert [a["label"] for a in result["applied"]] == ["Anna Bianchi", "Mario Rossi"]
 
 
+def employee_ids(db) -> dict[str, str]:
+    return {p["name"]: p["employee_id"] for p in db.list_persons()}
+
+
+# Nomi in ordine alfabetico e al contrario: l'ordine del ripristino non dipende dai nomi
+CHAIN_NAMES = [("Aldo Primo", "Bruna Seconda", "Carlo Terzo"), ("Zeno Primo", "Bruna Seconda", "Carlo Terzo")]
+
+
+@pytest.mark.parametrize(("first", "second", "third"), CHAIN_NAMES)
+async def test_an_employee_id_left_by_a_row_that_waits_for_a_code_comes_back(plant, db, first, second, third):
+    """Catena mista: la matricola M1 della prima persona ora è della seconda, che nel backup ha M2, libera; il codice
+    Pippo della seconda ora è della terza, che nel backup ha Terzo, libero. Con tutte le righe spuntate la terza deve
+    andare prima della seconda e la seconda prima della prima. Con un solo «dopo» (_after) la prima e la seconda
+    andavano nell'ordine dell'elenco: la prima trovava M1 ancora della seconda e restava senza matricola, senza
+    errori, anche se Cosa Cambierà l'aveva promessa."""
+    one = await plant.access.create_person(first, "04aa", "admin", employee_id="M1")
+    two = await plant.access.create_person(second, "04bb", "admin", printed_code="Pippo", employee_id="M2")
+    await plant.access.create_person(third, "04cc", "admin", printed_code="Terzo")
+    backup = await plant.backup()
+    await plant.access.update_person(one["id"], "admin", employee_id="")
+    await plant.access.update_person(two["id"], "admin", employee_id="M1")
+    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04cc")["id"], "Pippo", "admin")
+    items, result = await plant.restore(backup["id"], ["persone"])
+    rows = {i["label"]: i for i in items}
+    assert rows[first]["warnings"] == [
+        f"la matricola del backup ora è di {second}: torna a questa persona solo ripristinando anche {second}"
+    ]
+    assert rows[second]["warnings"] == [
+        f"il Codice Stampato Pippo della tessera 04bb ora è della tessera 04cc di {third}: torna a questa tessera "
+        f"solo ripristinando anche {third}"
+    ]
+    assert all(i["default"] for i in items)
+    assert not result["failed"]
+    assert [a["label"] for a in result["applied"]] == [third, second, first]
+    assert employee_ids(db) == {first: "M1", second: "M2", third: ""}
+    assert codes(db) == {"04aa": "", "04bb": "Pippo", "04cc": "Terzo"}
+
+
+@pytest.mark.parametrize(("first", "second", "third"), CHAIN_NAMES)
+async def test_a_code_left_by_a_row_that_waits_for_an_employee_id_comes_back(plant, db, first, second, third):
+    """Al contrario: il codice Ciccio della prima persona ora è della seconda, che nel backup ha Pippo, libero; la
+    matricola M2 della seconda ora è della terza, che nel backup ha M3, libera."""
+    one = await plant.access.create_person(first, "04aa", "admin", printed_code="Ciccio")
+    two = await plant.access.create_person(second, "04bb", "admin", printed_code="Pippo", employee_id="M2")
+    three = await plant.access.create_person(third, "04cc", "admin", employee_id="M3")
+    backup = await plant.backup()
+    plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "Ciccio", "admin")
+    await plant.access.update_person(two["id"], "admin", employee_id="")
+    await plant.access.update_person(three["id"], "admin", employee_id="M2")
+    items, result = await plant.restore(backup["id"], ["persone"])
+    rows = {i["label"]: i for i in items}
+    assert any(f"solo ripristinando anche {second}" in w for w in rows[first]["warnings"])
+    assert any(f"solo ripristinando anche {third}" in w for w in rows[second]["warnings"])
+    assert not result["failed"]
+    assert [a["label"] for a in result["applied"]] == [third, second, first]
+    assert codes(db) == {"04aa": "Ciccio", "04bb": "Pippo", "04cc": ""}
+    assert employee_ids(db) == {first: "", second: "M2", third: "M3"}
+    assert one["id"] != two["id"]
+
+
+@pytest.mark.parametrize(("first", "second"), [("Aldo Primo", "Bruna Seconda"), ("Zeno Primo", "Bruna Seconda")])
+async def test_two_rows_that_wait_for_each_other_both_get_back_what_was_promised(plant, db, first, second):
+    """Si aspettano a vicenda: la matricola M1 della prima ora è della seconda (che nel backup ha M2, libera), e il
+    codice C2 della seconda ora è sulla tessera della prima (che nel backup ha C1, libero). Nessun ordine va bene: la
+    prima riga si applica prima e poi di nuovo, quando la seconda ha lasciato M1. Le Attività dicono una volta sola
+    ogni cambio."""
+    one = await plant.access.create_person(first, "04aa", "admin", printed_code="C1", employee_id="M1")
+    two = await plant.access.create_person(second, "04bb", "admin", printed_code="C2", employee_id="M2")
+    backup = await plant.backup()
+    await plant.access.update_person(one["id"], "admin", employee_id="")
+    await plant.access.update_person(two["id"], "admin", employee_id="M1")
+    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "C2", "admin")
+    audit = len(db.list_audit())
+    items, result = await plant.restore(backup["id"], ["persone"])
+    rows = {i["label"]: i for i in items}
+    assert any(f"solo ripristinando anche {second}" in w for w in rows[first]["warnings"])
+    assert any(f"solo ripristinando anche {first}" in w for w in rows[second]["warnings"])
+    assert not result["failed"] and sorted(a["label"] for a in result["applied"]) == sorted([first, second])
+    assert employee_ids(db) == {first: "M1", second: "M2"}
+    assert codes(db) == {"04aa": "C1", "04bb": "C2"}
+    details = [row["detail"] for row in db.list_audit()[: len(db.list_audit()) - audit]]
+    assert len(details) == len(set(details))
+
+
 RESTORE_PAGE_NAMES = (*NAMES, "esc", "icon", "RESTORE_ACTIONS", "restoreItemHtml", "restoreGroupsHtml")
 
 

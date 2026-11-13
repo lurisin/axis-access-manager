@@ -1318,7 +1318,7 @@ async def test_restore_leaves_an_employee_id_given_to_someone_else_meanwhile(pla
         "la matricola del backup ora è di Bruno Neri: torna a questa persona solo eliminando anche Bruno Neri, "
         "registrata dopo il backup"
     ]
-    assert rows["Carla Verdi"]["_after"] and not rows["Bruno Neri"]["default"]
+    assert rows["Carla Verdi"]["_needs"] == [rows["Bruno Neri"]["key"]] and not rows["Bruno Neri"]["default"]
     assert not rows["Anna Bianchi"]["warnings"]
     text = json.dumps(public(items))
     assert all(f'"{value}"' not in text for value in ("M1", "M2", "m1", "A1", "C1", "c1"))
@@ -1398,7 +1398,8 @@ async def test_employee_id_of_a_person_registered_after_the_backup_comes_back_de
         "la matricola del backup ora è di Luca Verdi: torna a questa persona solo eliminando anche Luca Verdi, "
         "registrata dopo il backup"
     ]
-    assert rows["Mario Rossi"]["_after"] and rows["Mario Rossi"]["default"] and not rows["Mario Rossi"]["blocked"]
+    assert rows["Mario Rossi"]["_needs"] == [f"persona-nuova:{luca['id']}"]
+    assert rows["Mario Rossi"]["default"] and not rows["Mario Rossi"]["blocked"]
     if mario_now == "senza matricola":
         assert rows["Mario Rossi"]["changes"] == [{"label": "Matricola", "old": "—", "new": "indicato"}]
     assert rows["Luca Verdi"]["key"] == f"persona-nuova:{luca['id']}" and not rows["Luca Verdi"]["default"]
