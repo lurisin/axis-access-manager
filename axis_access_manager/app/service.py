@@ -164,7 +164,7 @@ def person_names(
     return full, first, last
 
 
-def saved_parts(saved: dict) -> tuple[str, str]:
+def _stored_parts(saved: dict) -> tuple[str, str]:
     """Nome e cognome di una persona di un backup dell'app, come sono salvati. I backup di prima della 0.28.3 non li
     hanno: si ricavano dal nome completo con split_name, come nella migrazione e nel confronto dei backup."""
     if saved.get("first_name") is None and saved.get("last_name") is None:
@@ -172,12 +172,34 @@ def saved_parts(saved: dict) -> tuple[str, str]:
     return saved.get("first_name") or "", saved.get("last_name") or ""
 
 
+def saved_parts(saved: dict, current: dict | None = None) -> tuple[str, str]:
+    """Nome e cognome che una persona di un backup dell'app ha dopo il ripristino (current: com'è adesso, se c'è).
+
+    Con il nome completo e nome e cognome uguali a quelli di adesso restano quelli, anche con gli spazi doppi di un
+    nome letto dal controller (compattarli sarebbe un cambio di nome sul controller che nessuno ha chiesto). Se no
+    quelli del backup, quando il nome completo salvato è già compatto. Un nome salvato con spazi da compattare (letto
+    dal controller, tutto nel nome) torna compattato come nella 0.28.2, e diviso con split_name come una persona nuova
+    con quel nome: compattare il solo nome lascerebbe il cognome vuoto."""
+    stored = _stored_parts(saved)
+    if (
+        current is not None
+        and current["name"] == saved["name"]
+        and stored == (current["first_name"], current["last_name"])
+    ):
+        return stored
+    name = saved["name"]
+    compact = " ".join(name.split())
+    # Con il nome compatto, nome e cognome che lo ricompongono sono compatti anche loro
+    if name == compact and compose_name(*stored) == name:
+        return stored
+    return split_name(compact)
+
+
 def saved_names(saved: dict) -> tuple[str, str, str]:
-    """Nome completo, nome e cognome per ricreare una persona di un backup dell'app, con gli spazi compattati come per
-    una persona nuova. Da un backup di prima della 0.28.3 il nome completo, diviso con split_name."""
-    if saved.get("first_name") is None and saved.get("last_name") is None:
-        return person_names(saved["name"])
-    return person_names(first_name=saved.get("first_name") or "", last_name=saved.get("last_name") or "")
+    """Nome completo, nome e cognome per ricreare una persona di un backup dell'app (vedi saved_parts), con i controlli
+    di una persona nuova."""
+    first, last = saved_parts(saved)
+    return person_names(first_name=first, last_name=last)
 
 
 def normalize_phone(value: str | None) -> str:
@@ -1159,15 +1181,15 @@ class AccessService:
         Se non c'è più si ricrea, con lo stesso numero e la stessa data di creazione se il numero è libero.
         cards: tessere del backup già controllate (numero libero o già della persona, profilo che esiste); le altre
         tessere della persona restano come sono. Un backup di prima della 0.28.3 non ha nome e cognome (si ricavano
-        dal nome completo, vedi saved_parts) né telefono ed email (restano quelli di adesso). Nome e cognome uguali a
-        quelli di adesso non cambiano niente, neanche gli spazi doppi di un nome letto dal controller."""
+        dal nome completo) né telefono ed email (restano quelli di adesso). Nome e cognome uguali a quelli di adesso
+        non cambiano niente, neanche gli spazi doppi di un nome letto dal controller (vedi saved_parts)."""
         current = self.db.get_person(saved["id"])
         if current is not None and current["created_at"] != saved["created_at"]:
             current = None
         if current is None:
             return await self._recreate_person(saved, cards, category_id, user)
         person_id = current["id"]
-        first, last = saved_parts(saved)
+        first, last = saved_parts(saved, current)
         await self.update_person(
             person_id,
             user,

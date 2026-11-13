@@ -499,6 +499,70 @@ async def test_restore_keeps_a_name_read_from_the_controller(plant, controller, 
     assert (person["name"], person["first_name"], person["last_name"]) == ("Luca  Verdi", "Luca  Verdi", "")
 
 
+def without_parts(saved: dict) -> None:
+    """Il backup come l'avrebbe fatto la 0.28.2: senza nome e cognome, telefono ed email."""
+    for person in saved[COMMON]["persons"]:
+        for key in ("first_name", "last_name", "phone", "email"):
+            del person[key]
+
+
+@pytest.mark.parametrize("old_backup", [False, True])
+async def test_restore_of_a_name_with_double_spaces_keeps_the_split_of_the_rule(plant, controller, db, old_backup):
+    """Backup con il nome letto dal controller con lo spazio doppio, «Luca  Verdi» (tutto nel nome); poi la persona è
+    diventata «Luca Verdi», nome Luca e cognome Verdi. Ripristinarla non cambia niente, come nella 0.28.2 (il nome
+    del backup compattato è quello di adesso): non le toglie il cognome lasciando tutto nel nome."""
+    controller.add_existing("utente_luca", "Luca  Verdi", "04aa")
+    await plant.access.sync_from_controller()
+    [luca] = db.all_persons()
+    assert (luca["first_name"], luca["last_name"]) == ("Luca  Verdi", "")
+    backup = await plant.backup()
+    await plant.access.update_person(luca["id"], "admin", first_name="Luca", last_name="Verdi")
+    before = db.get_person(luca["id"])
+    assert (before["name"], before["first_name"], before["last_name"]) == ("Luca Verdi", "Luca", "Verdi")
+    _, saved = plant.backups.load(backup["id"])
+    if old_backup:
+        without_parts(saved)
+    controller.calls.clear()
+
+    current, _ = await plant.backups.snapshot(plant.clients)
+    items = plan(saved, current, ["persone"], plant.controller_id)
+    [person] = saved[COMMON]["persons"]
+    await plant.access.restore_person(person, [], 0, "admin")
+
+    after = db.get_person(luca["id"])
+    assert (after["name"], after["first_name"], after["last_name"]) == ("Luca Verdi", "Luca", "Verdi")
+    assert after["updated_at"] == before["updated_at"] and controller.calls == []
+    assert "nome e cognome" not in json.dumps(db.list_audit())
+    # E Cosa Cambierà non lo propone: non dice «Luca Verdi» → «Luca  Verdi», che il ripristino non fa
+    assert items == []
+
+
+@pytest.mark.parametrize("old_backup", [False, True])
+async def test_recreated_name_with_double_spaces_is_split_like_a_new_one(plant, controller, db, old_backup):
+    """Persona eliminata, nel backup con il nome letto dal controller con lo spazio doppio: torna con il nome
+    compattato, come nella 0.28.2, e con nome e cognome della regola, come se la si scrivesse a mano."""
+    controller.add_existing("utente_luca", "Luca  Verdi", "04aa")
+    await plant.access.sync_from_controller()
+    [luca] = db.all_persons()
+    backup = await plant.backup()
+    await plant.access.delete_person(luca["id"], "admin")
+    _, saved = plant.backups.load(backup["id"])
+    if old_backup:
+        without_parts(saved)
+    current, _ = await plant.backups.snapshot(plant.clients)
+    [item] = plan(saved, current, ["persone"], plant.controller_id)
+    assert item["action"] == "ricrea"
+
+    runtime = Runtime(db, plant.access, plant.rules, plant.programming, plant.controller_id)
+    result = await apply([item], [item["key"]], runtime, "admin")
+
+    assert not result["failed"]
+    [again] = db.all_persons()
+    assert (again["name"], again["first_name"], again["last_name"]) == ("Luca Verdi", "Luca", "Verdi")
+    assert controller.users[again["axis_user_token"]]["Name"] == "Luca Verdi"
+    assert_invariant(db)
+
+
 async def test_backup_comparison_says_phone_and_email_changed_without_the_values(plant, db):
     anna = await plant.access.create_person("", "04aa", "admin", first_name="Anna", last_name="Rossi", phone=PHONE)
     await plant.backup()

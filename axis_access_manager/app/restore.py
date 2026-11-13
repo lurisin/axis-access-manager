@@ -19,16 +19,17 @@ from .backup import (
     FIELD_LABELS,
     PRIVATE_FIELDS,
     _item,
+    _person_name,
     _shown,
     common_view,
     context_of,
     controller_view,
     shown_change,
 )
-from .db import Database
+from .db import Database, compose_name
 from .programming import ProgrammingService, parse_duration
 from .rules_service import RulesService
-from .service import AccessService, ServiceError
+from .service import AccessService, ServiceError, saved_parts
 from .vapix import VapixError
 
 # Sezioni che si possono ripristinare, nell'ordine in cui si applicano: le porte prima delle tipologie (una regola
@@ -466,9 +467,19 @@ def _plan_persons(
             continue
         matched_persons.add(ident)
         current_item = current_view[f"{now['id']}:{now['created_at']}"]
+        # Il nome come lo rimette il ripristino (vedi saved_parts): un nome del backup con gli spazi doppi torna
+        # compattato, e se è già quello di adesso non c'è niente da cambiare
+        first, last = saved_parts(person, now)
+        names, shown = _person_name({"name": compose_name(first, last), "first_name": first, "last_name": last})
+        saved_item = saved_view[f"{ident[0]}:{ident[1]}"]
+        saved_item = {
+            **saved_item,
+            "fields": {**saved_item["fields"], "name": names},
+            "show": {**saved_item["show"], "name": shown},
+        }
         # Telefono ed email solo da un backup che li ha (dalla 0.28.3): uno di prima li lascia come sono adesso
         only = ("name", "company", "notes", *(f for f in PRIVATE_FIELDS if f in person))
-        changes = _changes(current_item, saved_view[f"{ident[0]}:{ident[1]}"], only=only)
+        changes = _changes(current_item, saved_item, only=only)
         if pending or (target["id"] if target else 0) != now["category_id"]:
             changes.append(
                 {
