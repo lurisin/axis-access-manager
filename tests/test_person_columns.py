@@ -174,18 +174,21 @@ def test_with_little_room_the_last_columns_of_the_order_go_first():
 
 
 # Pagina finta per personListWidth: finestra, pagina ed elenco con le larghezze di prova, e il riquadro di prova della
-# barra di scorrimento larga BAR (quante volte si misura in measured)
+# barra di scorrimento larga BAR (quante volte si misura in measured). page è la larghezza della pagina
+# (getBoundingClientRect di html), client il suo clientWidth: di solito uguali, ma con la foto ingrandita aperta
+# (overflow: hidden e scrollbar-gutter: stable) Chromium dà a clientWidth la finestra intera
 WINDOW = """
 let BAR = 17, measured = 0;
 const window = {innerWidth: 1280, devicePixelRatio: 1};
 const document = {
-  documentElement: {clientWidth: 1263},
+  documentElement: {clientWidth: 1263, width: 1263, getBoundingClientRect() { return {width: this.width}; }},
   body: {appendChild() { measured++; }},
   createElement: () => ({style: {}, offsetWidth: 100, get clientWidth() { return 100 - BAR; }, remove() {}}),
 };
 const list = {clientWidth: 981};
-const at = (inner, page, width) => { window.innerWidth = inner; document.documentElement.clientWidth = page;
-  list.clientWidth = width; return personListWidth(list); };
+const at = (inner, page, width, client = Math.round(page)) => { window.innerWidth = inner;
+  Object.assign(document.documentElement, {width: page, clientWidth: client}); list.clientWidth = width;
+  return personListWidth(list); };
 """
 
 
@@ -193,14 +196,20 @@ def test_the_list_is_measured_as_with_the_scrollbar_always_there():
     """Verifica della 0.28.4: la larghezza per le colonne non dipende dalla barra di scorrimento verticale, che compare
     e sparisce con l'altezza dell'elenco. Con la barra di Windows (17 px) a 1280 col menu aperto l'elenco è di 981 px
     con la barra e di 998 senza: tutte e due le volte conta 981. Con le barre sovrapposte del telefono e del Mac (0 px)
-    conta l'elenco com'è. La barra si misura una volta per ogni zoom, e la larghezza non supera mai quella vera."""
+    conta l'elenco com'è. La barra si misura una volta per ogni zoom, e la larghezza non supera mai quella vera.
+    Con la foto ingrandita aperta la barra non c'è ma il suo spazio resta, e clientWidth della pagina è la finestra
+    intera: conta lo spazio che la barra occupa davvero, la finestra meno la larghezza della pagina (prima 964, e Stato
+    andava via)."""
     out = run(
         {
             "windows": "[at(1280, 1263, 981), at(1280, 1280, 998), at(1280, 1263, 981)]",
             "measured": "measured",
+            # Foto ingrandita aperta: con la barra il suo spazio resta (scrollbar-gutter), senza la barra niente
+            "viewer": "[at(1280, 1263, 981, 1280), at(1280, 1280, 998, 1280), at(1275, 1258, 976, 1275)]",
             "overlay": "(BAR = 0, window.devicePixelRatio = 2, [at(1280, 1280, 998), at(1280, 1280, 998), measured])",
-            # Zoom al 125%: la barra si misura di nuovo, in px della pagina
-            "zoom": "(BAR = 14, window.devicePixelRatio = 1.25, [at(1024, 1010, 803), at(1024, 1024, 817), measured])",
+            # Zoom al 125%: la barra si misura di nuovo, in px della pagina; la pagina larga anche frazioni di px
+            "zoom": "(BAR = 14, window.devicePixelRatio = 1.25, [at(1024, 1010, 803), at(1024, 1024, 817), "
+            "at(1024, 1010.4, 803), measured])",
             # Una barra della pagina più larga di quella del riquadro di prova, o lo zoom col dito: mai più dell'elenco
             "wider": "at(1024, 1004, 797)",
             "pinch": "at(600, 1024, 817)",
@@ -208,8 +217,9 @@ def test_the_list_is_measured_as_with_the_scrollbar_always_there():
         WINDOW,
     )
     assert out["windows"] == [981, 981, 981] and out["measured"] == 1
+    assert out["viewer"] == [981, 981, 976]
     assert out["overlay"] == [998, 998, 2]
-    assert out["zoom"] == [803, 803, 3]
+    assert out["zoom"] == [803, 803, 803, 3]
     assert out["wider"] == 797 and out["pinch"] == 803
 
 

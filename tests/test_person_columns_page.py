@@ -13,6 +13,7 @@ from test_direct import ADMIN, NEW_PASSWORD, clients, fast_hash  # noqa: F401
 from test_direct_plain import plant  # noqa: F401
 from test_direct_plain_page import ingress_server  # noqa: F401
 from test_page_morph import _has_playwright
+from test_photo_viewer import plain_png
 
 # Testo di Cognome e Nome almeno così largo (un cognome di 8-10 lettere), come in test_person_list_page
 MIN_TEXT = 75
@@ -616,3 +617,203 @@ def test_same_window_width_same_columns_with_and_without_the_scrollbar(plant, in
     # Con la barra di Windows a 1275 Stato non c'è, con la barra e senza; senza barra (telefono, Mac) c'è
     assert out["windows"]["swing"]["1275"]["seq"][0]["hide"] == "stato"
     assert out["overlay"]["swing"]["1275"]["seq"][0]["hide"] == ""
+
+
+UNDER_PHOTO = r"""
+const { chromium } = require("playwright");
+const config = JSON.parse(process.argv[1]);
+// Barra classica di Windows simulata come in BAND
+const WINDOWS_BAR = "::-webkit-scrollbar { width: 17px; height: 17px; } "
+  + "::-webkit-scrollbar-thumb { background: #999; }";
+const look = (page, label) => page.evaluate((label) => {
+  const t = document.querySelector("#p-list .p-table");
+  const vis = (el) => el.getClientRects().length > 0 && getComputedStyle(el).display !== "none";
+  const de = document.documentElement;
+  return {label, viewer: document.querySelector("#viewer").open, overflow: getComputedStyle(de).overflowY,
+    bar: innerWidth - de.clientWidth, gap: Math.round(innerWidth - de.getBoundingClientRect().width),
+    list: document.querySelector("#p-list").clientWidth, measured: personListWidth(document.querySelector("#p-list")),
+    hide: t.dataset.hide, heads: [...t.querySelectorAll("thead th")].filter(vis).length,
+    changes: window.hideChanges.length};
+}, label);
+const settle = (page, ms = 250) => page.waitForTimeout(ms);
+
+async function run(browser, windowsBar) {
+  const context = await browser.newContext({viewport: {width: 1280, height: 800}, extraHTTPHeaders: config.admin});
+  await context.addInitScript((css) => {
+    localStorage.setItem("aam-nav", "1");
+    if (!css) return;
+    const add = () => {
+      const style = document.createElement("style");
+      style.textContent = css;
+      (document.head || document.documentElement).appendChild(style);
+    };
+    if (document.documentElement) add(); else document.addEventListener("DOMContentLoaded", add);
+  }, windowsBar ? WINDOWS_BAR : "");
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  const load = async () => {
+    await page.waitForSelector("#p-list .p-table");
+    await settle(page, 400);
+    // Ogni cambio delle colonne in vista
+    await page.evaluate(() => {
+      window.hideChanges = [];
+      new MutationObserver((ms) => ms.forEach((m) => window.hideChanges.push(m.target.dataset.hide)))
+        .observe(document.querySelector("#p-list"), {subtree: true, attributes: true, attributeFilter: ["data-hide"]});
+    });
+  };
+  await page.goto(`${config.ingress}/#persone`);
+  await load();
+  const out = {errors, steps: [await look(page, "caricata")]};
+  // Foto ingrandita dalla colonna Foto
+  await page.locator("#p-list td.c-photo img").first().click();
+  await page.waitForFunction(() => document.querySelector("#viewer img"));
+  await settle(page);
+  out.steps.push(await look(page, "foto"));
+  // Un altro utente cambia la ditta di una persona (fuori dalla pagina, e diversa a ogni giro: il dato cambia davvero);
+  // l'aggiornamento dei 15 secondi (refreshView, chiamato qui subito) ridisegna l'elenco sotto la foto
+  out.company = {sent: windowsBar ? "Sartoria Nord" : "Sartoria Sud"};
+  const changed = await context.request.patch(`${config.ingress}/api/persons/${config.changed}`,
+    {data: {company: out.company.sent}});
+  out.company.status = changed.status();
+  await page.evaluate(() => refreshView());
+  await settle(page);
+  out.company.shown = await page.$eval(`tr[data-person="${config.changed}"] td.c-company`, (td) => td.textContent);
+  out.steps.push(await look(page, "foto, aggiornata"));
+  // La finestra stretta e riallargata con la foto aperta
+  for (const width of [1275, 1258, 1280]) {
+    await page.setViewportSize({width, height: 800});
+    await settle(page);
+    out.steps.push(await look(page, `foto ${width}`));
+  }
+  await page.keyboard.press("Escape");
+  await page.waitForFunction(() => !document.querySelector("#viewer").open);
+  await settle(page, 500);
+  out.steps.push(await look(page, "foto chiusa"));
+  // Colonne dell'Elenco e «Attendere…»: non cambiano l'overflow della pagina, la misura resta
+  await page.click("#p-cols");
+  await page.waitForSelector(".p-cols");
+  await settle(page);
+  out.steps.push(await look(page, "Colonne"));
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".p-cols", {state: "hidden"});
+  await page.evaluate(() => { busy("Prova", new Promise((resolve) => setTimeout(resolve, 1200))); });
+  await page.waitForFunction(() => document.querySelector("#busy").open);
+  out.steps.push(await look(page, "Attendere"));
+  await page.waitForFunction(() => !document.querySelector("#busy").open);
+  // Riferimento: la pagina ricaricata alle stesse larghezze
+  out.reloaded = {};
+  for (const width of [1275, 1258, 1280]) {
+    await page.setViewportSize({width, height: 800});
+    await page.reload();
+    await load();
+    out.reloaded[width] = await look(page, `ricaricata ${width}`);
+  }
+  await context.close();
+  return out;
+}
+
+(async () => {
+  const out = {};
+  let browser = await chromium.launch();
+  out.overlay = await run(browser, false);
+  await browser.close();
+  browser = await chromium.launch({ignoreDefaultArgs: ["--hide-scrollbars"]});
+  out.windows = await run(browser, true);
+  await browser.close();
+  console.log(JSON.stringify(out));
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
+def test_columns_stay_the_same_under_the_enlarged_photo(plant, ingress_server, tmp_path):  # noqa: F811
+    """Verifica della 0.28.4: con la barra classica di Windows, a 1280 col menu aperto, la foto ingrandita aperta dalla
+    colonna Foto mette html.viewer-open (overflow: hidden) e scrollbar-gutter: stable. Lo spazio della barra resta e
+    l'elenco è largo uguale (981 px), ma clientWidth di html diventa la finestra intera: l'aggiornamento dei 15 secondi
+    con un dato cambiato ridisegnava l'elenco contando 17 px in meno e Stato andava via, anche dopo aver chiuso la foto,
+    fino al giro dopo; la pagina ricaricata alla stessa larghezza ce l'aveva. Ora la pagina misura lo spazio che la
+    barra occupa davvero: sotto la foto, aggiornando l'elenco e stringendo e riallargando la finestra, le colonne sono
+    quelle della pagina ricaricata alla stessa larghezza, e chiusa la foto non cambiano. Con la finestra Colonne
+    dell'Elenco e con il riquadro «Attendere…» l'overflow della pagina non cambia e la misura resta la stessa. Anche
+    senza barra (telefono, Mac)."""
+    ingress, _, _, app = plant
+    app.state.ha.snapshot_dir = tmp_path / "foto"
+    app.state.ha.snapshot_dir.mkdir()
+    ids = {}
+    for first, last, employee_id, company, phone, email, code, card in PERSONS:
+        body = {"first_name": first, "last_name": last, "employee_id": employee_id, "company": company, "phone": phone,
+                "email": email, "referent": "Direzione di Sala"}  # fmt: skip
+        if card:
+            body.update(card=card, printed_code=code)
+        response = ingress.post("/api/persons", json=body, headers=ADMIN)
+        assert response.status_code == 200, response.text
+        ids[last] = response.json()["id"]
+    for first, last in EXTRA:
+        assert (
+            ingress.post("/api/persons", json={"first_name": first, "last_name": last}, headers=ADMIN).status_code
+            == 200
+        )
+    photo = ingress.put(
+        f"/api/persons/{ids['Colombo']}/photo",
+        content=plain_png(480, 600, 120),
+        headers={**ADMIN, "Content-Type": "image/png"},
+    )
+    assert photo.status_code == 200, photo.text
+    config = {"ingress": ingress_server, "admin": ADMIN, "changed": ids["Ferrara"]}
+    result = subprocess.run(
+        ["node", "-e", UNDER_PHOTO, json.dumps(config)], capture_output=True, text=True, timeout=300
+    )
+    if result.returncode and "Executable doesn't exist" in result.stderr:
+        pytest.skip("Chromium di Playwright non installato")
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    for name, bar in (("overlay", 0), ("windows", 17)):
+        run = out[name]
+        assert run["errors"] == [], name
+        steps = {step["label"]: step for step in run["steps"]}
+        reloaded = run["reloaded"]
+        loaded = steps["caricata"]
+        # A 1280 col menu aperto tutte e 9 le colonne; la barra c'è (o non c'è) davvero
+        assert loaded["bar"] == loaded["gap"] == bar and loaded["hide"] == "" and loaded["heads"] == 9, (name, loaded)
+        assert loaded == {**reloaded["1280"], "label": "caricata"}, (name, loaded, reloaded["1280"])
+        # Con la foto aperta la pagina non scorre più (overflow: hidden) ma lo spazio della barra resta, come l'elenco
+        for label in ("foto", "foto, aggiornata"):
+            step = steps[label]
+            assert step["viewer"] and step["overflow"] == "hidden", (name, step)
+            assert step["gap"] == bar and step["list"] == loaded["list"], (name, step)
+            # Stessa misura, stesse colonne, nessun cambio: anche dopo il ridisegno dell'aggiornamento
+            assert step["measured"] == loaded["measured"] and step["hide"] == "" and step["changes"] == 0, (name, step)
+        # L'elenco sotto la foto è stato ridisegnato davvero: c'è la ditta nuova
+        assert run["company"]["status"] == 200 and run["company"]["shown"] == run["company"]["sent"], (
+            name,
+            run["company"],
+        )
+        # La finestra stretta e riallargata sotto la foto: le colonne della pagina ricaricata a quella larghezza
+        for width in ("1275", "1258", "1280"):
+            step, ref = steps[f"foto {width}"], reloaded[width]
+            assert step["viewer"] and step["gap"] == bar, (name, step)
+            assert (step["list"], step["measured"], step["hide"]) == (ref["list"], ref["measured"], ref["hide"]), (
+                name,
+                step,
+                ref,
+            )
+        # Chiusa la foto: la barra torna al suo spazio, niente cambia (né colonne né elenco)
+        closed = steps["foto chiusa"]
+        assert not closed["viewer"] and closed["overflow"] != "hidden" and closed["bar"] == bar, (name, closed)
+        assert closed["changes"] == steps["foto 1280"]["changes"], (name, closed)
+        assert {k: closed[k] for k in ("list", "measured", "hide", "heads")} == {
+            k: reloaded["1280"][k] for k in ("list", "measured", "hide", "heads")
+        }, (name, closed, reloaded["1280"])
+        # Colonne dell'Elenco (una finestra modal) e «Attendere…»: l'overflow della pagina non cambia, la misura resta
+        for label in ("Colonne", "Attendere"):
+            step = steps[label]
+            assert step["overflow"] == closed["overflow"] and step["bar"] == step["gap"] == bar, (name, step)
+            assert (step["measured"], step["hide"], step["changes"]) == (
+                closed["measured"],
+                closed["hide"],
+                closed["changes"],
+            ), (name, step)
+        # A 1258 Stato va via, con la barra e senza; a 1275 solo con la barra di Windows (come in BAND)
+        assert reloaded["1258"]["hide"] == "stato", name
+        assert reloaded["1275"]["hide"] == ("stato" if bar else ""), name

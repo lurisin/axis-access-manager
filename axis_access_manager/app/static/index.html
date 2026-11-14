@@ -675,7 +675,9 @@
                   background: transparent; box-shadow: none; overflow: visible; color: #eef1f5; }
   dialog#viewer::backdrop { background: rgba(6, 8, 12, .9); }
   /* Con la foto aperta la pagina sotto non scorre, né col dito né con la rotella: lo sfondo la copre, e chiudendo la foto
-     sarebbe da un'altra parte. Una barra di scorrimento che c'era lascia il suo spazio, così la pagina non si allarga */
+     sarebbe da un'altra parte. Una barra di scorrimento che c'era lascia il suo spazio, così la pagina non si allarga.
+     Intanto clientWidth di html è quello della finestra intera: le colonne dell'Anagrafica misurano la pagina con
+     getBoundingClientRect (personListWidth) */
   html.viewer-open { overflow: hidden; }
   html.viewer-open.viewer-gutter { scrollbar-gutter: stable; }
   dialog#viewer { overscroll-behavior: contain; }
@@ -2631,10 +2633,16 @@ function scrollbarWidth() {
 // della pagina, che compare e sparisce con l'altezza dell'elenco (la ricerca, l'aggiornamento, un'altra finestra). Senza
 // la barra l'elenco è più largo della sua larghezza, e le colonne in più si allargano: così alla stessa larghezza della
 // finestra ci sono sempre le stesse colonne, qualunque cosa sia successa prima, e la barra che va e viene non le fa
-// lampeggiare. Il calcolo non ricorda niente
+// lampeggiare. Il calcolo non ricorda niente.
+// La barra della pagina si misura dallo spazio che occupa davvero, la finestra meno la larghezza della pagina
+// (getBoundingClientRect di html), e non da clientWidth: con la foto ingrandita aperta (html.viewer-open, overflow:
+// hidden) la barra non c'è ma il suo spazio resta (scrollbar-gutter: stable), l'elenco è largo uguale, e Chromium dà
+// a clientWidth la finestra intera. Con clientWidth l'aggiornamento dell'elenco sotto la foto toglieva 17 px (Stato via
+// a 1280 col menu aperto), e chiusa la foto restava così fino al giro dopo
 function personListWidth(list) {
   const bar = scrollbarWidth();
-  const shown = Math.min(Math.max(window.innerWidth - document.documentElement.clientWidth, 0), bar);
+  const page = document.documentElement.getBoundingClientRect().width;
+  const shown = Math.min(Math.max(Math.round(window.innerWidth - page), 0), bar);
   return list.clientWidth - (bar - shown);
 }
 // Regole delle colonne, dal modello: larghezza delle colonne fisse, colonne tolte per lo spazio (data-hide della
