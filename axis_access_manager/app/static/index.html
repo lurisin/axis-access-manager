@@ -677,8 +677,24 @@
                  border-width: 0 0 0 1px; }
   dialog.sheet .dlg { max-height: 100vh; height: 100%; }
   dialog.sheet .dlg-body { flex: 1; background: var(--bg); }
-  dialog.image { width: auto; max-width: calc(100vw - 24px); }
-  dialog.image img { display: block; max-width: calc(100vw - 26px); max-height: calc(100vh - 120px); }
+  /* Foto ingrandita (showImage): larga quanto la foto, al centro su sfondo scuro in tutti e due i temi, alla sua
+     grandezza e mai più grande dello schermo meno i margini, senza deformarla. Titolo piccolo e × sopra, larghi quanto
+     la foto: un titolo lungo finisce nei puntini invece di allargare la finestra */
+  dialog#viewer { width: fit-content; max-width: calc(100vw - 16px); max-height: none; padding: 0; border: 0; border-radius: 0;
+                  background: transparent; box-shadow: none; overflow: visible; color: #eef1f5; }
+  dialog#viewer::backdrop { background: rgba(6, 8, 12, .9); }
+  .viewer-head { display: flex; align-items: center; gap: 8px; width: 0; min-width: 100%; margin-bottom: 8px; }
+  .viewer-head h2 { flex: 1; min-width: 0; margin: 0; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .viewer-x { flex: none; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: rgba(255, 255, 255, .14); color: #fff; }
+  .viewer-x:hover { background: rgba(255, 255, 255, .26); }
+  .viewer-x:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  dialog#viewer img { display: block; width: auto; height: auto; max-width: calc(100vw - 32px); max-height: calc(100vh - 92px);
+                      max-height: calc(100dvh - 92px); border-radius: 8px; background: #000; }
+  /* Mentre carica e quando non si carica: un riquadro scuro con la rotellina o con «Foto non disponibile» */
+  .viewer-wait { width: min(360px, calc(100vw - 32px)); aspect-ratio: 4 / 3; display: flex; flex-direction: column; align-items: center;
+                 justify-content: center; gap: 10px; border-radius: 8px; background: rgba(255, 255, 255, .07); color: #c4ccd6; font-size: 14px; text-align: center; }
+  .viewer-wait .spinner { width: 26px; height: 26px; border-color: rgba(255, 255, 255, .25); border-top-color: #fff; }
+  .viewer-wait svg.icon { width: 30px; height: 30px; opacity: .7; }
   /* Nel top layer (popover) come le finestre: inset, margin e border tolgono quelli del popover. Largo quanto il testo:
      con left: 50% andrebbe a capo a metà schermo */
   #toast { position: fixed; inset: auto auto 24px 50%; margin: 0; border: 0; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); z-index: 50;
@@ -861,6 +877,8 @@
 
 <dialog id="sheet" class="sheet"></dialog>
 <dialog id="modal"></dialog>
+<!-- Foto ingrandita: una finestra sua, sopra quella da cui si apre (il Dettaglio Evento sul telefono resta sotto) -->
+<dialog id="viewer" aria-labelledby="viewer-title"></dialog>
 <dialog id="retry"></dialog>
 <!-- Riquadro di attesa delle modifiche (busy): nessun pulsante, si chiude da solo alla fine dell'operazione -->
 <dialog id="busy" aria-labelledby="busy-title" aria-describedby="busy-status">
@@ -1619,8 +1637,46 @@ const confirmBox = (title, text, ok = "Conferma", danger = false) =>
 const field = (label, input, hint = "") => `<div class="field"><label>${esc(label)}</label>${input}${hint ? `<p class="hint">${hint}</p>` : ""}</div>`;
 const val = (dlg, name) => { const el = $(`[name="${name}"]`, dlg); return el ? (el.type === "checkbox" ? el.checked : el.value.trim()) : ""; };
 
+// Foto ingrandita: Foto della Persona, foto della telecamera, Foto in Anagrafica. Rotellina mentre carica, «Foto non
+// disponibile» se non arriva. Si chiude con Esc, con un tocco o un clic fuori dalla foto, con la × e cambiando pagina;
+// il fuoco resta sulla × finché è aperta e poi torna su chi l'ha aperta
 function showImage(src, title) {
-  modal({title, body: `<img src="${esc(src)}" alt="">`, cls: "image"});
+  const dlg = $("#viewer");
+  dlg.leave?.();
+  const back = document.activeElement;
+  dlg.innerHTML = `<div class="viewer-head"><h2 id="viewer-title" title="${esc(title)}">${esc(title)}</h2>
+      <button type="button" class="viewer-x" aria-label="Chiudi" title="Chiudi">${icon("close")}</button></div>
+    <div class="viewer-wait" role="status"><span class="spinner" aria-hidden="true"></span><span>Caricamento della foto…</span></div>`;
+  const wait = $(".viewer-wait", dlg), close = $(".viewer-x", dlg);
+  const img = new Image();
+  img.alt = title;
+  img.onload = () => { if (wait.isConnected) wait.replaceWith(img); };
+  img.onerror = () => {
+    if (!wait.isConnected) return;
+    wait.classList.add("failed");
+    wait.innerHTML = `${icon("camera")}<span>Foto non disponibile</span>`;
+  };
+  // Chiusura in un punto solo, subito (non all'evento close, che arriva dopo): Esc, ×, clic fuori, cambio di pagina
+  const leave = () => {
+    if (dlg.leave !== leave) return;
+    dlg.leave = null;
+    window.removeEventListener("hashchange", leave);
+    img.onload = img.onerror = null;
+    dlg.close();
+    dlg.replaceChildren();
+    if (back && back !== document.body && back.isConnected) back.focus({preventScroll: true});
+  };
+  dlg.leave = leave;
+  close.onclick = leave;
+  dlg.oncancel = (e) => { e.preventDefault(); leave(); };
+  // Il clic fuori arriva alla finestra stessa (lo sfondo è suo): sulla foto, sul titolo e sulla × no
+  dlg.onclick = (e) => { if (e.target === dlg) leave(); };
+  // Tab e Maiusc+Tab restano sulla ×, l'unico comando: la pagina sotto non prende il fuoco
+  dlg.onkeydown = (e) => { if (e.key === "Tab") { e.preventDefault(); close.focus(); } };
+  window.addEventListener("hashchange", leave);
+  img.src = src;
+  dlg.showModal();
+  close.focus();
 }
 
 // ---------- Stato condiviso ----------
@@ -3306,7 +3362,7 @@ function eventDetail(e) {
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(LOG_SOURCES[e.source] || e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
-    ${e.snapshot ? `<div class="ev-photo-label" data-snap-label hidden>Foto della Telecamera</div><img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    ${e.snapshot ? `<div class="ev-photo-label" data-snap-label hidden>Foto della Telecamera</div><img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" tabindex="0" role="button" aria-label="Ingrandisci la Foto della Telecamera" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
     ${e.person_id && can("persone") ? `<div class="ev-face" data-face="${e.person_id}" data-face-name="${esc(e.person_name || "")}" hidden></div>` : ""}
     ${props(rows)}
     <div class="row" style="margin-top:14px">
@@ -3523,6 +3579,11 @@ function bindSnapshots(root) {
   root.addEventListener("click", (e) => {
     const img = e.target.closest("[data-snap]");
     if (img) { e.stopPropagation(); showImage(`api/events/${img.dataset.snap}/snapshot`, img.dataset.title); }
+  });
+  // Da tastiera le foto grandi (Dettaglio Evento, notifiche) si aprono con Invio o Spazio come un pulsante
+  root.addEventListener("keydown", (e) => {
+    const img = (e.key === "Enter" || e.key === " ") && e.target.closest?.("[data-snap][tabindex]");
+    if (img) { e.preventDefault(); e.stopPropagation(); showImage(`api/events/${img.dataset.snap}/snapshot`, img.dataset.title); }
   });
 }
 
@@ -3851,7 +3912,7 @@ function notifCard(i) {
   const details = i.event && can("registro") ? `<button type="button" data-n-event="${i.event}">Dettagli</button>`
     : link ? `<a class="btn" href="${esc(link)}">Dettagli</a>` : "";
   const snap = i.snapshot && can("registro")
-    ? `<img class="n-snap" loading="lazy" src="api/events/${i.snapshot}/snapshot" alt="Foto" data-snap="${i.snapshot}" data-title="${esc(i.title + " · " + fmtFull(i.ts))}">`
+    ? `<img class="n-snap" loading="lazy" src="api/events/${i.snapshot}/snapshot" alt="Foto" tabindex="0" role="button" aria-label="Ingrandisci la foto" data-snap="${i.snapshot}" data-title="${esc(i.title + " · " + fmtFull(i.ts))}">`
     : i.snapshot_error ? `<div class="n-snap none" title="${esc(i.snapshot_error)}">${icon("camera")}<span>Foto non scattata</span></div>` : "";
   return `<article class="n-card sev-${i.severity}" data-key="${esc(i.id)}">
     <div class="n-tile">${icon(ic)}</div>
