@@ -205,6 +205,9 @@ class CameraWatch:
                         _LOGGER.exception("Ricontrollo della telecamera %s non riuscito", camera)
                     logged = True
                     error = "errore imprevisto, dettagli nel log dell'add-on"
+                if (wake := self._wake.get(camera)) is not None:
+                    # Il ritorno dell'API visto da questo stesso tentativo: l'attesa dopo ne tiene già conto
+                    wake.clear()
                 if not error:
                     if camera in self.errors:
                         _LOGGER.info("Telecamera %s di nuovo disponibile", camera)
