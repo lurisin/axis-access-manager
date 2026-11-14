@@ -1,7 +1,9 @@
 """Suggerimento del Codice Stampato (0.28.4): senza gli esempi inventati della 0.28.3 («Ciccio», «1234»,
 «Cicciobello») in tutto quello che il titolare può leggere (pagina, messaggi e commenti del server, DOCS, CHANGELOG che
-Home Assistant mostra all'aggiornamento), e lo stesso testo professionale in Nuova Persona, Tessere da Registrare,
-finestra Codice e Aggiungi Tessera. Nei test i valori restano: sono dati scritti dagli utenti."""
+Home Assistant mostra all'aggiornamento, opzioni dell'add-on), e lo stesso testo professionale in Nuova Persona, Tessere
+da Registrare, finestra Codice e Aggiungi Tessera. Niente «1234» neanche dentro un numero di esempio («+39 333 1234567»,
+«04123456»): in un software professionale gli esempi sono neutri (+39 333 5550190, A-07). Nei test i valori restano:
+sono dati scritti dagli utenti."""
 
 import json
 import re
@@ -19,23 +21,56 @@ ROOT = Path(__file__).resolve().parents[1]
 ADDON = ROOT / "axis_access_manager"
 PAGE = ADDON / "app" / "static" / "index.html"
 HINT = "Il codice scritto sulla tessera. Resta solo nell'app."
-# «1234» da solo: le password deboli di direct.py («password1234», «1234567890») e i numeri di telefono finti dei
-# documenti («+39 333 1234567») non sono esempi del Codice Stampato
-EXAMPLES = re.compile(r"ciccio|\b1234\b", re.I)
+# Esempi buttati lì: «Ciccio», e «1234» anche dentro le parole e i numeri («+39 333 1234567», «04123456»,
+# «password1234»), o le cifre in fila con il punto delle migliaia («06.123.456»)
+EXAMPLES = re.compile(r"ciccio|1234|123\.456", re.I)
+# L'elenco delle password deboli di direct.py, che non si vede: le password che l'accesso diretto rifiuta
+WEAK_PASSWORDS = re.compile(r"^COMMON_PASSWORDS = \{\n.*?^\}$", re.M | re.S)
 
 
 def _texts() -> list[Path]:
-    return [PAGE, ADDON / "DOCS.md", ADDON / "CHANGELOG.md", ROOT / "README.md", *sorted((ADDON / "app").glob("*.py"))]
+    return [
+        PAGE,
+        ADDON / "DOCS.md",
+        ADDON / "CHANGELOG.md",
+        ROOT / "README.md",
+        ADDON / "config.yaml",
+        *sorted((ADDON / "translations").glob("*.yaml")),
+        *sorted((ADDON / "app").glob("*.py")),
+    ]
+
+
+def _readable(path: Path) -> str:
+    text = path.read_text(encoding="utf-8")
+    if path.name == "direct.py":
+        # Le righe dell'elenco diventano vuote: i numeri delle righe dopo restano quelli del file
+        text = WEAK_PASSWORDS.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+    return text
 
 
 def test_no_made_up_examples_anywhere_the_owner_can_read():
     found = [
         f"{path.relative_to(ROOT)}:{number}: {line.strip()[:120]}"
         for path in _texts()
-        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        for number, line in enumerate(_readable(path).splitlines(), 1)
         if EXAMPLES.search(line)
     ]
     assert found == []
+
+
+def test_the_check_finds_1234_inside_words_but_not_in_the_weak_passwords():
+    """Il controllo di sopra trova «1234» anche dentro un numero o una parola; l'elenco delle password deboli di
+    direct.py, che ne ha (password1234, 1234567890), resta fuori, e solo lui."""
+    for text in ("+39 333 1234567", 'come `="04123456"`', "password1234", "«06.123.456»", "Codice Ciccio"):
+        assert EXAMPLES.search(text), text
+    for text in ("+39 333 5550190", 'come `="04705918"`', "A-07", "«06.555.019»", "matricola 000417"):
+        assert not EXAMPLES.search(text), text
+    direct = (ADDON / "app" / "direct.py").read_text(encoding="utf-8")
+    weak = WEAK_PASSWORDS.search(direct)
+    assert weak and '"password1234"' in weak.group(0) and '"1234567890"' in weak.group(0)
+    readable = _readable(ADDON / "app" / "direct.py")
+    assert "1234" not in readable and readable.count("\n") == direct.count("\n")
+    assert readable.replace("\n", "") == direct.replace(weak.group(0), "").replace("\n", "")
 
 
 def test_every_printed_code_field_uses_the_same_hint():

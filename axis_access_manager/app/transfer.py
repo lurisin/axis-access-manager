@@ -81,20 +81,20 @@ def _text(value: str) -> str:
 
 
 def _card_text(number: str) -> str:
-    """Tessera come formula di testo (="04123456") se il foglio di calcolo la convertirebbe in numero."""
+    """Tessera come formula di testo (="04705918") se il foglio di calcolo la convertirebbe in numero."""
     return f'="{number}"' if NUMERIC_CARD.fullmatch(number) else number
 
 
 def _formula_text(value: str) -> str:
     """Testo come formula di testo (="..."), come le tessere, perché il foglio di calcolo lo mostri com'è: se no toglie
-    lo zero iniziale, prende «06.123.456» per un numero con il punto delle migliaia e lascia in vista l'apostrofo
+    lo zero iniziale, prende «06.555.019» per un numero con il punto delle migliaia e lascia in vista l'apostrofo
     davanti a «+39 …». Solo senza virgolette, che chiuderebbero il testo della formula: con, come il testo normale."""
     return f'="{value}"' if value and '"' not in value else _text(value)
 
 
 def _contacts(person: dict) -> list[str]:
     """Telefono, email, matricola e referente per il file esportato. Telefono e matricola come formula di testo (vedi
-    _formula_text): la matricola 000123 resta con gli zeri. Il telefono non ha mai virgolette (vedi
+    _formula_text): la matricola 000417 resta con gli zeri. Il telefono non ha mai virgolette (vedi
     service.normalize_phone)."""
     return [
         _formula_text(person.get("phone") or ""),
