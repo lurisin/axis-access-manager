@@ -2998,6 +2998,14 @@ function personColumnsMoved(dlg, said = "") {
   // Lo stesso testo di prima si annuncia di nuovo solo se cambia: uno spazio in più o in meno
   if (said) live.textContent = said + (live.textContent.endsWith("\u00a0") ? "" : "\u00a0");
 }
+// Porta la riga li al posto at spostando le righe accanto e non lei: la riga che si trascina non esce mai dalla pagina,
+// nemmeno per un attimo (il puntatore resta suo), e il pulsante premuto tiene il fuoco
+function personColumnTo(li, at) {
+  const list = li.parentNode;
+  let now = [...list.children].indexOf(li);
+  for (; now > at; now--) list.insertBefore(li.previousElementSibling, li.nextElementSibling);
+  for (; now < at; now++) list.insertBefore(li.nextElementSibling, li);
+}
 const personColumnPlace = (li) => {
   const rows = [...li.parentNode.children];
   return `${PERSON_COLUMN_BY[li.dataset.col].label}: posizione ${rows.indexOf(li) + 1} di ${rows.length}`;
@@ -3010,15 +3018,14 @@ function bindPersonColumns(dlg) {
     const button = e.target.closest("[data-move]");
     if (!button) return;
     const li = button.closest(".p-col");
-    const step = Number(button.dataset.move);
-    const other = step < 0 ? li.previousElementSibling : li.nextElementSibling;
-    if (!other) return;
-    list.insertBefore(li, step < 0 ? other : other.nextElementSibling);
+    const at = [...list.children].indexOf(li) + Number(button.dataset.move);
+    if (at < 0 || at >= list.children.length) return;
+    personColumnTo(li, at);
     personColumnsMoved(dlg, personColumnPlace(li));
-    (button.disabled ? $(`[data-move="${-step}"]`, li) : button).focus();
+    if (button.disabled) $(`[data-move="${-button.dataset.move}"]`, li).focus();
   });
   // Trascinamento con il mouse o il dito dalla maniglia: la riga va dove sta il puntatore, e vicino al bordo l'elenco
-  // scorre da solo. Ascolto sulla finestra, come per il cruscotto: spostando la riga la maniglia perderebbe il puntatore
+  // scorre da solo. Ascolto sulla finestra, come per il cruscotto
   list.addEventListener("pointerdown", (e) => {
     const grip = e.target.closest(".p-col-grip");
     if (!grip || e.button > 0) return;
@@ -3027,10 +3034,8 @@ function bindPersonColumns(dlg) {
     const scroller = list.closest(".dlg-body");
     const from = [...list.children].indexOf(li);
     let y = e.clientY, frame = 0;
-    const place = () => {
-      const before = [...list.children].find((r) => r !== li && y < r.getBoundingClientRect().top + r.offsetHeight / 2) || null;
-      if (before !== li.nextElementSibling) list.insertBefore(li, before);
-    };
+    // Il posto è quante altre righe hanno la metà sopra il puntatore
+    const place = () => personColumnTo(li, [...list.children].filter((r) => r !== li && r.getBoundingClientRect().top + r.offsetHeight / 2 < y).length);
     const roll = () => {
       const box = scroller.getBoundingClientRect();
       const speed = y < box.top + 40 ? -8 : y > box.bottom - 40 ? 8 : 0;
