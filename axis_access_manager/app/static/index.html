@@ -2514,7 +2514,7 @@ const personColumnsChosen = () => cleanPersonColumns(personPrefs.user === store.
 // dell'ordine per inserimento, con le predefinite, prima di Stato)
 function personColumnsFor(chosen, sortKey, cards) {
   const columns = [...chosen];
-  [sortKey, cards ? "tessere" : ""].forEach((key) => {
+  [PERSON_COLUMN_BY[sortKey]?.sort ? sortKey : "", cards ? "tessere" : ""].forEach((key) => {
     if (!PERSON_COLUMN_KEYS.includes(key) || columns.includes(key)) return;
     const before = PERSON_COLUMN_KEYS.slice(0, PERSON_COLUMN_KEYS.indexOf(key));
     columns.splice(columns.findLastIndex((k) => before.includes(k)) + 1, 0, key);
