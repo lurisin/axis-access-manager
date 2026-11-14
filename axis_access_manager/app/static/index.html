@@ -33,7 +33,11 @@
          font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  svg.icon { width: 20px; height: 20px; fill: currentColor; flex: none; }
+  /* Un'icona dentro una riga di testo (anche in uno span da sola, come le voci del menu) non poggia sulla linea di
+     base, dove stava 2-3 px più in alto del nome accanto e allungava la riga: il suo centro va a metà delle maiuscole
+     (0.5cap; -0.3em dove cap non c'è, giusto col testo da 15 px). Ai pulsanti non cambia niente: sono elementi flex,
+     che vertical-align non tocca */
+  svg.icon { width: 20px; height: 20px; fill: currentColor; flex: none; vertical-align: -0.3em; vertical-align: calc(0.5cap - 10px); }
   code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
 
   /* Struttura */
