@@ -173,40 +173,69 @@ def test_with_little_room_the_last_columns_of_the_order_go_first():
     assert shown == every[: len(shown)] and 6 <= len(shown) < len(every)
 
 
-def test_a_column_comes_back_only_with_some_room_more():
-    """La barra di scorrimento che compare e sparisce (16 px) non fa lampeggiare una colonna: tolta a 970, torna solo
-    da 970 + 24 px; con altre colonne, un altro ordine o un'altra ricerca si riparte da capo."""
-    keep = '["cognome", "nome", "cognome"]'
-    shown = f"(w, cols = {json.dumps(DEFAULT)}) => personColumnsShown(cols, w, {keep}).length"
-    out = run(
-        {
-            "steps": f"[1000, 970, 985, 993, 994, 978, 994, 2000].map((w) => ({shown})(w))",
-            "other": f"(personColumnsShown({json.dumps(DEFAULT)}, 970, {keep}), "
-            f"personColumnsShown({json.dumps(DEFAULT)}, 985, ['cognome', 'nome', 'accesso']).length)",
-            "fresh": f"(personColumnsShown({json.dumps(DEFAULT)}, 970, {keep}), personFit = null, ({shown})(985))",
-        }
-    )
-    assert out["steps"] == [9, 8, 8, 8, 9, 8, 8, 9]
-    assert out["other"] == out["fresh"] == 9
+# Pagina finta per personListWidth: finestra, pagina ed elenco con le larghezze di prova, e il riquadro di prova della
+# barra di scorrimento larga BAR (quante volte si misura in measured)
+WINDOW = """
+let BAR = 17, measured = 0;
+const window = {innerWidth: 1280, devicePixelRatio: 1};
+const document = {
+  documentElement: {clientWidth: 1263},
+  body: {appendChild() { measured++; }},
+  createElement: () => ({style: {}, offsetWidth: 100, get clientWidth() { return 100 - BAR; }, remove() {}}),
+};
+const list = {clientWidth: 981};
+const at = (inner, page, width) => { window.innerWidth = inner; document.documentElement.clientWidth = page;
+  list.clientWidth = width; return personListWidth(list); };
+"""
 
 
-def test_same_width_same_columns_after_a_bigger_change():
-    """Revisione: la memoria valeva per qualsiasi cambio. A 1280 col menu aperto (998 px) ci sono le 9 colonne; dopo
-    un passaggio a 1100 (818 px) tornando a 998 mancava Stato. A 1100 col menu chiuso (986 px) le 9 colonne; aprendo e
-    chiudendo il menu, alla stessa larghezza mancava Stato. Con un cambio più grande della barra di scorrimento le
-    colonne sono quelle che ci stanno, come senza memoria."""
-    keep = '["cognome", "nome", "cognome"]'
-    shown = f"(w) => personColumnsShown({json.dumps(DEFAULT)}, w, {keep}).length"
-    fresh = f"(w) => (personFit = null, personColumnsShown({json.dumps(DEFAULT)}, w, {keep}).length)"
+def test_the_list_is_measured_as_with_the_scrollbar_always_there():
+    """Verifica della 0.28.4: la larghezza per le colonne non dipende dalla barra di scorrimento verticale, che compare
+    e sparisce con l'altezza dell'elenco. Con la barra di Windows (17 px) a 1280 col menu aperto l'elenco è di 981 px
+    con la barra e di 998 senza: tutte e due le volte conta 981. Con le barre sovrapposte del telefono e del Mac (0 px)
+    conta l'elenco com'è. La barra si misura una volta per ogni zoom, e la larghezza non supera mai quella vera."""
     out = run(
         {
-            "window": f"[998, 818, 998].map({shown})",
-            "menu": f"(personFit = null, [986, 818, 986].map({shown}))",
-            "fresh": f"[998, 818, 986].map({fresh})",
-        }
+            "windows": "[at(1280, 1263, 981), at(1280, 1280, 998), at(1280, 1263, 981)]",
+            "measured": "measured",
+            "overlay": "(BAR = 0, window.devicePixelRatio = 2, [at(1280, 1280, 998), at(1280, 1280, 998), measured])",
+            # Zoom al 125%: la barra si misura di nuovo, in px della pagina
+            "zoom": "(BAR = 14, window.devicePixelRatio = 1.25, [at(1024, 1010, 803), at(1024, 1024, 817), measured])",
+            # Una barra della pagina più larga di quella del riquadro di prova, o lo zoom col dito: mai più dell'elenco
+            "wider": "at(1024, 1004, 797)",
+            "pinch": "at(600, 1024, 817)",
+        },
+        WINDOW,
     )
-    assert out["fresh"][0] == out["fresh"][2] == 9
-    assert out["window"] == out["menu"] == [9, out["fresh"][1], 9]
+    assert out["windows"] == [981, 981, 981] and out["measured"] == 1
+    assert out["overlay"] == [998, 998, 2]
+    assert out["zoom"] == [803, 803, 3]
+    assert out["wider"] == 797 and out["pinch"] == 803
+
+
+def test_same_window_width_same_columns_whatever_happened_before():
+    """Verifica della 0.28.4: a 1280 col menu aperto le predefinite hanno 998 px (senza barra) e ne servono 980;
+    stringendo di poco la finestra (976 px a 1258) Stato andava via e riallargandola non tornava più fino al
+    ricaricamento, perché la colonna tolta tornava solo con 24 px in più. Ora le colonne dipendono solo dalla
+    larghezza: qualunque strada, alla stessa larghezza le stesse colonne, con la barra di Windows e senza."""
+    keep = '["cognome", "nome", "cognome"]'
+    shown = f"(w) => personColumnsFit({json.dumps(DEFAULT)}, w, {keep}).length"
+    windows = f"(inner) => personColumnsFit({json.dumps(DEFAULT)}, at(inner, inner - 17, inner - 299), {keep})"
+    out = run(
+        {
+            "overlay": f"[998, 993, 980, 979, 976, 980, 993, 998, 818, 998].map({shown})",
+            "windows": f"[1280, 1258, 1280, 1100, 1280].map({windows}).map((s) => s.length)",
+            "bar": f"[1280, 1275, 1263].map((inner) => [({windows})(inner), (BAR = 17, "
+            f"personColumnsFit({json.dumps(DEFAULT)}, at(inner, inner, inner - 282), {keep}))])",
+        },
+        WINDOW,
+    )
+    assert out["overlay"] == [9, 9, 9, 8, 8, 9, 9, 9, out["overlay"][8], 9] and out["overlay"][8] < 8
+    assert out["windows"] == [9, 8, 9, out["windows"][3], 9] and out["windows"][3] < 8
+    # La barra che va e viene (998 px senza, 981 con, a 1280) non cambia le colonne
+    for with_bar, without in out["bar"]:
+        assert with_bar == without
+    assert [len(with_bar) for with_bar, _ in out["bar"]] == [9, 8, 8]
 
 
 PEOPLE = [
@@ -285,7 +314,7 @@ def test_table_with_the_chosen_columns_in_their_order():
     table = (
         "(sort, q = '', width) => { personFilters.sort = sort; personFilters.q = q; "
         "store.me.username = 'maria'; Object.assign(personPrefs, {user: 'maria', columns: "
-        f"{json.dumps(chosen)}}}); personFit = null; "
+        f"{json.dumps(chosen)}}}); "
         "return personTable(sortPersons(persons.filter((p) => personMatches(p, q)), sort), width); }"
     )
     many = [*PEOPLE, *(person(10 + i, f"Nome{i:02d}", ["Abete", "Betulla", "Cedro"][i % 3]) for i in range(12))]

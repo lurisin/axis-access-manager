@@ -537,9 +537,9 @@
   .p-tools .sort-pick select { max-width: 270px; }
   /* Tabella delle Persone sul computer: le colonne scelte da chi guarda, testi lunghi con i puntini (e il testo intero
      nel title), mai più larga della pagina. Con poco spazio (menu aperto, finestra piccola) spariscono le ultime
-     colonne dell'ordine scelto: lo decide la pagina misurando l'elenco (personColumnsShown), e le regole di larghezze,
-     colonne nascoste e bordi vengono dal modello delle colonne (personColumnCss). Il riquadro non si allarga per il
-     contenuto (contenimento della larghezza): la tabella si adatta a lui, e non il contrario */
+     colonne dell'ordine scelto: lo decide la pagina misurando l'elenco (personListWidth, personColumnsFit), e le
+     regole di larghezze, colonne nascoste e bordi vengono dal modello delle colonne (personColumnCss). Il riquadro non
+     si allarga per il contenuto (contenimento della larghezza): la tabella si adatta a lui, e non il contrario */
   .p-table-wrap { container-type: inline-size; }
   table.p-table { table-layout: fixed; }
   /* table.table.p-table: più peso di table.table, che viene dopo (vertical-align: top) */
@@ -2556,13 +2556,11 @@ const PERSON_COLUMNS_REQUIRED = ["cognome", "nome"];
 const PERSON_COLUMNS_DEFAULT = ["foto", "cognome", "nome", "matricola", "ditta", "tipologia", "tessere", "accesso", "stato"];
 // Larghezza minima delle colonne larghe quanto avanza (Cognome, Nome, Ditta…), bordo compreso: il testo resta di almeno
 // 75 px, un cognome di 8-10 lettere. Con le predefinite ci stanno tutte da 980 px, a 1280 anche col menu aperto e la
-// barra di scorrimento di Windows. La prima e l'ultima colonna in vista hanno 8 px di bordo in più (PERSON_EDGE)
+// barra di scorrimento di Windows (elenco di 998 px, 981 contando la barra: personListWidth). La prima e l'ultima
+// colonna in vista hanno 8 px di bordo in più (PERSON_EDGE)
 const PERSON_FLEX_MIN = 95;
 const PERSON_EDGE = 8;
 const personEdge = (key) => PERSON_COLUMN_BY[key].edge ?? PERSON_EDGE;
-// Una colonna tolta per lo spazio torna solo con un po' di spazio in più di quando è stata tolta: la barra di
-// scorrimento che compare e sparisce (fino a 17 px) con l'altezza delle righe non la fa lampeggiare
-const PERSON_FIT_SLACK = 24;
 // Scelta salvata, pulita come fa il server (preferences.clean_person_columns): colonne sconosciute (di una versione
 // futura) e doppioni tolti, Cognome e Nome rimessi accanto se mancano. Senza una scelta, le predefinite
 function cleanPersonColumns(value) {
@@ -2615,19 +2613,29 @@ function personColumnsFit(columns, width, keep) {
   }
   return shown;
 }
-// Come personColumnsFit, ricordando l'ultimo cambio (stesse colonne, stessa colonna dell'ordine e stessa ricerca) e la
-// larghezza a cui è avvenuto: una colonna tolta torna solo con PERSON_FIT_SLACK px in più di quella larghezza. Vale
-// solo per le piccole oscillazioni, cioè la barra di scorrimento: con un cambio più grande (menu, finestra, zoom) le
-// colonne sono quelle che ci stanno, come senza memoria, così alla stessa larghezza si vedono le stesse colonne
-// qualunque cosa sia successa prima. Le colonne in vista sono sempre le prime dell'ordine
-let personFit = null;
-function personColumnsShown(columns, width, keep) {
-  const sig = `${columns.join(" ")}|${keep.join(" ")}`;
-  const last = personFit?.sig === sig ? personFit : null;
-  let shown = personColumnsFit(columns, width, keep);
-  if (last && shown.length > last.shown.length && width - last.width < PERSON_FIT_SLACK) shown = last.shown;
-  if (!last || shown.length !== last.shown.length) personFit = {sig, shown, width};
-  return shown;
+// Larghezza della barra di scorrimento del browser: 17 px con quella classica di Windows, 0 con le barre sovrapposte
+// del telefono e del Mac. Misurata su un riquadro di prova, una volta per ogni zoom (in px della pagina cambia con lo
+// zoom)
+let scrollbarSize = null;
+function scrollbarWidth() {
+  if (scrollbarSize?.ratio !== window.devicePixelRatio) {
+    const probe = document.createElement("div");
+    probe.style.cssText = "position: absolute; top: -200px; left: 0; width: 100px; height: 100px; overflow: scroll; visibility: hidden";
+    document.body.appendChild(probe);
+    scrollbarSize = {ratio: window.devicePixelRatio, width: Math.max(probe.offsetWidth - probe.clientWidth, 0)};
+    probe.remove();
+  }
+  return scrollbarSize.width;
+}
+// Larghezza dell'elenco per scegliere le colonne (personColumnsFit): sempre come con la barra di scorrimento verticale
+// della pagina, che compare e sparisce con l'altezza dell'elenco (la ricerca, l'aggiornamento, un'altra finestra). Senza
+// la barra l'elenco è più largo della sua larghezza, e le colonne in più si allargano: così alla stessa larghezza della
+// finestra ci sono sempre le stesse colonne, qualunque cosa sia successa prima, e la barra che va e viene non le fa
+// lampeggiare. Il calcolo non ricorda niente
+function personListWidth(list) {
+  const bar = scrollbarWidth();
+  const shown = Math.min(Math.max(window.innerWidth - document.documentElement.clientWidth, 0), bar);
+  return list.clientWidth - (bar - shown);
 }
 // Regole delle colonne, dal modello: larghezza delle colonne fisse, colonne tolte per lo spazio (data-hide della
 // tabella) e bordo più largo per la prima e l'ultima in vista (data-first, data-last), con i suoi px in più
@@ -2931,7 +2939,7 @@ function renderPersonList() {
   }
   const sorted = sortPersons(rows, personFilters.sort);
   // Sul telefono righe essenziali, sul computer una tabella con le colonne che stanno nell'elenco
-  morph(list, phoneLayout() ? personRows(sorted) : personTable(sorted, list.clientWidth));
+  morph(list, phoneLayout() ? personRows(sorted) : personTable(sorted, personListWidth(list)));
 }
 // Telefono: foto o iniziali con il pallino della tipologia, «Nome Cognome», l'etichetta dello stato e sotto il nome,
 // in piccolo, il valore usato per ordinare o, con l'ordine per cognome o per nome, i primi dati delle colonne scelte
@@ -2990,14 +2998,14 @@ function personCell(p, key) {
 // Computer: tabella con le colonne scelte da chi guarda, nel suo ordine, e le intestazioni che ordinano (un pulsante in
 // ogni intestazione ordinabile, aria-sort su quella scelta). Con l'ordine per una colonna non scelta, o con la ricerca
 // che trova delle tessere, c'è anche quella colonna (personColumnsFor). width: larghezza dell'elenco, per le colonne
-// che ci stanno (personColumnsShown); le altre restano nella tabella, nascoste da data-hide, così cambiando la
+// che ci stanno (personColumnsFit); le altre restano nella tabella, nascoste da data-hide, così cambiando la
 // larghezza (menu, finestra) cambia solo un attributo. Le righe non dipendono dall'ordine scelto: cambiando ordine si
 // spostano e basta, senza ridisegnarle
 function personTable(sorted, width = Infinity) {
   const [key, dir] = personFilters.sort.split(":");
   const found = sorted.some((p) => searchedCards(p, personFilters.q).length);
   const columns = personColumnsFor(personColumnsChosen(), key, found);
-  const shown = personColumnsShown(columns, width, personColumnsKeep(key, found));
+  const shown = personColumnsFit(columns, width, personColumnsKeep(key, found));
   // Intestazioni con la chiave della colonna (data-key): quando una colonna in più se ne va (l'ordine per Telefono
   // lasciato per Ultimo Accesso) il morph le abbina per colonna e non per posizione, e il pulsante col fuoco resta suo
   const head = columns.map((k) => {
@@ -3028,7 +3036,7 @@ function fitPersonTable() {
   const table = $("#p-list .p-table");
   if (!table) return;
   const columns = table.dataset.columns.split(" ");
-  const shown = personColumnsShown(columns, $("#p-list").clientWidth, personColumnsKeep(table.dataset.sorted, table.hasAttribute("data-cards")));
+  const shown = personColumnsFit(columns, personListWidth($("#p-list")), personColumnsKeep(table.dataset.sorted, table.hasAttribute("data-cards")));
   Object.entries(personFitData(columns, shown)).forEach(([name, value]) => { if (table.dataset[name] !== value) table.dataset[name] = value; });
 }
 const personResize = typeof ResizeObserver === "function" ? new ResizeObserver(() => fitPersonTable()) : null;

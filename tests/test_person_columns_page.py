@@ -475,3 +475,144 @@ def test_columns_review_width_memory_header_focus_and_rows_in_view(plant, ingres
     keys = out["keys"]
     assert [k["at"] for k in keys] == list(range(2, 16)) and {k["col"] for k in keys} == {"foto"}
     assert all(k["button"] and k["row"] for k in keys), keys
+
+
+BAND = r"""
+const { chromium } = require("playwright");
+const config = JSON.parse(process.argv[1]);
+// Barra di scorrimento classica di Windows, 17 px. Chromium di Playwright parte con --hide-scrollbars, che toglie ogni
+// barra (come le barre sovrapposte del telefono e del Mac, che non tolgono spazio): senza quell'opzione Chromium su
+// Linux ha la barra classica (15 px), e ::-webkit-scrollbar la porta a 17 px come su Windows
+const WINDOWS_BAR = "::-webkit-scrollbar { width: 17px; height: 17px; } "
+  + "::-webkit-scrollbar-thumb { background: #999; }";
+const look = (page, label) => page.evaluate((label) => {
+  const t = document.querySelector("#p-list .p-table");
+  const vis = (el) => el.getClientRects().length > 0 && getComputedStyle(el).display !== "none";
+  const pad = (td) => parseFloat(getComputedStyle(td).paddingLeft) + parseFloat(getComputedStyle(td).paddingRight);
+  const inner = (cls) => Math.min(...[...t.querySelectorAll(`tbody tr[data-person] td.${cls}`)].filter(vis)
+    .map((td) => td.clientWidth - pad(td)));
+  const de = document.documentElement;
+  return {label, bar: innerWidth - de.clientWidth, list: document.querySelector("#p-list").clientWidth,
+    hide: t.dataset.hide, heads: [...t.querySelectorAll("thead th")].filter(vis).length,
+    last: inner("c-last"), first: inner("c-first"), side: de.scrollWidth > de.clientWidth};
+}, label);
+
+async function run(browser, windowsBar) {
+  const context = await browser.newContext({viewport: {width: 1280, height: 800}, extraHTTPHeaders: config.admin});
+  await context.addInitScript((css) => {
+    localStorage.setItem("aam-nav", "1");
+    if (!css) return;
+    const add = () => {
+      const style = document.createElement("style");
+      style.textContent = css;
+      (document.head || document.documentElement).appendChild(style);
+    };
+    if (document.documentElement) add(); else document.addEventListener("DOMContentLoaded", add);
+  }, windowsBar ? WINDOWS_BAR : "");
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${config.ingress}/#persone`);
+  await page.waitForSelector("#p-list .p-table");
+  await page.waitForTimeout(400);
+  const size = async (width, height = 800) => {
+    await page.setViewportSize({width, height});
+    await page.waitForTimeout(200);
+    return look(page, `${width}x${height}`);
+  };
+  const out = {errors};
+  // Finestra stretta di poco e riallargata, un px alla volta intorno al limite e di colpo
+  out.band = [];
+  for (const width of [1280, 1270, 1262, 1261, 1258, 1261, 1262, 1270, 1280, 1258, 1280]) {
+    out.band.push(await size(width));
+  }
+  // Barra che va e viene: la finestra alta quanto tutto l'elenco (niente barra) e più bassa (la barra), e la ricerca
+  // che lascia poche righe. Si contano i cambi delle colonne in vista
+  out.swing = {};
+  for (const width of [1280, 1275]) {
+    await size(width);
+    await page.evaluate(() => {
+      window.hideChanges = [];
+      new MutationObserver((ms) => ms.forEach((m) => window.hideChanges.push(m.target.dataset.hide)))
+        .observe(document.querySelector("#p-list"), {subtree: true, attributes: true, attributeFilter: ["data-hide"]});
+    });
+    const seq = [];
+    for (const height of [800, 6000, 800, 6000, 800]) seq.push(await size(width, height));
+    for (const q of ["Colombo", "", "Prova0", ""]) {
+      await page.fill("#p-q", q);
+      await page.waitForTimeout(200);
+      seq.push(await look(page, `${width} «${q}»`));
+    }
+    out.swing[width] = {seq, changes: await page.evaluate(() => window.hideChanges)};
+  }
+  await context.close();
+  return out;
+}
+
+(async () => {
+  const out = {};
+  let browser = await chromium.launch();
+  out.overlay = await run(browser, false);
+  await browser.close();
+  browser = await chromium.launch({ignoreDefaultArgs: ["--hide-scrollbars"]});
+  out.windows = await run(browser, true);
+  await browser.close();
+  console.log(JSON.stringify(out));
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
+def test_same_window_width_same_columns_with_and_without_the_scrollbar(plant, ingress_server):  # noqa: F811
+    """Verifica della 0.28.4: a 1280 col menu aperto, con le predefinite, l'elenco è di 998 px e ne servono 980.
+    Stringendo di poco la finestra (1258-1261) Stato andava via e riallargandola a 1280 non tornava più fino al
+    ricaricamento. Ora la pagina conta sempre la barra di scorrimento verticale, che ci sia o no: alla stessa larghezza
+    della finestra le stesse colonne, qualunque cosa sia successa prima. Senza barra (Chromium di Playwright, come le
+    barre sovrapposte del telefono e del Mac) e con la barra classica di Windows simulata (17 px): a 1280 col menu
+    aperto tutte e 9 le colonne, Tessere compresa; la barra che compare e sparisce (finestra più alta o più bassa, la
+    ricerca che lascia poche righe) non cambia le colonne; Cognome e Nome mai sotto i 75 px, mai lo scorrimento di
+    lato."""
+    ingress, _, _, _ = plant
+    for first, last, employee_id, company, phone, email, code, card in PERSONS:
+        body = {"first_name": first, "last_name": last, "employee_id": employee_id, "company": company, "phone": phone,
+                "email": email, "referent": "Direzione di Sala"}  # fmt: skip
+        if card:
+            body.update(card=card, printed_code=code)
+        assert ingress.post("/api/persons", json=body, headers=ADMIN).status_code == 200
+    for first, last in EXTRA:
+        assert (
+            ingress.post("/api/persons", json={"first_name": first, "last_name": last}, headers=ADMIN).status_code
+            == 200
+        )
+    config = {"ingress": ingress_server, "admin": ADMIN}
+    result = subprocess.run(["node", "-e", BAND, json.dumps(config)], capture_output=True, text=True, timeout=300)
+    if result.returncode and "Executable doesn't exist" in result.stderr:
+        pytest.skip("Chromium di Playwright non installato")
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    for name, bar in (("overlay", 0), ("windows", 17)):
+        run = out[name]
+        assert run["errors"] == [], name
+        band = run["band"]
+        # La barra c'è (o non c'è) davvero: l'elenco di 46 persone scorre a 800 px di altezza
+        assert {step["bar"] for step in band} == {bar}, (name, band)
+        by_width = {}
+        for step in band:
+            by_width.setdefault(step["label"], set()).add(step["hide"])
+            assert step["last"] >= MIN_TEXT and step["first"] >= MIN_TEXT and not step["side"], (name, step)
+        # Stessa larghezza, stesse colonne, in qualunque ordine ci si arrivi
+        assert all(len(hides) == 1 for hides in by_width.values()), (name, band)
+        # A 1280 col menu aperto ci sono tutte, Tessere compresa; a 1258 va via solo Stato
+        assert by_width["1280x800"] == {""} and band[0]["heads"] == 9, (name, band)
+        assert by_width["1258x800"] == {"stato"}, (name, band)
+        for width, swing in run["swing"].items():
+            seq = swing["seq"]
+            # Senza barra con la finestra alta e con la ricerca che lascia poche righe, con la barra a 800 px
+            assert {step["bar"] for step in seq} == {0, bar}, (name, width, seq)
+            assert swing["changes"] == [], (name, width, swing)
+            assert len({step["hide"] for step in seq}) == 1, (name, width, seq)
+            assert all(s["last"] >= MIN_TEXT and s["first"] >= MIN_TEXT and not s["side"] for s in seq), (name, seq)
+        assert run["swing"]["1280"]["seq"][0]["hide"] == "", name
+    # Con la barra di Windows a 1275 Stato non c'è, con la barra e senza; senza barra (telefono, Mac) c'è
+    assert out["windows"]["swing"]["1275"]["seq"][0]["hide"] == "stato"
+    assert out["overlay"]["swing"]["1275"]["seq"][0]["hide"] == ""
