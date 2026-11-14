@@ -160,7 +160,7 @@ class CameraWatch:
 
     def _open(self, camera: str, down: _Down) -> None:
         self.errors[camera] = {"ts": down.ts, "error": down.error}
-        _LOGGER.warning("Telecamera %s non disponibile (%s): l'app la ricontrolla da sola", camera, down.error)
+        _LOGGER.warning("Telecamera %s: %s; l'app la ricontrolla da sola", camera, down.error)
 
     def _start(self, camera: str) -> None:
         task = self._tasks.get(camera)

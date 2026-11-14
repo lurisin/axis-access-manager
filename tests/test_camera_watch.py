@@ -186,7 +186,7 @@ async def test_long_fault_opens_and_closes_when_the_camera_is_back(db, caplog):
     # Nel log una riga quando si apre e una quando si chiude: i tentativi solo in debug
     lines = [(r.levelname, r.getMessage()) for r in caplog.records if r.levelno >= logging.INFO]
     assert lines == [
-        ("WARNING", f"Telecamera camera.cortile non disponibile ({NOT_LOADED}): l'app la ricontrolla da sola"),
+        ("WARNING", f"Telecamera camera.cortile: {NOT_LOADED}; l'app la ricontrolla da sola"),
         ("INFO", "Telecamera camera.cortile di nuovo disponibile"),
     ]
 
