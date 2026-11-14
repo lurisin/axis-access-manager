@@ -333,3 +333,23 @@ async def test_real_client_without_answer_is_the_api_down(error):
     assert (await ha.probe_camera("camera.cortile")).startswith(NO_ANSWER)
     assert ha.api_up is False
     await ha.aclose()
+
+
+async def test_photo_not_written_is_not_a_camera_to_recheck(db):
+    """Foto arrivata ma non salvata (cartella Media in sola lettura): una prova riuscirebbe e chiuderebbe il guasto
+    senza che niente sia cambiato. Resta come prima, fino alla prossima foto salvata, e non si ricontrolla."""
+    from app.ha import MEDIA_NOT_WRITABLE
+
+    clock = FakeTime("09:00:00")
+    plant = Plant(db, clock)
+
+    async def not_written(camera, name):
+        return "", MEDIA_NOT_WRITABLE
+
+    plant.ha.save_snapshot = not_written
+    event_id = await plant.event()
+    assert plant.errors["camera.cortile"]["error"] == MEDIA_NOT_WRITABLE
+    assert plant.row(event_id)["snapshot_error"] == MEDIA_NOT_WRITABLE
+    await clock.advance(600)
+    assert plant.watch.watching == [] and plant.ha.probes == []
+    assert set(plant.errors) == {"camera.cortile"}

@@ -65,7 +65,15 @@ from .direct import (
 from .direct import load_settings as load_direct_settings
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS, renamed_tokens
-from .ha import LOW_SPACE, HomeAssistant, default_snapshot_dir, delete_old_snapshots, disk_space, low_space
+from .ha import (
+    LOW_SPACE,
+    MEDIA_NOT_WRITABLE,
+    HomeAssistant,
+    default_snapshot_dir,
+    delete_old_snapshots,
+    disk_space,
+    low_space,
+)
 from .ha_mqtt import DOOR_PHYSICAL, OFFLINE_TIMEOUT, HaBridge, parse_command, topic_base
 from .health import (
     HEALTH_INTERVAL,
@@ -3068,7 +3076,7 @@ async def _save_snapshot(state, camera: str, row: dict) -> None:
     except OSError:
         # Disco di Home Assistant pieno o cartella Media in sola lettura
         _LOGGER.exception("Istantanea da %s non salvata", camera)
-        filename, error = "", "spazio esaurito o cartella Media non scrivibile"
+        filename, error = "", MEDIA_NOT_WRITABLE
     except Exception:  # noqa: BLE001
         _LOGGER.exception("Istantanea da %s non salvata", camera)
         filename, error = "", "errore imprevisto, dettagli nel log dell'add-on"
@@ -3078,7 +3086,11 @@ async def _save_snapshot(state, camera: str, row: dict) -> None:
         # Disco quasi pieno: la telecamera non è stata chiesta, e lo dice già il guasto del disco. Prima ogni
         # telecamera diventava «Telecamera Non Disponibile», e lo restava dopo fino al suo prossimo evento
         return
-    if watch is None:
+    if watch is None or error == MEDIA_NOT_WRITABLE or error.startswith("errore imprevisto"):
+        # Foto non salvata per il disco, o errore imprevisto: una foto di prova riuscirebbe e chiuderebbe il guasto
+        # senza che niente sia cambiato. Come prima, resta fino alla prossima foto salvata
+        if watch is not None:
+            watch.ok(camera)
         state.snapshot_errors.pop(camera, None)
         if error:
             state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}

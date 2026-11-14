@@ -33,6 +33,8 @@ LEGACY_SNAPSHOT_DIR = Path("/data/snapshots")
 # istantanee fermava anche il registro
 MIN_FREE_SPACE = 1024**3
 LOW_SPACE = "spazio su disco quasi esaurito"
+# Foto arrivata ma non salvata: il guasto è del disco o della cartella Media, non della telecamera
+MEDIA_NOT_WRITABLE = "spazio esaurito o cartella Media non scrivibile"
 # Risposte del Supervisor quando il core di Home Assistant non c'è (riavvio, aggiornamento): l'API non risponde. Un 404
 # o un 503 vengono da Home Assistant (telecamera non ancora caricata, spenta)
 API_DOWN_STATUS = {502, 504}
@@ -156,7 +158,7 @@ class HomeAssistant:
         except OSError as err:
             # Disco di Home Assistant pieno o cartella Media in sola lettura
             _LOGGER.warning("Istantanea da %s non salvata: %s", camera, err)
-            return "", "spazio esaurito o cartella Media non scrivibile"
+            return "", MEDIA_NOT_WRITABLE
         return filename, ""
 
     async def probe_camera(self, camera: str) -> str:
