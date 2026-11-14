@@ -2,7 +2,8 @@
 quanto la foto, al centro su sfondo scuro, alla grandezza della foto e mai più grande dello schermo meno i margini,
 senza deformarla. Prima la finestra era sempre larga al massimo e la foto restava a sinistra con lo spazio vuoto a
 destra. Si apre dalla Foto della Persona nella scheda, dalla foto della telecamera nel Dettaglio Evento (anche da
-tastiera), dalla Foto in Anagrafica e dalle notifiche; si chiude con Esc, con un clic fuori e con la ×, il fuoco resta
+tastiera), dalla Foto in Anagrafica, dalle notifiche e, sul computer, dalla colonna Foto dell'elenco Persone (senza
+aprire la scheda); si chiude con Esc, con un clic fuori e con la ×, il fuoco resta
 sulla × e poi torna su chi l'ha aperta, e la finestra di sotto (scheda, Dettaglio Evento) resta. Mentre carica c'è la
 rotellina, e una foto che non arriva dice «Foto non disponibile». Solo immagini di fantasia disegnate qui."""
 
@@ -62,6 +63,7 @@ const config = JSON.parse(process.argv[1]);
     const after = async (name) => {
       await page.waitForFunction(() => !document.querySelector("#viewer").open, null, {timeout: 3000});
       out.push({width, scheme, name, closed: await page.evaluate(() => ({focus: document.activeElement.className,
+        row: document.activeElement.dataset?.person || "",
         sheet: document.querySelector("#sheet").open, modal: document.querySelector("#modal").open,
         empty: document.querySelector("#viewer").childElementCount === 0}))});
     };
@@ -94,6 +96,15 @@ const config = JSON.parse(process.argv[1]);
     await shown("notifica");
     await page.keyboard.press("Escape");
     await after("notifica");
+    // Sul computer, la foto della colonna Foto dell'elenco Persone: si ingrandisce senza aprire la scheda, e il fuoco
+    // torna sulla riga
+    if (width >= 1000) {
+      await page.goto(`${config.base}/#persone`);
+      await page.locator(`#p-list tr[data-person="${config.person}"] td.c-photo img`).click();
+      await shown("elenco");
+      await page.keyboard.press("Escape");
+      await after("elenco");
+    }
     // Caricamento lento, poi una foto che non arriva
     await page.route("**/api/events/*/snapshot", async (route) => {
       await new Promise((r) => setTimeout(r, 1500));
@@ -167,7 +178,10 @@ def test_enlarged_photo_is_as_wide_as_the_photo(plant, ingress_server, tmp_path)
             assert closed["empty"], row
             # Il fuoco torna su chi l'ha aperta, e la finestra di sotto resta aperta
             back = {"persona": "avatar", "telecamera": "thumb", "anagrafica": "ev-face-img", "notifica": "n-snap"}
-            assert back[row["name"]] in closed["focus"], row
+            if row["name"] == "elenco":
+                assert closed["row"] == str(person["id"]), row
+            else:
+                assert back[row["name"]] in closed["focus"], row
             assert closed["sheet"] is (row["name"] == "persona"), row
             assert closed["modal"] is (width == 390 and row["name"] in ("telecamera", "anagrafica")), row
         elif row["name"] == "tab":
@@ -192,4 +206,6 @@ def test_enlarged_photo_is_as_wide_as_the_photo(plant, ingress_server, tmp_path)
             expected = min(natural_w, width - 32, (height - 92) * natural_w / natural_h)
             assert abs(img["w"] - expected) <= 1, row
     names = [row["name"] for row in out if "dialog" in row]
-    assert names == ["persona", "telecamera", "anagrafica", "notifica", "non disponibile"] * 4
+    phone = ["persona", "telecamera", "anagrafica", "notifica", "non disponibile"]
+    computer = ["persona", "telecamera", "anagrafica", "notifica", "elenco", "non disponibile"]
+    assert names == phone * 2 + computer * 2

@@ -541,6 +541,7 @@
   table.table.p-table td { padding-top: 6px; padding-bottom: 6px; height: 46px; }
   table.table.p-table th { padding-top: 10px; }
   table.table.p-table td.c-photo { text-overflow: clip; }
+  .p-table td.c-photo img { cursor: zoom-in; }
   .p-table tbody tr:last-child td { border-bottom: none; }
   /* Tessere come nella scheda: il Codice Stampato sopra, il numero sotto più piccolo; una tessera sotto l'altra */
   .p-card { line-height: 1.25; }
@@ -2823,6 +2824,11 @@ async function viewPersons(el, sub) {
     const item = e.target.closest("[data-person]");
     // Telefono ed email della riga chiamano e scrivono, senza aprire la scheda
     if (!item || e.target.closest("a")) return;
+    // La foto della colonna Foto si ingrandisce come nella scheda (showImage); il resto della riga apre la scheda, e da
+    // tastiera la foto si ingrandisce dalla scheda
+    const face = e.target.closest("td.c-photo img");
+    const pictured = face && store.persons.find((x) => x.id === Number(item.dataset.person));
+    if (pictured?.photo) { showImage(photoUrl(pictured), `Foto di ${pictured.name}`); return; }
     history.pushState(null, "", `#persone/${item.dataset.person}`);
     openPerson(Number(item.dataset.person));
   });

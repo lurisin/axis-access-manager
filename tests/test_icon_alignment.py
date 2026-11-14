@@ -1,7 +1,9 @@
 """Icone allineate al nome accanto (0.28.4), nella pagina vera in Chromium a 1280 e 390 px: il centro di ogni icona
 del menu, dei pulsanti e dei titoli sta a metà delle maiuscole del testo accanto, entro un pixel. Prima le icone del
 menu (uno span con dentro l'icona, poggiata sulla linea di base del testo) stavano 2,5 px più in alto di Porte,
-Anagrafica, Da Registrare e degli altri nomi, e l'icona di ☰ 3,25 px più in alto di Controllo Accessi."""
+Anagrafica, Da Registrare e degli altri nomi, e l'icona di ☰ 3,25 px più in alto di Controllo Accessi. Lo stesso nella
+finestra Colonne dell'Elenco dell'Anagrafica: la maniglia di ogni riga accanto al nome della colonna e l'icona della
+maniglia nel suggerimento in cima."""
 
 import json
 import subprocess
@@ -53,6 +55,39 @@ function measure() {
   }
   return out;
 }
+// Colonne dell'Elenco: la maniglia di ogni riga rispetto al nome della colonna (dopo la casella, troppo lontano per
+// measure), e l'icona nel suggerimento rispetto al testo della sua riga
+function measureColumns() {
+  const ctx = document.createElement("canvas").getContext("2d");
+  const delta = (svg, host) => {
+    const r = svg.getBoundingClientRect();
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    let best = null;
+    while (walker.nextNode()) {
+      const t = walker.currentNode;
+      if (!t.textContent.trim() || t.parentElement.closest("svg")) continue;
+      const range = document.createRange();
+      range.selectNodeContents(t);
+      for (const rect of range.getClientRects()) {
+        const overlap = Math.min(rect.bottom, r.bottom) - Math.max(rect.top, r.top);
+        if (overlap <= 0 || (best && overlap <= best.overlap)) continue;
+        best = {overlap, rect, el: t.parentElement, text: t.textContent.trim()};
+      }
+    }
+    const cs = getComputedStyle(best.el);
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    const baseline = best.rect.top + ctx.measureText(best.text).fontBoundingBoxAscent;
+    const cap = baseline - ctx.measureText("H").actualBoundingBoxAscent / 2;
+    return +(r.top + r.height / 2 - cap).toFixed(2);
+  };
+  const out = [...document.querySelectorAll(".p-col")].map((li) => {
+    const name = li.querySelector(".p-col-name > span");
+    return {menu: false, text: name.textContent, delta: delta(li.querySelector(".p-col-grip svg.icon"), name)};
+  });
+  const hint = document.querySelector(".p-cols-hint");
+  out.push({menu: false, text: "suggerimento", delta: delta(hint.querySelector("svg.icon"), hint)});
+  return out;
+}
 (async () => {
   const browser = await chromium.launch();
   const out = [];
@@ -62,6 +97,15 @@ function measure() {
     const page = await context.newPage();
     const errors = [];
     page.on("pageerror", (e) => errors.push(String(e)));
+    // Prima delle pagine: sul telefono il menu allargato da ☰ coprirebbe il pulsante Colonne
+    await page.goto(`${config.base}/#persone`);
+    await page.waitForSelector("#view .card");
+    await page.click("#p-cols");
+    await page.waitForSelector(".p-cols");
+    await page.waitForTimeout(300);
+    for (const row of await page.evaluate(measureColumns)) out.push({width, hash: "colonne", ...row});
+    await page.keyboard.press("Escape");
+    await page.waitForSelector(".p-cols", {state: "hidden"});
     for (const hash of ["#persone", `#persone/${config.person}`, "#regole", "#impostazioni"]) {
       await page.goto(`${config.base}/${hash}`);
       await page.waitForSelector("#view .card, #sheet[open]");
@@ -108,7 +152,11 @@ def test_icons_sit_in_the_middle_of_the_capitals_next_to_them(plant, ingress_ser
     names = {"Controllo Accessi", "Cruscotto", "Porte", "Anagrafica", "Da Registrare", "Registro", "Fasce Orarie"}
     for width in (1280, 390):
         assert names <= {text for w, text in menu if w == width}, menu
-    # Pulsanti con icona: Nuova Persona, Rileggi dal Controller, Aggiungi e Codice della scheda, Esporta…
+    # Pulsanti con icona: Nuova Persona, Colonne, Rileggi dal Controller, Aggiungi e Codice della scheda, Esporta…
     assert len([r for r in rows if not r["menu"]]) >= 10, rows
+    assert {(r["width"], r["text"]) for r in rows if r["hash"] == "#persone"} >= {(1280, "Colonne"), (390, "Colonne")}
+    # Finestra Colonne dell'Elenco: le 15 maniglie e il suggerimento, a 1280 e a 390 px
+    columns = [r for r in rows if r["hash"] == "colonne"]
+    assert len(columns) == 2 * 16 and {"Cognome", "Email", "suggerimento"} <= {r["text"] for r in columns}, columns
     off = [r for r in rows if abs(r["delta"]) > 1]
     assert off == [], off
