@@ -33,7 +33,11 @@
          font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif; }
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
-  svg.icon { width: 20px; height: 20px; fill: currentColor; flex: none; }
+  /* Un'icona dentro una riga di testo (anche in uno span da sola, come le voci del menu) non poggia sulla linea di
+     base, dove stava 2-3 px più in alto del nome accanto e allungava la riga: il suo centro va a metà delle maiuscole
+     (0.5cap; -0.3em dove cap non c'è, giusto col testo da 15 px). Ai pulsanti non cambia niente: sono elementi flex,
+     che vertical-align non tocca */
+  svg.icon { width: 20px; height: 20px; fill: currentColor; flex: none; vertical-align: -0.3em; vertical-align: calc(0.5cap - 10px); }
   code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
 
   /* Struttura */
@@ -673,8 +677,24 @@
                  border-width: 0 0 0 1px; }
   dialog.sheet .dlg { max-height: 100vh; height: 100%; }
   dialog.sheet .dlg-body { flex: 1; background: var(--bg); }
-  dialog.image { width: auto; max-width: calc(100vw - 24px); }
-  dialog.image img { display: block; max-width: calc(100vw - 26px); max-height: calc(100vh - 120px); }
+  /* Foto ingrandita (showImage): larga quanto la foto, al centro su sfondo scuro in tutti e due i temi, alla sua
+     grandezza e mai più grande dello schermo meno i margini, senza deformarla. Titolo piccolo e × sopra, larghi quanto
+     la foto: un titolo lungo finisce nei puntini invece di allargare la finestra */
+  dialog#viewer { width: fit-content; max-width: calc(100vw - 16px); max-height: none; padding: 0; border: 0; border-radius: 0;
+                  background: transparent; box-shadow: none; overflow: visible; color: #eef1f5; }
+  dialog#viewer::backdrop { background: rgba(6, 8, 12, .9); }
+  .viewer-head { display: flex; align-items: center; gap: 8px; width: 0; min-width: 100%; margin-bottom: 8px; }
+  .viewer-head h2 { flex: 1; min-width: 0; margin: 0; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .viewer-x { flex: none; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: rgba(255, 255, 255, .14); color: #fff; }
+  .viewer-x:hover { background: rgba(255, 255, 255, .26); }
+  .viewer-x:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+  dialog#viewer img { display: block; width: auto; height: auto; max-width: calc(100vw - 32px); max-height: calc(100vh - 92px);
+                      max-height: calc(100dvh - 92px); border-radius: 8px; background: #000; }
+  /* Mentre carica e quando non si carica: un riquadro scuro con la rotellina o con «Foto non disponibile» */
+  .viewer-wait { width: min(360px, calc(100vw - 32px)); aspect-ratio: 4 / 3; display: flex; flex-direction: column; align-items: center;
+                 justify-content: center; gap: 10px; border-radius: 8px; background: rgba(255, 255, 255, .07); color: #c4ccd6; font-size: 14px; text-align: center; }
+  .viewer-wait .spinner { width: 26px; height: 26px; border-color: rgba(255, 255, 255, .25); border-top-color: #fff; }
+  .viewer-wait svg.icon { width: 30px; height: 30px; opacity: .7; }
   /* Nel top layer (popover) come le finestre: inset, margin e border tolgono quelli del popover. Largo quanto il testo:
      con left: 50% andrebbe a capo a metà schermo */
   #toast { position: fixed; inset: auto auto 24px 50%; margin: 0; border: 0; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); z-index: 50;
@@ -857,6 +877,8 @@
 
 <dialog id="sheet" class="sheet"></dialog>
 <dialog id="modal"></dialog>
+<!-- Foto ingrandita: una finestra sua, sopra quella da cui si apre (il Dettaglio Evento sul telefono resta sotto) -->
+<dialog id="viewer" aria-labelledby="viewer-title"></dialog>
 <dialog id="retry"></dialog>
 <!-- Riquadro di attesa delle modifiche (busy): nessun pulsante, si chiude da solo alla fine dell'operazione -->
 <dialog id="busy" aria-labelledby="busy-title" aria-describedby="busy-status">
@@ -1615,8 +1637,46 @@ const confirmBox = (title, text, ok = "Conferma", danger = false) =>
 const field = (label, input, hint = "") => `<div class="field"><label>${esc(label)}</label>${input}${hint ? `<p class="hint">${hint}</p>` : ""}</div>`;
 const val = (dlg, name) => { const el = $(`[name="${name}"]`, dlg); return el ? (el.type === "checkbox" ? el.checked : el.value.trim()) : ""; };
 
+// Foto ingrandita: Foto della Persona, foto della telecamera, Foto in Anagrafica. Rotellina mentre carica, «Foto non
+// disponibile» se non arriva. Si chiude con Esc, con un tocco o un clic fuori dalla foto, con la × e cambiando pagina;
+// il fuoco resta sulla × finché è aperta e poi torna su chi l'ha aperta
 function showImage(src, title) {
-  modal({title, body: `<img src="${esc(src)}" alt="">`, cls: "image"});
+  const dlg = $("#viewer");
+  dlg.leave?.();
+  const back = document.activeElement;
+  dlg.innerHTML = `<div class="viewer-head"><h2 id="viewer-title" title="${esc(title)}">${esc(title)}</h2>
+      <button type="button" class="viewer-x" aria-label="Chiudi" title="Chiudi">${icon("close")}</button></div>
+    <div class="viewer-wait" role="status"><span class="spinner" aria-hidden="true"></span><span>Caricamento della foto…</span></div>`;
+  const wait = $(".viewer-wait", dlg), close = $(".viewer-x", dlg);
+  const img = new Image();
+  img.alt = title;
+  img.onload = () => { if (wait.isConnected) wait.replaceWith(img); };
+  img.onerror = () => {
+    if (!wait.isConnected) return;
+    wait.classList.add("failed");
+    wait.innerHTML = `${icon("camera")}<span>Foto non disponibile</span>`;
+  };
+  // Chiusura in un punto solo, subito (non all'evento close, che arriva dopo): Esc, ×, clic fuori, cambio di pagina
+  const leave = () => {
+    if (dlg.leave !== leave) return;
+    dlg.leave = null;
+    window.removeEventListener("hashchange", leave);
+    img.onload = img.onerror = null;
+    dlg.close();
+    dlg.replaceChildren();
+    if (back && back !== document.body && back.isConnected) back.focus({preventScroll: true});
+  };
+  dlg.leave = leave;
+  close.onclick = leave;
+  dlg.oncancel = (e) => { e.preventDefault(); leave(); };
+  // Il clic fuori arriva alla finestra stessa (lo sfondo è suo): sulla foto, sul titolo e sulla × no
+  dlg.onclick = (e) => { if (e.target === dlg) leave(); };
+  // Tab e Maiusc+Tab restano sulla ×, l'unico comando: la pagina sotto non prende il fuoco
+  dlg.onkeydown = (e) => { if (e.key === "Tab") { e.preventDefault(); close.focus(); } };
+  window.addEventListener("hashchange", leave);
+  img.src = src;
+  dlg.showModal();
+  close.focus();
 }
 
 // ---------- Stato condiviso ----------
@@ -2872,9 +2932,11 @@ const contactFields = (p = {}) => `<div class="fields-2">${field("Telefono", `<i
 const idFields = (p = {}) => `<div class="fields-2">${field("Matricola", `<input name="employee_id" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(p.employee_id || "")}" placeholder="facoltativa">`)}
   ${field("Referente Interno", `<input name="referent" autocomplete="off" maxlength="100" value="${esc(p.referent || "")}" placeholder="facoltativo">`)}</div>`;
 // Codice Stampato della tessera: quello scritto sopra la tessera fisica (sono tutte bianche), facoltativo e unico. Solo
-// nell'app: mai sul controller. Si scrive aggiungendo o registrando una tessera, e dopo dalla scheda (Codice)
-const printedCodeField = (value = "", hint = "Quello scritto sopra la tessera. Resta solo nell'app.") =>
-  field("Codice Stampato", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo, es. Ciccio o 1234">`, hint);
+// nell'app: mai sul controller. Si scrive aggiungendo o registrando una tessera, e dopo dalla scheda (Codice). Lo stesso
+// suggerimento ovunque, senza esempi inventati: ogni impianto scrive i suoi codici
+const PRINTED_CODE_HINT = "Il codice scritto sulla tessera. Resta solo nell'app.";
+const printedCodeField = (value = "", hint = PRINTED_CODE_HINT) =>
+  field("Codice Stampato", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo">`, hint);
 // Telefono ed email incollati da una pagina web, da un PDF o da Word, puliti come fa il server mentre si scrivono:
 // senza caratteri invisibili, con gli spazi non separabili come lo spazio e i trattini tipografici («–» di Word) come
 // il trattino. L'email anche senza spazi ai lati, che il browser altrimenti rifiuta prima di mandarla
@@ -2901,7 +2963,7 @@ async function newPerson(card = "") {
       ${contactFields()}
       ${idFields()}
       ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
-      <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField("", "Quello che hai scritto sopra la tessera, es. Ciccio o 1234. Resta solo nell'app.")}</div>
+      <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField()}</div>
       ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Anagrafica → Tipologie.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}
@@ -3131,8 +3193,8 @@ async function openPerson(id) {
     const ok = await modal({
       title: "Aggiungi Tessera a " + p.name,
       body: `<div class="fields-2">${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`)}
-        ${printedCodeField("", "")}</div>
-        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Il Codice Stampato è quello scritto sopra la tessera (es. Ciccio o 1234) e resta solo nell'app. Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.</p>`,
+        ${printedCodeField()}</div>
+        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.</p>`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
         (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card"), printed_code: val(dlg, "printed_code")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false}],
     });
@@ -3143,7 +3205,7 @@ async function openPerson(id) {
     const card = p.cards.find((c) => c.id === Number(b.dataset.cardCode));
     const ok = await modal({
       title: "Codice Stampato",
-      body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", "Quello scritto sopra la tessera, es. Ciccio o 1234. Vuoto per toglierlo. Resta solo nell'app e non va sul controller.")}`,
+      body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", PRINTED_CODE_HINT + " Vuoto per toglierlo.")}`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
         const code = val(dlg, "printed_code");
         if (code === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
@@ -3216,7 +3278,7 @@ async function viewUnknown(el) {
       const ok = await modal({
         title: "Assegna Tessera " + number,
         body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.")
-          + printedCodeField("", "Quello che hai scritto sopra la tessera, es. Ciccio o 1234. Resta solo nell'app.") : '<p class="muted">Nessuna persona registrata.</p>',
+          + printedCodeField() : '<p class="muted">Nessuna persona registrata.</p>',
         actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
           (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number, printed_code: val(dlg, "printed_code")}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
       });
@@ -3300,7 +3362,7 @@ function eventDetail(e) {
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(LOG_SOURCES[e.source] || e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
-    ${e.snapshot ? `<div class="ev-photo-label" data-snap-label hidden>Foto della Telecamera</div><img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
+    ${e.snapshot ? `<div class="ev-photo-label" data-snap-label hidden>Foto della Telecamera</div><img class="thumb" style="width:100%;height:auto;aspect-ratio:16/9;margin-bottom:12px" loading="lazy" src="api/events/${e.id}/snapshot" alt="Foto" tabindex="0" role="button" aria-label="Ingrandisci la Foto della Telecamera" data-snap="${e.id}" data-title="${esc(label + " · " + fmtFull(e.ts))}">` : ""}
     ${e.person_id && can("persone") ? `<div class="ev-face" data-face="${e.person_id}" data-face-name="${esc(e.person_name || "")}" hidden></div>` : ""}
     ${props(rows)}
     <div class="row" style="margin-top:14px">
@@ -3517,6 +3579,11 @@ function bindSnapshots(root) {
   root.addEventListener("click", (e) => {
     const img = e.target.closest("[data-snap]");
     if (img) { e.stopPropagation(); showImage(`api/events/${img.dataset.snap}/snapshot`, img.dataset.title); }
+  });
+  // Da tastiera le foto grandi (Dettaglio Evento, notifiche) si aprono con Invio o Spazio come un pulsante
+  root.addEventListener("keydown", (e) => {
+    const img = (e.key === "Enter" || e.key === " ") && e.target.closest?.("[data-snap][tabindex]");
+    if (img) { e.preventDefault(); e.stopPropagation(); showImage(`api/events/${img.dataset.snap}/snapshot`, img.dataset.title); }
   });
 }
 
@@ -3845,7 +3912,7 @@ function notifCard(i) {
   const details = i.event && can("registro") ? `<button type="button" data-n-event="${i.event}">Dettagli</button>`
     : link ? `<a class="btn" href="${esc(link)}">Dettagli</a>` : "";
   const snap = i.snapshot && can("registro")
-    ? `<img class="n-snap" loading="lazy" src="api/events/${i.snapshot}/snapshot" alt="Foto" data-snap="${i.snapshot}" data-title="${esc(i.title + " · " + fmtFull(i.ts))}">`
+    ? `<img class="n-snap" loading="lazy" src="api/events/${i.snapshot}/snapshot" alt="Foto" tabindex="0" role="button" aria-label="Ingrandisci la foto" data-snap="${i.snapshot}" data-title="${esc(i.title + " · " + fmtFull(i.ts))}">`
     : i.snapshot_error ? `<div class="n-snap none" title="${esc(i.snapshot_error)}">${icon("camera")}<span>Foto non scattata</span></div>` : "";
   return `<article class="n-card sev-${i.severity}" data-key="${esc(i.id)}">
     <div class="n-tile">${icon(ic)}</div>

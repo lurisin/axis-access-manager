@@ -382,8 +382,8 @@ EMPLOYEE_ID_INDEX = (
     "CREATE UNIQUE INDEX IF NOT EXISTS persons_employee_id ON persons(employee_id COLLATE NOCASE) "
     "WHERE employee_id != ''"
 )
-# Codice Stampato della tessera (0.28.3, migrazione 10): quello che c'è scritto sopra la tessera fisica («Ciccio»,
-# «1234»), messo da chi la consegna perché le tessere sono tutte bianche. Solo nell'app: mai sul controller (né utenti
+# Codice Stampato della tessera (0.28.3, migrazione 10): il codice scritto sulla tessera fisica (per esempio «A-07»),
+# messo da chi la consegna perché le tessere sono tutte bianche. Solo nell'app: mai sul controller (né utenti
 # né tessere, quindi neanche nel confronto in ombra) e mai in Home Assistant. Non è un dato personale. Si aggiunge anche
 # a ogni avvio, se manca (vedi _person_details), come matricola e referente
 CARD_COLUMNS = (("printed_code", "TEXT NOT NULL DEFAULT ''"),)
