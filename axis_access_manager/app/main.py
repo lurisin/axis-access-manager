@@ -27,6 +27,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
 from .backup_copy import RESTORED, STARTED_EMPTY, error_reason, ha_copy_error, ha_copy_path, update_copies
+from .camera_watch import CameraWatch
 from .compare import KIND_TITLES, KINDS, compare, lists_for, merge_readings, read_strict
 from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .controller_state import POLL_LIVE, POLL_WITHOUT_EVENTS, StateKeeper
@@ -64,7 +65,15 @@ from .direct import (
 from .direct import load_settings as load_direct_settings
 from .events import EventMonitor
 from .full_restore import FULL_SECTIONS, renamed_tokens
-from .ha import LOW_SPACE, HomeAssistant, default_snapshot_dir, delete_old_snapshots, disk_space, low_space
+from .ha import (
+    LOW_SPACE,
+    MEDIA_NOT_WRITABLE,
+    HomeAssistant,
+    default_snapshot_dir,
+    delete_old_snapshots,
+    disk_space,
+    low_space,
+)
 from .ha_mqtt import DOOR_PHYSICAL, OFFLINE_TIMEOUT, HaBridge, parse_command, topic_base
 from .health import (
     HEALTH_INTERVAL,
@@ -386,6 +395,9 @@ DASHBOARD_WIDGETS = (
 )
 SETTING_DASHBOARD = "dashboard_layout:"
 CAMERA_NAMES_TTL = 300
+# Videocitofoni con il relè cablato anche su un ingresso Relè Citofono del controller, porta → {"since", "input"}:
+# l'inoltro dall'app va spento (vedi IntercomBridge.wired_check e la notifica Videocitofono Cablato sul Controller)
+SETTING_INTERCOM_WIRED = "intercom_wired"
 
 
 class ControllerCameraIn(BaseModel):
@@ -800,6 +812,10 @@ def create_app(
         app.state.backups = BackupService(app.state.db, db_folder / BACKUP_DIR, __version__)
         app.state.ha = home_assistant or HomeAssistant()
         app.state.snapshot_errors = {}
+        # Telecamere con la foto non riuscita: si ricontrollano da sole, con la tolleranza dell'avvio
+        app.state.camera_watch = CameraWatch(
+            app.state.ha, app.state.snapshot_errors, wanted=lambda camera: _camera_used(app.state, camera)
+        )
         # Nomi delle telecamere di Home Assistant (entity_id → friendly name), riletti ogni CAMERA_NAMES_TTL
         app.state.camera_names = {}
         app.state.camera_names_at = None
@@ -857,6 +873,7 @@ def create_app(
                 _LOGGER.exception("Attività in background terminata con un errore")
         await app.state.health.aclose()
         await _stop_runtime(app)
+        await app.state.camera_watch.stop()
         await app.state.ha.aclose()
         app.state.db.close()
 
@@ -2915,6 +2932,10 @@ def _wire(app: FastAPI) -> None:
     service.after_event = after_event
     service.on_change = on_change
     state.intercoms = []
+    # Relè dei videocitofoni cablati anche sul controller, visti finora: solo per le porte con l'inoltro attivo (la
+    # notifica si chiude quando l'inoltro si spegne)
+    forwarding = {d["door_token"] for d in state.doors if d["intercom_name"] and d["intercom_open_door"]}
+    wired = _intercom_wired(state, forwarding)
     for door in state.doors:
         if not door["intercom_name"]:
             continue
@@ -2929,12 +2950,19 @@ def _wire(app: FastAPI) -> None:
             open_door=lambda source, note, door_token=door["door_token"]: service.open_door(
                 False, source, door_token, note
             ),
+            # Aperture del controller dal suo ingresso Relè Citofono: con il relè cablato lì, la porta è già aperta
+            controller_openings=lambda since, until, door_token=door["door_token"]: service.intercom_openings(
+                door_token, since, until
+            ),
+            wall=service.controller_now,
+            wired=wired.get(door["door_token"]),
+            on_wired=lambda value, door_token=door["door_token"]: _save_intercom_wired(state, door_token, value),
         )
         intercom.door = door
         # Stesso citofono di una porta precedente: la chiamata la segue quella (vedi sotto)
         intercom.call = next((i for i in state.intercoms if i.call_topic == intercom.call_topic), None)
         state.intercoms.append(intercom)
-        for topic in intercom.topics:
+        for topic in intercom.subscriptions:
             # Stesso citofono su due porte (relè 1 e 2): la chiamata è una e la tiene la prima porta, invece di
             # passare all'ultima; ogni relè resta della sua porta
             monitor.extra_subscriptions.setdefault(topic, intercom.handle)
@@ -2987,16 +3015,68 @@ def _wire(app: FastAPI) -> None:
     else:
         # Rimuove le entità pubblicate in precedenza
         monitor.on_connect = bridge.on_connect
+    if state.intercoms:
+        ha_connect = monitor.on_connect
+
+        async def on_connect(client) -> None:
+            # Collegati di nuovo al broker: i primi messaggi dei videocitofoni possono essere pressioni vecchie,
+            # riconsegnate in ritardo (vedi intercom.RECONNECT_SECONDS)
+            for intercom in state.intercoms:
+                intercom.broker_connected()
+            if ha_connect is not None:
+                await ha_connect(client)
+
+        monitor.on_connect = on_connect
+
+
+def _intercom_wired(state, keep: set[str]) -> dict[str, dict]:
+    """Videocitofoni con il relè cablato anche sul controller (porta → {"since", "input"}), solo delle porte in keep:
+    quelli delle porte con l'inoltro spento si dimenticano."""
+    try:
+        saved = json.loads(state.db.get_setting(SETTING_INTERCOM_WIRED) or "{}")
+    except ValueError:
+        saved = {}
+    saved = saved if isinstance(saved, dict) else {}
+    kept = {door: value for door, value in saved.items() if door in keep and isinstance(value, dict)}
+    if kept != saved:
+        _write_intercom_wired(state, kept)
+    return kept
+
+
+def _save_intercom_wired(state, door: str, value: dict | None) -> None:
+    """Cablaggio doppio visto o non più visto da un videocitofono (IntercomBridge.wired_check)."""
+    try:
+        saved = json.loads(state.db.get_setting(SETTING_INTERCOM_WIRED) or "{}")
+    except ValueError:
+        saved = {}
+    saved = saved if isinstance(saved, dict) else {}
+    if value is None:
+        saved.pop(door, None)
+    else:
+        saved[door] = value
+    _write_intercom_wired(state, saved)
+
+
+def _write_intercom_wired(state, value: dict) -> None:
+    try:
+        state.db.set_setting(SETTING_INTERCOM_WIRED, json.dumps(value) if value else "")
+    except sqlite3.Error as err:
+        # Disco pieno: la notifica resta in memoria fino al riavvio
+        _LOGGER.warning("Cablaggio del videocitofono non salvato: %s", err)
 
 
 async def _save_snapshot(state, camera: str, row: dict) -> None:
-    """Istantanea di un evento. L'ultimo esito per telecamera va nella scheda Telecamere del controller."""
+    """Istantanea di un evento. L'ultimo esito per telecamera va nella scheda Telecamere del controller; una telecamera
+    che non risponde si ricontrolla da sola (camera_watch), e la foto si riprova per l'evento solo per pochi secondi."""
+    watch = getattr(state, "camera_watch", None)
+    requested = watch.now() if watch is not None else 0.0
+    name = f"{row['id']}_{_file_stamp(row.get('ts') or '')}"
     try:
-        filename, error = await state.ha.save_snapshot(camera, f"{row['id']}_{_file_stamp(row.get('ts') or '')}")
+        filename, error = await state.ha.save_snapshot(camera, name)
     except OSError:
         # Disco di Home Assistant pieno o cartella Media in sola lettura
         _LOGGER.exception("Istantanea da %s non salvata", camera)
-        filename, error = "", "spazio esaurito o cartella Media non scrivibile"
+        filename, error = "", MEDIA_NOT_WRITABLE
     except Exception:  # noqa: BLE001
         _LOGGER.exception("Istantanea da %s non salvata", camera)
         filename, error = "", "errore imprevisto, dettagli nel log dell'add-on"
@@ -3006,9 +3086,27 @@ async def _save_snapshot(state, camera: str, row: dict) -> None:
         # Disco quasi pieno: la telecamera non è stata chiesta, e lo dice già il guasto del disco. Prima ogni
         # telecamera diventava «Telecamera Non Disponibile», e lo restava dopo fino al suo prossimo evento
         return
-    state.snapshot_errors.pop(camera, None)
-    if error:
-        state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}
+    if watch is None or error == MEDIA_NOT_WRITABLE or error.startswith("errore imprevisto"):
+        # Foto non salvata per il disco, o errore imprevisto: una foto di prova riuscirebbe e chiuderebbe il guasto
+        # senza che niente sia cambiato. Come prima, resta fino alla prossima foto salvata
+        if watch is not None:
+            watch.ok(camera)
+        state.snapshot_errors.pop(camera, None)
+        if error:
+            state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}
+    elif error:
+        # Riprovata entro pochi secondi la foto resta dell'evento; dopo, la prova serve solo a chiudere il guasto
+        attach = functools.partial(state.db.set_event_snapshot, row["id"])
+        watch.failed(camera, error, row.get("ts") or _now(), photo=(name, attach, requested))
+    elif filename:
+        watch.ok(camera)
+
+
+def _camera_used(state, camera: str) -> bool:
+    """La telecamera fa ancora le foto di una porta o del coperchio del controller."""
+    return camera == getattr(state, "controller_camera", "") or any(
+        d["snapshot_camera"] == camera for d in getattr(state, "doors", [])
+    )
 
 
 def _policy_schedules(profile: dict, points: list[str]) -> list[str] | None:
@@ -3117,6 +3215,11 @@ def _current_notifications(state) -> list[dict]:
             }
             for camera, problem in state.snapshot_errors.items()
             if camera == state.controller_camera or any(d["snapshot_camera"] == camera for d in state.doors)
+        ],
+        intercom_wiring=[
+            {"door": i.door["name"], "door_token": i.door["door_token"], "name": i.settings.name, **wired}
+            for i in getattr(state, "intercoms", [])
+            if (wired := i.wired_check())
         ],
         controllers=_controllers_health(state),
         missing=_missing_summary(state.db),
