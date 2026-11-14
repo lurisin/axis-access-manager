@@ -38,6 +38,10 @@ MEDIA_NOT_WRITABLE = "spazio esaurito o cartella Media non scrivibile"
 # Risposte del Supervisor quando il core di Home Assistant non c'è (riavvio, aggiornamento): l'API non risponde. Un 404
 # o un 503 vengono da Home Assistant (telecamera non ancora caricata, spenta)
 API_DOWN_STATUS = {502, 504}
+# Tempo scaduto su una telecamera: Home Assistant aspetta l'immagine fino a 10 s, quanto il client, quindi di solito è
+# la telecamera. Prima di dire che l'API è giù si chiede la sua pagina più leggera (GET /api/), con questo tempo
+API_CHECK_TIMEOUT = 5.0
+CAMERA_TIMEOUT = "la telecamera non risponde (tempo scaduto)"
 
 
 def default_snapshot_dir() -> Path:
@@ -105,6 +109,19 @@ class HomeAssistant:
             _LOGGER.info("API di Home Assistant di nuovo raggiungibile")
             if self.on_api_back is not None:
                 self.on_api_back()
+
+    async def _api_answers(self) -> bool:
+        """L'API di Home Assistant risponde? Dopo un tempo scaduto su una telecamera: una sola telecamera lenta non deve
+        far sembrare giù Home Assistant (e poi «di nuovo raggiungibile», con la tolleranza di tutte le telecamere e i
+        ricontrolli fitti)."""
+        try:
+            response = await self._client.get("/", timeout=API_CHECK_TIMEOUT)
+        except httpx.HTTPError:
+            self._api(False)
+            return False
+        up = response.status_code not in API_DOWN_STATUS
+        self._api(up)
+        return up
 
     def _api_error(self, err: httpx.HTTPError) -> None:
         """Richiesta non riuscita: senza risposta, o con quella del Supervisor senza Home Assistant, l'API è giù."""
@@ -177,11 +194,14 @@ class HomeAssistant:
         try:
             response = await self._client.get(f"/camera_proxy/{urllib.parse.quote(camera, safe='')}")
         except httpx.HTTPError as err:
-            self._api(False)
             # Il testo di httpx (in inglese, spesso vuoto con i tempi scaduti) resta nel log
             log("Istantanea da %s non riuscita: %r", camera, err)
-            if isinstance(err, httpx.TimeoutException):
+            if isinstance(err, httpx.TimeoutException) and not isinstance(err, httpx.ConnectTimeout):
+                # Collegati ma senza risposta in tempo: la telecamera, se l'API risponde
+                if await self._api_answers():
+                    return None, CAMERA_TIMEOUT
                 return None, "Home Assistant non risponde (tempo scaduto)"
+            self._api(False)
             return None, "Home Assistant non risponde"
         self._api(response.status_code not in API_DOWN_STATUS)
         if response.status_code != 200 or not response.content:

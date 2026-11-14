@@ -15,7 +15,7 @@ import pytest
 
 from app import main
 from app.camera_watch import API_DOWN_RECHECK, CameraWatch
-from app.ha import HomeAssistant
+from app.ha import CAMERA_TIMEOUT, HomeAssistant
 
 ITALIA = timezone(timedelta(hours=1))
 NOT_LOADED = "telecamera non disponibile (risposta 404 di Home Assistant)"
@@ -165,15 +165,20 @@ async def test_long_fault_opens_and_closes_when_the_camera_is_back(db, caplog):
     plant = Plant(db, clock)
     plant.ha.back["camera.cortile"] = float("inf")
     await clock.advance(3600)
-    # Fuori dalla tolleranza dell'avvio: il guasto si apre alla foto non riuscita, come prima
+    # Fuori dalla tolleranza dell'avvio, ma la prima foto non riuscita di una telecamera ha la sua: un tentativo ogni
+    # 3 s, e il guasto si apre se dopo un minuto la telecamera è ancora giù
     first = await plant.event()
-    assert plant.errors == {"camera.cortile": {"ts": plant.row(first)["ts"], "error": NOT_LOADED}}
-    # Ricontrollo con attese crescenti: 5, 15, 30, 60 s e poi ogni 5 minuti. Il primo, entro 5 s dall'evento, è ancora
-    # la foto dell'evento; gli altri sono prove non salvate
     start = clock.now
-    await clock.advance(20 * 60)
-    assert [round(at - start) for at, _, _ in plant.ha.saved] == [0, 5]
-    assert [round(at - start) for at, _ in plant.ha.probes] == [20, 50, 110, 410, 710, 1010]
+    assert plant.errors == {}
+    await clock.advance(59)
+    assert plant.errors == {}
+    await clock.advance(1)
+    assert plant.errors == {"camera.cortile": {"ts": plant.row(first)["ts"], "error": NOT_LOADED}}
+    # Poi il ricontrollo con attese crescenti: 5, 15, 30, 60 s e poi ogni 5 minuti. Il primo tentativo, entro 5 s
+    # dall'evento, è ancora la foto dell'evento; gli altri sono prove non salvate
+    await clock.advance(20 * 60 - 60)
+    assert [round(at - start) for at, _, _ in plant.ha.saved] == [0, 3]
+    assert [round(at - start) for at, _ in plant.ha.probes] == [*range(6, 61, 3), 65, 80, 110, 170, 470, 770, 1070]
     # Un'altra foto non riuscita: stesso guasto, dalla stessa ora, e sempre un solo ricontrollo
     await clock.advance(30)
     await plant.event()
@@ -197,9 +202,10 @@ async def test_shutdown_stops_the_recheck(db):
     plant.ha.back["camera.cortile"] = float("inf")
     await clock.advance(120)
     await plant.event()
-    await clock.advance(30)
+    # Guasto aperto dopo la tolleranza, ricontrollo in corso
+    await clock.advance(90)
     checks = len(plant.ha.saved) + len(plant.ha.probes)
-    assert plant.watch.watching == ["camera.cortile"] and checks == 3
+    assert plant.watch.watching == ["camera.cortile"] and set(plant.errors) == {"camera.cortile"}
     await plant.watch.stop()
     assert plant.watch.watching == []
     await clock.advance(3600)
@@ -217,6 +223,7 @@ async def test_cameras_are_rechecked_each_on_its_own(db):
     await plant.event("camera.cortile")
     await plant.event("camera.cantina")
     await plant.event("camera.quadro")
+    await clock.advance(60)
     assert set(plant.errors) == {"camera.cortile", "camera.cantina"}
     assert plant.watch.watching == ["camera.cantina", "camera.cortile"]
     # La cantina torna, il cortile no
@@ -353,3 +360,111 @@ async def test_photo_not_written_is_not_a_camera_to_recheck(db):
     await clock.advance(600)
     assert plant.watch.watching == [] and plant.ha.probes == []
     assert set(plant.errors) == {"camera.cortile"}
+
+
+async def test_core_restart_with_the_addon_running_gives_the_camera_its_tolerance(db, caplog):
+    """Revisione: si aggiorna solo il core di Home Assistant e l'add-on resta acceso. Nessuna richiesta dell'app cade
+    mentre il core è giù, quindi l'app non vede né l'API giù né il suo ritorno; la foto delle 20:03:04 trova la
+    telecamera non ancora caricata (404). La prima foto non riuscita ha comunque la sua tolleranza: la telecamera torna
+    alle 20:03:22 e il guasto non si apre mai, senza WARNING. La foto riuscita è di 18 s dopo: non va sull'evento."""
+    caplog.set_level(logging.DEBUG, logger="app.camera_watch")
+    clock = FakeTime("19:00:00")  # add-on acceso dalle 19:00
+    plant = Plant(db, clock)
+    plant.ha.back["camera.cortile"] = clock.local("20:03:22")
+    await clock.until(clock.local("20:03:04"))
+    assert plant.ha.api_up is None
+    opened = await plant.event()
+    while clock.now < clock.local("20:04:30"):
+        await clock.advance(1)
+        assert plant.errors == {}, "mai un guasto aperto"
+
+    assert plant.watch.watching == []
+    assert [at - clock.local("20:03:04") for at, _ in plant.ha.probes] == [6, 9, 12, 15, 18]
+    assert plant.row(opened)["snapshot"] == "" and plant.row(opened)["snapshot_error"] == NOT_LOADED
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+HANGING = "camera.cancello"  # Home Assistant aspetta l'immagine fino al tempo scaduto
+WORKING = "camera.ingresso"
+
+
+def hanging_home_assistant(clock: FakeTime, tmp_path):
+    """HomeAssistant vero con il Supervisor finto: una telecamera fa scadere il tempo (10 s, quanto il client), l'altra
+    e il resto dell'API rispondono."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((clock.now, request.url.path))
+        if request.url.path.endswith(HANGING):
+            clock.now += 10
+            raise httpx.ReadTimeout("timed out", request=request)
+        if request.url.path.endswith("/states"):
+            return httpx.Response(200, json=[{"entity_id": HANGING, "attributes": {}}])
+        if request.url.path == "/core/api/":
+            return httpx.Response(200, json={"message": "API running."})
+        return httpx.Response(200, content=b"\xff\xd8jpg", headers={"content-type": "image/jpeg"})
+
+    ha = HomeAssistant(token="x", snapshot_dir=tmp_path)
+    ha._client = httpx.AsyncClient(base_url="http://supervisor/core/api", transport=httpx.MockTransport(handler))
+    return ha, calls
+
+
+@pytest.mark.parametrize("other_photos", [20, 50])
+async def test_one_camera_timing_out_is_not_home_assistant_down(db, tmp_path, caplog, other_photos):
+    """Revisione: un tempo scaduto su una sola telecamera segnava giù tutta l'API di Home Assistant; la risposta dopo
+    (la foto di un'altra porta, i nomi delle telecamere) la segnava «di nuovo raggiungibile», riapriva la tolleranza
+    di tutte le telecamere e faceva riprovare quella spenta ogni 3 s: con un'altra porta che fa foto spesso il guasto
+    non si apriva mai. Ora l'app chiede all'API se risponde (GET /api/): sì, quindi è la telecamera."""
+    caplog.set_level(logging.INFO)
+    clock = FakeTime("09:00:00")
+    ha, calls = hanging_home_assistant(clock, tmp_path)
+    errors: dict = {}
+    watch = CameraWatch(ha, errors, clock=clock, sleep=clock.sleep)
+    state = SimpleNamespace(db=db, ha=ha, snapshot_errors=errors, camera_watch=watch)
+
+    async def event(camera):
+        row = {"ts": clock.iso(), "kind": "apertura_remota", "door": "porta"}
+        row["id"] = db.add_event(**row)
+        await main._save_snapshot(state, camera, row)
+        return row["id"]
+
+    await clock.advance(3600)
+    first = await event(HANGING)
+    assert next(e for e in db.list_events() if e["id"] == first)["snapshot_error"] == CAMERA_TIMEOUT
+    assert ha.api_up is True and errors == {}
+    start, opened_at, refreshed = clock.now, None, clock.now
+    while clock.now < start + 1800:
+        await clock.advance(other_photos)
+        await event(WORKING)
+        if clock.now - refreshed >= 300:
+            refreshed = clock.now
+            await ha.states()  # nomi delle telecamere, con la pagina aperta
+        if HANGING in errors and opened_at is None:
+            opened_at = clock.now - start
+        assert ha.api_up is True
+    await watch.stop()
+    await ha.aclose()
+
+    # Il guasto si apre dopo la tolleranza di un minuto (più il tempo dei tentativi da 10 s), con il motivo giusto
+    assert opened_at is not None and opened_at <= 60 + 10 + 3 + other_photos
+    assert errors[HANGING]["error"] == CAMERA_TIMEOUT
+    assert not [r for r in caplog.records if "di nuovo raggiungibile" in r.getMessage()]
+    # Poi le attese crescono fino a 5 minuti: in mezz'ora pochi tentativi, non uno ogni 3 s
+    hanging = [at for at, path in calls if path.endswith(HANGING)]
+    assert len(hanging) <= 20
+    assert [round(b - a) for a, b in zip(hanging[-3:], hanging[-2:], strict=False)] == [310, 310]
+
+
+async def test_camera_timeout_with_the_api_down_is_still_home_assistant_down():
+    """Tempo scaduto sulla telecamera e l'API che non risponde neanche lei: Home Assistant è giù, come prima."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/core/api/":
+            return httpx.Response(502)
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    ha = HomeAssistant(token="x")
+    ha._client = httpx.AsyncClient(base_url="http://supervisor/core/api", transport=httpx.MockTransport(handler))
+    assert await ha.probe_camera("camera.cortile") == "Home Assistant non risponde (tempo scaduto)"
+    assert ha.api_up is False
+    await ha.aclose()

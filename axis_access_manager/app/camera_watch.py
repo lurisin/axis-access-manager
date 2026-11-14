@@ -6,10 +6,14 @@ il riavvio di Home Assistant per un aggiornamento, l'add-on è ripartito alle 20
 20:03:04 non è riuscita (risposta 404: la telecamera non era ancora caricata), la telecamera è tornata alle 20:03:22
 e il guasto è rimasto aperto.
 
-- Tolleranza. Nei primi TOLERANCE_SECONDS dall'avvio dell'app o dal ritorno dell'API di Home Assistant, e dopo una foto
-  non riuscita perché l'API non risponde, la foto si riprova ogni RETRY_SECONDS e il guasto si apre solo se alla fine la
-  telecamera è ancora giù. Il 13/11 la telecamera è tornata 24 s dopo l'avvio e 18 s dopo la foto non riuscita: con 60 s
-  il guasto non si apre, con più del doppio di margine per le telecamere che Home Assistant carica più lentamente.
+- Tolleranza. Dopo la prima foto non riuscita di una telecamera la foto si riprova ogni RETRY_SECONDS, e il guasto si
+  apre solo se dopo TOLERANCE_SECONDS la telecamera è ancora giù. La tolleranza vale per ogni prima foto non riuscita,
+  non solo nel primo minuto dall'avvio dell'app o dal ritorno dell'API di Home Assistant: quando si aggiorna solo il
+  core gli add-on restano accesi, e se nessuna richiesta dell'app cade mentre è giù l'app non vede il riavvio; la
+  prima foto dopo trova la telecamera non ancora caricata (risposta 404). Una foto non riuscita perché l'API non
+  risponde allunga la tolleranza, e il ritorno dell'API la fa ripartire. Il 13/11 la telecamera è tornata 24 s dopo
+  l'avvio e 18 s dopo la foto non riuscita: con 60 s il guasto non si apre, con più del doppio di margine per le
+  telecamere che Home Assistant carica più lentamente. Una telecamera guasta davvero apre il guasto un minuto dopo.
 - Ricontrollo. Con il guasto aperto la telecamera si riprova da sola dopo 5, 15, 30 e 60 s e poi ogni 5 minuti (ogni
   30 s finché l'API di Home Assistant non risponde, per accorgersi subito del suo ritorno). Quando risponde il guasto si
   chiude, come dopo una foto buona. Un solo ricontrollo per telecamera, fermato allo spegnimento; nel log una riga
@@ -59,7 +63,7 @@ class _Down:
 
     ts: str
     error: str
-    # Fine della tolleranza per questa foto (oltre a quella dell'avvio e del ritorno dell'API)
+    # Fine della tolleranza di questa telecamera (oltre a quella dell'avvio e del ritorno dell'API)
     grace_until: float
     photo: _Photo | None = None
 
@@ -124,10 +128,13 @@ class CameraWatch:
         quando è stata chiesta (vedi now), per riprovarla entro EVENT_PHOTO_SECONDS."""
         now = self._clock()
         down = self._down.get(camera)
-        # Con l'API di Home Assistant giù (riavvio) anche la foto ha la sua tolleranza: il ritorno la allunga
+        # Con l'API di Home Assistant giù (riavvio) ogni foto non riuscita allunga la tolleranza: il ritorno la allunga
+        # ancora
         grace = now + TOLERANCE_SECONDS if getattr(self.ha, "api_up", None) is False else float("-inf")
         if down is None:
-            down = self._down[camera] = _Down(ts=ts, error=error, grace_until=grace)
+            # Prima foto non riuscita: può essere un riavvio del core che l'app non ha visto, o la telecamera che si
+            # riavvia. Il guasto si apre se è ancora giù alla fine della tolleranza
+            down = self._down[camera] = _Down(ts=ts, error=error, grace_until=now + TOLERANCE_SECONDS)
         else:
             down.error = error
             down.grace_until = max(down.grace_until, grace)
