@@ -8,8 +8,9 @@ Il relè del citofono si collega in uno dei due modi:
   all'A1210 un solo AccessDoor, mai uno sblocco permanente ("Apri" dal Videocitofono Apre Questa Porta);
 - a un ingresso dell'A1210 con il ruolo Relè Citofono: la porta la apre il controller da solo, anche con Home
   Assistant spento, e l'inoltro dall'app va lasciato spento (Solo Registro). Con l'inoltro acceso un messaggio
-  arrivato in ritardo riapre la porta: il 13/11 sera, dopo un riavvio di Home Assistant, il bridge ha riconsegnato
-  25 secondi dopo le pressioni già aperte dal controller, e la serratura si è aperta una seconda volta.
+  arrivato in ritardo riapre la porta: il 13/11 sera, dopo un riavvio di Home Assistant, il bridge ha riconsegnato le
+  pressioni già aperte dal controller 22 e 27 secondi dopo l'apertura (20:02:42; messaggi alle 20:03:04 e 20:03:09),
+  e la serratura si è aperta una seconda volta.
 
 Per questo un relè ON non si inoltra se il controller ha appena aperto la stessa porta da un ingresso Relè Citofono,
 né nei primi secondi dopo un ricollegamento (dell'app al broker o del bridge) senza una chiamata arrivata dopo; e se
