@@ -27,6 +27,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import __version__
 from .backup import BACKUP_DIR, BackupError, BackupService
 from .backup_copy import RESTORED, STARTED_EMPTY, error_reason, ha_copy_error, ha_copy_path, update_copies
+from .camera_watch import CameraWatch
 from .compare import KIND_TITLES, KINDS, compare, lists_for, merge_readings, read_strict
 from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .controller_state import POLL_LIVE, POLL_WITHOUT_EVENTS, StateKeeper
@@ -803,6 +804,10 @@ def create_app(
         app.state.backups = BackupService(app.state.db, db_folder / BACKUP_DIR, __version__)
         app.state.ha = home_assistant or HomeAssistant()
         app.state.snapshot_errors = {}
+        # Telecamere con la foto non riuscita: si ricontrollano da sole, con la tolleranza dell'avvio
+        app.state.camera_watch = CameraWatch(
+            app.state.ha, app.state.snapshot_errors, wanted=lambda camera: _camera_used(app.state, camera)
+        )
         # Nomi delle telecamere di Home Assistant (entity_id → friendly name), riletti ogni CAMERA_NAMES_TTL
         app.state.camera_names = {}
         app.state.camera_names_at = None
@@ -860,6 +865,7 @@ def create_app(
                 _LOGGER.exception("Attività in background terminata con un errore")
         await app.state.health.aclose()
         await _stop_runtime(app)
+        await app.state.camera_watch.stop()
         await app.state.ha.aclose()
         app.state.db.close()
 
@@ -3052,9 +3058,13 @@ def _write_intercom_wired(state, value: dict) -> None:
 
 
 async def _save_snapshot(state, camera: str, row: dict) -> None:
-    """Istantanea di un evento. L'ultimo esito per telecamera va nella scheda Telecamere del controller."""
+    """Istantanea di un evento. L'ultimo esito per telecamera va nella scheda Telecamere del controller; una telecamera
+    che non risponde si ricontrolla da sola (camera_watch), e la foto si riprova per l'evento solo per pochi secondi."""
+    watch = getattr(state, "camera_watch", None)
+    requested = watch.now() if watch is not None else 0.0
+    name = f"{row['id']}_{_file_stamp(row.get('ts') or '')}"
     try:
-        filename, error = await state.ha.save_snapshot(camera, f"{row['id']}_{_file_stamp(row.get('ts') or '')}")
+        filename, error = await state.ha.save_snapshot(camera, name)
     except OSError:
         # Disco di Home Assistant pieno o cartella Media in sola lettura
         _LOGGER.exception("Istantanea da %s non salvata", camera)
@@ -3068,9 +3078,23 @@ async def _save_snapshot(state, camera: str, row: dict) -> None:
         # Disco quasi pieno: la telecamera non è stata chiesta, e lo dice già il guasto del disco. Prima ogni
         # telecamera diventava «Telecamera Non Disponibile», e lo restava dopo fino al suo prossimo evento
         return
-    state.snapshot_errors.pop(camera, None)
-    if error:
-        state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}
+    if watch is None:
+        state.snapshot_errors.pop(camera, None)
+        if error:
+            state.snapshot_errors[camera] = {"ts": row.get("ts") or _now(), "error": error}
+    elif error:
+        # Riprovata entro pochi secondi la foto resta dell'evento; dopo, la prova serve solo a chiudere il guasto
+        attach = functools.partial(state.db.set_event_snapshot, row["id"])
+        watch.failed(camera, error, row.get("ts") or _now(), photo=(name, attach, requested))
+    elif filename:
+        watch.ok(camera)
+
+
+def _camera_used(state, camera: str) -> bool:
+    """La telecamera fa ancora le foto di una porta o del coperchio del controller."""
+    return camera == getattr(state, "controller_camera", "") or any(
+        d["snapshot_camera"] == camera for d in getattr(state, "doors", [])
+    )
 
 
 def _policy_schedules(profile: dict, points: list[str]) -> list[str] | None:

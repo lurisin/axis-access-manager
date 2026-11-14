@@ -43,7 +43,7 @@ TYPES = {
     "unknown_card": ("Tessere Sconosciute", "Tessere non registrate passate sul lettore.", "urgent"),
     "denied": ("Accessi Negati", "Accessi negati a persone registrate.", "urgent"),
     "expiring": ("Tessere in Scadenza", "Tessere che scadono nei prossimi 7 giorni.", "urgent"),
-    "camera": ("Telecamere Non Disponibili", "L'ultima foto di una telecamera non è riuscita.", "urgent"),
+    "camera": ("Telecamere Non Disponibili", "Una telecamera non risponde: l'app la ricontrolla da sola.", "urgent"),
     "intercom": (
         "Videocitofono Cablato sul Controller",
         "Il relè del videocitofono apre la porta anche dal controller: l'inoltro dall'app va spento.",
@@ -727,7 +727,8 @@ class NotificationService:
                     severity = "crit" if len(group) > 1 else "warn"
                     add_group("unknown_card", severity, "Tessera Sconosciuta", text, group, "#da-registrare")
         for cam in cameras or []:
-            # Telecamera di una porta con l'ultima foto non riuscita: sparisce alla prima foto buona
+            # Telecamera di una porta che non risponde: l'app la ricontrolla da sola (camera_watch), e la notifica
+            # sparisce quando una foto riesce, di un evento o di prova
             add(
                 "camera",
                 f"cam:{cam['camera']}",
