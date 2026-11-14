@@ -2872,9 +2872,11 @@ const contactFields = (p = {}) => `<div class="fields-2">${field("Telefono", `<i
 const idFields = (p = {}) => `<div class="fields-2">${field("Matricola", `<input name="employee_id" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(p.employee_id || "")}" placeholder="facoltativa">`)}
   ${field("Referente Interno", `<input name="referent" autocomplete="off" maxlength="100" value="${esc(p.referent || "")}" placeholder="facoltativo">`)}</div>`;
 // Codice Stampato della tessera: quello scritto sopra la tessera fisica (sono tutte bianche), facoltativo e unico. Solo
-// nell'app: mai sul controller. Si scrive aggiungendo o registrando una tessera, e dopo dalla scheda (Codice)
-const printedCodeField = (value = "", hint = "Quello scritto sopra la tessera. Resta solo nell'app.") =>
-  field("Codice Stampato", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo, es. Ciccio o 1234">`, hint);
+// nell'app: mai sul controller. Si scrive aggiungendo o registrando una tessera, e dopo dalla scheda (Codice). Lo stesso
+// suggerimento ovunque, senza esempi inventati: ogni impianto scrive i suoi codici
+const PRINTED_CODE_HINT = "Il codice scritto sulla tessera. Resta solo nell'app.";
+const printedCodeField = (value = "", hint = PRINTED_CODE_HINT) =>
+  field("Codice Stampato", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo">`, hint);
 // Telefono ed email incollati da una pagina web, da un PDF o da Word, puliti come fa il server mentre si scrivono:
 // senza caratteri invisibili, con gli spazi non separabili come lo spazio e i trattini tipografici («–» di Word) come
 // il trattino. L'email anche senza spazi ai lati, che il browser altrimenti rifiuta prima di mandarla
@@ -2901,7 +2903,7 @@ async function newPerson(card = "") {
       ${contactFields()}
       ${idFields()}
       ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
-      <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField("", "Quello che hai scritto sopra la tessera, es. Ciccio o 1234. Resta solo nell'app.")}</div>
+      <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField()}</div>
       ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Anagrafica → Tipologie.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}
@@ -3131,8 +3133,8 @@ async function openPerson(id) {
     const ok = await modal({
       title: "Aggiungi Tessera a " + p.name,
       body: `<div class="fields-2">${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`)}
-        ${printedCodeField("", "")}</div>
-        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Il Codice Stampato è quello scritto sopra la tessera (es. Ciccio o 1234) e resta solo nell'app. Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.</p>`,
+        ${printedCodeField()}</div>
+        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.</p>`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
         (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card"), printed_code: val(dlg, "printed_code")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false}],
     });
@@ -3143,7 +3145,7 @@ async function openPerson(id) {
     const card = p.cards.find((c) => c.id === Number(b.dataset.cardCode));
     const ok = await modal({
       title: "Codice Stampato",
-      body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", "Quello scritto sopra la tessera, es. Ciccio o 1234. Vuoto per toglierlo. Resta solo nell'app e non va sul controller.")}`,
+      body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", PRINTED_CODE_HINT + " Vuoto per toglierlo.")}`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
         const code = val(dlg, "printed_code");
         if (code === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
@@ -3216,7 +3218,7 @@ async function viewUnknown(el) {
       const ok = await modal({
         title: "Assegna Tessera " + number,
         body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.")
-          + printedCodeField("", "Quello che hai scritto sopra la tessera, es. Ciccio o 1234. Resta solo nell'app.") : '<p class="muted">Nessuna persona registrata.</p>',
+          + printedCodeField() : '<p class="muted">Nessuna persona registrata.</p>',
         actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
           (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number, printed_code: val(dlg, "printed_code")}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
       });

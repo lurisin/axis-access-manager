@@ -276,9 +276,9 @@ def normalize_referent(value: str | None) -> str:
 
 
 def normalize_printed_code(value: str | None) -> str:
-    """Codice Stampato facoltativo della tessera («Ciccio», «1234», «A-07»): qualsiasi testo di una riga, al massimo
-    PRINTED_CODE_MAX caratteri (vedi _short_text). Unico senza distinguere le maiuscole: lo controlla
-    AccessService.check_printed_code."""
+    """Codice Stampato facoltativo della tessera (il codice scritto sulla tessera, per esempio «A-07»): qualsiasi testo
+    di una riga, al massimo PRINTED_CODE_MAX caratteri (vedi _short_text). Unico senza distinguere le maiuscole: lo
+    controlla AccessService.check_printed_code."""
     return _short_text(value, PRINTED_CODE_MAX, PRINTED_CODE_LABEL)
 
 
