@@ -360,3 +360,118 @@ def test_columns_chosen_with_keyboard_mouse_and_finger_follow_the_user(plant, in
     assert desk["prefs"] == {"person_columns": None}
     # E l'amministratore ha ancora la sua
     assert ingress.get("/api/me/preferences", headers=ADMIN).json() == {"person_columns": chosen}
+
+
+REVIEW = r"""
+const { chromium } = require("playwright");
+const config = JSON.parse(process.argv[1]);
+const look = (page) => page.evaluate(() => {
+  const t = document.querySelector("#p-list .p-table");
+  return {list: document.querySelector("#p-list").clientWidth, hide: t.dataset.hide,
+    menu: document.body.classList.contains("nav-open")};
+});
+const settle = (page) => page.waitForTimeout(450);
+
+(async () => {
+  const browser = await chromium.launch();
+  const out = {};
+  const context = await browser.newContext({viewport: {width: 1280, height: 800}, extraHTTPHeaders: config.admin});
+  await context.addInitScript(() => localStorage.setItem("aam-nav", "1"));
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(`${config.ingress}/#persone`);
+  await page.waitForSelector("#p-list .p-table");
+  await settle(page);
+  // Colonne tolte per lo spazio: a 1280 col menu aperto, poi 1100, poi di nuovo 1280
+  out.window = [await look(page)];
+  for (const width of [1100, 1280]) {
+    await page.setViewportSize({width, height: 800});
+    await settle(page);
+    out.window.push(await look(page));
+  }
+  // A 1100 col menu chiuso, poi aperto e di nuovo chiuso
+  await page.setViewportSize({width: 1100, height: 800});
+  out.menu = [];
+  for (let i = 0; i < 3; i++) {
+    await page.click("#nav-toggle");
+    await settle(page);
+    out.menu.push(await look(page));
+  }
+  // Da tastiera: ordine per Telefono dalla tendina (la colonna si aggiunge), poi Invio su Ultimo Accesso
+  await page.setViewportSize({width: 1280, height: 800});
+  out.focus = [];
+  for (const sort of ["telefono:asc", "email:asc", "referente:asc"]) {
+    await page.selectOption("#p-sort", sort);
+    await settle(page);
+    await page.focus("#p-list [data-sort='accesso']");
+    await page.keyboard.press("Enter");
+    await settle(page);
+    out.focus.push(await page.evaluate(() => ({sort: document.querySelector("#p-sort").value,
+      focus: document.activeElement.dataset?.sort || document.activeElement.tagName})));
+  }
+  // Colonne dell'Elenco su uno schermo basso: ↓ da tastiera su Foto fino in fondo, la riga resta in vista
+  await page.setViewportSize({width: 1366, height: 768});
+  await page.click("#p-cols");
+  await page.waitForSelector(".p-cols");
+  await settle(page);
+  out.scrolls = await page.evaluate(() => {
+    const body = document.querySelector("#modal .dlg-body");
+    return body.scrollHeight > body.clientHeight;
+  });
+  await page.focus('.p-col[data-col="foto"] [data-move="1"]');
+  out.keys = [];
+  for (let i = 0; i < 14; i++) {
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(50);
+    out.keys.push(await page.evaluate(() => {
+      const body = document.querySelector("#modal .dlg-body").getBoundingClientRect();
+      const el = document.activeElement, row = el.closest(".p-col");
+      const inside = (r) => r.top >= body.top - 0.5 && r.bottom <= body.bottom + 0.5;
+      return {at: [...row.parentNode.children].indexOf(row) + 1, col: row.dataset.col,
+        button: inside(el.getBoundingClientRect()), row: inside(row.getBoundingClientRect())};
+    }));
+  }
+  out.errors = errors;
+  console.log(JSON.stringify(out));
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
+def test_columns_review_width_memory_header_focus_and_rows_in_view(plant, ingress_server):  # noqa: F811
+    """Revisione delle colonne: (1) una colonna tolta per lo spazio torna alla stessa larghezza dopo un cambio grande
+    (finestra, menu): a 1280 col menu aperto le 9 colonne anche dopo un passaggio a 1100, e a 1100 il menu aperto e
+    richiuso lascia le colonne di prima; (2) da tastiera, dopo l'ordine per Telefono, Email o Referente dalla tendina,
+    Invio su Ultimo Accesso lascia il fuoco su quel pulsante (prima finiva sul body); (3) nella finestra Colonne
+    dell'Elenco, su uno schermo basso, ↓ da tastiera tiene in vista la riga spostata e il pulsante col fuoco."""
+    ingress, _, _, _ = plant
+    for first, last, employee_id, company, phone, email, code, card in PERSONS:
+        body = {"first_name": first, "last_name": last, "employee_id": employee_id, "company": company, "phone": phone,
+                "email": email, "referent": "Direzione di Sala"}  # fmt: skip
+        if card:
+            body.update(card=card, printed_code=code)
+        assert ingress.post("/api/persons", json=body, headers=ADMIN).status_code == 200
+    config = {"ingress": ingress_server, "admin": ADMIN}
+    result = subprocess.run(["node", "-e", REVIEW, json.dumps(config)], capture_output=True, text=True, timeout=300)
+    if result.returncode and "Executable doesn't exist" in result.stderr:
+        pytest.skip("Chromium di Playwright non installato")
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert out["errors"] == []
+
+    first, narrow, back = out["window"]
+    assert first["menu"] and first["hide"] == "" and narrow["hide"] != ""
+    assert back["list"] == first["list"] and back["hide"] == "", out["window"]
+    closed, opened, closed_again = out["menu"]
+    assert not closed["menu"] and opened["menu"] and not closed_again["menu"], out["menu"]
+    assert closed["hide"] == "" and opened["hide"] != "", out["menu"]
+    assert closed_again["list"] == closed["list"] and closed_again["hide"] == "", out["menu"]
+
+    assert out["focus"] == [{"sort": "accesso:desc", "focus": "accesso"}] * 3, out["focus"]
+
+    assert out["scrolls"] is True
+    keys = out["keys"]
+    assert [k["at"] for k in keys] == list(range(2, 16)) and {k["col"] for k in keys} == {"foto"}
+    assert all(k["button"] and k["row"] for k in keys), keys

@@ -636,8 +636,8 @@ def test_desktop_table_headers_sort_and_rows_do_not_depend_on_the_order():
     # Un pulsante in ogni intestazione che ordina, aria-sort solo su quella scelta
     assert re.findall(r'aria-sort="(\w+)"', html) == ["ascending"]
     assert re.search(
-        r'<th class="c-emp" scope="col" aria-sort="ascending"><button type="button" class="th-sort" '
-        r'data-sort="matricola"',
+        r'<th class="c-emp" scope="col" data-key="th-matricola" aria-sort="ascending"><button type="button" '
+        r'class="th-sort" data-sort="matricola"',
         html,
     )
     assert re.findall(r'data-sort="(\w+)"', html) == ["cognome", "nome", "matricola", "ditta", "tipologia", "accesso"]
@@ -646,7 +646,7 @@ def test_desktop_table_headers_sort_and_rows_do_not_depend_on_the_order():
     # Con l'ordine per data di inserimento, che non è tra le colonne scelte, c'è anche la sua colonna, prima di Stato,
     # con la data come Ultimo Accesso e quella completa nel title
     assert table_attrs(out["created"])["data-columns"].endswith(" accesso inserimento stato")
-    assert '<th class="c-created" scope="col" aria-sort="descending">' in out["created"]
+    assert '<th class="c-created" scope="col" data-key="th-inserimento" aria-sort="descending">' in out["created"]
     assert '<td class="c-created" title="10 gen 2026, 10:00:00">10/01/2026 10:00</td>' in out["created"]
     # Riga: apre la scheda da tastiera, foto con la versione codificata, caricata solo quando serve
     assert '<tr data-person="1" data-key="p1" tabindex="0">' in html

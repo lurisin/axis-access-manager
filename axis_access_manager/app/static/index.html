@@ -47,6 +47,9 @@
          position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column; padding: 10px 10px 12px; gap: 2px;
          transition: width .18s ease; z-index: 30; }
   body.nav-open .nav { width: var(--nav-w); }
+  /* Icona del luogo in cima alla pagina di una porta: la riga resta alta come prima della 0.28.4, quando l'icona poggiava
+     sulla linea di base e la alzava; sul telefono, dove va a capo, il resto della pagina non si sposta */
+  .door-place { display: flex; align-items: center; min-height: 26.5px; }
   .nav .lbl { opacity: 0; pointer-events: none; transition: opacity .12s; white-space: nowrap; }
   body.nav-open .nav .lbl { opacity: 1; pointer-events: auto; }
   .nav-toggle { display: flex; align-items: center; gap: 12px; width: 100%; justify-content: flex-start; padding: 9px 12px;
@@ -56,6 +59,9 @@
   .nav-backdrop { display: none; }
   .nav a { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 10px; color: var(--muted);
            font-weight: 500; position: relative; white-space: nowrap; }
+  /* Voci del menu alte almeno un dito, anche sul computer e sui tablet: fino alla 0.28.3 lo erano per caso, con l'icona
+     che poggiava sulla linea di base e allungava la riga */
+  .nav a, .nav-toggle { min-height: 44px; }
   .nav a:hover { background: var(--surface-2); text-decoration: none; color: var(--text); }
   .nav a.active { background: var(--accent-soft); color: var(--accent); }
   .nav .count { position: absolute; top: 3px; left: 28px; background: var(--err); color: var(--err-text); border-radius: 10px; font-size: 11px;
@@ -668,6 +674,11 @@
   dialog#viewer { width: fit-content; max-width: calc(100vw - 16px); max-height: none; padding: 0; border: 0; border-radius: 0;
                   background: transparent; box-shadow: none; overflow: visible; color: #eef1f5; }
   dialog#viewer::backdrop { background: rgba(6, 8, 12, .9); }
+  /* Con la foto aperta la pagina sotto non scorre, né col dito né con la rotella: lo sfondo la copre, e chiudendo la foto
+     sarebbe da un'altra parte. Una barra di scorrimento che c'era lascia il suo spazio, così la pagina non si allarga */
+  html.viewer-open { overflow: hidden; }
+  html.viewer-open.viewer-gutter { scrollbar-gutter: stable; }
+  dialog#viewer { overscroll-behavior: contain; }
   .viewer-head { display: flex; align-items: center; gap: 8px; width: 0; min-width: 100%; margin-bottom: 8px; }
   .viewer-head h2 { flex: 1; min-width: 0; margin: 0; font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .viewer-x { flex: none; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; background: rgba(255, 255, 255, .14); color: #fff; }
@@ -789,7 +800,7 @@
   @media (max-width: 860px) {
     /* Sul telefono il menu allargato si apre sopra la pagina e si richiude da solo dopo la scelta */
     .nav { position: fixed; left: 0; top: 0; bottom: 0; width: 52px; padding: 6px 4px calc(8px + env(safe-area-inset-bottom)); }
-    .nav a, .nav-toggle { padding: 10px 12px; min-height: 44px; }
+    .nav a, .nav-toggle { padding: 10px 12px; }
     body.nav-open .nav { width: min(264px, 80vw); box-shadow: 4px 0 24px rgba(0, 0, 0, .25); }
     body.nav-open .nav-backdrop { display: block; position: fixed; inset: 0; background: rgba(10, 14, 20, .4); z-index: 25; }
     .main { margin-left: 52px; }
@@ -1650,6 +1661,7 @@ function showImage(src, title) {
     img.onload = img.onerror = null;
     dlg.close();
     dlg.replaceChildren();
+    document.documentElement.classList.remove("viewer-open", "viewer-gutter");
     if (back && back !== document.body && back.isConnected) back.focus({preventScroll: true});
   };
   dlg.leave = leave;
@@ -1661,6 +1673,9 @@ function showImage(src, title) {
   dlg.onkeydown = (e) => { if (e.key === "Tab") { e.preventDefault(); close.focus(); } };
   window.addEventListener("hashchange", leave);
   img.src = src;
+  const root = document.documentElement;
+  root.classList.toggle("viewer-gutter", window.innerWidth > root.clientWidth);
+  root.classList.add("viewer-open");
   dlg.showModal();
   close.focus();
 }
@@ -2468,7 +2483,7 @@ async function viewDoorDetail(el, id, doors) {
   el.innerHTML = `
     <div class="row" style="margin-bottom:14px">
       <a class="small-text" href="#porte">← Tutte le Porte</a>
-      ${place ? `<span class="muted">${icon("building")}</span><span class="muted">${esc(place)}</span>` : ""}
+      ${place ? `<span class="muted door-place">${icon("building")}</span><span class="muted">${esc(place)}</span>` : ""}
       <span class="pill ${doorModeClass(d.mode)}" style="font-size:14px;padding:4px 12px"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span>
       <span class="spacer" style="flex:1"></span>${switcher}
     </div>
@@ -2545,8 +2560,8 @@ const PERSON_COLUMNS_DEFAULT = ["foto", "cognome", "nome", "matricola", "ditta",
 const PERSON_FLEX_MIN = 95;
 const PERSON_EDGE = 8;
 const personEdge = (key) => PERSON_COLUMN_BY[key].edge ?? PERSON_EDGE;
-// Una colonna tolta per lo spazio torna solo con un po' di spazio in più: la barra di scorrimento che compare e sparisce
-// con l'altezza delle righe non la fa lampeggiare
+// Una colonna tolta per lo spazio torna solo con un po' di spazio in più di quando è stata tolta: la barra di
+// scorrimento che compare e sparisce (fino a 17 px) con l'altezza delle righe non la fa lampeggiare
 const PERSON_FIT_SLACK = 24;
 // Scelta salvata, pulita come fa il server (preferences.clean_person_columns): colonne sconosciute (di una versione
 // futura) e doppioni tolti, Cognome e Nome rimessi accanto se mancano. Senza una scelta, le predefinite
@@ -2600,17 +2615,18 @@ function personColumnsFit(columns, width, keep) {
   }
   return shown;
 }
-// Come personColumnsFit, ricordando l'ultima volta (stesse colonne, stessa colonna dell'ordine e stessa ricerca): una
-// colonna tolta torna solo con PERSON_FIT_SLACK px in più. Le colonne in vista sono sempre le prime dell'ordine
+// Come personColumnsFit, ricordando l'ultimo cambio (stesse colonne, stessa colonna dell'ordine e stessa ricerca) e la
+// larghezza a cui è avvenuto: una colonna tolta torna solo con PERSON_FIT_SLACK px in più di quella larghezza. Vale
+// solo per le piccole oscillazioni, cioè la barra di scorrimento: con un cambio più grande (menu, finestra, zoom) le
+// colonne sono quelle che ci stanno, come senza memoria, così alla stessa larghezza si vedono le stesse colonne
+// qualunque cosa sia successa prima. Le colonne in vista sono sempre le prime dell'ordine
 let personFit = null;
 function personColumnsShown(columns, width, keep) {
   const sig = `${columns.join(" ")}|${keep.join(" ")}`;
+  const last = personFit?.sig === sig ? personFit : null;
   let shown = personColumnsFit(columns, width, keep);
-  if (personFit?.sig === sig && shown.length > personFit.shown.length) {
-    const roomy = personColumnsFit(columns, width - PERSON_FIT_SLACK, keep);
-    if (roomy.length < shown.length) shown = roomy.length > personFit.shown.length ? roomy : personFit.shown;
-  }
-  personFit = {sig, shown};
+  if (last && shown.length > last.shown.length && width - last.width < PERSON_FIT_SLACK) shown = last.shown;
+  if (!last || shown.length !== last.shown.length) personFit = {sig, shown, width};
   return shown;
 }
 // Regole delle colonne, dal modello: larghezza delle colonne fisse, colonne tolte per lo spazio (data-hide della
@@ -2982,17 +2998,19 @@ function personTable(sorted, width = Infinity) {
   const found = sorted.some((p) => searchedCards(p, personFilters.q).length);
   const columns = personColumnsFor(personColumnsChosen(), key, found);
   const shown = personColumnsShown(columns, width, personColumnsKeep(key, found));
+  // Intestazioni con la chiave della colonna (data-key): quando una colonna in più se ne va (l'ordine per Telefono
+  // lasciato per Ultimo Accesso) il morph le abbina per colonna e non per posizione, e il pulsante col fuoco resta suo
   const head = columns.map((k) => {
     const {cls, label, sort} = PERSON_COLUMN_BY[k];
-    return !sort ? `<th class="${cls}" scope="col">${label}</th>`
-      : `<th class="${cls}" scope="col"${k === key ? ` aria-sort="${dir === "desc" ? "descending" : "ascending"}"` : ""}><button type="button" class="th-sort" data-sort="${k}" title="Ordina per ${label}"><span>${label}</span><span class="arrow" aria-hidden="true">${k === key ? (dir === "desc" ? "↓" : "↑") : ""}</span></button></th>`;
+    return !sort ? `<th class="${cls}" scope="col" data-key="th-${k}">${label}</th>`
+      : `<th class="${cls}" scope="col" data-key="th-${k}"${k === key ? ` aria-sort="${dir === "desc" ? "descending" : "ascending"}"` : ""}><button type="button" class="th-sort" data-sort="${k}" title="Ordina per ${label}"><span>${label}</span><span class="arrow" aria-hidden="true">${k === key ? (dir === "desc" ? "↓" : "↑") : ""}</span></button></th>`;
   }).join("");
   // Lettere di sezione nella colonna dell'ordine (Cognome o Nome, sempre in vista). Una cella per colonna, con le
   // classi delle colonne: un colspan contato su tutte le colonne, con quelle nascoste, lascerebbe colonne vuote in fondo
   let letter = "";
   const body = sorted.map((p) => {
     const first = sorted.length > 12 ? personLetter(p, key) : "";
-    const section = first && first !== letter ? `<tr class="sec" data-key="h${esc(first)}">${columns.map((k) => `<td class="${PERSON_COLUMN_BY[k].cls}">${k === key ? esc(first) : ""}</td>`).join("")}</tr>` : "";
+    const section = first && first !== letter ? `<tr class="sec" data-key="h${esc(first)}">${columns.map((k) => `<td class="${PERSON_COLUMN_BY[k].cls}" data-key="${k}">${k === key ? esc(first) : ""}</td>`).join("")}</tr>` : "";
     letter = first;
     return `${section}<tr data-person="${p.id}" data-key="p${p.id}" tabindex="0">${columns.map((k) => personCell(p, k)).join("")}</tr>`;
   }).join("");
@@ -3089,6 +3107,8 @@ function bindPersonColumns(dlg) {
     personColumnTo(li, at);
     personColumnsMoved(dlg, personColumnPlace(li));
     if (button.disabled) $(`[data-move="${-button.dataset.move}"]`, li).focus();
+    // Con l'elenco che scorre (schermo basso, telefono) la riga spostata resta in vista, e con lei il pulsante col fuoco
+    li.scrollIntoView({block: "nearest"});
   });
   // Trascinamento con il mouse o il dito dalla maniglia: la riga va dove sta il puntatore, e vicino al bordo l'elenco
   // scorre da solo. Ascolto sulla finestra, come per il cruscotto

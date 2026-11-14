@@ -209,3 +209,95 @@ def test_enlarged_photo_is_as_wide_as_the_photo(plant, ingress_server, tmp_path)
     phone = ["persona", "telecamera", "anagrafica", "notifica", "non disponibile"]
     computer = ["persona", "telecamera", "anagrafica", "notifica", "elenco", "non disponibile"]
     assert names == phone * 2 + computer * 2
+
+
+STILL = r"""
+const { chromium } = require("playwright");
+const config = JSON.parse(process.argv[1]);
+(async () => {
+  const browser = await chromium.launch();
+  const out = [];
+  for (const [width, scheme] of [[390, "dark"], [1280, "light"]]) {
+    const phone = width === 390;
+    const context = await browser.newContext({viewport: {width, height: phone ? 844 : 900}, colorScheme: scheme,
+      hasTouch: phone, isMobile: phone, extraHTTPHeaders: config.headers});
+    const page = await context.newPage();
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(String(e)));
+    // La scheda della persona sopra l'Anagrafica, che è lunga: la foto della persona si apre dalla scheda
+    await page.goto(`${config.base}/#persone/${config.person}`);
+    const opener = page.locator("#sheet .dlg-head [data-photo-view]");
+    await opener.waitFor();
+    await page.waitForTimeout(300);
+    const look = () => page.evaluate(() => ({y: Math.round(scrollY), open: document.querySelector("#viewer").open,
+      lock: document.documentElement.className, width: document.querySelector(".main").clientWidth}));
+    const before = await look();
+    if (phone) await opener.tap(); else await opener.click();
+    await page.waitForFunction(() => document.querySelector("#viewer img"));
+    const opened = await look();
+    if (phone) {
+      // Un dito che trascina in su sullo sfondo scuro, sotto la foto
+      const cdp = await context.newCDPSession(page);
+      const x = 195, from = 820, to = 420;
+      await cdp.send("Input.dispatchTouchEvent", {type: "touchStart", touchPoints: [{x, y: from}]});
+      for (let i = 1; i <= 10; i++) {
+        await page.waitForTimeout(16);
+        const touchPoints = [{x, y: from + (to - from) * i / 10}];
+        await cdp.send("Input.dispatchTouchEvent", {type: "touchMove", touchPoints});
+      }
+      await cdp.send("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});
+    } else {
+      // La rotella del mouse sullo sfondo
+      await page.mouse.move(40, 450);
+      await page.mouse.wheel(0, 800);
+    }
+    await page.waitForTimeout(500);
+    const moved = await look();
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => !document.querySelector("#viewer").open);
+    const closed = await look();
+    // Chiusa la foto la pagina scorre di nuovo
+    await page.evaluate(() => window.scrollTo(0, 300));
+    await page.waitForTimeout(100);
+    out.push({width, before, opened, moved, closed, again: await page.evaluate(() => Math.round(scrollY)), errors});
+    await context.close();
+  }
+  console.log(JSON.stringify(out));
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
+def test_page_under_the_enlarged_photo_does_not_scroll(plant, ingress_server, tmp_path):  # noqa: F811
+    """Revisione: sul telefono un trascinamento sullo sfondo scuro, e sul computer la rotella, facevano scorrere la
+    pagina sotto la foto (più di 600 px): chiudendo la foto l'elenco non era più dove era. Ora resta ferma, e la
+    pagina non cambia larghezza mentre la foto è aperta."""
+    ingress, _, _, app = plant
+    app.state.ha.snapshot_dir = tmp_path / "foto"
+    app.state.ha.snapshot_dir.mkdir()
+    person = ingress.post(
+        "/api/persons", json={"first_name": "Marta", "last_name": "Colombo", "card": "04a1b2c3"}, headers=ADMIN
+    ).json()
+    photo = ingress.put(
+        f"/api/persons/{person['id']}/photo",
+        content=plain_png(480, 600, 120),
+        headers={**ADMIN, "Content-Type": "image/png"},
+    )
+    assert photo.status_code == 200, photo.text
+    for i in range(40):
+        body = {"first_name": "Persona", "last_name": f"Prova{i:02d}"}
+        assert ingress.post("/api/persons", json=body, headers=ADMIN).status_code == 200
+    config = {"base": ingress_server, "headers": ADMIN, "person": person["id"]}
+    result = subprocess.run(["node", "-e", STILL, json.dumps(config)], capture_output=True, text=True, timeout=300)
+    if result.returncode and "Executable doesn't exist" in result.stderr:
+        pytest.skip("Chromium di Playwright non installato")
+    assert result.returncode == 0, result.stderr
+    for row in json.loads(result.stdout):
+        assert row["errors"] == [], row
+        assert row["opened"]["open"] and row["moved"]["open"], row
+        assert row["moved"]["y"] == row["opened"]["y"] == row["before"]["y"], row
+        assert "viewer-open" in row["opened"]["lock"] and "viewer-open" not in row["closed"]["lock"], row
+        # La pagina sotto non cambia larghezza aprendo e chiudendo la foto
+        assert row["opened"]["width"] == row["before"]["width"] == row["closed"]["width"], row
+        assert row["again"] == 300, row

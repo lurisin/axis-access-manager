@@ -175,19 +175,38 @@ def test_with_little_room_the_last_columns_of_the_order_go_first():
 
 def test_a_column_comes_back_only_with_some_room_more():
     """La barra di scorrimento che compare e sparisce (16 px) non fa lampeggiare una colonna: tolta a 970, torna solo
-    da 980 + 24 px; con altre colonne, un altro ordine o un'altra ricerca si riparte da capo."""
+    da 970 + 24 px; con altre colonne, un altro ordine o un'altra ricerca si riparte da capo."""
     keep = '["cognome", "nome", "cognome"]'
     shown = f"(w, cols = {json.dumps(DEFAULT)}) => personColumnsShown(cols, w, {keep}).length"
     out = run(
         {
-            "steps": f"[1000, 970, 985, 1003, 1004, 970, 2000].map((w) => ({shown})(w))",
+            "steps": f"[1000, 970, 985, 993, 994, 978, 994, 2000].map((w) => ({shown})(w))",
             "other": f"(personColumnsShown({json.dumps(DEFAULT)}, 970, {keep}), "
             f"personColumnsShown({json.dumps(DEFAULT)}, 985, ['cognome', 'nome', 'accesso']).length)",
             "fresh": f"(personColumnsShown({json.dumps(DEFAULT)}, 970, {keep}), personFit = null, ({shown})(985))",
         }
     )
-    assert out["steps"] == [9, 8, 8, 8, 9, 8, 9]
+    assert out["steps"] == [9, 8, 8, 8, 9, 8, 8, 9]
     assert out["other"] == out["fresh"] == 9
+
+
+def test_same_width_same_columns_after_a_bigger_change():
+    """Revisione: la memoria valeva per qualsiasi cambio. A 1280 col menu aperto (998 px) ci sono le 9 colonne; dopo
+    un passaggio a 1100 (818 px) tornando a 998 mancava Stato. A 1100 col menu chiuso (986 px) le 9 colonne; aprendo e
+    chiudendo il menu, alla stessa larghezza mancava Stato. Con un cambio più grande della barra di scorrimento le
+    colonne sono quelle che ci stanno, come senza memoria."""
+    keep = '["cognome", "nome", "cognome"]'
+    shown = f"(w) => personColumnsShown({json.dumps(DEFAULT)}, w, {keep}).length"
+    fresh = f"(w) => (personFit = null, personColumnsShown({json.dumps(DEFAULT)}, w, {keep}).length)"
+    out = run(
+        {
+            "window": f"[998, 818, 998].map({shown})",
+            "menu": f"(personFit = null, [986, 818, 986].map({shown}))",
+            "fresh": f"[998, 818, 986].map({fresh})",
+        }
+    )
+    assert out["fresh"][0] == out["fresh"][2] == 9
+    assert out["window"] == out["menu"] == [9, out["fresh"][1], 9]
 
 
 PEOPLE = [
@@ -321,9 +340,15 @@ def test_table_with_the_chosen_columns_in_their_order():
     assert cards["data-columns"] == "nome cognome tessere telefono email note modifica inserimento referente stato"
     assert cards["data-hide"] == "note modifica inserimento referente stato"
     assert "data-cards" in cards
-    # Lettere di sezione nella colonna dell'ordine, che c'è sempre
+    # Lettere di sezione nella colonna dell'ordine, che c'è sempre. Intestazioni e celle delle sezioni con la chiave
+    # della colonna: il morph le abbina per colonna, non per posizione
     section = re.search(r'<tr class="sec" data-key="hA">(.*?)</tr>', out["letters"]).group(1)
-    assert section.startswith('<td class="c-first">A</td><td class="c-last"></td>')
+    assert section.startswith('<td class="c-first" data-key="nome">A</td><td class="c-last" data-key="cognome"></td>')
+    assert re.findall(r'<th class="c-[a-z]+" scope="col" data-key="th-([a-z]+)"', out["letters"])[:3] == [
+        "nome",
+        "cognome",
+        "telefono",
+    ]
 
 
 def test_rules_of_the_columns_come_from_the_model():

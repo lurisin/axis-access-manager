@@ -3,7 +3,8 @@ del menu, dei pulsanti e dei titoli sta a metà delle maiuscole del testo accant
 menu (uno span con dentro l'icona, poggiata sulla linea di base del testo) stavano 2,5 px più in alto di Porte,
 Anagrafica, Da Registrare e degli altri nomi, e l'icona di ☰ 3,25 px più in alto di Controllo Accessi. Lo stesso nella
 finestra Colonne dell'Elenco dell'Anagrafica: la maniglia di ogni riga accanto al nome della colonna e l'icona della
-maniglia nel suggerimento in cima."""
+maniglia nel suggerimento in cima. Senza spostare altro: le voci del menu restano alte almeno 44 px anche sul computer,
+e la riga del luogo nella pagina di una porta quanto prima."""
 
 import json
 import subprocess
@@ -126,6 +127,30 @@ function measureColumns() {
     })});
     await context.close();
   }
+  // Voci del menu sul computer e su un tablet: alte almeno un dito come prima; e la riga del luogo nella pagina di una
+  // porta, alta come prima (l'icona dentro uno span suo, come nella pagina)
+  for (const width of [1280, 1024]) {
+    const context = await browser.newContext({viewport: {width, height: 900}, extraHTTPHeaders: config.headers,
+      hasTouch: width === 1024});
+    await context.addInitScript(() => localStorage.setItem("aam-nav", "1"));
+    const page = await context.newPage();
+    await page.goto(`${config.base}/#persone`);
+    await page.waitForSelector("#view .card");
+    await page.waitForTimeout(300);
+    out.push({width, nav: await page.evaluate(() => [...document.querySelectorAll("#nav-toggle, #nav a")]
+      .filter((a) => a.getClientRects().length).map((a) => [a.textContent.trim(), a.getBoundingClientRect().height])),
+    place: await page.evaluate(() => {
+      const row = document.createElement("div");
+      row.className = "row";
+      const place = '<span class="muted">Sede › Piano</span>';
+      row.innerHTML = `<span class="muted door-place">${icon("building")}</span>${place}`;
+      document.querySelector("#view").prepend(row);
+      const height = row.getBoundingClientRect().height;
+      row.remove();
+      return height;
+    })});
+    await context.close();
+  }
   console.log(JSON.stringify(out));
   await browser.close();
 })().catch((e) => { console.error(e); process.exit(1); });
@@ -160,3 +185,10 @@ def test_icons_sit_in_the_middle_of_the_capitals_next_to_them(plant, ingress_ser
     assert len(columns) == 2 * 16 and {"Cognome", "Email", "suggerimento"} <= {r["text"] for r in columns}, columns
     off = [r for r in rows if abs(r["delta"]) > 1]
     assert off == [], off
+    # Revisione: la correzione delle icone non accorcia le voci del menu (prima 44,5 px, poi 40,5) né la riga del luogo
+    # di una porta (prima 26,5 px, poi 22,5: sul telefono la pagina sotto saliva di 4 px)
+    sizes = [r for r in out if "nav" in r]
+    assert [r["width"] for r in sizes] == [1280, 1024]
+    for r in sizes:
+        assert len(r["nav"]) >= 10 and all(height >= 44 for _, height in r["nav"]), r
+        assert r["place"] == 26.5, r
