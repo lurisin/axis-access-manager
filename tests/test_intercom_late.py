@@ -488,3 +488,23 @@ def test_app_follows_the_bridge_and_closes_the_warning_when_forwarding_stops(con
         assert client.put(f"/api/doors/{door['id']}", json={**door, "intercom_open_door": False}).status_code == 200
         assert warnings() == []
         assert not app.state.db.get_setting(SETTING_INTERCOM_WIRED)
+
+
+async def test_new_texts_are_fine_for_staff_without_technical_permissions(db, controller, settings, clock):
+    """Le righe del registro e la notifica nuove non nominano Home Assistant, MQTT, broker o add-on: il personale
+    dell'accesso diretto le legge come sono (vedi plain.py)."""
+    from app.notifications import TYPES
+    from app.plain import forbidden
+
+    plant = Plant(db, controller, settings, clock)
+    plant.bridge.broker_connected()
+    await plant.unlock("20:03:02")
+    plant.press("20:03:40")
+    await plant.unlock("20:03:41")
+    clock.now += 60
+    await plant.unlock("20:05:00", time="2026-11-13T20:04:00+01:00")
+    texts = [detail for kind, detail, _ in plant.rows() if kind == "citofono"]
+    assert len(texts) == 3
+    assert not [t for t in texts if forbidden(t)]
+    assert not forbidden(TYPES["intercom"][0]) and not forbidden(TYPES["intercom"][1])
+    assert not forbidden(TYPES["camera"][1])
