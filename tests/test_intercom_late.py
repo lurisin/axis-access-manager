@@ -194,12 +194,13 @@ async def test_13_11_without_the_controller_event_the_reconnection_stops_them(db
     ]
 
 
-@pytest.mark.parametrize("comeback", ["availability", "idle"])
+@pytest.mark.parametrize("comeback", ["availability", "relay_off"])
 async def test_13_11_with_the_app_still_connected_the_bridge_comeback_stops_them(
     db, controller, settings, clock, comeback
 ):
     """L'add-on resta collegato a un broker che non cade: conta il ritorno del bridge alle 20:02:57, con la sua
-    disponibilità (ha-mqtt-discoverable con manual_availability) o con lo stato a riposo ripubblicato."""
+    disponibilità (ha-mqtt-discoverable con manual_availability) o con il relè spento che un bridge ripartito
+    ripubblica (lo Switch pubblica solo i cambi)."""
     clock = Clock("19:00:00")
     plant = Plant(db, controller, settings, clock, wired=False)
     plant.bridge.broker_connected()
@@ -215,7 +216,7 @@ async def test_13_11_with_the_app_still_connected_the_bridge_comeback_stops_them
     if comeback == "availability":
         plant.mqtt(RELAY_AVAILABILITY, "online")
     else:
-        plant.mqtt(CALL, "idle")
+        plant.mqtt(RELAY, "OFF")
     await plant.unlock("20:03:04")
     await plant.unlock("20:03:09")
     await settle()
@@ -227,6 +228,71 @@ async def test_13_11_with_the_app_still_connected_the_bridge_comeback_stops_them
         "chiamata in corso",
         "Citofono Cortile",
     )
+
+
+@pytest.mark.parametrize("wired", [True, False])
+async def test_bridge_back_with_online_after_online_stops_the_late_presses(db, controller, settings, wired):
+    """Revisione: il bridge che torna con "online" dopo un "online", senza un "offline" visto in mezzo, è un ritorno.
+    Succede quando il bridge si chiude in modo ordinato (il broker scarta il testamento) o quando il broker cade con
+    lui e con la persistenza tiene l'ultimo "online". L'Apri vero è di 69 s prima: oltre il minuto in cui conta
+    l'apertura del controller, quindi resta solo il ritorno del bridge."""
+    clock = Clock("19:00:00")
+    plant = Plant(db, controller, settings, clock, wired=wired)
+    # L'app è collegata da tempo: disponibilità conservata "online", stati a riposo
+    plant.bridge.broker_connected()
+    for topic in (CALL_AVAILABILITY, RELAY_AVAILABILITY):
+        plant.mqtt(topic, "online", retained=True)
+    plant.mqtt(CALL, "idle", retained=True)
+    plant.mqtt(RELAY, "OFF", retained=True)
+    clock.at("19:30:00")
+    plant.mqtt(CALL, "ringing")
+    clock.at("19:30:05")
+    plant.mqtt(CALL, "idle")
+    # 20:01:30 il bridge si ferma senza "offline". 20:01:55 Apri dal monitor: con il relè cablato apre il controller
+    clock.at("20:01:30")
+    if wired:
+        plant.press("20:01:55")
+    # 20:02:57 il bridge riparte e pubblica la disponibilità; 20:03:04 e 20:03:09 riconsegna le pressioni vecchie
+    clock.at("20:02:57")
+    for topic in (CALL_AVAILABILITY, RELAY_AVAILABILITY):
+        plant.mqtt(topic, "online")
+    await plant.unlock("20:03:04")
+    await plant.unlock("20:03:09")
+    await settle()
+
+    assert controller.calls == []
+    assert plant.rows()[-1] == (
+        "citofono",
+        "apertura dal citofono non inoltrata: messaggio arrivato 7 s dopo il ritorno del videocitofono, senza una "
+        "chiamata in corso",
+        "Citofono Cortile",
+    )
+    # Passati i 30 s, un Apri senza chiamata passa di nuovo
+    controller.door = "Locked"
+    plant.monitor.door_mode = "Locked"
+    await plant.unlock("20:03:40", unlock_type="CENTER_PLATFORM")
+    assert controller.calls == [FORWARDED]
+
+
+async def test_idle_republished_by_the_call_state_polling_does_not_hold_back_an_open(db, controller, settings):
+    """Revisione: il bridge con call_state_poll rilegge callStatus a intervalli e ripubblica "idle" ogni volta
+    (Sensor.set_state con force_update). Un "idle" uguale dopo un minuto di silenzio non è un ritorno del bridge: l'Apri
+    dalla portineria con Hik-Connect, senza chiamata, 10 s dopo si inoltra."""
+    clock = Clock("08:00:00")
+    plant = Plant(db, controller, settings, clock, wired=False)
+    plant.bridge.broker_connected()
+    plant.mqtt(CALL_AVAILABILITY, "online", retained=True)
+    plant.mqtt(CALL, "idle", retained=True)
+    plant.mqtt(RELAY, "OFF", retained=True)
+    for _ in range(5):
+        clock.now += 90
+        plant.mqtt(CALL, "idle")
+    clock.now += 10
+    await plant.unlock(clock.wall().astimezone(ITALIA).strftime("%H:%M:%S"), unlock_type="CENTER_PLATFORM")
+    await settle()
+
+    assert controller.calls == [FORWARDED]
+    assert plant.rows() == [("apertura_remota", "", "App Hik-Connect (Videocitofono)")]
 
 
 async def test_live_open_without_wiring_is_forwarded_at_once(db, controller, settings, clock):

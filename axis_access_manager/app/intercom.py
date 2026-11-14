@@ -45,19 +45,21 @@ RING_MAX_SECONDS = 90.0
 # inoltra. Il 13/11 il bridge ha riconsegnato le pressioni 22 e 27 s dopo l'apertura vera
 CONTROLLER_OPEN_SECONDS = 60.0
 # Messaggi vecchi dopo un ricollegamento: un relè ON nei primi secondi dopo che l'app si ricollega al broker o che il
-# bridge torna (disponibilità di nuovo "online", stato iniziale ripubblicato dopo un silenzio) non si inoltra, se non
-# c'è una chiamata arrivata dopo il ricollegamento. Il 13/11 il bridge è tornato alle 20:02:57 e l'add-on alle
-# 20:02:58, e le pressioni vecchie sono arrivate alle 20:03:04 e 20:03:09 (7 e 12 s dopo): 30 s le coprono con più del
-# doppio di margine, per un bridge che si ricollega al citofono più lentamente. Un Apri dal vivo durante una
-# chiamata passa sempre; uno senza chiamata in quei 30 s resta nel registro, e basta ripeterlo
+# bridge torna (disponibilità "online" pubblicata adesso, relè "OFF" ripubblicato da un bridge ripartito) non si
+# inoltra, se non c'è una chiamata arrivata dopo il ricollegamento. Il 13/11 il bridge è tornato alle 20:02:57 e
+# l'add-on alle 20:02:58, e le pressioni vecchie sono arrivate alle 20:03:04 e 20:03:09 (7 e 12 s dopo): 30 s le
+# coprono con più del doppio di margine, per un bridge che si ricollega al citofono più lentamente. Un Apri dal vivo
+# durante una chiamata passa sempre; uno senza chiamata in quei 30 s resta nel registro, e basta ripeterlo
 RECONNECT_SECONDS = 30.0
 # Con l'ora dell'evento negli attributi del relè: un messaggio più vecchio di così non si inoltra (stesso caso, senza
 # ricollegamento visto). Lo scarto dell'orologio del citofono si misura alle aperture durante una chiamata
 STALE_SECONDS = 15.0
 # Attributi del relè che possono portare l'ora dell'evento
 EVENT_TIME_KEYS = ("time", "event_time", "eventTime", "date_time", "dateTime", "datetime", "timestamp")
-# Senza messaggi dal bridge per questo tempo, uno stato a riposo ripetuto (chiamata "idle" già a riposo, relè "OFF"
-# già spento) è il bridge ripartito: ha-mqtt-discoverable pubblica uno stato uguale al precedente solo dopo un riavvio
+# Senza messaggi dal bridge per questo tempo, un relè "OFF" già spento è il bridge ripartito: in ha-mqtt-discoverable
+# (0.26.3) lo Switch pubblica solo i cambi, e un bridge nuovo comincia con off(). Una chiamata "idle" ripetuta invece
+# non dice niente: Sensor.set_state ripubblica sempre (force_update), e il bridge rilegge callStatus a intervalli se
+# ha call_state_poll
 BRIDGE_SILENCE_SECONDS = 60.0
 # Righe uguali di aperture non inoltrate (una raffica di messaggi vecchi): una sola nel registro entro questo tempo
 SKIP_REPEAT_SECONDS = 10.0
@@ -182,8 +184,8 @@ class IntercomBridge:
         relay = topic_name(f"Door {settings.relay} relay")
         self.relay_topic = f"{base}/switch/{device}/{relay}/state"
         self.relay_attributes_topic = f"{base}/switch/{device}/{relay}/attributes"
-        # Disponibilità pubblicata da ha-mqtt-discoverable (manual_availability): "online" dopo "offline" è il bridge
-        # che torna
+        # Disponibilità pubblicata da ha-mqtt-discoverable (manual_availability): un "online" non conservato è il
+        # bridge che torna
         self.availability_topics = [f"{call}/availability", f"{base}/switch/{device}/{relay}/availability"]
         # Stesso citofono su due porte (relè 1 e 2): la chiamata è una e la segue il bridge della prima porta
         self.call: IntercomBridge | None = None
@@ -205,7 +207,6 @@ class IntercomBridge:
         # Ultimo messaggio del bridge (None: nessuno da quando l'app ascolta) e ultimo stato del relè
         self._heard_at: float | None = None
         self._relay_state = ""
-        self._availability: dict[str, str] = {}
         # Scarto dell'orologio del citofono (secondi di ritardo dei messaggi dal vivo), misurato alle aperture durante
         # una chiamata; None finché non si sa
         self._skew: float | None = None
@@ -239,7 +240,7 @@ class IntercomBridge:
         # mentre l'app era scollegata allinea però lo stato, senza eventi: altrimenti la chiamata dopo si perde
         text = payload.decode(errors="replace").strip()
         if topic in self.availability_topics:
-            self._on_availability(topic, text.lower(), retained)
+            self._on_availability(text.lower(), retained)
             return
         if retained:
             if topic == self.call_topic and text.lower() in IDLE_STATES:
@@ -250,10 +251,6 @@ class IntercomBridge:
         self._heard_at = now
         self.last_message_at = now_iso()
         if topic == self.call_topic:
-            state = text.lower()
-            if quiet and state in IDLE_STATES and self._call_state in IDLE_STATES and self._ring_at is None:
-                # Stato a riposo ripetuto dopo un silenzio: il bridge è ripartito e ripubblica il suo stato
-                self._came_back("il ritorno del videocitofono")
             self._on_call_state(text)
         elif topic == self.relay_attributes_topic:
             try:
@@ -266,16 +263,19 @@ class IntercomBridge:
         elif topic == self.relay_topic:
             state = text.upper()
             if quiet and state == "OFF" and self._relay_state != "ON":
+                # Relè spento ripubblicato dopo un silenzio: il bridge è ripartito
                 self._came_back("il ritorno del videocitofono")
             self._relay_state = state
             if state == "ON":
                 self._on_unlock()
 
-    def _on_availability(self, topic: str, value: str, retained: bool) -> None:
-        previous = self._availability.get(topic)
-        self._availability[topic] = value
-        # Conservata dal broker: è lo stato di prima, non un ritorno (al ricollegamento dell'app vale già quello)
-        if value == "online" and previous != "online" and not retained:
+    def _on_availability(self, value: str, retained: bool) -> None:
+        # Il bridge pubblica "online" solo quando parte e a ogni suo ricollegamento al broker (set_availability in
+        # on_connect): è sempre un ritorno, anche dopo un "online" senza "offline" in mezzo. Il testamento "offline"
+        # non arriva quando il bridge si chiude in modo ordinato (DISCONNECT) né quando cade il broker, che con la
+        # persistenza tiene l'ultimo "online". Conservata dal broker invece è lo stato di prima, non un ritorno (al
+        # ricollegamento dell'app vale già quello)
+        if value == "online" and not retained:
             self._came_back("il ritorno del videocitofono")
 
     def _came_back(self, reason: str) -> None:
