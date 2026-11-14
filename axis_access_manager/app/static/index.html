@@ -529,22 +529,19 @@
   .p-tools input[type=search] { flex: 1 1 260px; }
   .p-tools select { max-width: 230px; }
   .p-tools .sort-pick select { max-width: 270px; }
-  /* Tabella delle Persone sul computer: colonne fisse, testi lunghi con i puntini (e il testo intero nel title), mai
-     più larga della pagina. Le colonne meno importanti spariscono quando il riquadro è stretto (menu aperto, finestra
-     piccola), tranne quella dell'ordine scelto (data-sorted) */
-  .p-table-wrap { container: persone / inline-size; }
+  /* Tabella delle Persone sul computer: le colonne scelte da chi guarda, testi lunghi con i puntini (e il testo intero
+     nel title), mai più larga della pagina. Con poco spazio (menu aperto, finestra piccola) spariscono le ultime
+     colonne dell'ordine scelto: lo decide la pagina misurando l'elenco (personColumnsShown), e le regole di larghezze,
+     colonne nascoste e bordi vengono dal modello delle colonne (personColumnCss). Il riquadro non si allarga per il
+     contenuto (contenimento della larghezza): la tabella si adatta a lui, e non il contrario */
+  .p-table-wrap { container-type: inline-size; }
   table.p-table { table-layout: fixed; }
   /* table.table.p-table: più peso di table.table, che viene dopo (vertical-align: top) */
   table.table.p-table th, table.table.p-table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
   table.table.p-table td { padding-top: 6px; padding-bottom: 6px; height: 46px; }
   table.table.p-table th { padding-top: 10px; }
   table.table.p-table td.c-photo { text-overflow: clip; }
-  table.table.p-table th:first-child, table.table.p-table td:first-child { padding-left: 18px; }
-  table.table.p-table th:last-child, table.table.p-table td:last-child { padding-right: 18px; }
   .p-table tbody tr:last-child td { border-bottom: none; }
-  .p-table .c-photo { width: 64px; }
-  .p-table .c-emp { width: 104px; }
-  .p-table .c-cards { width: 124px; }
   /* Tessere come nella scheda: il Codice Stampato sopra, il numero sotto più piccolo; una tessera sotto l'altra */
   .p-card { line-height: 1.25; }
   .p-card + .p-card { margin-top: 5px; }
@@ -553,16 +550,35 @@
   .p-card .card-no { font-size: 12px; color: var(--muted); }
   /* Il numero a 12 px anche senza codice: uno di 14 cifre esadecimali sta intero nella colonna */
   .p-card .mono { font-size: 12px; }
-  .p-table .c-access, .p-table .c-extra { width: 140px; }
-  /* Con la colonna della data di inserimento o di modifica, Tessere lascia il posto, tranne quando la ricerca ha trovato
-     delle tessere (data-cards) */
-  .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"]):not([data-cards]) .c-cards { display: none; }
-  .p-table .c-state { width: 168px; }
   .p-table .avatar { display: inline-grid; vertical-align: middle; }
   .p-table .c-last, .p-table .c-first { font-weight: 600; }
-  .p-table td.c-emp { font-variant-numeric: tabular-nums; }
+  .p-table td.c-emp, .p-table td.c-phone { font-variant-numeric: tabular-nums; }
   .p-table .c-cat .swatch { vertical-align: -1px; margin-right: 7px; }
   .p-table td.c-state .pill { max-width: 100%; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle; }
+  /* Telefono ed email della riga: si chiamano e si scrivono da lì, come dalla scheda */
+  .p-table td a { color: var(--accent); }
+  /* Finestra Colonne dell'Elenco: una riga per colonna, con la maniglia, la casella e le frecce */
+  .p-cols-hint { margin: 0 0 12px; }
+  .p-cols-hint svg.icon { width: 16px; height: 16px; vertical-align: -3px; }
+  .p-cols { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .p-col { display: flex; align-items: center; gap: 2px; min-height: 46px; padding: 0 4px 0 0; border-top: 1px solid var(--border); background: var(--surface); }
+  .p-col:first-child { border-top: none; }
+  .p-col-grip { display: grid; place-items: center; width: 40px; align-self: stretch; flex: none; color: var(--muted); cursor: grab; touch-action: none; user-select: none; }
+  .p-col-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 10px 0; cursor: pointer; }
+  .p-col-name > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .p-col-name .muted { margin-left: auto; padding-left: 6px; white-space: nowrap; }
+  .p-col-name input:disabled { cursor: default; }
+  button.p-col-move { width: 38px; height: 38px; font-size: 17px; line-height: 1; }
+  .p-col.dragging { position: relative; z-index: 1; background: var(--accent-soft); box-shadow: 0 6px 18px rgba(0, 0, 0, .2); }
+  .p-cols.dragging, .p-cols.dragging .p-col-grip { cursor: grabbing; user-select: none; }
+  .dlg-foot .p-cols-reset { margin-right: auto; }
+  /* Telefono: il nome della colonna intero (Sempre in vista lo dice già la spiegazione), e Ripristina Predefinite su una
+     riga sua, sopra Annulla e Salva */
+  @media (max-width: 480px) {
+    .p-col-name .muted { display: none; }
+    .dlg-foot .p-cols-reset { flex: 1 1 100%; justify-content: flex-start; }
+  }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   .th-sort { border: none; background: none; padding: 2px 6px; margin: -2px -6px; border-radius: 6px; color: inherit; font: inherit; gap: 4px;
              max-width: calc(100% + 12px); justify-content: flex-start; }
   .th-sort:hover { background: var(--surface-2); color: var(--text); }
@@ -573,38 +589,6 @@
   .p-table tbody tr[data-person]:hover td, .p-table tbody tr[data-person]:focus-visible td { background: var(--surface-2); }
   .p-table tbody tr:focus-visible { outline-offset: -2px; }
   table.table.p-table tr.sec td { background: var(--surface-2); font-size: 12px; font-weight: 700; color: var(--muted); padding-top: 4px; padding-bottom: 4px; height: auto; overflow: visible; }
-  /* Riquadro stretto: le colonne in più lasciano il posto, perché Cognome, Nome, Ditta e Tipologia (larghe quanto
-     avanza) non scendano sotto i 95 px circa. Prima Tessere, poi Matricola, Ditta e Ultimo Accesso, mai la colonna
-     dell'ordine scelto. Quando la ricerca trova delle tessere (data-cards) Tessere resta e prende il posto di Ultimo
-     Accesso; la data dell'ordine per inserimento o modifica prende quello di Tessere e, sotto i 1060 px, di Ultimo
-     Accesso; Matricola o Ditta dell'ordine prendono il posto di Ultimo Accesso, Ultimo Accesso dell'ordine quello di
-     Tipologia. Con Tessere e un'altra colonna fissa che resta (data, Ultimo Accesso o Matricola dell'ordine) vanno via
-     prima Matricola, Ditta, Tipologia e, al limite, Stato; con l'ordine per Ditta o Tipologia, Tipologia e Stato */
-  @container persone (max-width: 1179px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"])[data-cards] .c-access { display: none; } }
-  @container persone (max-width: 1059px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"]) .c-access { display: none; } }
-  @container persone (max-width: 979px) {
-    .p-table:not([data-cards]) .c-cards { display: none; }
-    .p-table[data-cards]:not([data-sorted="accesso"]) .c-access { display: none; }
-    .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"])[data-cards] .c-emp { display: none; }
-  }
-  @container persone (max-width: 883px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"], [data-sorted="matricola"])[data-cards] .c-company { display: none; } }
-  @container persone (max-width: 859px) {
-    .p-table:not([data-sorted="matricola"]) .c-emp { display: none; } .p-table .c-state { width: 156px; }
-    /* Matricola dell'ordine al posto di Ultimo Accesso */
-    .p-table[data-sorted="matricola"] .c-access { display: none; }
-  }
-  @container persone (max-width: 768px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"], [data-sorted="matricola"])[data-cards] .c-cat { display: none; } }
-  @container persone (max-width: 759px) { .p-table:not([data-sorted="ditta"]) .c-company { display: none; } .p-table[data-sorted="ditta"] .c-access { display: none; } }
-  @container persone (max-width: 739px) { .p-table[data-sorted="ditta"][data-cards] .c-cat { display: none; } }
-  @container persone (max-width: 673px) { .p-table:is([data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"], [data-sorted="matricola"])[data-cards] .c-state { display: none; } }
-  @container persone (max-width: 644px) {
-    .p-table:not([data-sorted="accesso"]) .c-access { display: none; }
-    /* Ultimo Accesso c'è già solo se è l'ordine scelto: Tessere trovate o la data dell'ordine prendono il posto di
-       Tipologia, o di Stato quando Tipologia (o Ditta) è l'ordine scelto */
-    .p-table:is([data-cards], [data-sorted="inserimento"], [data-sorted="modifica"], [data-sorted="accesso"]):not([data-sorted="tipologia"]) .c-cat { display: none; }
-    .p-table:is([data-sorted="ditta"], [data-sorted="tipologia"])[data-cards] .c-state { display: none; }
-  }
-  @container persone (max-width: 609px) { .p-table:is([data-sorted="matricola"], [data-sorted="ditta"]) .c-cat { display: none; } }
   .chip svg.icon { width: 14px; height: 14px; }
   .ev-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; flex: none; font-size: 16px; }
   .ev-icon svg { width: 18px; height: 18px; fill: currentColor; }
@@ -831,7 +815,7 @@
     .p-tools .sort-pick { flex: 1 1 40%; }
     .p-tools select { max-width: none; }
     .p-tools .sort-pick select { flex: 1 1 auto; width: 100%; }
-    .p-tools #p-new { flex: 1 1 100%; }
+    .p-tools #p-new { flex: 1 1 60%; }
     .fields-2 { grid-template-columns: 1fr; }
     dialog { width: calc(100vw - 16px); }
   }
@@ -935,6 +919,7 @@ const ICONS = {
   lock: "M12,17A2,2 0 0,0 14,15C14,13.89 13.1,13 12,13A2,2 0 0,0 10,15A2,2 0 0,0 12,17M18,8A2,2 0 0,1 20,10V20A2,2 0 0,1 18,22H6A2,2 0 0,1 4,20V10C4,8.89 4.9,8 6,8H7V6A5,5 0 0,1 12,1A5,5 0 0,1 17,6V8H18M12,3A3,3 0 0,0 9,6V8H15V6A3,3 0 0,0 12,3Z",
   lockopen: "M18,1C15.24,1 13,3.24 13,6V8H4C2.9,8 2,8.89 2,10V20C2,21.11 2.9,22 4,22H16C17.11,22 18,21.11 18,20V10C18,8.9 17.11,8 16,8H15V6C15,4.34 16.34,3 18,3C19.66,3 21,4.34 21,6V8H23V6C23,3.24 20.76,1 18,1M10,13C11.1,13 12,13.89 12,15C12,16.1 11.1,17 10,17C8.9,17 8,16.11 8,15C8,13.9 8.9,13 10,13Z",
   sort: "M18,21L14,17H17V7H14L18,3L22,7H19V17H22M2,19V17H12V19M2,13V11H9V13M2,7V5H6V7H2Z",
+  columns: "M16,5V18H21V5M4,18H9V5H4M10,18H15V5H10V18Z",
   history: "M13.5,8H12V13L16.28,15.54L17,14.33L13.5,12.25V8M13,3A9,9 0 0,0 4,12H1L4.96,16.03L9,12H6A7,7 0 0,1 13,5A7,7 0 0,1 20,12A7,7 0 0,1 13,19C11.07,19 9.32,18.21 8.06,16.94L6.64,18.36C8.27,20 10.5,21 13,21A9,9 0 0,0 22,12A9,9 0 0,0 13,3",
 };
 const icon = (name, cls = "icon") => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS[name] || ""}"/></svg>`;
@@ -2516,7 +2501,8 @@ async function viewDoorDetail(el, id, doors) {
 const PERSON_SORTS = [
   ["cognome:asc", "Cognome A→Z"], ["cognome:desc", "Cognome Z→A"], ["nome:asc", "Nome A→Z"], ["nome:desc", "Nome Z→A"],
   ["matricola:asc", "Matricola A→Z"], ["matricola:desc", "Matricola Z→A"], ["ditta:asc", "Ditta A→Z"], ["ditta:desc", "Ditta Z→A"],
-  ["tipologia:asc", "Tipologia A→Z"], ["tipologia:desc", "Tipologia Z→A"],
+  ["tipologia:asc", "Tipologia A→Z"], ["tipologia:desc", "Tipologia Z→A"], ["telefono:asc", "Telefono 0→9"], ["telefono:desc", "Telefono 9→0"],
+  ["email:asc", "Email A→Z"], ["email:desc", "Email Z→A"], ["referente:asc", "Referente Interno A→Z"], ["referente:desc", "Referente Interno Z→A"],
   ["accesso:desc", "Ultimo Accesso Più Recente"], ["accesso:asc", "Ultimo Accesso Meno Recente"],
   ["inserimento:desc", "Data di Inserimento Più Recente"], ["inserimento:asc", "Data di Inserimento Meno Recente"],
   ["modifica:desc", "Ultima Modifica Più Recente"], ["modifica:asc", "Ultima Modifica Meno Recente"],
@@ -2524,6 +2510,122 @@ const PERSON_SORTS = [
 const PERSON_SORT_DEFAULT = "cognome:asc";
 // Chiavi con una data: il primo clic sull'intestazione mette in cima la più recente
 const PERSON_SORT_DATES = ["accesso", "inserimento", "modifica"];
+// Colonne dell'elenco Persone, nell'ordine della finestra Colonne dell'Elenco: key è la chiave salvata sul server
+// (preferences.PERSON_COLUMNS) e, per quelle con sort, dell'ordinamento; cls la classe delle celle; width la larghezza
+// fissa in px (bordo compreso: le date e il telefono con l'intestazione in grassetto e la freccia). Le altre sono
+// larghe quanto avanza, mai meno di PERSON_FLEX_MIN. Come prima o ultima colonna in vista, con il bordo più largo,
+// prendono edge px in più (PERSON_EDGE se non è detto): la foto e l'etichetta dello Stato, che si accorcia con i puntini,
+// ci stanno anche senza
+const PERSON_COLUMNS = [
+  {key: "foto", label: "Foto", cls: "c-photo", width: 64, edge: 0},
+  {key: "cognome", label: "Cognome", cls: "c-last", sort: true},
+  {key: "nome", label: "Nome", cls: "c-first", sort: true},
+  {key: "matricola", label: "Matricola", cls: "c-emp", sort: true, width: 104},
+  {key: "ditta", label: "Ditta", cls: "c-company", sort: true},
+  {key: "tipologia", label: "Tipologia", cls: "c-cat", sort: true},
+  {key: "tessere", label: "Tessere", cls: "c-cards", width: 124},
+  {key: "telefono", label: "Telefono", cls: "c-phone", sort: true, width: 156},
+  {key: "email", label: "Email", cls: "c-email", sort: true},
+  {key: "referente", label: "Referente Interno", cls: "c-ref", sort: true},
+  {key: "note", label: "Note", cls: "c-notes"},
+  {key: "accesso", label: "Ultimo Accesso", cls: "c-access", sort: true, width: 140},
+  {key: "inserimento", label: "Data di Inserimento", cls: "c-created", sort: true, width: 156},
+  {key: "modifica", label: "Ultima Modifica", cls: "c-updated", sort: true, width: 148},
+  {key: "stato", label: "Stato", cls: "c-state", width: 168, edge: 0},
+];
+const PERSON_COLUMN_KEYS = PERSON_COLUMNS.map((c) => c.key);
+const PERSON_COLUMN_BY = Object.fromEntries(PERSON_COLUMNS.map((c) => [c.key, c]));
+// Sempre in vista (si spostano ma non si tolgono), e le predefinite: l'elenco della 0.28.3
+const PERSON_COLUMNS_REQUIRED = ["cognome", "nome"];
+const PERSON_COLUMNS_DEFAULT = ["foto", "cognome", "nome", "matricola", "ditta", "tipologia", "tessere", "accesso", "stato"];
+// Larghezza minima delle colonne larghe quanto avanza (Cognome, Nome, Ditta…), bordo compreso: il testo resta di almeno
+// 75 px, un cognome di 8-10 lettere. Con le predefinite ci stanno tutte da 980 px, a 1280 anche col menu aperto e la
+// barra di scorrimento di Windows. La prima e l'ultima colonna in vista hanno 8 px di bordo in più (PERSON_EDGE)
+const PERSON_FLEX_MIN = 95;
+const PERSON_EDGE = 8;
+const personEdge = (key) => PERSON_COLUMN_BY[key].edge ?? PERSON_EDGE;
+// Una colonna tolta per lo spazio torna solo con un po' di spazio in più: la barra di scorrimento che compare e sparisce
+// con l'altezza delle righe non la fa lampeggiare
+const PERSON_FIT_SLACK = 24;
+// Scelta salvata, pulita come fa il server (preferences.clean_person_columns): colonne sconosciute (di una versione
+// futura) e doppioni tolti, Cognome e Nome rimessi accanto se mancano. Senza una scelta, le predefinite
+function cleanPersonColumns(value) {
+  if (!Array.isArray(value)) return [...PERSON_COLUMNS_DEFAULT];
+  const columns = [];
+  value.forEach((key) => { if (PERSON_COLUMN_KEYS.includes(key) && !columns.includes(key)) columns.push(key); });
+  if (!columns.includes("cognome") && !columns.includes("nome")) columns.splice(columns[0] === "foto" ? 1 : 0, 0, ...PERSON_COLUMNS_REQUIRED);
+  else if (!columns.includes("cognome")) columns.splice(columns.indexOf("nome"), 0, "cognome");
+  else if (!columns.includes("nome")) columns.splice(columns.indexOf("cognome") + 1, 0, "nome");
+  return columns;
+}
+// Colonne scelte da chi guarda, lette dal server per il suo nome utente (api/me/preferences): un altro utente nello
+// stesso browser ha le sue. Finché non arrivano, o se il server non risponde, le predefinite
+const personPrefs = {user: null, columns: null};
+async function loadPersonColumns() {
+  const user = store.me.username;
+  try {
+    const prefs = await api("api/me/preferences");
+    if (store.me.username === user) Object.assign(personPrefs, {user, columns: prefs.person_columns ?? null});
+  } catch (err) { /* restano quelle di prima, o le predefinite */ }
+}
+const personColumnsChosen = () => cleanPersonColumns(personPrefs.user === store.me.username ? personPrefs.columns : null);
+// Colonne della tabella: quelle scelte, più quella dell'ordine in uso e, quando la ricerca trova delle tessere, Tessere,
+// se non sono già tra le scelte; vanno dopo l'ultima scelta che le precede nell'elenco completo (la data
+// dell'ordine per inserimento, con le predefinite, prima di Stato)
+function personColumnsFor(chosen, sortKey, cards) {
+  const columns = [...chosen];
+  [PERSON_COLUMN_BY[sortKey]?.sort ? sortKey : "", cards ? "tessere" : ""].forEach((key) => {
+    if (!PERSON_COLUMN_KEYS.includes(key) || columns.includes(key)) return;
+    const before = PERSON_COLUMN_KEYS.slice(0, PERSON_COLUMN_KEYS.indexOf(key));
+    columns.splice(columns.findLastIndex((k) => before.includes(k)) + 1, 0, key);
+  });
+  return columns;
+}
+// Spazio che servono le colonne in vista: le fisse quanto sono larghe, le altre almeno PERSON_FLEX_MIN, e il bordo più
+// largo della prima e dell'ultima
+function personColumnsNeed(keys) {
+  if (!keys.length) return 0;
+  return keys.reduce((n, key) => n + (PERSON_COLUMN_BY[key].width || PERSON_FLEX_MIN), 0) + personEdge(keys[0]) + personEdge(keys[keys.length - 1]);
+}
+// Colonne che stanno in width px: con poco spazio si tolgono dalla fine dell'ordine scelto, tranne quelle di keep
+// (Cognome, Nome, la colonna dell'ordine, Tessere quando la ricerca trova delle tessere). Se non bastasse ancora, al
+// limite anche quelle, sempre dalla fine: Cognome e Nome mai
+function personColumnsFit(columns, width, keep) {
+  const shown = [...columns];
+  for (const spare of [keep, PERSON_COLUMNS_REQUIRED]) {
+    for (let i = shown.length - 1; i >= 0 && personColumnsNeed(shown) > width; i--) {
+      if (!spare.includes(shown[i])) shown.splice(i, 1);
+    }
+  }
+  return shown;
+}
+// Come personColumnsFit, ricordando l'ultima volta (stesse colonne, stessa colonna dell'ordine e stessa ricerca): una
+// colonna tolta torna solo con PERSON_FIT_SLACK px in più. Le colonne in vista sono sempre le prime dell'ordine
+let personFit = null;
+function personColumnsShown(columns, width, keep) {
+  const sig = `${columns.join(" ")}|${keep.join(" ")}`;
+  let shown = personColumnsFit(columns, width, keep);
+  if (personFit?.sig === sig && shown.length > personFit.shown.length) {
+    const roomy = personColumnsFit(columns, width - PERSON_FIT_SLACK, keep);
+    if (roomy.length < shown.length) shown = roomy.length > personFit.shown.length ? roomy : personFit.shown;
+  }
+  personFit = {sig, shown};
+  return shown;
+}
+// Regole delle colonne, dal modello: larghezza delle colonne fisse, colonne tolte per lo spazio (data-hide della
+// tabella) e bordo più largo per la prima e l'ultima in vista (data-first, data-last), con i suoi px in più
+function personColumnCss() {
+  return PERSON_COLUMNS.map(({key, cls, width}) => {
+    const wider = width && personEdge(key) ? ` width: ${width + personEdge(key)}px;` : "";
+    return [
+      width ? `.p-table .${cls} { width: ${width}px; }` : "",
+      `.p-table[data-hide~="${key}"] .${cls} { display: none; }`,
+      `table.table.p-table[data-first="${key}"] .${cls} { padding-left: 18px;${wider} }`,
+      `table.table.p-table[data-last="${key}"] .${cls} { padding-right: 18px;${wider} }`,
+    ].filter(Boolean).join("\n");
+  }).join("\n");
+}
+document.head.insertAdjacentHTML("beforeend", `<style id="p-columns-css">${personColumnCss()}</style>`);
 // Ordine scelto, ricordato nel browser. Senza localStorage (navigazione privata, dati bloccati) o con un valore che
 // non c'è più resta il predefinito
 function savedPersonSort() {
@@ -2549,13 +2651,16 @@ function comparePersons(a, b) {
     || nameCollator.compare(a.name || "", b.name || "") || a.id - b.id;
 }
 // Valore della persona per l'ordine scelto: testo, numero (le date) o "" se manca. Per nome chi non ha il nome sta al
-// suo cognome, come per cognome chi non ha il cognome sta al suo nome
+// suo cognome, come per cognome chi non ha il cognome sta al suo nome. Il telefono senza spazi né trattini
 function personSortValue(p, key) {
   switch (key) {
     case "nome": return p.first_name || p.last_name || p.name || "";
     case "matricola": return p.employee_id || "";
     case "ditta": return p.company || "";
     case "tipologia": return categoryOf(p.category_id)?.name || "";
+    case "telefono": return (p.phone || "").replace(PHONE_MARKS, "");
+    case "email": return p.email || "";
+    case "referente": return p.referent || "";
     case "accesso": return Date.parse(p.last_access || "") || "";
     case "inserimento": return Date.parse(p.created_at || "") || "";
     case "modifica": return Date.parse(p.updated_at || "") || "";
@@ -2582,17 +2687,42 @@ function personLetter(p, key) {
   if (key !== "cognome" && key !== "nome") return "";
   return (foldText(personSortValue(p, key)).trim()[0] || "#").toLocaleUpperCase("it");
 }
-// Sul telefono, sotto il nome, il valore usato per ordinare (niente con l'ordine per cognome o per nome)
-function personSortNote(p, key) {
+// Sul telefono, sotto il nome, un dato della persona in breve («Matricola 0042», «Inserita il 12/11/2026»); "" se
+// manca o per le colonne che la riga ha già (Foto, Cognome, Nome, Stato)
+function personColumnNote(p, key) {
   switch (key) {
-    case "matricola": return p.employee_id ? `Matricola ${p.employee_id}` : "Senza matricola";
-    case "ditta": return p.company || "Senza ditta";
-    case "tipologia": return categoryOf(p.category_id)?.name || "Senza tipologia";
-    case "accesso": return p.last_access ? `Ultimo accesso ${relTime(p.last_access)}` : "Nessun accesso registrato";
+    case "matricola": return p.employee_id ? `Matricola ${p.employee_id}` : "";
+    case "ditta": return p.company || "";
+    case "tipologia": return categoryOf(p.category_id)?.name || "";
+    case "tessere": return (p.cards || []).map((c) => c.printed_code || c.number).join(", ");
+    case "telefono": return p.phone || "";
+    case "email": return p.email || "";
+    case "referente": return p.referent ? `Referente ${p.referent}` : "";
+    case "note": return (p.notes || "").replace(/\s+/g, " ").trim();
+    case "accesso": return p.last_access ? `Ultimo accesso ${relTime(p.last_access)}` : "";
     case "inserimento": return p.created_at ? `Inserita il ${fmtNumDay(p.created_at)}` : "";
     case "modifica": return p.updated_at ? `Modificata il ${fmtNumDay(p.updated_at)}` : "";
     default: return "";
   }
+}
+const PERSON_NOTE_EMPTY = {matricola: "Senza matricola", ditta: "Senza ditta", tipologia: "Senza tipologia", telefono: "Senza telefono", email: "Senza email", referente: "Senza referente", accesso: "Nessun accesso registrato"};
+// Sul telefono, sotto il nome, il valore usato per ordinare (niente con l'ordine per cognome o per nome)
+function personSortNote(p, key) {
+  if (key === "cognome" || key === "nome") return "";
+  return personColumnNote(p, key) || PERSON_NOTE_EMPTY[key] || "";
+}
+// Riga del telefono: con l'ordine per cognome o per nome, sotto il nome i primi due dati non vuoti delle colonne scelte
+// (tranne Foto, Cognome, Nome e Stato, che la riga ha già, e Tessere quando la ricerca ne mostra già qualcuna); con un
+// altro ordine il valore usato per ordinare
+function personRowNote(p, key, chosen, found = false) {
+  if (key !== "cognome" && key !== "nome") return personSortNote(p, key);
+  const notes = [];
+  for (const column of chosen) {
+    if (["foto", "cognome", "nome", "stato"].includes(column) || (found && column === "tessere")) continue;
+    const note = personColumnNote(p, column);
+    if (note && notes.push(note) === 2) break;
+  }
+  return notes.join(" · ");
 }
 // Testo per la ricerca: minuscolo e senza accenti
 const foldText = (text) => String(text || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
@@ -2640,7 +2770,8 @@ async function viewPersons(el, sub) {
   if (sub === "tipologie") return viewCategories(el);
   if (sub === "mancanti") { personFilters.state = "mancanti"; sub = ""; history.replaceState(null, "", "#persone"); }
   // Le tipologie dal database dell'app: l'elenco non aspetta il controller
-  try { await Promise.all([loadPersons(), loadCategories()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
+  // Con le colonne scelte da chi guarda, lette ogni volta: cambiate da un altro computer o telefono, si vedono qui
+  try { await Promise.all([loadPersons(), loadCategories(), loadPersonColumns()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   // Nel frattempo si è aperta un'altra pagina: niente elenco né scheda sopra di lei
   if (!el.isConnected) return;
   el.innerHTML = `${personTabs("")}
@@ -2652,6 +2783,7 @@ async function viewPersons(el, sub) {
         <option value="mancanti">Non Presenti sul Controller</option><option value="senza">Senza Tessera</option>
       </select>
       <label class="sort-pick" title="Ordina per">${icon("sort")}<select id="p-sort" aria-label="Ordina per">${PERSON_SORTS.map(([value, label]) => `<option value="${value}">${esc(label)}</option>`).join("")}</select></label>
+      <button type="button" id="p-cols" title="Scegli e metti in ordine le colonne dell'elenco">${icon("columns")}Colonne</button>
       <button type="button" class="primary w-persone" id="p-new">${icon("plus")}Nuova Persona</button>
     </div>
     <div id="p-missing"></div>
@@ -2671,6 +2803,7 @@ async function viewPersons(el, sub) {
   $("#p-state").addEventListener("change", (e) => { personFilters.state = e.target.value; renderPersonList(); });
   $("#p-sort").addEventListener("change", (e) => setPersonSort(e.target.value));
   $("#p-new").addEventListener("click", () => newPerson());
+  $("#p-cols").addEventListener("click", () => editPersonColumns());
   $("#p-sync").addEventListener("click", async (e) => {
     // Il pulsante e non l'icona su cui si è cliccato: resta disabilitato fino alla fine della rilettura
     const button = e.currentTarget;
@@ -2688,12 +2821,14 @@ async function viewPersons(el, sub) {
       return;
     }
     const item = e.target.closest("[data-person]");
-    if (!item) return;
+    // Telefono ed email della riga chiamano e scrivono, senza aprire la scheda
+    if (!item || e.target.closest("a")) return;
     history.pushState(null, "", `#persone/${item.dataset.person}`);
     openPerson(Number(item.dataset.person));
   });
   $("#p-list").addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-person]")) { e.preventDefault(); e.target.click(); } });
   renderPersonList();
+  if (personResize) { personResize.disconnect(); personResize.observe($("#p-list")); }
   if (sub) openPerson(Number(sub));
 }
 // Ordine scelto dalla tendina o dalle intestazioni: ricordato nel browser, se si può
@@ -2773,22 +2908,25 @@ function renderPersonList() {
     return;
   }
   const sorted = sortPersons(rows, personFilters.sort);
-  // Sul telefono righe essenziali, sul computer una tabella con le colonne
-  morph(list, phoneLayout() ? personRows(sorted) : personTable(sorted));
+  // Sul telefono righe essenziali, sul computer una tabella con le colonne che stanno nell'elenco
+  morph(list, phoneLayout() ? personRows(sorted) : personTable(sorted, list.clientWidth));
 }
-// Telefono: foto o iniziali con il pallino della tipologia, «Nome Cognome», l'etichetta dello stato e, se l'ordine
-// non è per cognome o per nome, il valore usato per ordinare. La riga non mostra le tessere: solo quelle che la
-// ricerca ha trovato, una per riga sotto il nome, con il codice in evidenza e il numero più piccolo
+// Telefono: foto o iniziali con il pallino della tipologia, «Nome Cognome», l'etichetta dello stato e sotto il nome,
+// in piccolo, il valore usato per ordinare o, con l'ordine per cognome o per nome, i primi dati delle colonne scelte
+// (personRowNote). Le tessere che la ricerca ha trovato, una per riga sotto il nome, con il codice in evidenza e il
+// numero più piccolo
 function personRows(sorted) {
   const key = personFilters.sort.split(":")[0];
+  const chosen = personColumnsChosen();
   let letter = "";
   return sorted.map((p) => {
     const first = sorted.length > 12 ? personLetter(p, key) : "";
     const head = first && first !== letter ? `<div class="day" data-key="h${esc(first)}">${esc(first)}</div>` : "";
     letter = first;
     const c = categoryOf(p.category_id);
-    const note = personSortNote(p, key);
-    const found = searchedCards(p, personFilters.q).map((t) => `<span class="p-sub p-found" title="${esc(cardTitle([t]))}">${icon("card")}${t.printed_code
+    const cards = searchedCards(p, personFilters.q);
+    const note = personRowNote(p, key, chosen, cards.length > 0);
+    const found = cards.map((t) => `<span class="p-sub p-found" title="${esc(cardTitle([t]))}">${icon("card")}${t.printed_code
       ? `<span class="p-code">${esc(t.printed_code)}</span>` : ""}<span class="mono">${esc(t.number)}</span></span>`).join("");
     return `${head}<div class="person-row" data-person="${p.id}" data-key="p${p.id}" role="button" tabindex="0">
       <span class="p-face">${personAvatar(p, "sm")}<span class="swatch ${c ? `c-${esc(c.color)}` : ""}" title="${esc(c?.name || "Senza Tipologia")}" ${c ? "" : 'style="background:var(--border-strong)"'}></span></span>
@@ -2796,37 +2934,192 @@ function personRows(sorted) {
     </div>`;
   }).join("");
 }
-// Computer: tabella con le intestazioni che ordinano (un pulsante in ogni intestazione, aria-sort su quella scelta).
-// Con l'ordine per data di inserimento o di modifica compare anche la colonna con quella data. Le righe non dipendono
-// dall'ordine scelto né dalla ricerca (la colonna da tenere in vista la dice data-sorted della tabella, e data-cards
-// quando la ricerca trova delle tessere): cambiando ordine si spostano e basta, senza ridisegnarle
-function personTable(sorted) {
+// Celle dell'elenco del computer, una per colonna. Telefono ed email come nella scheda, per chiamare e scrivere; le note
+// su una riga, con il testo intero nel title; le date come l'Ultimo Accesso («ieri 13:34»), complete nel title
+const PERSON_DASH = '<span class="muted">—</span>';
+const personTextCell = (cls, value) => `<td class="${cls}"${value ? ` title="${esc(value)}"` : ""}>${value ? esc(value) : PERSON_DASH}</td>`;
+const personLinkCell = (cls, value, href) => value ? `<td class="${cls}" title="${esc(value)}"><a href="${esc(href)}">${esc(value)}</a></td>` : `<td class="${cls}">${PERSON_DASH}</td>`;
+const personWhenCell = (cls, iso) => `<td class="${cls}"${iso ? ` title="${esc(fmtFull(iso))}"` : ""}>${iso ? esc(relTime(iso)) : PERSON_DASH}</td>`;
+function personCell(p, key) {
+  switch (key) {
+    case "foto": return `<td class="c-photo">${personAvatar(p, "sm")}</td>`;
+    case "cognome": return personTextCell("c-last", p.last_name);
+    case "nome": return personTextCell("c-first", p.first_name);
+    case "matricola": return personTextCell("c-emp", p.employee_id);
+    case "ditta": return personTextCell("c-company", p.company);
+    case "tipologia": {
+      const c = categoryOf(p.category_id);
+      return `<td class="c-cat"${c ? ` title="${esc(c.name)}"` : ""}>${c ? `<span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}` : PERSON_DASH}</td>`;
+    }
+    case "tessere": return `<td class="c-cards"${p.cards.length ? ` title="${esc(cardTitle(p.cards))}"` : ""}>${p.cards.map(cardTag).join("") || PERSON_DASH}</td>`;
+    case "telefono": return personLinkCell("c-phone", p.phone, p.phone && telHref(p.phone));
+    case "email": return personLinkCell("c-email", p.email, p.email && mailtoHref(p.email));
+    case "referente": return personTextCell("c-ref", p.referent);
+    case "note": {
+      const line = (p.notes || "").replace(/\s+/g, " ").trim();
+      return `<td class="c-notes"${line ? ` title="${esc(p.notes.trim())}"` : ""}>${line ? esc(line) : PERSON_DASH}</td>`;
+    }
+    case "accesso": return personWhenCell("c-access", p.last_access);
+    case "inserimento": return personWhenCell("c-created", p.created_at);
+    case "modifica": return personWhenCell("c-updated", p.updated_at);
+    default: return `<td class="c-state">${personFlag(p)}</td>`;
+  }
+}
+// Computer: tabella con le colonne scelte da chi guarda, nel suo ordine, e le intestazioni che ordinano (un pulsante in
+// ogni intestazione ordinabile, aria-sort su quella scelta). Con l'ordine per una colonna non scelta, o con la ricerca
+// che trova delle tessere, c'è anche quella colonna (personColumnsFor). width: larghezza dell'elenco, per le colonne
+// che ci stanno (personColumnsShown); le altre restano nella tabella, nascoste da data-hide, così cambiando la
+// larghezza (menu, finestra) cambia solo un attributo. Le righe non dipendono dall'ordine scelto: cambiando ordine si
+// spostano e basta, senza ridisegnarle
+function personTable(sorted, width = Infinity) {
   const [key, dir] = personFilters.sort.split(":");
-  const extra = key === "inserimento" ? "Data di Inserimento" : key === "modifica" ? "Ultima Modifica" : "";
-  const columns = [["c-photo", "Foto", ""], ["c-last", "Cognome", "cognome"], ["c-first", "Nome", "nome"], ["c-emp", "Matricola", "matricola"],
-    ["c-company", "Ditta", "ditta"], ["c-cat", "Tipologia", "tipologia"], ["c-cards", "Tessere", ""], ["c-access", "Ultimo Accesso", "accesso"],
-    ...(extra ? [["c-extra", extra, key]] : []), ["c-state", "Stato", ""]];
-  const head = columns.map(([cls, label, k]) => !k ? `<th class="${cls}" scope="col">${label}</th>`
-    : `<th class="${cls}" scope="col"${k === key ? ` aria-sort="${dir === "desc" ? "descending" : "ascending"}"` : ""}><button type="button" class="th-sort" data-sort="${k}" title="Ordina per ${label}"><span>${label}</span><span class="arrow" aria-hidden="true">${k === key ? (dir === "desc" ? "↓" : "↑") : ""}</span></button></th>`).join("");
-  const dash = '<span class="muted">—</span>';
-  const text = (cls, value) => `<td class="${cls}"${value ? ` title="${esc(value)}"` : ""}>${value ? esc(value) : dash}</td>`;
-  const when = (cls, iso, shown) => `<td class="${cls}"${iso ? ` title="${esc(fmtFull(iso))}"` : ""}>${iso ? esc(shown(iso)) : dash}</td>`;
+  const found = sorted.some((p) => searchedCards(p, personFilters.q).length);
+  const columns = personColumnsFor(personColumnsChosen(), key, found);
+  const shown = personColumnsShown(columns, width, personColumnsKeep(key, found));
+  const head = columns.map((k) => {
+    const {cls, label, sort} = PERSON_COLUMN_BY[k];
+    return !sort ? `<th class="${cls}" scope="col">${label}</th>`
+      : `<th class="${cls}" scope="col"${k === key ? ` aria-sort="${dir === "desc" ? "descending" : "ascending"}"` : ""}><button type="button" class="th-sort" data-sort="${k}" title="Ordina per ${label}"><span>${label}</span><span class="arrow" aria-hidden="true">${k === key ? (dir === "desc" ? "↓" : "↑") : ""}</span></button></th>`;
+  }).join("");
+  // Lettere di sezione nella colonna dell'ordine (Cognome o Nome, sempre in vista). Una cella per colonna, con le
+  // classi delle colonne: un colspan contato su tutte le colonne, con quelle nascoste, lascerebbe colonne vuote in fondo
   let letter = "";
   const body = sorted.map((p) => {
     const first = sorted.length > 12 ? personLetter(p, key) : "";
-    // Una cella per colonna, con le classi delle colonne: un colspan contato su tutte le colonne, con quelle nascoste
-    // dal riquadro stretto, lascerebbe colonne vuote in fondo
-    const section = first && first !== letter ? `<tr class="sec" data-key="h${esc(first)}">${columns.map(([cls], i) => `<td class="${cls}">${i ? "" : esc(first)}</td>`).join("")}</tr>` : "";
+    const section = first && first !== letter ? `<tr class="sec" data-key="h${esc(first)}">${columns.map((k) => `<td class="${PERSON_COLUMN_BY[k].cls}">${k === key ? esc(first) : ""}</td>`).join("")}</tr>` : "";
     letter = first;
-    const c = categoryOf(p.category_id);
-    return `${section}<tr data-person="${p.id}" data-key="p${p.id}" tabindex="0">
-      <td class="c-photo">${personAvatar(p, "sm")}</td>${text("c-last", p.last_name)}${text("c-first", p.first_name)}${text("c-emp", p.employee_id)}${text("c-company", p.company)}
-      <td class="c-cat"${c ? ` title="${esc(c.name)}"` : ""}>${c ? `<span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}` : dash}</td>
-      <td class="c-cards"${p.cards.length ? ` title="${esc(cardTitle(p.cards))}"` : ""}>${p.cards.map(cardTag).join("") || dash}</td>${when("c-access", p.last_access, relTime)}${extra ? when("c-extra", key === "inserimento" ? p.created_at : p.updated_at, fmtNumDay) : ""}
-      <td class="c-state">${personFlag(p)}</td></tr>`;
+    return `${section}<tr data-person="${p.id}" data-key="p${p.id}" tabindex="0">${columns.map((k) => personCell(p, k)).join("")}</tr>`;
   }).join("");
-  const found = sorted.some((p) => searchedCards(p, personFilters.q).length);
-  return `<table class="table p-table" data-sorted="${key}"${found ? " data-cards" : ""}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  return `<table class="table p-table" data-sorted="${key}"${found ? " data-cards" : ""} ${personFitAttrs(columns, shown)}><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+// Colonne che non spariscono per lo spazio: Cognome, Nome, quella dell'ordine e, quando la ricerca trova delle
+// tessere, Tessere
+const personColumnsKeep = (key, cards) => [...PERSON_COLUMNS_REQUIRED, key, ...(cards ? ["tessere"] : [])];
+// Attributi della tabella per le colonne in vista (data-*): tutte quelle disegnate, quelle nascoste, la prima e l'ultima
+const personFitData = (columns, shown) => ({columns: columns.join(" "), hide: columns.filter((k) => !shown.includes(k)).join(" "), first: shown[0] || "", last: shown[shown.length - 1] || ""});
+const personFitAttrs = (columns, shown) => Object.entries(personFitData(columns, shown)).map(([name, value]) => `data-${name}="${value}"`).join(" ");
+// Riquadro più largo o più stretto (menu aperto o chiuso, finestra): le colonne in vista cambiano con gli attributi
+// della tabella, senza ridisegnare le righe
+function fitPersonTable() {
+  const table = $("#p-list .p-table");
+  if (!table) return;
+  const columns = table.dataset.columns.split(" ");
+  const shown = personColumnsShown(columns, $("#p-list").clientWidth, personColumnsKeep(table.dataset.sorted, table.hasAttribute("data-cards")));
+  Object.entries(personFitData(columns, shown)).forEach(([name, value]) => { if (table.dataset[name] !== value) table.dataset[name] = value; });
+}
+const personResize = typeof ResizeObserver === "function" ? new ResizeObserver(() => fitPersonTable()) : null;
+// Finestra Colonne dell'Elenco: una riga per colonna, nell'ordine dell'elenco (prima quelle in vista), con la maniglia
+// per trascinarla (mouse o dito: pointer events, il trascinamento HTML5 sul telefono non va), la casella per vederla e
+// ↑ ↓ per spostarla da tastiera. Cognome e Nome sempre in vista, ma si spostano. Salva manda la scelta al server: la
+// stessa da ogni computer o telefono, per il nome utente di chi guarda
+async function editPersonColumns() {
+  const rows = (chosen) => [...chosen, ...PERSON_COLUMN_KEYS.filter((k) => !chosen.includes(k))].map((key) => {
+    const {label} = PERSON_COLUMN_BY[key];
+    const fixed = PERSON_COLUMNS_REQUIRED.includes(key);
+    return `<li class="p-col" data-col="${key}"><span class="p-col-grip" title="Trascina per spostare" aria-hidden="true">${icon("drag")}</span>
+      <label class="p-col-name"><input type="checkbox"${chosen.includes(key) ? " checked" : ""}${fixed ? " disabled" : ""}><span>${esc(label)}</span>${fixed ? '<span class="muted small-text">Sempre in vista</span>' : ""}</label>
+      <button type="button" class="ghost icon-only p-col-move" data-move="-1" aria-label="Sposta ${esc(label)} in su" title="Sposta in su">↑</button><button type="button" class="ghost icon-only p-col-move" data-move="1" aria-label="Sposta ${esc(label)} in giù" title="Sposta in giù">↓</button></li>`;
+  }).join("");
+  const saved = await modal({
+    title: "Colonne dell'Elenco",
+    body: `<p class="hint p-cols-hint">Spunta le colonne da vedere e mettile in ordine trascinandole per ${icon("drag")} o con ↑ e ↓. Cognome e Nome restano sempre in vista; con poco spazio spariscono prima le ultime. La scelta vale per il tuo utente, su ogni computer e telefono.</p>
+      <ol class="p-cols" aria-label="Colonne dell'elenco, in ordine">${rows(personColumnsChosen())}</ol>
+      <p class="sr-only" aria-live="polite" data-live></p>`,
+    actions: [
+      {label: "Ripristina Predefinite", kind: "ghost p-cols-reset", onClick: (dlg) => {
+        $(".p-cols", dlg).innerHTML = rows(PERSON_COLUMNS_DEFAULT);
+        personColumnsMoved(dlg, "Colonne predefinite: salva per tenerle");
+        return false;
+      }},
+      {label: "Annulla", value: null},
+      {label: "Salva", kind: "primary", busy: "Salvataggio delle colonne", onClick: async (dlg) => {
+        const columns = $$(".p-col", dlg).filter((li) => $("input", li).checked).map((li) => li.dataset.col);
+        try {
+          const prefs = await api("api/me/preferences", {method: "PUT", body: {person_columns: columns}});
+          Object.assign(personPrefs, {user: store.me.username, columns: prefs.person_columns ?? null});
+        } catch (err) {
+          toast(err.message, true);
+          return false;
+        }
+        return true;
+      }},
+    ],
+    onOpen: (dlg) => bindPersonColumns(dlg),
+  });
+  if (!saved) return;
+  toast("Colonne salvate");
+  renderPersonList();
+}
+// Dopo uno spostamento: frecce in cima e in fondo spente, e chi usa un lettore di schermo sente dove è finita la colonna
+function personColumnsMoved(dlg, said = "") {
+  const rows = $$(".p-col", dlg);
+  rows.forEach((li, i) => { $('[data-move="-1"]', li).disabled = i === 0; $('[data-move="1"]', li).disabled = i === rows.length - 1; });
+  const live = $("[data-live]", dlg);
+  // Lo stesso testo di prima si annuncia di nuovo solo se cambia: uno spazio in più o in meno
+  if (said) live.textContent = said + (live.textContent.endsWith("\u00a0") ? "" : "\u00a0");
+}
+// Porta la riga li al posto at spostando le righe accanto e non lei: la riga che si trascina non esce mai dalla pagina,
+// nemmeno per un attimo (il puntatore resta suo), e il pulsante premuto tiene il fuoco
+function personColumnTo(li, at) {
+  const list = li.parentNode;
+  let now = [...list.children].indexOf(li);
+  for (; now > at; now--) list.insertBefore(li.previousElementSibling, li.nextElementSibling);
+  for (; now < at; now++) list.insertBefore(li.nextElementSibling, li);
+}
+const personColumnPlace = (li) => {
+  const rows = [...li.parentNode.children];
+  return `${PERSON_COLUMN_BY[li.dataset.col].label}: posizione ${rows.indexOf(li) + 1} di ${rows.length}`;
+};
+function bindPersonColumns(dlg) {
+  const list = $(".p-cols", dlg);
+  personColumnsMoved(dlg);
+  // ↑ e ↓: la riga sale o scende di un posto, e il fuoco resta sul pulsante (o sull'altra freccia, in cima o in fondo)
+  list.addEventListener("click", (e) => {
+    const button = e.target.closest("[data-move]");
+    if (!button) return;
+    const li = button.closest(".p-col");
+    const at = [...list.children].indexOf(li) + Number(button.dataset.move);
+    if (at < 0 || at >= list.children.length) return;
+    personColumnTo(li, at);
+    personColumnsMoved(dlg, personColumnPlace(li));
+    if (button.disabled) $(`[data-move="${-button.dataset.move}"]`, li).focus();
+  });
+  // Trascinamento con il mouse o il dito dalla maniglia: la riga va dove sta il puntatore, e vicino al bordo l'elenco
+  // scorre da solo. Ascolto sulla finestra, come per il cruscotto
+  list.addEventListener("pointerdown", (e) => {
+    const grip = e.target.closest(".p-col-grip");
+    if (!grip || e.button > 0) return;
+    e.preventDefault();
+    const li = grip.closest(".p-col");
+    const scroller = list.closest(".dlg-body");
+    const from = [...list.children].indexOf(li);
+    let y = e.clientY, frame = 0;
+    // Il posto è quante altre righe hanno la metà sopra il puntatore
+    const place = () => personColumnTo(li, [...list.children].filter((r) => r !== li && r.getBoundingClientRect().top + r.offsetHeight / 2 < y).length);
+    const roll = () => {
+      const box = scroller.getBoundingClientRect();
+      const speed = y < box.top + 40 ? -8 : y > box.bottom - 40 ? 8 : 0;
+      if (speed && scroller.scrollHeight > scroller.clientHeight) { scroller.scrollTop += speed; place(); }
+      frame = requestAnimationFrame(roll);
+    };
+    const move = (ev) => { if (ev.pointerId === e.pointerId) { y = ev.clientY; place(); } };
+    const end = (ev) => {
+      if (ev.pointerId !== e.pointerId) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      cancelAnimationFrame(frame);
+      li.classList.remove("dragging");
+      list.classList.remove("dragging");
+      personColumnsMoved(dlg, [...list.children].indexOf(li) === from ? "" : personColumnPlace(li));
+    };
+    li.classList.add("dragging");
+    list.classList.add("dragging");
+    frame = requestAnimationFrame(roll);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
+  });
 }
 // Telefono girato o finestra allargata oltre gli 860 px (o il contrario): righe o tabella
 window.matchMedia("(max-width: 860px)").addEventListener("change", () => renderPersonList());
@@ -2954,6 +3247,8 @@ document.addEventListener("input", (e) => {
 // Collegamento per scrivere all'email: codificata tutta tranne la @, se no «#» e «?», validi in un indirizzo, farebbero
 // scrivere a un altro destinatario
 const mailtoHref = (email) => "mailto:" + encodeURIComponent(email).replace(/%40/g, "@");
+// Numero da chiamare: solo le cifre e il +
+const telHref = (phone) => "tel:" + phone.replace(/[^\d+]/g, "");
 async function newPerson(card = "") {
   await loadCategories();
   const created = await modal({
@@ -3094,7 +3389,7 @@ async function openPerson(id) {
         <dl class="props"><dt>Foto</dt><dd>${photoCell}</dd>
           <dt>Nome</dt><dd>${esc(p.first_name || "—")}</dd><dt>Cognome</dt><dd>${esc(p.last_name || "—")}</dd>
           <dt>Ditta o Reparto</dt><dd>${esc(p.company || "—")}</dd>
-          <dt>Telefono</dt><dd>${p.phone ? `<a href="tel:${esc(p.phone.replace(/[^\d+]/g, ""))}">${esc(p.phone)}</a>` : "—"}</dd>
+          <dt>Telefono</dt><dd>${p.phone ? `<a href="${esc(telHref(p.phone))}">${esc(p.phone)}</a>` : "—"}</dd>
           <dt>Email</dt><dd>${p.email ? `<a href="${esc(mailtoHref(p.email))}">${esc(p.email)}</a>` : "—"}</dd>
           <dt>Matricola</dt><dd>${esc(p.employee_id || "—")}</dd><dt>Referente Interno</dt><dd>${esc(p.referent || "—")}</dd>
           <dt>Note</dt><dd style="white-space:pre-wrap">${esc(p.notes || "—")}</dd></dl>

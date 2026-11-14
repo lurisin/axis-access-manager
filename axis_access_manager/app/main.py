@@ -21,7 +21,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
@@ -31,7 +31,7 @@ from .camera_watch import CameraWatch
 from .compare import KIND_TITLES, KINDS, compare, lists_for, merge_readings, read_strict
 from .config import Settings, load_settings, resolve_mqtt, supervisor_token
 from .controller_state import POLL_LIVE, POLL_WITHOUT_EVENTS, StateKeeper
-from .db import DB_PATH, Database, local_day_start
+from .db import DB_PATH, Database, local_day_start, preferences_key
 from .desired import PROGRAMMING, build, load_conf
 from .direct import (
     BUSY,
@@ -96,6 +96,15 @@ from .notifications import (
     recovery_title,
 )
 from .plain import ASK_ADMIN, once, plain_text, technical
+from .preferences import (
+    PREFERENCE_PERMISSIONS,
+    PREFERENCES_MAX,
+    PreferenceError,
+    PreferencesIn,
+    read_saved,
+    updated,
+    visible,
+)
 from .presa_in_carico import confronto
 from .programming import (
     CONTACTS,
@@ -602,6 +611,7 @@ FIELD_LABELS = {
     "employee_id": "matricola",
     "referent": "referente interno",
     "printed_code": "Codice Stampato",
+    "person_columns": "colonne dell'elenco",
 }
 # Campi delle persone che non finiscono nel log neanche quando sono rifiutati (vedi db.PERSON_COLUMNS), a qualsiasi
 # profondità dei dati mandati
@@ -665,6 +675,23 @@ def _validation_text(errors: list[dict]) -> str:
 
 # Foto della persona chiesta con la sua versione (?v=): non cambia mai, solo nel browser di chi la guarda
 PHOTO_CACHE = "private, max-age=31536000, immutable"
+
+
+async def _capped_body(request: Request, limit: int) -> bytes:
+    """Dati mandati, letti al massimo fino a limit byte: oltre si risponde subito 413 (la dimensione dichiarata, se
+    c'è, si controlla prima di leggere)."""
+    try:
+        declared = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declared = 0
+    if declared > limit:
+        raise HTTPException(status_code=413, detail="dati troppo grandi")
+    data = bytearray()
+    async for chunk in request.stream():
+        data += chunk
+        if len(data) > limit:
+            raise HTTPException(status_code=413, detail="dati troppo grandi")
+    return bytes(data)
 
 
 async def _photo_body(request: Request) -> bytes:
@@ -976,6 +1003,35 @@ def create_app(
             "has_password": password is not None,
             "must_change": bool(password and password["must_change"]) and is_direct(request),
         }
+
+    @app.get("/api/me/preferences")
+    async def my_preferences(request: Request) -> dict:
+        """Preferenze dell'utente (le colonne dell'elenco Persone): le stesse da ogni computer o telefono, da Home
+        Assistant e dall'accesso diretto; null dove valgono le predefinite."""
+        user = current_user(request)
+        return visible(read_saved(request.app.state.db.get_setting(preferences_key(user.username))), user.can)
+
+    @app.put("/api/me/preferences")
+    async def save_my_preferences(request: Request) -> dict:
+        """Cambia solo le preferenze mandate, ognuna con il suo permesso. I dati si leggono al massimo fino a
+        PREFERENCES_MAX: oltre si risponde subito 413."""
+        user = current_user(request)
+        try:
+            body = PreferencesIn.model_validate_json(await _capped_body(request, PREFERENCES_MAX))
+        except ValidationError as err:
+            raise RequestValidationError(err.errors()) from None
+        for name in sorted(body.model_fields_set):
+            perm = PREFERENCE_PERMISSIONS[name]
+            if not user.can(perm):
+                raise HTTPException(status_code=403, detail=f"il tuo utente non ha il permesso «{PERMISSIONS[perm]}»")
+        db = request.app.state.db
+        key = preferences_key(user.username)
+        try:
+            saved = updated(read_saved(db.get_setting(key)), body)
+        except PreferenceError as err:
+            raise HTTPException(status_code=400, detail=str(err)) from None
+        db.set_setting(key, json.dumps(saved))
+        return visible(saved, user.can)
 
     @app.get("/api/status", dependencies=[need("impianti", "import_export", "utenti", any_of=True)])
     async def status(request: Request, controller: bool = True) -> dict:
