@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.28.4
+
+- **Foto ingrandita larga quanto la foto.** Toccando una foto (la Foto della Persona nella scheda, la foto della telecamera nel Dettaglio Evento, negli ultimi passaggi della scheda e nelle notifiche, la Foto in Anagrafica) si apriva una finestra larga al massimo, con la foto a sinistra e lo spazio vuoto a destra. Ora la foto si apre al centro dello schermo su sfondo scuro, alla sua grandezza e mai più grande dello schermo, senza deformarla; sopra ci sono il titolo, piccolo, e la ×. Si chiude con Esc, con un tocco fuori dalla foto o con la ×, e il fuoco della tastiera torna dove era. Mentre la foto arriva c'è la rotellina; se non arriva, «Foto non disponibile». Sul telefono il Dettaglio Evento resta aperto sotto la foto, e la foto della telecamera del Dettaglio Evento e delle notifiche si apre anche da tastiera.
+- **Icone allineate ai nomi.** Nel menu le icone stavano un paio di pixel più in alto dei nomi accanto (Porte, Anagrafica, Da Registrare e le altre): ora sono a metà delle lettere, con qualsiasi carattere del computer o del telefono. Lo stesso per l'icona accanto al luogo nella pagina di una porta e per le frecce delle porte e delle notifiche; le voci del menu sono un po' più basse (sul telefono restano grandi quanto un dito). Pulsanti e titoli erano già allineati e non cambiano.
+- **Codice Stampato, suggerimento senza esempi.** In Nuova Persona, in Tessere da Registrare, in Aggiungi Tessera e nella finestra Codice il suggerimento del Codice Stampato è lo stesso ovunque, «Il codice scritto sulla tessera. Resta solo nell'app.», senza esempi inventati; il campo dice solo «facoltativo», come gli altri. Anche la documentazione e queste note usano un esempio neutro come «A-07».
+
 ## 0.28.3
 
 Anagrafica più completa: nome e cognome separati, telefono, email, matricola, referente interno e foto della persona, con l'Ultima Modifica di ogni persona, e il Codice Stampato di ogni tessera. Nel menu Anagrafica e Fasce Orarie al posto di Persone e Regole, e chi entra dall'accesso diretto senza permessi tecnici non legge più di Home Assistant. Sul controller, nel registro accessi e in Home Assistant non cambia niente rispetto alla 0.28.2: le persone hanno lo stesso nome completo di prima, e il confronto in ombra resta senza differenze.
