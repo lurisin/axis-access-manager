@@ -746,9 +746,9 @@ class NotificationService:
                 f"intercom:{wired['door_token']}",
                 "crit",
                 "Videocitofono Cablato sul Controller",
-                f"{wired['name']} · Il relè apre la porta anche dal controller ({wired['input']}): l'inoltro "
-                "dall'app non serve e un messaggio in ritardo può riaprirla. In Modifica Videocitofono togli "
-                '«"Apri" dal Videocitofono Apre Questa Porta»: resta Solo Registro.',
+                f"{wired['name']} · Il relè apre la porta anche dal controller, dall'ingresso {wired['input']}: "
+                "l'inoltro dall'app non serve e un messaggio in ritardo può riaprirla. In Modifica Videocitofono "
+                'togli «"Apri" dal Videocitofono Apre Questa Porta»: resta Solo Registro.',
                 wired["since"],
                 door=wired["door"],
                 door_token=wired["door_token"],
