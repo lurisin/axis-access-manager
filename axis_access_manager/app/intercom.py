@@ -45,7 +45,12 @@ RING_MAX_SECONDS = 90.0
 # inoltra, se non c'è una chiamata arrivata dopo il ricollegamento. Il 13/11 il bridge è tornato alle 20:02:57 e
 # l'add-on alle 20:02:58, e le pressioni vecchie sono arrivate alle 20:03:04 e 20:03:09 (7 e 12 s dopo): 30 s le
 # coprono con più del doppio di margine, per un bridge che si ricollega al citofono più lentamente. Un Apri dal vivo
-# durante una chiamata passa sempre; uno senza chiamata in quei 30 s resta nel registro, e basta ripeterlo
+# durante una chiamata passa sempre; uno senza chiamata in quei 30 s resta nel registro, e basta ripeterlo.
+# Vale anche quando il controller torna a rispondere dopo un'interruzione (il 14/11 la rete della porta è caduta per
+# due ore: al ritorno il videocitofono ha consegnato quattro pressioni vecchie, alle 19:23:54, 19:24:05, 19:24:12 e
+# 19:24:20, e l'app le ha inoltrate tutte), e finché le pressioni vecchie continuano ad arrivare: ognuna fa ripartire
+# i 30 s. Con il controller che non risponde, un Apri senza chiamata non si inoltra (non aprirebbe adesso, e la
+# richiesta non deve restare in coda per dopo)
 RECONNECT_SECONDS = 30.0
 # Con l'ora dell'evento negli attributi del relè: un messaggio più vecchio di così non si inoltra (stesso caso, senza
 # ricollegamento visto). Lo scarto dell'orologio del citofono si misura alle aperture durante una chiamata
@@ -150,8 +155,10 @@ class IntercomBridge:
         clock: Callable[[], float] = time.monotonic,
         *,
         wall: Callable[[], datetime] | None = None,
+        controller_down: Callable[[], bool] | None = None,
     ) -> None:
-        """wall: ora adesso sull'orologio del controller, per l'ora dell'evento negli attributi del relè."""
+        """wall: ora adesso sull'orologio del controller, per l'ora dell'evento negli attributi del relè.
+        controller_down: il controller della porta adesso non risponde (vedi health.ControllerHealth)."""
         self.settings = settings
         self._log = log
         self._open_door = open_door
@@ -192,6 +199,9 @@ class IntercomBridge:
         self._skew: float | None = None
         # Ultima riga di apertura non inoltrata e quando: una raffica fa una riga sola
         self._skipped = ("", float("-inf"))
+        # Ultima pressione non inoltrata perché vecchia: quelle che arrivano a raffica dopo sono della stessa coda
+        self._last_stale = float("-inf")
+        self._controller_down = controller_down
 
     @property
     def topics(self) -> list[str]:
@@ -209,6 +219,11 @@ class IntercomBridge:
     def broker_connected(self) -> None:
         """L'app si è collegata (o ricollegata) al broker: i primi messaggi del citofono possono essere vecchi."""
         self._came_back("il ricollegamento dell'app")
+
+    def controller_back(self) -> None:
+        """Il controller della porta risponde di nuovo dopo un'interruzione: il videocitofono, spesso sulla stessa rete,
+        può consegnare adesso le pressioni fatte mentre non c'era (14/11)."""
+        self._came_back("il ritorno del controller")
 
     def handle(self, topic: str, payload: bytes, retained: bool = False) -> None:
         # Gli stati sono conservati dal broker: alla riconnessione non sono eventi nuovi. La fine chiamata arrivata
@@ -328,11 +343,16 @@ class IntercomBridge:
         if live and delay is not None:
             self._skew = delay
         stale = ""
-        if not live and now - back_at < RECONNECT_SECONDS:
+        if not live and self._controller_down is not None and self._controller_down():
+            stale = "il controller non risponde, senza una chiamata in corso"
+        elif not live and now - back_at < RECONNECT_SECONDS:
             stale = f"messaggio arrivato {round(now - back_at)} s dopo {back_reason}, senza una chiamata in corso"
+        elif not live and now - self._last_stale < RECONNECT_SECONDS:
+            stale = "altra pressione arrivata insieme a quelle vecchie, senza una chiamata in corso"
         elif not live and delay is not None and delay - (self._skew or 0.0) > STALE_SECONDS:
             stale = f"messaggio di {round(delay - (self._skew or 0.0))} s prima (ora del videocitofono)"
         if stale:
+            self._last_stale = now
             # Possibile pressione vecchia consegnata in ritardo: mai un'apertura quando nessuno la aspetta più.
             # Non conta come apertura: un Apri vero subito dopo passa
             self._skip(f"apertura dal citofono non inoltrata: {stale}", attributes, "vecchio")

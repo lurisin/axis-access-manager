@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.28.6
+
+- **Videocitofono, niente aperture in ritardo dopo un'interruzione della rete.** Il 14/11 il controller non ha risposto per circa due ore e il videocitofono, sulla stessa rete, non arrivava a Home Assistant. Le pressioni dell'Apri fatte intanto non hanno aperto, e il videocitofono le ha tenute. Al ritorno, alle 19:23:54, 19:24:05, 19:24:12 e 19:24:20, le ha consegnate tutte e l'app le ha inoltrate: la porta si è aperta quattro volte con nessuno davanti. La 0.28.5 non le fermava, perché né l'app né il bridge si erano ricollegati al broker. Ora un Apri senza chiamata non si inoltra mentre il controller non risponde e nei 30 secondi dopo che torna a rispondere. Le pressioni vecchie che continuano ad arrivare fanno ripartire i 30 secondi ogni volta. Un Apri durante una chiamata passa sempre, e senza chiamata passa di nuovo dopo 30 secondi senza pressioni vecchie. Nel registro una riga del videocitofono dice perché non è stato inoltrato.
+- **La rotellina di caricamento gira sempre.** Con «Riduci movimento» attivo sul telefono la rotellina pulsava soltanto, e l'archetto azzurro sembrava fermo. Ora gira, un po' più piano.
+
 ## 0.28.5
 
 Correzione urgente del videocitofono della 0.28.4, da installare al posto della 0.28.4.

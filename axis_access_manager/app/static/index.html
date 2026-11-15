@@ -707,8 +707,9 @@
              animation: spin .8s linear infinite; display: inline-block; vertical-align: middle; }
   @keyframes spin { to { transform: rotate(360deg); } }
   /* Con il movimento ridotto la rotellina non gira: pulsa piano */
-  @keyframes pulse { 50% { opacity: .35; } }
-  @media (prefers-reduced-motion: reduce) { .spinner { animation: pulse 2s ease-in-out infinite; } }
+  /* Con «Riduci movimento» del telefono la rotellina gira lo stesso, più piano: fermo, l'archetto non dice che
+     l'app sta lavorando (prima pulsava soltanto, e sembrava bloccata) */
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 1.6s; } }
   .loading { padding: 40px; text-align: center; color: var(--muted); }
   /* Riquadro «Attendere…» di una modifica che dura più di mezzo secondo: piccolo e al centro, sopra un velo leggero
      che lascia vedere la pagina. Nel top layer come le finestre, quindi anche sopra una finestra aperta */
