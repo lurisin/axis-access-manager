@@ -123,17 +123,17 @@ async def test_import_names_the_owner_of_a_card_with_another_name(service, db):
 
 async def test_export_then_reimport_changes_nothing(service, db):
     """Il file esportato si reimporta com'è, anche risalvato da un foglio di calcolo senza secondi."""
-    await service.create_person("Marco", "04123456", "admin", valid_to="2026-12-31T23:59:59", notes="=1+1")
+    await service.create_person("Marco", "04482156", "admin", valid_to="2026-12-31T23:59:59", notes="=1+1")
     bruno = await service.create_person("Bruno", "04bb", "admin")
     await service.set_card_enabled(bruno["cards"][0]["id"], False, "admin")
     text = persons_csv(db.list_persons(), {"profilo_sempre": "Sempre"}, db.last_accesses())
     # Tessere di sole cifre e testi come formule protetti per il foglio di calcolo
-    assert '"=""04123456"""' in text and "'=1+1" in text
-    for variant in (text, text.replace("23:59:59", "23:59"), text.replace('"=""04123456"""', "04123456")):
+    assert '"=""04482156"""' in text and "'=1+1" in text
+    for variant in (text, text.replace("23:59:59", "23:59"), text.replace('"=""04482156"""', "04482156")):
         result = await import_persons(service, variant, GROUPS, "admin", apply=False)
         assert result["riepilogo"]["saltate"] == 2
     # Tessere rovinate dal foglio di calcolo: errore, non una tessera nuova
-    mangled = "nome;tessera\nMarco;4123456\nMarco;6,33031E+15"
+    mangled = "nome;tessera\nMarco;4482156\nMarco;6,33031E+15"
     rows = (await import_persons(service, mangled, GROUPS, "admin", apply=False))["righe"]
     assert [r["esito"] for r in rows] == ["errore", "errore"]
 

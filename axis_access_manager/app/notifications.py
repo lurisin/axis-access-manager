@@ -43,7 +43,12 @@ TYPES = {
     "unknown_card": ("Tessere Sconosciute", "Tessere non registrate passate sul lettore.", "urgent"),
     "denied": ("Accessi Negati", "Accessi negati a persone registrate.", "urgent"),
     "expiring": ("Tessere in Scadenza", "Tessere che scadono nei prossimi 7 giorni.", "urgent"),
-    "camera": ("Telecamere Non Disponibili", "L'ultima foto di una telecamera non è riuscita.", "urgent"),
+    "camera": ("Telecamere Non Disponibili", "Una telecamera non risponde: l'app la ricontrolla da sola.", "urgent"),
+    "intercom": (
+        "Videocitofono Cablato sul Controller",
+        "Il relè del videocitofono apre la porta anche dal controller: l'inoltro dall'app va spento.",
+        "urgent",
+    ),
     "controller_changed": (
         "Controller Cambiato",
         "All'indirizzo del controller risponde un apparecchio diverso.",
@@ -86,6 +91,7 @@ FAULT_TYPES = (
     "programming",
     "mqtt",
     "camera",
+    "intercom",
     "controller_changed",
     "clock",
     "missing_cards",
@@ -101,6 +107,8 @@ VISIBILITY = {
     "missing_cards": "persone",
     "backup": "backup",
     "database": "backup",
+    # Si corregge solo dalla configurazione dei videocitofoni
+    "intercom": "impianti",
 }
 # Attiva: compare in Da Gestire e conta sulla campanella. "info" (fino alla 0.13) vale come attiva.
 LEVELS = {"urgent": "Attiva", "off": "Disattivata"}
@@ -220,6 +228,7 @@ class NotificationService:
         intercoms: bool = False,
         door_names: dict[str, str],
         cameras: list[dict] | None = None,
+        intercom_wiring: list[dict] | None = None,
         controllers: list[dict] | None = None,
         missing: dict | None = None,
         backup: dict | None = None,
@@ -241,6 +250,8 @@ class NotificationService:
         low_space: spazio libero e totale del disco, se è quasi esaurito.
         write_error: registro non scrivibile ({"since", "error"}, vedi AccessService.write_error).
         ws: stato del WebSocket degli eventi (LiveEvents.status), None se l'app non lo usa.
+        intercom_wiring: videocitofoni con l'inoltro attivo e il relè cablato anche sul controller ({"door",
+        "door_token", "name", "input", "since"}, vedi IntercomBridge.wired_check).
         ha_integration: l'integrazione con Home Assistant, che passa dal broker MQTT, è attiva.
         intercoms: ci sono videocitofoni, i cui eventi arrivano dal broker MQTT.
 
@@ -716,7 +727,8 @@ class NotificationService:
                     severity = "crit" if len(group) > 1 else "warn"
                     add_group("unknown_card", severity, "Tessera Sconosciuta", text, group, "#da-registrare")
         for cam in cameras or []:
-            # Telecamera di una porta con l'ultima foto non riuscita: sparisce alla prima foto buona
+            # Telecamera di una porta che non risponde: l'app la ricontrolla da sola (camera_watch), e la notifica
+            # sparisce quando una foto riesce, di un evento o di prova
             add(
                 "camera",
                 f"cam:{cam['camera']}",
@@ -726,6 +738,22 @@ class NotificationService:
                 cam["ts"],
                 door=", ".join(cam.get("doors") or []),
                 link="#impianti",
+            )
+        for wired in intercom_wiring or []:
+            # Il controller apre già dal relè: l'inoltro dall'app è un'apertura in più, e con un messaggio in ritardo
+            # riapre la porta senza che nessuno l'abbia chiesto (13/11). Resta finché l'inoltro non si spegne
+            add(
+                "intercom",
+                f"intercom:{wired['door_token']}",
+                "crit",
+                "Videocitofono Cablato sul Controller",
+                f"{wired['name']} · Il relè apre la porta anche dal controller, dall'ingresso {wired['input']}: "
+                "l'inoltro dall'app non serve e un messaggio in ritardo può riaprirla. In Modifica Videocitofono "
+                'togli «"Apri" dal Videocitofono Apre Questa Porta»: resta Solo Registro.',
+                wired["since"],
+                door=wired["door"],
+                door_token=wired["door_token"],
+                link=f"#impianti/c{primary_id}/citofoni" if primary_id else "#impianti",
             )
         if levels["expiring"] != "off":
             for person in self.db.list_persons():

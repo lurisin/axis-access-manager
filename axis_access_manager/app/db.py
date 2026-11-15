@@ -382,8 +382,8 @@ EMPLOYEE_ID_INDEX = (
     "CREATE UNIQUE INDEX IF NOT EXISTS persons_employee_id ON persons(employee_id COLLATE NOCASE) "
     "WHERE employee_id != ''"
 )
-# Codice Stampato della tessera (0.28.3, migrazione 10): quello che c'è scritto sopra la tessera fisica («Ciccio»,
-# «1234»), messo da chi la consegna perché le tessere sono tutte bianche. Solo nell'app: mai sul controller (né utenti
+# Codice Stampato della tessera (0.28.3, migrazione 10): il codice scritto sulla tessera fisica (per esempio «A-07»),
+# messo da chi la consegna perché le tessere sono tutte bianche. Solo nell'app: mai sul controller (né utenti
 # né tessere, quindi neanche nel confronto in ombra) e mai in Home Assistant. Non è un dato personale. Si aggiunge anche
 # a ogni avvio, se manca (vedi _person_details), come matricola e referente
 CARD_COLUMNS = (("printed_code", "TEXT NOT NULL DEFAULT ''"),)
@@ -398,6 +398,13 @@ SETTING_LAST_PERSON = "persons_last_id"
 # Identità di questa installazione (uuid4): sta nel database, quindi un ripristino di Home Assistant la riporta uguale
 # e un database ripartito vuoto ne ha una nuova. Fuori dai backup dell'app (vedi backup.SETTINGS_KEPT)
 SETTING_INSTALL_ID = "install_id"
+# Preferenze di ogni utente (vedi preferences.py), con il nome utente: se ne vanno con l'utente e lo seguono quando
+# cambia nome. Fuori dai backup dell'app (vedi backup.SETTINGS_PREFIXES)
+SETTING_PREFERENCES = "preferences:"
+
+
+def preferences_key(username: str) -> str:
+    return SETTING_PREFERENCES + username.lower()
 
 
 # Un giro del confronto in ombra nello storico del suo giorno: i contatori si sommano, l'ora è quella dell'ultimo giro,
@@ -1837,9 +1844,10 @@ class Database:
     def save_app_user(self, username: str, name: str, perms: list[str]) -> None:
         with self._lock:
             if not self._conn.execute("SELECT 1 FROM app_users WHERE username = ?", (username,)).fetchone():
-                # Un utente nuovo non eredita password o sessioni rimaste di un utente con lo stesso nome
+                # Un utente nuovo non eredita password, sessioni o preferenze rimaste di un utente con lo stesso nome
                 self._conn.execute("DELETE FROM app_user_passwords WHERE username = ?", (username,))
                 self._conn.execute("DELETE FROM sessions WHERE username = ?", (username,))
+                self._conn.execute("DELETE FROM app_settings WHERE key = ?", (preferences_key(username),))
             self._conn.execute(
                 "INSERT INTO app_users (username, name, perms, created_at) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(username) DO UPDATE SET name = excluded.name, perms = excluded.perms",
@@ -1855,9 +1863,10 @@ class Database:
 
     def delete_app_user(self, username: str) -> None:
         with self._lock:
-            # Con l'utente se ne vanno la password e le sessioni dell'accesso diretto
+            # Con l'utente se ne vanno la password e le sessioni dell'accesso diretto, e le sue preferenze
             for table in ("app_users", "app_user_passwords", "sessions"):
                 self._conn.execute(f"DELETE FROM {table} WHERE username = ?", (username,))
+            self._conn.execute("DELETE FROM app_settings WHERE key = ?", (preferences_key(username),))
             self._commit()
 
     # Accesso diretto: password e sessioni
@@ -1903,12 +1912,17 @@ class Database:
         return closed
 
     def move_credentials(self, old: str, new: str) -> None:
-        """Nome utente cambiato: password e sessioni lo seguono."""
+        """Nome utente cambiato: password, sessioni e preferenze lo seguono."""
         with self._lock:
             self._conn.execute("DELETE FROM app_user_passwords WHERE username = ?", (new,))
             self._conn.execute("UPDATE app_user_passwords SET username = ? WHERE username = ?", (new, old))
             self._conn.execute("DELETE FROM sessions WHERE username = ?", (new,))
             self._conn.execute("UPDATE sessions SET username = ? WHERE username = ?", (new, old))
+            if preferences_key(new) != preferences_key(old):
+                self._conn.execute("DELETE FROM app_settings WHERE key = ?", (preferences_key(new),))
+                self._conn.execute(
+                    "UPDATE app_settings SET key = ? WHERE key = ?", (preferences_key(new), preferences_key(old))
+                )
             self._commit()
 
     def add_session(self, digest: str, username: str, password_set_at: str, ip: str, agent: str) -> None:

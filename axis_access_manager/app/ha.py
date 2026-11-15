@@ -8,6 +8,7 @@ import logging
 import shutil
 import time
 import urllib.parse
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -32,6 +33,15 @@ LEGACY_SNAPSHOT_DIR = Path("/data/snapshots")
 # istantanee fermava anche il registro
 MIN_FREE_SPACE = 1024**3
 LOW_SPACE = "spazio su disco quasi esaurito"
+# Foto arrivata ma non salvata: il guasto è del disco o della cartella Media, non della telecamera
+MEDIA_NOT_WRITABLE = "spazio esaurito o cartella Media non scrivibile"
+# Risposte del Supervisor quando il core di Home Assistant non c'è (riavvio, aggiornamento): l'API non risponde. Un 404
+# o un 503 vengono da Home Assistant (telecamera non ancora caricata, spenta)
+API_DOWN_STATUS = {502, 504}
+# Tempo scaduto su una telecamera: Home Assistant aspetta l'immagine fino a 10 s, quanto il client, quindi di solito è
+# la telecamera. Prima di dire che l'API è giù si chiede la sua pagina più leggera (GET /api/), con questo tempo
+API_CHECK_TIMEOUT = 5.0
+CAMERA_TIMEOUT = "la telecamera non risponde (tempo scaduto)"
 
 
 def default_snapshot_dir() -> Path:
@@ -80,6 +90,10 @@ class HomeAssistant:
         self._client = httpx.AsyncClient(
             base_url=CORE_API, timeout=10, headers={"Authorization": f"Bearer {self.token}"} if self.token else {}
         )
+        # L'API di Home Assistant risponde: None finché non si sa. Quando torna dopo un'interruzione si chiama
+        # on_api_back (le telecamere si riprovano subito, vedi camera_watch)
+        self.api_up: bool | None = None
+        self.on_api_back: Callable[[], None] | None = None
 
     @property
     def available(self) -> bool:
@@ -87,6 +101,34 @@ class HomeAssistant:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    def _api(self, up: bool) -> None:
+        """Esito di una richiesta all'API: risponde o no."""
+        was, self.api_up = self.api_up, up
+        if up and was is False:
+            _LOGGER.info("API di Home Assistant di nuovo raggiungibile")
+            if self.on_api_back is not None:
+                self.on_api_back()
+
+    async def _api_answers(self) -> bool:
+        """L'API di Home Assistant risponde? Dopo un tempo scaduto su una telecamera: una sola telecamera lenta non deve
+        far sembrare giù Home Assistant (e poi «di nuovo raggiungibile», con la tolleranza di tutte le telecamere e i
+        ricontrolli fitti)."""
+        try:
+            response = await self._client.get("/", timeout=API_CHECK_TIMEOUT)
+        except httpx.HTTPError:
+            self._api(False)
+            return False
+        up = response.status_code not in API_DOWN_STATUS
+        self._api(up)
+        return up
+
+    def _api_error(self, err: httpx.HTTPError) -> None:
+        """Richiesta non riuscita: senza risposta, o con quella del Supervisor senza Home Assistant, l'API è giù."""
+        if isinstance(err, httpx.HTTPStatusError):
+            self._api(err.response.status_code not in API_DOWN_STATUS)
+        else:
+            self._api(False)
 
     async def states(self) -> list[dict]:
         """Telecamere disponibili, per scegliere quella delle istantanee."""
@@ -97,8 +139,11 @@ class HomeAssistant:
             response.raise_for_status()
             states = response.json()
         except (httpx.HTTPError, ValueError) as err:
+            if isinstance(err, httpx.HTTPError):
+                self._api_error(err)
             _LOGGER.warning("Stati di Home Assistant non leggibili: %s", err)
             return []
+        self._api(True)
         result = []
         for state in states:
             entity_id = state.get("entity_id", "")
@@ -120,29 +165,52 @@ class HomeAssistant:
         if await asyncio.to_thread(low_space, self.snapshot_dir):
             _LOGGER.warning("Istantanea da %s non salvata: %s", camera, LOW_SPACE)
             return "", f"{LOW_SPACE}: istantanea non salvata"
+        content, error = await self._camera_image(camera)
+        if content is None:
+            return "", error
+        filename = f"{name}.jpg"
+        try:
+            self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread((self.snapshot_dir / filename).write_bytes, content)
+        except OSError as err:
+            # Disco di Home Assistant pieno o cartella Media in sola lettura
+            _LOGGER.warning("Istantanea da %s non salvata: %s", camera, err)
+            return "", MEDIA_NOT_WRITABLE
+        return filename, ""
+
+    async def probe_camera(self, camera: str) -> str:
+        """Foto di prova, non salvata: "" se la telecamera manda un'immagine, se no il motivo. Per il ricontrollo di
+        una telecamera guasta (camera_watch): passa dalla stessa strada delle foto degli eventi, e nel log solo in
+        debug, così una telecamera giù per ore non riempie il log."""
+        if not self.available or not valid_camera(camera):
+            return ""
+        content, error = await self._camera_image(camera, quiet=True)
+        return "" if content is not None else error
+
+    async def _camera_image(self, camera: str, quiet: bool = False) -> tuple[bytes | None, str]:
+        """Immagine della telecamera da Home Assistant: (byte, "") oppure (None, motivo). quiet: nel log solo in
+        debug."""
+        log = _LOGGER.debug if quiet else _LOGGER.warning
         try:
             response = await self._client.get(f"/camera_proxy/{urllib.parse.quote(camera, safe='')}")
         except httpx.HTTPError as err:
             # Il testo di httpx (in inglese, spesso vuoto con i tempi scaduti) resta nel log
-            _LOGGER.warning("Istantanea da %s non riuscita: %r", camera, err)
-            if isinstance(err, httpx.TimeoutException):
-                return "", "Home Assistant non risponde (tempo scaduto)"
-            return "", "Home Assistant non risponde"
+            log("Istantanea da %s non riuscita: %r", camera, err)
+            if isinstance(err, httpx.TimeoutException) and not isinstance(err, httpx.ConnectTimeout):
+                # Collegati ma senza risposta in tempo: la telecamera, se l'API risponde
+                if await self._api_answers():
+                    return None, CAMERA_TIMEOUT
+                return None, "Home Assistant non risponde (tempo scaduto)"
+            self._api(False)
+            return None, "Home Assistant non risponde"
+        self._api(response.status_code not in API_DOWN_STATUS)
         if response.status_code != 200 or not response.content:
-            _LOGGER.warning("Istantanea da %s non riuscita: risposta %s", camera, response.status_code)
-            return "", f"telecamera non disponibile (risposta {response.status_code} di Home Assistant)"
+            log("Istantanea da %s non riuscita: risposta %s", camera, response.status_code)
+            return None, f"telecamera non disponibile (risposta {response.status_code} di Home Assistant)"
         if not response.headers.get("content-type", "").lower().startswith("image/"):
-            _LOGGER.warning("Istantanea da %s non riuscita: %s", camera, response.headers.get("content-type"))
-            return "", "la telecamera non ha mandato un'immagine"
-        filename = f"{name}.jpg"
-        try:
-            self.snapshot_dir.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread((self.snapshot_dir / filename).write_bytes, response.content)
-        except OSError as err:
-            # Disco di Home Assistant pieno o cartella Media in sola lettura
-            _LOGGER.warning("Istantanea da %s non salvata: %s", camera, err)
-            return "", "spazio esaurito o cartella Media non scrivibile"
-        return filename, ""
+            log("Istantanea da %s non riuscita: %s", camera, response.headers.get("content-type"))
+            return None, "la telecamera non ha mandato un'immagine"
+        return response.content, ""
 
     async def button_presser(self, command: str = "", now: datetime | None = None) -> str | None:
         """Nome della persona che ha appena premuto il pulsante dell'add-on che manda questo comando.
@@ -161,8 +229,11 @@ class HomeAssistant:
             response.raise_for_status()
             states = response.json()
         except (httpx.HTTPError, ValueError) as err:
+            if isinstance(err, httpx.HTTPError):
+                self._api_error(err)
             _LOGGER.warning("Utente del pulsante non leggibile da Home Assistant: %s", err)
             return None
+        self._api(True)
         pressed = []
         for state in states:
             if not str(state.get("entity_id", "")).startswith("button."):

@@ -200,7 +200,7 @@ def compare_list(kind):
 @pytest.mark.parametrize(
     ("change", "label"),
     [
-        (lambda c: c["IdData"].append({"Name": "PIN", "Value": "1234"}), "Numero e PIN"),
+        (lambda c: c["IdData"].append({"Name": "PIN", "Value": "5871"}), "Numero e PIN"),
         (lambda c: c.update(Attribute=[{"Name": "Piano", "Value": "3"}]), "Attributi"),
         (lambda c: c.update(Description="Anna Rossi"), "Descrizione"),
         (lambda c: c.update(Enabled=False), "Stato"),

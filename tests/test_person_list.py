@@ -48,6 +48,8 @@ SORT = (
     "sortPersons",
     "foldText",
     "personLetter",
+    "personColumnNote",
+    "PERSON_NOTE_EMPTY",
     "personSortNote",
     "PHONE_MARKS",
     "searchFold",
@@ -55,6 +57,26 @@ SORT = (
     "personHaystack",
     "personMatches",
     "searchedCards",
+    # Colonne scelte da chi guarda (0.28.4)
+    "PERSON_COLUMNS",
+    "PERSON_COLUMN_KEYS",
+    "PERSON_COLUMN_BY",
+    "PERSON_COLUMNS_REQUIRED",
+    "PERSON_COLUMNS_DEFAULT",
+    "PERSON_FLEX_MIN",
+    "PERSON_EDGE",
+    "personEdge",
+    "cleanPersonColumns",
+    "personPrefs",
+    "personColumnsChosen",
+    "personColumnsFor",
+    "personColumnsNeed",
+    "personColumnsFit",
+    "scrollbarSize",
+    "scrollbarWidth",
+    "personListWidth",
+    "personColumnCss",
+    "personRowNote",
 )
 TABLE = (
     "esc",
@@ -70,6 +92,16 @@ TABLE = (
     "icon",
     "cardTag",
     "cardTitle",
+    "mailtoHref",
+    "telHref",
+    "PERSON_DASH",
+    "personTextCell",
+    "personLinkCell",
+    "personWhenCell",
+    "personCell",
+    "personColumnsKeep",
+    "personFitData",
+    "personFitAttrs",
     "personRows",
     "personTable",
 )
@@ -148,6 +180,9 @@ PERSONS = [
         "Rossi",
         employee_id="0042",
         company="Teatro",
+        phone="+39 06 5550 4821",
+        email="m.rossi@esempio.it",
+        referent="Direzione",
         category_id=1,
         last_access="2026-11-12T10:00:00+00:00",
         created_at="2026-01-10T09:00:00+00:00",
@@ -158,6 +193,8 @@ PERSONS = [
         "Anna",
         "Bianchi",
         employee_id="7",
+        phone="347 555 0101",
+        referent="amministrazione",
         category_id=2,
         created_at="2026-03-01T09:00:00+00:00",
         updated_at="2026-11-13T09:59:59.999999+00:00",
@@ -168,6 +205,8 @@ PERSONS = [
         "Abate",
         employee_id="a-12",
         company="Biglietteria",
+        phone="06 555-0177",
+        email="abate@esempio.it",
         last_access="2026-11-13T08:00:00Z",
         created_at="2025-12-31T23:00:00Z",
         updated_at="2026-11-01T08:00:00+00:00",
@@ -203,6 +242,13 @@ EXPECTED = {
     "ditta:desc": [5, 1, 4, 3, 6, 2, 7],
     "tipologia:asc": [6, 4, 1, 2, 5, 3, 7],
     "tipologia:desc": [2, 5, 6, 4, 1, 3, 7],
+    # Telefono come testo senza spazi né trattini (il + prima delle cifre), email e referente come testo
+    "telefono:asc": [1, 3, 2, 6, 7, 4, 5],
+    "telefono:desc": [2, 3, 1, 6, 7, 4, 5],
+    "email:asc": [3, 1, 6, 2, 7, 4, 5],
+    "email:desc": [1, 3, 6, 2, 7, 4, 5],
+    "referente:asc": [2, 1, 3, 6, 7, 4, 5],
+    "referente:desc": [1, 2, 3, 6, 7, 4, 5],
     "accesso:desc": [3, 5, 1, 6, 2, 7, 4],
     "accesso:asc": [1, 3, 5, 6, 2, 7, 4],
     "inserimento:desc": [4, 5, 2, 6, 1, 3, 7],
@@ -222,6 +268,7 @@ def test_every_order_of_the_dropdown_has_empty_values_last():
     labels = out.pop("labels")
     assert labels[:2] == ["Cognome A→Z", "Cognome Z→A"]
     assert "Data di Inserimento Più Recente" in labels and "Ultima Modifica Meno Recente" in labels
+    assert {"Telefono 0→9", "Email Z→A", "Referente Interno A→Z"} <= set(labels)
     # L'elenco della pagina non cambia ordine: si ordina una copia
     assert out.pop("untouched") == [1, 2, 3, 4, 5, 6, 7]
     assert out == EXPECTED
@@ -303,7 +350,7 @@ SEARCH_PERSON = person(
     employee_id="M-0042",
     company="Sartoria",
     referent="Direzione di Sala",
-    phone="+39 06 123-4567",
+    phone="+39 06 555-0190",
     email="giulia.neri@example.org",
     notes="Chiavi del magazzino\nscenografie",
     cards=[{"number": "04AB12CD"}],
@@ -320,8 +367,8 @@ def test_search_finds_every_field():
         "employee": "m-0042",
         "company": "sartoria",
         "referent": "direzione di",
-        "phone": "061234567",
-        "phone_spaced": "06 123",
+        "phone": "065550190",
+        "phone_spaced": "06 555",
         "email": "neri@example",
         "card": "04ab12",
         "notes": "magazzino scenografie",
@@ -376,31 +423,31 @@ CODED = [
         "Marta",
         "Gialli",
         cards=[
-            {"id": 1, "number": "04ab12cd", "printed_code": "Ciccio"},
+            {"id": 1, "number": "04ab12cd", "printed_code": "Delta"},
             {"id": 2, "number": "04ff0011", "printed_code": "Ávila  7"},
         ],
     ),
     person(21, "Paolo", "Verdi", cards=[{"id": 3, "number": "04cc0099", "printed_code": ""}]),
-    person(22, "Ugo", "Neri", cards=[{"id": 4, "number": "04dd2200", "printed_code": "cICCIObello"}]),
+    person(22, "Ugo", "Neri", cards=[{"id": 4, "number": "04dd2200", "printed_code": "dELTAnord"}]),
     person(23, "Rita", "Bruni", notes="tessera da fare"),
 ]
 CODED_PRELUDE = f"store.categories = {json.dumps(CATEGORIES)}; const persons = {json.dumps(CODED)};"
 
 
 def test_search_finds_the_printed_code_of_any_card():
-    """«cicc» trova chi ha la tessera «Ciccio», come gli altri campi: parte del testo, maiuscole e accenti indifferenti,
+    """«delt» trova chi ha la tessera «Delta», come gli altri campi: parte del testo, maiuscole e accenti indifferenti,
     anche sulla seconda tessera della persona; un codice e il numero accanto non si uniscono."""
     searches = {
-        "part": "cicc",
-        "upper": "CICCIO",
-        "longer": "ciccioB",
+        "part": "delt",
+        "upper": "DELTA",
+        "longer": "deltaN",
         "second_card": "vila",
         "accent": "AVILA 7",
         "spaces": "  ávila   7 ",
         "number": "04CC",
         "both_cards": "04ff",
         "name": "marta",
-        "code_and_number": "ciccio 04ff",
+        "code_and_number": "delta 04ff",
         "nothing": "zeta",
     }
     calls = {
@@ -428,7 +475,7 @@ def test_cards_found_by_the_search_are_the_ones_shown():
     found = "(i, q) => searchedCards(persons[i], q).map((c) => c.id)"
     out = run(
         {
-            "code": f"({found})(0, 'CICC')",
+            "code": f"({found})(0, 'DELT')",
             "second": f"({found})(0, 'avila 7')",
             "number": f"({found})(0, '04FF00')",
             "every": f"({found})(0, '04')",
@@ -464,7 +511,7 @@ def test_desktop_table_shows_every_card_like_the_sheet():
     out = run(
         {
             "plain": f"({table})('')",
-            "code": f"({table})('cicc')",
+            "code": f"({table})('delt')",
             "name": f"({table})('marta')",
             "number": f"({table})('04cc')",
         },
@@ -474,8 +521,8 @@ def test_desktop_table_shows_every_card_like_the_sheet():
     html = out["plain"]
     cells = dict(re.findall(r'<tr data-person="(\d+)".*?<td class="c-cards"(.*?)</td>', html, re.S))
     assert cells["20"] == (
-        ' title="Ciccio · 04ab12cd\nÁvila  7 · 04ff0011">'
-        '<div class="p-card"><div class="p-code">Ciccio</div><div class="card-no mono">04ab12cd</div></div>'
+        ' title="Delta · 04ab12cd\nÁvila  7 · 04ff0011">'
+        '<div class="p-card"><div class="p-code">Delta</div><div class="card-no mono">04ab12cd</div></div>'
         '<div class="p-card"><div class="p-code">Ávila  7</div><div class="card-no mono">04ff0011</div></div>'
     )
     assert cells["21"] == ' title="04cc0099"><div class="p-card"><div class="mono">04cc0099</div></div>'
@@ -485,11 +532,10 @@ def test_desktop_table_shows_every_card_like_the_sheet():
         ' title="A&amp;B &lt;7&gt; · 04ee"><div class="p-card"><div class="p-code">A&amp;B &lt;7&gt;</div>'
         '<div class="card-no mono">04ee</div></div>'
     )
-    assert '<table class="table p-table" data-sorted="cognome">' in html
-    assert '<table class="table p-table" data-sorted="cognome" data-cards>' in out["code"]
-    assert '<table class="table p-table" data-sorted="cognome" data-cards>' in out["number"]
+    assert table_attrs(html)["data-sorted"] == "cognome" and "data-cards" not in table_attrs(html)
+    assert table_attrs(out["code"])["data-cards"] == "" and table_attrs(out["number"])["data-cards"] == ""
     # Trovata per nome: niente data-cards, la colonna segue lo spazio come sempre
-    assert '<table class="table p-table" data-sorted="cognome">' in out["name"]
+    assert "data-cards" not in table_attrs(out["name"])
     rows = {pid: row for row, pid in re.findall(r'(<tr data-person="(\d+)".*?</tr>)', html, re.S)}
     found = {pid: row for row, pid in re.findall(r'(<tr data-person="(\d+)".*?</tr>)', out["code"], re.S)}
     assert found["20"] == rows["20"] and found["22"] == rows["22"]
@@ -504,7 +550,7 @@ def test_phone_rows_show_the_cards_the_search_found():
     )
     out = run(
         {
-            "code": f"({rows})('Cicc')",
+            "code": f"({rows})('Delt')",
             "number": f"({rows})('04cc')",
             "name": f"({rows})('marta')",
             "all": f"({rows})('')",
@@ -525,9 +571,9 @@ def test_phone_rows_show_the_cards_the_search_found():
         }
 
     code = found(out["code"])
-    assert code["20"] == [("Ciccio · 04ab12cd", '<span class="p-code">Ciccio</span><span class="mono">04ab12cd</span>')]
+    assert code["20"] == [("Delta · 04ab12cd", '<span class="p-code">Delta</span><span class="mono">04ab12cd</span>')]
     assert code["22"] == [
-        ("cICCIObello · 04dd2200", '<span class="p-code">cICCIObello</span><span class="mono">04dd2200</span>')
+        ("dELTAnord · 04dd2200", '<span class="p-code">dELTAnord</span><span class="mono">04dd2200</span>')
     ]
     assert found(out["number"]) == {"21": [("04cc0099", '<span class="mono">04cc0099</span>')]}
     assert found(out["name"]) == {"20": []}
@@ -549,12 +595,18 @@ def test_chosen_order_is_remembered_if_the_browser_can(storage, expected):
     assert out == {"sort": expected, "saved": expected}
 
 
+def table_attrs(html: str) -> dict:
+    """Attributi della tabella dell'elenco: data-cards senza valore è ""."""
+    tag = re.search(r"<table ([^>]*)>", html).group(1)
+    return {name: value or "" for name, value in re.findall(r'([\w-]+)(?:="([^"]*)")?', tag)}
+
+
 def _rows(body: str) -> list[str]:
     return sorted(re.findall(r"<tr data-person=.*?</tr>", body, re.S))
 
 
 def test_desktop_table_headers_sort_and_rows_do_not_depend_on_the_order():
-    version = "2026-11-13T10:00:00.123456+00:00"
+    version = "2026-11-13T10:00:00.482156+00:00"
     persons = [{**p, "photo": version if p["id"] == 1 else ""} for p in PERSONS]
     prelude = f"store.categories = {json.dumps(CATEGORIES)}; const persons = {json.dumps(persons)};"
     table = "(s) => { personFilters.sort = s; return personTable(sortPersons(persons, s)); }"
@@ -570,25 +622,35 @@ def test_desktop_table_headers_sort_and_rows_do_not_depend_on_the_order():
         names=DATES + SORT + TABLE,
     )
     html = out["matricola"]
-    assert '<table class="table p-table" data-sorted="matricola">' in html
+    # Senza la larghezza dell'elenco ci sono tutte le colonne predefinite, nessuna nascosta
+    assert table_attrs(html) == {
+        "class": "table p-table",
+        "data-sorted": "matricola",
+        "data-columns": "foto cognome nome matricola ditta tipologia tessere accesso stato",
+        "data-hide": "",
+        "data-first": "foto",
+        "data-last": "stato",
+    }
     heads = re.findall(r'<th class="(c-[a-z]+)"[^>]*>', html)
     assert heads == ["c-photo", "c-last", "c-first", "c-emp", "c-company", "c-cat", "c-cards", "c-access", "c-state"]
     # Un pulsante in ogni intestazione che ordina, aria-sort solo su quella scelta
     assert re.findall(r'aria-sort="(\w+)"', html) == ["ascending"]
     assert re.search(
-        r'<th class="c-emp" scope="col" aria-sort="ascending"><button type="button" class="th-sort" '
-        r'data-sort="matricola"',
+        r'<th class="c-emp" scope="col" data-key="th-matricola" aria-sort="ascending"><button type="button" '
+        r'class="th-sort" data-sort="matricola"',
         html,
     )
     assert re.findall(r'data-sort="(\w+)"', html) == ["cognome", "nome", "matricola", "ditta", "tipologia", "accesso"]
     assert re.findall(r'aria-sort="(\w+)"', out["desc"]) == ["descending"]
     assert '<span class="arrow" aria-hidden="true">↓</span>' in out["desc"]
-    # Con l'ordine per data di inserimento la sua colonna, con la data in cifre e quella completa nel title
-    assert '<th class="c-extra" scope="col" aria-sort="descending">' in out["created"]
-    assert ">10/01/2026</td>" in out["created"]
+    # Con l'ordine per data di inserimento, che non è tra le colonne scelte, c'è anche la sua colonna, prima di Stato,
+    # con la data come Ultimo Accesso e quella completa nel title
+    assert table_attrs(out["created"])["data-columns"].endswith(" accesso inserimento stato")
+    assert '<th class="c-created" scope="col" data-key="th-inserimento" aria-sort="descending">' in out["created"]
+    assert '<td class="c-created" title="10 gen 2026, 10:00:00">10/01/2026 10:00</td>' in out["created"]
     # Riga: apre la scheda da tastiera, foto con la versione codificata, caricata solo quando serve
     assert '<tr data-person="1" data-key="p1" tabindex="0">' in html
-    assert 'src="api/persons/1/photo?v=2026-11-13T10%3A00%3A00.123456%2B00%3A00"' in html
+    assert 'src="api/persons/1/photo?v=2026-11-13T10%3A00%3A00.482156%2B00%3A00"' in html
     assert 'loading="lazy" decoding="async"' in html
     assert '<span class="avatar sm">AB</span>' in html
     # Le righe sono le stesse con un altro ordine (cambiano solo posto): il ridisegno le sposta e basta
@@ -636,8 +698,9 @@ def test_photo_is_prepared_in_the_browser_and_sent_inside_the_waiting_box():
     assert 'e.person_id && can("persone") ? `<div class="ev-face"' in page
 
 
-# Chromium vero (Playwright, se c'è): l'elenco con i Codici Stampati disegnato con le regole CSS della pagina com'è, a
-# 1280 px (tabella) e a 390 px (righe del telefono), in tema chiaro e scuro
+# Chromium vero (Playwright, se c'è): l'elenco con i Codici Stampati disegnato con le regole CSS della pagina com'è (e
+# quelle delle colonne, personColumnCss), a 1280 e 680 px (tabella) e a 390 px (righe del telefono), in tema chiaro e
+# scuro
 LAYOUT = r"""
 const { chromium } = require("playwright");
 (async () => {
@@ -645,12 +708,12 @@ const { chromium } = require("playwright");
   const out = {};
   const cases = [
     ["wide", 1280, false, "", "light"],
-    ["wide_dark", 1280, false, "cicc", "dark"],
-    ["narrow", 1000, false, "", "light"],
-    ["narrow_search", 1000, false, "cicc", "light"],
+    ["wide_dark", 1280, false, "delt", "dark"],
+    ["narrow", 680, false, "", "light"],
+    ["narrow_search", 680, false, "delt", "light"],
     ["narrow_by_date", 1280, false, "04cc", "light", "inserimento:desc"],
     ["phone", 390, true, "", "light"],
-    ["phone_code", 390, true, "CICC", "light"],
+    ["phone_code", 390, true, "DELT", "light"],
     ["phone_long", 390, true, "04AAB", "dark"],
   ];
   for (const [name, width, phone, q, scheme, sort = "cognome:asc"] of cases) {
@@ -660,7 +723,8 @@ const { chromium } = require("playwright");
       personFilters.q = q;
       personFilters.sort = sort;
       const shown = sortPersons(persons.filter((p) => personMatches(p, q)), sort);
-      document.getElementById("p-list").innerHTML = phone ? personRows(shown) : personTable(shown);
+      const list = document.getElementById("p-list");
+      list.innerHTML = phone ? personRows(shown) : personTable(shown, list.clientWidth);
       const de = document.documentElement;
       const visible = (el) => el.getClientRects().length > 0 && getComputedStyle(el).display !== "none";
       // Testo intero: niente puntini (scrollWidth oltre la larghezza vera, con il mezzo pixel del browser)
@@ -678,6 +742,7 @@ const { chromium } = require("playwright");
         code: style(codes.find(visible)),
         number: style(document.querySelector(".p-card .card-no, .p-found .mono")),
         found: [...document.querySelectorAll(".p-found")].map((el) => el.closest("[data-person]").dataset.person),
+        hide: document.querySelector(".p-table")?.dataset.hide ?? null,
         rows: document.querySelectorAll("[data-person]").length,
       };
     }, [phone, q, sort]);
@@ -699,9 +764,9 @@ def _has_playwright() -> bool:
 @pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
 def test_list_with_printed_codes_in_a_real_browser_at_1280_and_390():
     """Tabella: la colonna Tessere con il codice in evidenza (grassetto) e il numero intero, più piccolo e più chiaro;
-    con il riquadro stretto la colonna sparisce, tranne quando la ricerca trova delle tessere (anche con l'ordine per
-    data). Telefono: senza ricerca nessuna tessera; con la ricerca per codice o per numero la tessera sotto il nome,
-    con il numero intero anche dopo un codice lungo. Mai scorrimento orizzontale."""
+    con il riquadro stretto la colonna sparisce dopo quelle che la seguono, tranne quando la ricerca trova delle tessere
+    (anche con l'ordine per data). Telefono: senza ricerca nessuna tessera; con la ricerca per codice o per numero la
+    tessera sotto il nome, con il numero intero anche dopo un codice lungo. Mai scorrimento orizzontale."""
     page = PAGE.read_text(encoding="utf-8")
     css = re.search(r"<style>(.*?)</style>", page, re.S).group(1)
     persons = [
@@ -718,6 +783,7 @@ def test_list_with_printed_codes_in_a_real_browser_at_1280_and_390():
             "const store = {me: {time_zone: 'Europe/Rome'}, categories: " + json.dumps(CATEGORIES) + ", persons: []};",
             "const persons = " + json.dumps(persons) + ";",
             _declarations(DATES + SORT + TABLE),
+            'document.head.insertAdjacentHTML("beforeend", `<style>${personColumnCss()}</style>`);',
         ]
     )
     html = (
@@ -735,7 +801,7 @@ def test_list_with_printed_codes_in_a_real_browser_at_1280_and_390():
     assert all(case["scroll"] for case in out.values()), out
     wide = out["wide"]
     assert wide["column"] is True and wide["rows"] == 5
-    assert wide["codes"] == ["Riserva Magazzino Lunga", "Ciccio", "Ávila  7", "cICCIObello"]
+    assert wide["codes"] == ["Riserva Magazzino Lunga", "Delta", "Ávila  7", "dELTAnord"]
     # Ogni numero intero, anche quello di una tessera senza codice (Verdi); nessuno per chi non ha tessere (Bruni)
     assert wide["numbers"] == [
         ["04aab2c200993f", True],
@@ -749,9 +815,12 @@ def test_list_with_printed_codes_in_a_real_browser_at_1280_and_390():
         assert int(case["code"]["weight"]) >= 600
         assert float(case["number"]["size"].removesuffix("px")) < float(case["code"]["size"].removesuffix("px"))
         assert case["number"]["color"] != case["code"]["color"]
-    assert out["wide_dark"]["codes"] == ["Ciccio", "Ávila  7", "cICCIObello"]
-    # Riquadro stretto: la colonna lascia il posto, tranne quando la ricerca trova delle tessere
+    assert out["wide_dark"]["codes"] == ["Delta", "Ávila  7", "dELTAnord"]
+    # Riquadro stretto: la colonna lascia il posto (dopo Stato e Ultimo Accesso, che la seguono), tranne quando la
+    # ricerca trova delle tessere
     assert out["narrow"]["column"] is False and out["narrow"]["numbers"] == []
+    assert out["narrow"]["hide"] == "tessere accesso stato"
+    assert out["narrow_search"]["hide"] == "tipologia accesso stato"
     assert out["narrow_search"]["column"] is True
     assert out["narrow_search"]["numbers"] == [["04ab12cd", True], ["04ff0011", True], ["04dd2200", True]]
     assert out["narrow_by_date"]["column"] is True and out["narrow_by_date"]["numbers"] == [["04cc0099", True]]
@@ -759,7 +828,7 @@ def test_list_with_printed_codes_in_a_real_browser_at_1280_and_390():
     assert out["phone"]["column"] is None and out["phone"]["rows"] == 5 and out["phone"]["found"] == []
     assert out["phone"]["numbers"] == []
     assert out["phone_code"]["found"] == ["20", "22"]
-    assert out["phone_code"]["codes"] == ["Ciccio", "cICCIObello"]
+    assert out["phone_code"]["codes"] == ["Delta", "dELTAnord"]
     assert out["phone_code"]["numbers"] == [["04ab12cd", True], ["04dd2200", True]]
     assert int(out["phone_code"]["code"]["weight"]) >= 600
     # Codice lungo: si accorcia il codice, il numero cercato resta intero

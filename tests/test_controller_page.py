@@ -173,9 +173,9 @@ def test_notifications_group_repeated_events(db):
 
     # Tre tentativi della stessa persona a 2 minuti l'uno dall'altro: una notifica media con il conteggio
     for minutes in (20, 18, 16):
-        denied(minutes, person_id=1, person_name="Ciccio Bello")
+        denied(minutes, person_id=1, person_name="Elio Ferri")
     # Un quarto tentativo un'ora prima: troppo lontano, è un'altra notifica
-    denied(80, person_id=1, person_name="Ciccio Bello")
+    denied(80, person_id=1, person_name="Elio Ferri")
     # Tessera sconosciuta ripetuta: critica
     denied(5, card="c0110a01")
     denied(4, card="c0110a01")
@@ -191,7 +191,7 @@ def test_notifications_group_repeated_events(db):
     # Presa visione, poi un nuovo tentativo nella stessa finestra: la notifica torna da gestire
     service.mark_seen([group["id"]], items)
     assert service.listing(_collect(service))["open"] == 2
-    denied(15, person_id=1, person_name="Ciccio Bello")
+    denied(15, person_id=1, person_name="Elio Ferri")
     listing = service.listing(_collect(service))
     assert listing["open"] == 3
     assert next(i for i in listing["items"] if i["count"] == 4)["seen"] is False

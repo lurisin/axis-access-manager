@@ -39,7 +39,7 @@ DENIED = {
 GRANTED = {
     "CredentialToken": "Axis-b8a44fe6a074:1792889564.863735000",
     "CredentialType": "StandardCredential",
-    "CredentialHolderName": "utente_ciccio_bello_261025005209",
+    "CredentialHolderName": "utente_prova_banco_261025005209",
 }
 DOOR = {"DoorToken": "porta"}
 # (topic WebSocket, ora in ms, sorgente, dati) nell'ordine in cui sono arrivati al banco

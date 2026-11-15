@@ -375,6 +375,9 @@ class FakeCamera(HomeAssistant):
             return "", "telecamera non disponibile (risposta 503 di Home Assistant)"
         return f"{name}.jpg", ""
 
+    async def probe_camera(self, camera):
+        return "telecamera non disponibile (risposta 503 di Home Assistant)" if camera == "camera.spenta" else ""
+
 
 def test_one_snapshot_per_passage_and_always_on_remote_open(controller, tmp_path, monkeypatch):
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
@@ -420,13 +423,21 @@ def test_one_snapshot_per_passage_and_always_on_remote_open(controller, tmp_path
         assert len(ha.shots) == 4 and ha.shots[-1][0] == "camera.quadro"
         assert app.state.db.list_controllers()[0]["snapshot_camera"] == "camera.quadro"
 
-        # Telecamera spenta: l'evento dice perché manca la foto
+        # Telecamera spenta: l'evento dice perché manca la foto. La prima foto non riuscita di una telecamera ha la
+        # sua tolleranza (dopo un riavvio Home Assistant la carica in ritardo): l'app la ricontrolla e il guasto aspetta
         door = app.state.db.list_doors()[0]
         client.put(f"/api/doors/{door['id']}", json={**door, "snapshot_camera": "camera.spenta"})
         remote = event("apertura_remota")
         row = next(e for e in client.get("/api/events?limit=5").json() if e["id"] == remote)
         assert row["snapshot"] == "" and "503" in row["snapshot_error"]
+        assert "camera.spenta" not in app.state.snapshot_errors
+        assert app.state.camera_watch.watching == ["camera.spenta"]
+        # Passata la tolleranza il guasto si apre alla foto non riuscita, e la telecamera resta ricontrollata
+        app.state.camera_watch.started_at -= 120
+        app.state.camera_watch._down["camera.spenta"].grace_until -= 120
+        event("apertura_remota")
         assert app.state.snapshot_errors["camera.spenta"]["error"] == row["snapshot_error"]
+        assert app.state.camera_watch.watching == ["camera.spenta"]
 
 
 def test_snapshots_move_to_the_media_folder(tmp_path):

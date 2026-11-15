@@ -17,11 +17,11 @@ from test_page_morph import _has_playwright
 MIN_TEXT = 75
 
 PERSONS = [
-    ("Marta", "Colombo", "04a1b2c3d4e5f6", "Ciccio", "Sala Prove", "0042"),
-    ("Paolo", "Esposito", "04b2c3d4e5f6a7", "Cicciobello", "Biglietteria", "0107"),
+    ("Marta", "Colombo", "04a1b2c3d4e5f6", "Delta", "Sala Prove", "0042"),
+    ("Paolo", "Esposito", "04b2c3d4e5f6a7", "DeltaNord", "Biglietteria", "0107"),
     ("Giulia", "De Santis", "04c3d4e5f6a7b8", "A-07", "Sartoria", ""),
     ("Luca", "Ferrara", "04d4e5f6a7b8c9", "", "Tecnici di Palco", "0311"),
-    ("Sara", "Bernardi", "04e5f6a7b8c9d0", "1234", "", "0099"),
+    ("Sara", "Bernardi", "04e5f6a7b8c9d0", "4821", "", "0099"),
     ("Anna", "Villa", "", "", "Ufficio Stampa", ""),
 ]
 
@@ -89,11 +89,11 @@ def test_person_columns_in_the_real_page_with_the_menu_open_and_closed(plant, in
         for width in (900, 1024, 1280)
         for nav in (None, "0")
         for sort in ("cognome:asc", "modifica:desc")
-        for q in ("", "cic")
+        for q in ("", "delt")
     ]
     # Con la colonna dell'ordine che resta sempre (Ultimo Accesso, Matricola) e la ricerca che tiene Tessere
     cases += [
-        [width, nav, sort, "cic"]
+        [width, nav, sort, "delt"]
         for width in (900, 1024, 1280)
         for nav in (None, "0")
         for sort in ("accesso:desc", "matricola:asc")
@@ -119,7 +119,7 @@ def test_person_columns_in_the_real_page_with_the_menu_open_and_closed(plant, in
         column = {"modifica:desc": "Ultima Modifica", "accesso:desc": "Ultimo Accesso", "matricola:asc": "Matricola"}
         assert column.get(case["sort"], "Cognome") in case["heads"], name
         if case["q"]:
-            # La ricerca trova Ciccio e Cicciobello: Tessere in vista, con i numeri interi
+            # La ricerca trova Delta e DeltaNord: Tessere in vista, con i numeri interi
             assert case["rows"] == 2 and "Tessere" in case["heads"], name
             assert sorted(n for n, _ in case["numbers"]) == ["04a1b2c3d4e5f6", "04b2c3d4e5f6a7"], name
             assert all(whole for _, whole in case["numbers"]), name
@@ -141,6 +141,6 @@ def test_person_columns_in_the_real_page_with_the_menu_open_and_closed(plant, in
     assert len(wide["numbers"]) == 5 and all(whole for _, whole in wide["numbers"])
     assert "Tessere" in by[(1280, "0", "cognome:asc", "")]["heads"]
     # Riquadro stretto (900 px col menu aperto): con la ricerca Tessere prende il posto di Ultimo Accesso
-    narrow = by[(900, None, "cognome:asc", "cic")]
+    narrow = by[(900, None, "cognome:asc", "delt")]
     assert "Tessere" in narrow["heads"] and "Ultimo Accesso" not in narrow["heads"]
     assert "Tessere" not in by[(900, None, "cognome:asc", "")]["heads"]

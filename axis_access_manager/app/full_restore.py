@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
+import string
 
 from .backup import COMMON, context_of
 from .compare import (
@@ -67,7 +68,7 @@ def renamed_tokens(db) -> dict[str, str]:
 
 
 def _hex(value: str) -> str:
-    return "".join(ch for ch in value.lower() if ch in "0123456789abcdef")
+    return "".join(ch for ch in value.lower() if ch in string.hexdigits)
 
 
 def _uuids(part: dict) -> set[str]:
