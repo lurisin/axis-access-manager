@@ -579,12 +579,12 @@ async def test_recreated_name_with_double_spaces_is_split_like_a_new_one(plant, 
 async def test_backup_comparison_says_phone_and_email_changed_without_the_values(plant, db):
     anna = await plant.access.create_person("", "04aa", "admin", first_name="Anna", last_name="Rossi", phone=PHONE)
     await plant.backup()
-    await plant.access.update_person(anna["id"], "admin", phone="06 1234567", email=EMAIL)
+    await plant.access.update_person(anna["id"], "admin", phone="06 5550190", email=EMAIL)
     second = await plant.backup()
 
     result = await plant.backups.compare(second["id"], "precedente", plant.clients)
 
-    assert assert_no_secret(result) and "1234567" not in json.dumps(result)
+    assert assert_no_secret(result) and "5550190" not in json.dumps(result)
     fields = [
         (f["label"], f["old"], f["new"])
         for group in result["groups"]
@@ -634,21 +634,21 @@ async def test_backup_of_0_28_2_against_a_new_one_shows_only_what_changed(plant,
         ("", ""),
         ("   ", ""),
         (f"  {PHONE} ", PHONE),
-        ("(06) 123-45.67/8", "(06) 123-45.67/8"),
-        ("123456", "123456"),
+        ("(06) 555-01.90/8", "(06) 555-01.90/8"),
+        ("482156", "482156"),
         ("1" * 30, "1" * 30),
         # Incollati da una pagina web, da un PDF o da Word: spazi non separabili (anche stretti), tabulazioni e spazi
         # doppi, trattini tipografici, segni di direzione del testo (WhatsApp Web) e spazi di larghezza zero
-        ("333\u00a01234567", "333 1234567"),
-        ("+39\u202f333\u2007123\u00a04567", "+39 333 123 4567"),
-        ("333\t1234567", "333 1234567"),
-        ("  333   123  4567 ", "333 123 4567"),
-        ("06 \u2013 1234567", "06 - 1234567"),
-        ("06\u20101234\u2011567\u2212890\u2014", "06-1234-567-890-"),
-        ("\u202a+39 333 1234567\u202c", "+39 333 1234567"),
-        ("\ufeff333\u200b123\u00ad4567\u200e", "3331234567"),
+        ("333\u00a05550190", "333 5550190"),
+        ("+39\u202f333\u2007555\u00a00190", "+39 333 555 0190"),
+        ("333\t5550190", "333 5550190"),
+        ("  333   555  0190 ", "333 555 0190"),
+        ("06 \u2013 5550190", "06 - 5550190"),
+        ("06\u20104821\u2011567\u2212890\u2014", "06-4821-567-890-"),
+        ("\u202a+39 333 5550190\u202c", "+39 333 5550190"),
+        ("\ufeff333\u200b555\u00ad0190\u200e", "3335550190"),
         # Il massimo di 30 caratteri vale dopo la pulizia
-        ("+39  333  1234  5678  9012  345", "+39 333 1234 5678 9012 345"),
+        ("+39  333  4821  5678  9012  345", "+39 333 4821 5678 9012 345"),
     ],
 )
 def test_valid_phones(value, expected):
@@ -658,10 +658,10 @@ def test_valid_phones(value, expected):
 @pytest.mark.parametrize(
     ("value", "reason"),
     [
-        ("12345", "almeno 6 cifre"),
+        ("48215", "almeno 6 cifre"),
         ("+39 333 abc 4567", "ammessi"),
-        ("333#1234567", "ammessi"),
-        ("333\u20201234567", "ammessi"),
+        ("333#5550190", "ammessi"),
+        ("333\u20205550190", "ammessi"),
         ("1" * 31, "massimo 30"),
         ("+-./() ", "almeno 6 cifre"),
     ],
@@ -676,13 +676,13 @@ async def test_pasted_phone_and_email_are_saved_clean(service, db):
     """Telefono ed email copiati da una pagina web o da Word, con lo spazio non separabile e il trattino lungo: si
     salvano puliti, come scritti a mano, invece di un errore che dice che gli spazi sono ammessi."""
     person = await service.create_person(
-        "", "", "admin", first_name="Giulia", last_name="Bianchi", phone="333\u00a01234567", email=f"{EMAIL}\u00a0"
+        "", "", "admin", first_name="Giulia", last_name="Bianchi", phone="333\u00a05550190", email=f"{EMAIL}\u00a0"
     )
-    assert (person["phone"], person["email"]) == ("333 1234567", EMAIL)
-    person = await service.update_person(person["id"], "admin", phone="06 \u2013 1234567", email=f"\u00a0{EMAIL}")
-    assert (person["phone"], person["email"]) == ("06 - 1234567", EMAIL)
+    assert (person["phone"], person["email"]) == ("333 5550190", EMAIL)
+    person = await service.update_person(person["id"], "admin", phone="06 \u2013 5550190", email=f"\u00a0{EMAIL}")
+    assert (person["phone"], person["email"]) == ("06 - 5550190", EMAIL)
     # Lo stesso telefono scritto con lo spazio normale non è una modifica
-    await service.update_person(person["id"], "admin", phone="06\u00a0-\u00a01234567")
+    await service.update_person(person["id"], "admin", phone="06\u00a0-\u00a05550190")
     assert [a["detail"] for a in db.list_audit()].count("Giulia Bianchi: telefono") == 1
 
 
@@ -840,34 +840,34 @@ async def test_events_and_home_assistant_never_carry_phone_or_email(service, con
 
 async def test_exported_file_has_phone_and_email_and_imports_as_before(service, db):
     await service.create_person(
-        "", "04aa", "admin", first_name="Mario", last_name="Rossi", phone="0612345678", email="mario@example.it"
+        "", "04aa", "admin", first_name="Mario", last_name="Rossi", phone="0655501908", email="mario@example.it"
     )
     anna = await service.create_person("", "", "admin", first_name="Anna", last_name="Maria Bianchi", phone=PHONE)
-    await service.create_person("", "", "admin", first_name="Ugo", last_name="Neri", phone="06.123.456")
-    await service.create_person("", "", "admin", first_name="Ada", last_name="Neri", phone="(06) 123-4567")
+    await service.create_person("", "", "admin", first_name="Ugo", last_name="Neri", phone="06.555.019")
+    await service.create_person("", "", "admin", first_name="Ada", last_name="Neri", phone="(06) 555-0190")
     text = persons_csv(db.list_persons(), {"profilo_sempre": "Sempre"}, db.last_accesses())
     lines = text.lstrip("\ufeff").splitlines()
     assert lines[0].split(";")[-6:-1] == ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
     # Ogni telefono come formula di testo, perché il foglio di calcolo lo mostri com'è: lo zero iniziale resta, il + non
-    # ha davanti l'apostrofo che resterebbe in vista, «06.123.456» non diventa il numero 6123456. In fondo matricola e
+    # ha davanti l'apostrofo che resterebbe in vista, «06.555.019» non diventa il numero 6482156. In fondo matricola e
     # referente, qui vuoti, e il Codice Stampato della tessera (vedi test_card_code)
     by_name = {line.split(";")[0]: line for line in lines[1:]}
-    assert by_name["Mario Rossi"].endswith(';"=""0612345678""";mario@example.it;;;')
+    assert by_name["Mario Rossi"].endswith(';"=""0655501908""";mario@example.it;;;')
     assert by_name["Anna Maria Bianchi"] == f'Anna Maria Bianchi;;;;;;;;;;"=""{PHONE}""";;;;'
-    assert by_name["Ugo Neri"] == 'Ugo Neri;;;;;;;;;;"=""06.123.456""";;;;'
-    assert by_name["Ada Neri"] == 'Ada Neri;;;;;;;;;;"=""(06) 123-4567""";;;;'
+    assert by_name["Ugo Neri"] == 'Ugo Neri;;;;;;;;;;"=""06.555.019""";;;;'
+    assert by_name["Ada Neri"] == 'Ada Neri;;;;;;;;;;"=""(06) 555-0190""";;;;'
     rows = {row["nome"]: row for row in read_import(text)}
-    assert rows["Mario Rossi"]["telefono"] == "0612345678" and rows["Anna Maria Bianchi"]["telefono"] == PHONE
-    assert (rows["Ugo Neri"]["telefono"], rows["Ada Neri"]["telefono"]) == ("06.123.456", "(06) 123-4567")
+    assert rows["Mario Rossi"]["telefono"] == "0655501908" and rows["Anna Maria Bianchi"]["telefono"] == PHONE
+    assert (rows["Ugo Neri"]["telefono"], rows["Ada Neri"]["telefono"]) == ("06.555.019", "(06) 555-0190")
 
     # Reimportato com'è: niente da fare; telefono ed email del file non contano
     result = await import_persons(service, text, GROUPS, "admin", apply=False)
     assert result["riepilogo"] == {"righe": 4, "ok": 0, "aggiornate": 0, "saltate": 4, "errori": 0}
-    changed = text.replace("mario@example.it", "altro@example.it").replace("0612345678", "0698765432")
+    changed = text.replace("mario@example.it", "altro@example.it").replace("0655501908", "0698765432")
     result = await import_persons(service, changed, GROUPS, "admin", apply=True)
     assert result["riepilogo"]["saltate"] == 4
     mario = next(p for p in db.all_persons() if p["name"] == "Mario Rossi")
-    assert (mario["phone"], mario["email"]) == ("0612345678", "mario@example.it")
+    assert (mario["phone"], mario["email"]) == ("0655501908", "mario@example.it")
     # Una persona nuova dal file: il nome completo diviso al primo spazio, telefono ed email non si importano
     await service.delete_person(anna["id"], "admin")
     result = await import_persons(service, text, GROUPS, "admin", apply=True)
@@ -882,7 +882,7 @@ async def test_exported_file_has_phone_and_email_and_imports_as_before(service, 
 PERSONS = [
     {"id": 1, "name": "Mario Rossi", "first_name": "Mario", "last_name": "Rossi", "phone": PHONE, "email": EMAIL},
     {"id": 2, "name": "Zeno Abate", "first_name": "Zeno", "last_name": "Abate"},
-    {"id": 3, "name": "Bruno Bianchi", "first_name": "Bruno", "last_name": "Bianchi", "phone": "(06) 123-4567"},
+    {"id": 3, "name": "Bruno Bianchi", "first_name": "Bruno", "last_name": "Bianchi", "phone": "(06) 555-0190"},
     {"id": 4, "name": "Ospite", "first_name": "Ospite", "last_name": ""},
     {"id": 5, "name": "anna bianchi", "first_name": "anna", "last_name": "bianchi"},
     {"id": 6, "name": "Élodie Àlvarez", "first_name": "Élodie", "last_name": "Àlvarez", "company": "Pulizie Srl"},
@@ -899,7 +899,7 @@ def test_persons_are_sorted_by_last_name_and_found_by_phone_and_email():
         "phone": "3339876543",
         "spaced": "333 987",
         "prefix": "+39333",
-        "landline": "061234567",
+        "landline": "065550190",
         "email": "RISERVATA@example",
         "reversed": "rossi mario",
         "accent": "alvarez",
@@ -953,9 +953,9 @@ def test_page_cleans_pasted_phone_and_email_like_the_server():
     separabile, trattino lungo di Word, segni invisibili), l'email anche senza spazi ai lati, che il browser
     rifiuterebbe prima dell'invio. Il telefono che si sta scrivendo tiene i suoi spazi, anche in fondo."""
     values = {
-        "nbsp": ("phone", "333 1234567"),
-        "endash": ("phone", "06 – 1234567"),
-        "marks": ("phone", "‪+39 333 1234567‬"),
+        "nbsp": ("phone", "333 5550190"),
+        "endash": ("phone", "06 – 5550190"),
+        "marks": ("phone", "‪+39 333 5550190‬"),
         "typing": ("phone", "333 "),
         "email": ("email", f" {EMAIL} "),
         "invisible": ("email", f"﻿{EMAIL}​"),
@@ -963,9 +963,9 @@ def test_page_cleans_pasted_phone_and_email_like_the_server():
     calls = {key: f"cleanContact({json.dumps(kind)}, {json.dumps(text)})" for key, (kind, text) in values.items()}
     out = run_page("Europe/Rome", calls, names=("INVISIBLE_MARKS", "cleanContact"))
     assert out == {
-        "nbsp": "333 1234567",
-        "endash": "06 - 1234567",
-        "marks": "+39 333 1234567",
+        "nbsp": "333 5550190",
+        "endash": "06 - 5550190",
+        "marks": "+39 333 5550190",
         "typing": "333 ",
         "email": EMAIL,
         "invisible": EMAIL,

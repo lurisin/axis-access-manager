@@ -24,9 +24,9 @@ PERSONS = [
         "Colombo",
         "0042",
         "Sala Prove",
-        "+39 06 5550 1234",
+        "+39 06 5550 4821",
         "marta.colombo@esempio.it",
-        "Ciccio",
+        "Delta",
         "04a1b2c3d4e5f6",
     ),
     ("Paolo", "Esposito", "0107", "Biglietteria", "347 555 0101", "", "", "04b2c3d4e5f6a7"),
@@ -348,7 +348,7 @@ def test_columns_chosen_with_keyboard_mouse_and_finger_follow_the_user(plant, in
     assert phone["touch"]["order"][:2] == ["telefono+", "foto+"]
     assert phone["touch"]["said"] == "Telefono: posizione 1 di 15"
     for name in ("saved", "reloaded"):
-        assert "+39 06 5550 1234 · Matricola 0042" in phone[name]["rows"], name
+        assert "+39 06 5550 4821 · Matricola 0042" in phone[name]["rows"], name
         assert "347 555 0101 · Matricola 0107" in phone[name]["rows"], name
         assert not phone[name]["scroll"], name
     # Dal computer lo stesso utente ritrova la sua scelta

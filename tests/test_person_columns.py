@@ -260,12 +260,12 @@ PEOPLE = [
         "Rossi",
         employee_id="0042",
         company="Teatro",
-        phone="+39 06 5550 1234",
+        phone="+39 06 5550 4821",
         email="mario.rossi+sala@esempio.it",
         referent="Direzione di Sala",
         notes="Chiavi del magazzino\n  scenografie <B>",
         category_id=1,
-        cards=[{"id": 1, "number": "04ab12cd", "printed_code": "Ciccio"}, {"id": 2, "number": "04ff0011"}],
+        cards=[{"id": 1, "number": "04ab12cd", "printed_code": "Delta"}, {"id": 2, "number": "04ff0011"}],
         last_access="2026-11-12T10:00:00+00:00",
         created_at="2026-01-10T09:00:00+00:00",
         updated_at="2026-11-13T11:55:00+00:00",
@@ -285,7 +285,7 @@ PRELUDE = f"store.categories = {json.dumps(CATEGORIES)}; const persons = {json.d
             ["telefono", "cognome", "nome", "email", "note"],
             "nome",
             "",
-            ["+39 06 5550 1234 · mario.rossi+sala@esempio.it", "", ""],
+            ["+39 06 5550 4821 · mario.rossi+sala@esempio.it", "", ""],
         ),  # fmt: skip
         # Foto, Cognome, Nome e Stato la riga li ha già; le note su una riga
         (
@@ -298,18 +298,18 @@ PRELUDE = f"store.categories = {json.dumps(CATEGORIES)}; const persons = {json.d
             ["cognome", "nome", "tessere", "accesso"],
             "cognome",
             "",
-            ["Ciccio, 04ff0011 · Ultimo accesso ieri 11:00", "", ""],
+            ["Delta, 04ff0011 · Ultimo accesso ieri 11:00", "", ""],
         ),  # fmt: skip
         # Le tessere trovate dalla ricerca sono già sotto il nome
         (
             ["cognome", "nome", "tessere", "inserimento"],
             "cognome",
-            "cicc",
+            "delt",
             ["Inserita il 10/01/2026", *["Inserita il 01/10/2026"] * 2],
         ),
         # Con un altro ordine il valore usato per ordinare, come prima
         (["cognome", "nome", "telefono"], "matricola", "", ["Matricola 0042", "Senza matricola", "Senza matricola"]),
-        (DEFAULT, "telefono", "", ["+39 06 5550 1234", "Senza telefono", "Senza telefono"]),
+        (DEFAULT, "telefono", "", ["+39 06 5550 4821", "Senza telefono", "Senza telefono"]),
         (DEFAULT, "referente", "", ["Referente Direzione di Sala", "Senza referente", "Senza referente"]),
         (DEFAULT, "email", "", ["mario.rossi+sala@esempio.it", "Senza email", "Senza email"]),
     ],
@@ -357,7 +357,7 @@ def test_table_with_the_chosen_columns_in_their_order():
     cells = re.findall(r"<td class=\"(c-[a-z]+)\"", row)
     assert cells == [c.replace("c-", "c-") for c in heads]
     # Telefono ed email come nella scheda, per chiamare e scrivere
-    assert '<td class="c-phone" title="+39 06 5550 1234"><a href="tel:+390655501234">+39 06 5550 1234</a></td>' in row
+    assert '<td class="c-phone" title="+39 06 5550 4821"><a href="tel:+390655504821">+39 06 5550 4821</a></td>' in row
     assert (
         '<td class="c-email" title="mario.rossi+sala@esempio.it"><a href="mailto:mario.rossi%2Bsala@esempio.it">'
         "mario.rossi+sala@esempio.it</a></td>"

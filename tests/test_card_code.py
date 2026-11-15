@@ -1,5 +1,5 @@
 """Codice Stampato delle tessere (cards.printed_code, 0.28.3): quello che c'è scritto sopra la tessera fisica, messo da
-chi la consegna perché le tessere sono tutte bianche («Ciccio», «1234», «A-07»). Facoltativo, unico senza badare alle
+chi la consegna perché le tessere sono tutte bianche («Delta», «4821», «A-07»). Facoltativo, unico senza badare alle
 maiuscole, solo nell'app: mai sul controller (né utenti né tessere: desired.build e il confronto in ombra non cambiano)
 e mai in Home Assistant. Non è un dato personale: lo vede chi vede le tessere e, accanto al numero, chi vede il
 registro (il codice di adesso della tessera, il registro salva solo il numero).
@@ -96,15 +96,15 @@ def post(client, url: str, body: dict, headers=ADMIN):
         (None, ""),
         ("", ""),
         ("   ", ""),
-        ("  Ciccio ", "Ciccio"),
-        ("1234", "1234"),
+        ("  Delta ", "Delta"),
+        ("4821", "4821"),
         ("0042", "0042"),
         ("A-07", "A-07"),
         # Spazi interni compattati, anche non separabili, tabulazioni e a capo
         ("Sala   Prove", "Sala Prove"),
         ("Turno\tB\nNotte", "Turno B Notte"),
         # Caratteri invisibili di un testo incollato
-        ("​Cic­cio﻿", "Ciccio"),
+        ("​Del­ta﻿", "Delta"),
         ("x" * 30, "x" * 30),
         ('Tessera "Ospite"', 'Tessera "Ospite"'),
     ],
@@ -117,7 +117,7 @@ def test_the_code_is_cleaned_like_the_other_fields(value, expected):
     ("value", "message"),
     [
         ("x" * 31, "Codice Stampato troppo lungo (massimo 30 caratteri)"),
-        ("Cic\x07cio", "Codice Stampato non valido: contiene caratteri di controllo"),
+        ("Del\x07ta", "Codice Stampato non valido: contiene caratteri di controllo"),
     ],
 )
 def test_a_too_long_code_or_control_characters_are_refused(value, message):
@@ -157,7 +157,7 @@ def test_a_database_already_at_schema_10_gets_the_code(tmp_path, caplog):
         assert codes(db) == {"04AA": ""}
         assert "cards_printed_code" in indexes(db)
         assert "Codice Stampato aggiunto alle tessere" in caplog.text
-        db.set_card_printed_code(card_of(db, "04aa")["id"], "Ciccio")
+        db.set_card_printed_code(card_of(db, "04aa")["id"], "Delta")
     finally:
         db.close()
     # Di nuovo: niente da aggiungere, il codice resta
@@ -165,7 +165,7 @@ def test_a_database_already_at_schema_10_gets_the_code(tmp_path, caplog):
     with caplog.at_level(logging.INFO):
         db = Database(path, "0.28.3")
     try:
-        assert codes(db) == {"04AA": "Ciccio"}
+        assert codes(db) == {"04AA": "Delta"}
         assert "Codice Stampato" not in caplog.text
     finally:
         db.close()
@@ -195,10 +195,10 @@ def test_two_equal_codes_put_in_by_hand_do_not_stop_the_app(tmp_path, caplog, co
     person = database_without_code(path)
     conn = sqlite3.connect(path)
     conn.execute("ALTER TABLE cards ADD COLUMN printed_code TEXT NOT NULL DEFAULT ''")
-    conn.execute("UPDATE cards SET printed_code = 'ciccio'")
+    conn.execute("UPDATE cards SET printed_code = 'delta'")
     conn.execute(
         "INSERT INTO cards (person_id, number, enabled, axis_credential_token, created_at, printed_code) "
-        "VALUES (?, '04BB', 1, 'cred-2', ?, 'CICCIO')",
+        "VALUES (?, '04BB', 1, 'cred-2', ?, 'DELTA')",
         (person, TS),
     )
     conn.commit()
@@ -211,41 +211,41 @@ def test_two_equal_codes_put_in_by_hand_do_not_stop_the_app(tmp_path, caplog, co
         # Il servizio non ne lascia scrivere un altro uguale
         service = AccessService(db, controller, settings)
         with pytest.raises(ServiceError, match="già usato dalla tessera di Mario Rossi"):
-            service.check_printed_code("Ciccio")
+            service.check_printed_code("Delta")
     finally:
         db.close()
 
 
 def test_the_database_refuses_the_same_code_in_other_letters(db):
     mario = db.add_person("Mario Rossi", None)
-    db.add_card(mario, "04AA", "cred-1", printed_code="Ciccio")
+    db.add_card(mario, "04AA", "cred-1", printed_code="Delta")
     db.add_card(mario, "04BB", "cred-2")
     db.add_card(mario, "04CC", "cred-3")
     with pytest.raises(sqlite3.IntegrityError):
-        db.set_card_printed_code(card_of(db, "04bb")["id"], "cICCIO")
+        db.set_card_printed_code(card_of(db, "04bb")["id"], "dELTA")
     # Tessere senza codice quante se ne vuole
-    assert sorted(codes(db).values()) == ["", "", "Ciccio"]
+    assert sorted(codes(db).values()) == ["", "", "Delta"]
 
 
 # Unicità
 
 
 async def test_the_same_code_in_other_letters_names_who_has_it(service, controller, db):
-    await service.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio")
+    await service.create_person("Mario Rossi", "04aa", "admin", printed_code="Delta")
     anna = await service.create_person("Anna Bianchi", "", "admin")
     calls = list(controller.calls)
     with pytest.raises(ServiceError) as err:
-        await service.add_card(anna["id"], "04bb", "admin", printed_code="  CICCIO ")
+        await service.add_card(anna["id"], "04bb", "admin", printed_code="  DELTA ")
     assert str(err.value) == "Codice Stampato già usato dalla tessera di Mario Rossi"
     # Controllato prima di scrivere sul controller: niente tessera, né sul controller né nell'app
-    assert controller.calls == calls and codes(db) == {"04aa": "Ciccio"}
+    assert controller.calls == calls and codes(db) == {"04aa": "Delta"}
     with pytest.raises(ServiceError, match="già usato dalla tessera di Mario Rossi"):
-        await service.create_person("Ugo Neri", "04cc", "admin", printed_code="ciccio")
+        await service.create_person("Ugo Neri", "04cc", "admin", printed_code="delta")
     assert controller.calls == calls and len(db.all_persons()) == 2
     # Lo stesso codice sulla stessa tessera non è un doppione
     card = card_of(db, "04aa")
-    service.set_card_printed_code(card["id"], "ciccio", "admin")
-    assert codes(db) == {"04aa": "ciccio"}
+    service.set_card_printed_code(card["id"], "delta", "admin")
+    assert codes(db) == {"04aa": "delta"}
 
 
 # Permessi e API
@@ -256,7 +256,7 @@ def test_who_sees_the_cards_sees_the_code_and_only_who_edits_persons_changes_it(
     card = person["cards"][0]
     url = f"/api/cards/{card['id']}"
     for headers in (VIEWER, LOG_ONLY):
-        assert client.patch(url, json={"printed_code": "Ciccio"}, headers=headers).status_code == 403
+        assert client.patch(url, json={"printed_code": "Delta"}, headers=headers).status_code == 403
         assert (
             post(
                 client, f"/api/persons/{person['id']}/cards", {"card": "04bb", "printed_code": "X"}, headers
@@ -265,11 +265,11 @@ def test_who_sees_the_cards_sees_the_code_and_only_who_edits_persons_changes_it(
         )
         body = {"first_name": "Anna", "card": "04cc", "printed_code": "Y"}
         assert post(client, "/api/persons", body, headers).status_code == 403
-    assert client.patch(url, json={"printed_code": "Ciccio"}, headers=ADMIN).status_code == 200
+    assert client.patch(url, json={"printed_code": "Delta"}, headers=ADMIN).status_code == 200
     # Chi vede le persone vede il codice di ogni tessera, nell'elenco e nella scheda
     listed = client.get("/api/persons", headers=VIEWER).json()
-    assert listed[0]["cards"][0]["printed_code"] == "Ciccio"
-    assert client.get(f"/api/persons/{person['id']}", headers=VIEWER).json()["cards"][0]["printed_code"] == "Ciccio"
+    assert listed[0]["cards"][0]["printed_code"] == "Delta"
+    assert client.get(f"/api/persons/{person['id']}", headers=VIEWER).json()["cards"][0]["printed_code"] == "Delta"
     assert client.get("/api/persons", headers=LOG_ONLY).status_code == 403
 
 
@@ -281,8 +281,8 @@ def test_every_write_point_of_the_page(client):
     ).json()
     assert mario["cards"][0]["printed_code"] == "0042"
     # Aggiungi Tessera della scheda
-    response = post(client, f"/api/persons/{mario['id']}/cards", {"card": "04ab", "printed_code": "Ciccio"})
-    assert response.status_code == 200 and codes(db)["04ab"] == "Ciccio"
+    response = post(client, f"/api/persons/{mario['id']}/cards", {"card": "04ab", "printed_code": "Delta"})
+    assert response.status_code == 200 and codes(db)["04ab"] == "Delta"
     # Senza codice resta senza, come prima
     assert post(client, f"/api/persons/{mario['id']}/cards", {"card": "04ac"}).status_code == 200
     assert codes(db)["04ac"] == ""
@@ -292,15 +292,15 @@ def test_every_write_point_of_the_page(client):
     body = {"first_name": "Anna", "last_name": "Bianchi", "card": "04DD", "printed_code": "A-07"}
     anna = post(client, "/api/persons", body).json()
     assert anna["cards"][0]["printed_code"] == "A-07"
-    response = post(client, f"/api/persons/{anna['id']}/cards", {"card": "04EE", "printed_code": "1234"})
-    assert response.status_code == 200 and codes(db)["04EE"] == "1234"
+    response = post(client, f"/api/persons/{anna['id']}/cards", {"card": "04EE", "printed_code": "4821"})
+    assert response.status_code == 200 and codes(db)["04EE"] == "4821"
     assert db.list_unknown_cards() == []
     # Senza tessera il codice non ha dove stare
     response = post(client, "/api/persons", {"first_name": "Ugo", "printed_code": "Z9"})
     assert response.status_code == 400 and "senza tessera" in response.json()["detail"]
     assert all(p["name"] != "Ugo" for p in db.all_persons())
     # Doppione: il messaggio dice di chi è la tessera
-    response = post(client, "/api/persons", {"first_name": "Ugo", "card": "04ff", "printed_code": "ciccio"})
+    response = post(client, "/api/persons", {"first_name": "Ugo", "card": "04ff", "printed_code": "delta"})
     assert response.status_code == 400
     assert response.json()["detail"] == "Codice Stampato già usato dalla tessera di Mario Rossi"
     response = post(client, "/api/persons", {"first_name": "Ugo", "card": "04ff", "printed_code": "x" * 31})
@@ -316,12 +316,12 @@ def test_patch_of_a_card_keeps_the_old_body_and_takes_the_code(client, controlle
     response = client.patch(url, json={"enabled": False}, headers=ADMIN)
     assert response.status_code == 200 and response.json()["cards"][0]["enabled"] is False
     assert ("disable_credential", card["axis_credential_token"]) in controller.calls
-    response = client.patch(url, json={"printed_code": "Ciccio"}, headers=ADMIN)
-    assert response.status_code == 200 and response.json()["cards"][0]["printed_code"] == "Ciccio"
+    response = client.patch(url, json={"printed_code": "Delta"}, headers=ADMIN)
+    assert response.status_code == 200 and response.json()["cards"][0]["printed_code"] == "Delta"
     # Tutti e due insieme
-    response = client.patch(url, json={"enabled": True, "printed_code": "1234"}, headers=ADMIN)
+    response = client.patch(url, json={"enabled": True, "printed_code": "4821"}, headers=ADMIN)
     assert response.status_code == 200
-    assert (card_of(db, "04aa")["enabled"], card_of(db, "04aa")["printed_code"]) == (True, "1234")
+    assert (card_of(db, "04aa")["enabled"], card_of(db, "04aa")["printed_code"]) == (True, "4821")
     # Un codice rifiutato non lascia mezza modifica: la tessera resta attiva, sul controller non si scrive
     calls = list(controller.calls)
     response = client.patch(url, json={"enabled": False, "printed_code": "x" * 31}, headers=ADMIN)
@@ -341,34 +341,34 @@ async def test_only_the_code_never_calls_the_controller_and_does_not_wait_for_it
     with watch(db, clock) as step:
         # Anche mentre un'altra operazione aspetta il controller (lock preso)
         async with service.lock:
-            person = await service.update_card(card["id"], "admin", printed_code="Ciccio")
-    assert person["cards"][0]["printed_code"] == "Ciccio"
+            person = await service.update_card(card["id"], "admin", printed_code="Delta")
+    assert person["cards"][0]["printed_code"] == "Delta"
     assert (controller.calls, controller.reads, controller.attempts) == (calls, reads, attempts)
     # Ultima Modifica della persona e Attività con i valori
     assert step.changed() == {mario["id"]}
-    assert audit_details(db) == ["Mario Rossi, codice stampato della tessera 04aa: — → Ciccio"]
+    assert audit_details(db) == ["Mario Rossi, codice stampato della tessera 04aa: — → Delta"]
     # Lo stesso codice (anche con gli spazi): niente
     with watch(db, clock) as step:
-        service.set_card_printed_code(card["id"], " Ciccio ", "admin")
+        service.set_card_printed_code(card["id"], " Delta ", "admin")
     assert step.changed() == set() and len(audit_details(db)) == 1
     # Cambiato e tolto
     with watch(db, clock) as step:
-        service.set_card_printed_code(card["id"], "1234", "admin")
+        service.set_card_printed_code(card["id"], "4821", "admin")
     assert step.changed() == {mario["id"]}
     service.set_card_printed_code(card["id"], "", "admin")
     assert audit_details(db)[:2] == [
-        "Mario Rossi, codice stampato della tessera 04aa: 1234 → —",
-        "Mario Rossi, codice stampato della tessera 04aa: Ciccio → 1234",
+        "Mario Rossi, codice stampato della tessera 04aa: 4821 → —",
+        "Mario Rossi, codice stampato della tessera 04aa: Delta → 4821",
     ]
     assert (controller.calls, controller.attempts) == (calls, attempts)
 
 
 async def test_adding_a_card_with_a_code_tells_it_in_the_activity(service, db):
-    await service.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio")
+    await service.create_person("Mario Rossi", "04aa", "admin", printed_code="Delta")
     anna = await service.create_person("Anna Bianchi", "", "admin")
     await service.add_card(anna["id"], "04bb", "admin", printed_code="A-07")
     details = [row["detail"] for row in db.list_audit()]
-    assert "Mario Rossi, tessera 04aa, codice stampato Ciccio" in details
+    assert "Mario Rossi, tessera 04aa, codice stampato Delta" in details
     assert "Anna Bianchi, tessera 04bb, codice stampato A-07" in details
 
 
@@ -376,24 +376,24 @@ async def test_adding_a_card_with_a_code_tells_it_in_the_activity(service, db):
 
 
 async def test_synchronization_never_takes_the_code_away(service, controller, db, clock):
-    mario = await service.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio")
-    anna = await service.create_person("Anna Bianchi", "04bb", "admin", printed_code="1234")
+    mario = await service.create_person("Mario Rossi", "04aa", "admin", printed_code="Delta")
+    anna = await service.create_person("Anna Bianchi", "04bb", "admin", printed_code="4821")
     token = mario["cards"][0]["axis_credential_token"]
     await service.sync_from_controller()
-    assert codes(db) == {"04aa": "Ciccio", "04bb": "1234"}
+    assert codes(db) == {"04aa": "Delta", "04bb": "4821"}
 
     # Passata sul controller ad Anna (stessa tessera, utente diverso): la tessera fisica è la stessa
     controller.credentials[token]["UserToken"] = anna["axis_user_token"]
     await service.sync_from_controller()
     card = card_of(db, "04aa")
-    assert card["person_id"] == anna["id"] and card["printed_code"] == "Ciccio"
+    assert card["person_id"] == anna["id"] and card["printed_code"] == "Delta"
 
     # Tolta sul controller e scritta di nuovo, con un token nuovo, per un utente nuovo: è sempre quella tessera
     controller.credentials.pop(token)
     controller.add_existing("utente_ugo", "Ugo Neri", "04AA")
     await service.sync_from_controller()
     card = card_of(db, "04aa")
-    assert card["axis_credential_token"] != token and card["printed_code"] == "Ciccio"
+    assert card["axis_credential_token"] != token and card["printed_code"] == "Delta"
     assert db.get_person(card["person_id"])["name"] == "Ugo Neri"
 
     # Il numero di Anna passato sul controller a un'altra tessera: il codice scritto su quella tessera passa con lui
@@ -402,27 +402,27 @@ async def test_synchronization_never_takes_the_code_away(service, controller, db
     controller.credentials.pop(anna_card["axis_credential_token"])
     controller.credentials[ugo_token]["IdData"] = [{"Name": "Card", "Value": "04bb"}]
     await service.sync_from_controller()
-    assert codes(db) == {"04bb": "1234"} and db.card_by_token(ugo_token)["printed_code"] == "1234"
+    assert codes(db) == {"04bb": "4821"} and db.card_by_token(ugo_token)["printed_code"] == "4821"
 
     # Un numero corretto sul controller, senza un'altra tessera nell'app: il codice resta
     controller.credentials[ugo_token]["IdData"] = [{"Name": "Card", "Value": "04bc"}]
     await service.sync_from_controller()
-    assert codes(db) == {"04bc": "1234"}
+    assert codes(db) == {"04bc": "4821"}
 
     # Il numero passato a una tessera dell'app senza codice: su quella tessera fisica non c'è scritto niente, e il
-    # codice dell'altra non la segue (prima diventava «1234», come se fosse scritto anche lì)
+    # codice dell'altra non la segue (prima diventava «4821», come se fosse scritto anche lì)
     bruno = await service.create_person("Bruno Verdi", "04dd", "admin")
     controller.credentials.pop(bruno["cards"][0]["axis_credential_token"])
     controller.credentials[ugo_token]["IdData"] = [{"Name": "Card", "Value": "04dd"}]
     await service.sync_from_controller()
     assert codes(db) == {"04dd": ""} and db.card_by_token(ugo_token)["printed_code"] == ""
-    await service.add_card(bruno["id"], "04ee", "admin", printed_code="1234")
+    await service.add_card(bruno["id"], "04ee", "admin", printed_code="4821")
 
     # Giri senza novità: niente cambia, neanche l'Ultima Modifica
     with watch(db, clock) as step:
         await service.sync_from_controller()
         await service.sync_from_controller()
-    assert step.changed() == set() and codes(db) == {"04dd": "", "04ee": "1234"}
+    assert step.changed() == set() and codes(db) == {"04dd": "", "04ee": "4821"}
 
 
 def set_number(controller, token: str, number: str) -> None:
@@ -505,8 +505,8 @@ def test_codes_swapped_between_two_cards_in_one_write(db):
 
 
 async def test_rewriting_a_missing_card_keeps_the_code_and_removing_it_takes_it_away(service, controller, db):
-    mario = await service.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio")
-    await service.add_card(mario["id"], "04ab", "admin", printed_code="1234")
+    mario = await service.create_person("Mario Rossi", "04aa", "admin", printed_code="Delta")
+    await service.add_card(mario["id"], "04ab", "admin", printed_code="4821")
     first = card_of(db, "04aa")
     controller.credentials.pop(first["axis_credential_token"])
     await service.sync_from_controller()
@@ -515,17 +515,17 @@ async def test_rewriting_a_missing_card_keeps_the_code_and_removing_it_takes_it_
     result = await service.restore_missing("admin")
     assert result["restored"] == 1
     again = card_of(db, "04aa")
-    assert again["axis_credential_token"] != first["axis_credential_token"] and again["printed_code"] == "Ciccio"
+    assert again["axis_credential_token"] != first["axis_credential_token"] and again["printed_code"] == "Delta"
     # Non presente e tolta dall'app: il codice se ne va con la riga, e un'altra tessera lo può avere
     controller.credentials.pop(again["axis_credential_token"])
     await service.sync_from_controller()
     service.forget_missing("admin", [again["id"]])
-    assert codes(db) == {"04ab": "1234"}
-    await service.add_card(mario["id"], "04ac", "admin", printed_code="ciccio")
+    assert codes(db) == {"04ab": "4821"}
+    await service.add_card(mario["id"], "04ac", "admin", printed_code="delta")
     # Eliminata dalla scheda: lo stesso
     await service.delete_card(card_of(db, "04ab")["id"], "admin")
-    assert codes(db) == {"04ac": "ciccio"}
-    await service.add_card(mario["id"], "04ad", "admin", printed_code="1234")
+    assert codes(db) == {"04ac": "delta"}
+    await service.add_card(mario["id"], "04ad", "admin", printed_code="4821")
 
 
 # Backup e ripristino
@@ -545,34 +545,34 @@ def changes_of(items: list[dict]) -> dict[str, list[tuple[str, str, str]]]:
 
 
 async def test_the_code_is_in_new_backups_and_comes_back(plant, db):
-    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio")
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Delta")
     await plant.access.add_card(mario["id"], "04ab", "admin")
     backup = await plant.backup()
     raw = json.dumps(plant.backups.load(backup["id"]))
-    assert '"printed_code": "Ciccio"' in raw
+    assert '"printed_code": "Delta"' in raw
     plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "Altro", "admin")
     plant.access.set_card_printed_code(card_of(db, "04ab")["id"], "Nuovo", "admin")
     items, result = await plant.restore(backup["id"], ["persone"])
     # Cosa Cambierà come gli altri campi della tessera, con i valori
     assert changes_of(items)["Mario Rossi"] == [
-        ("Tessera 04aa: codice stampato", "Altro", "Ciccio"),
+        ("Tessera 04aa: codice stampato", "Altro", "Delta"),
         ("Tessera 04ab: codice stampato", "Nuovo", "—"),
     ]
-    assert not result["failed"] and codes(db) == {"04aa": "Ciccio", "04ab": ""}
+    assert not result["failed"] and codes(db) == {"04aa": "Delta", "04ab": ""}
     # Il ripristino lo ha scritto in Attività, e sul controller non c'è niente da fare
-    assert "Mario Rossi, codice stampato della tessera 04aa: Altro → Ciccio" in audit_details(db)
+    assert "Mario Rossi, codice stampato della tessera 04aa: Altro → Delta" in audit_details(db)
 
     # Persona eliminata e ricreata dal backup: tessere con i loro codici
     await plant.access.delete_person(mario["id"], "admin")
     items, result = await plant.restore(backup["id"], ["persone"])
-    assert ("Tessera 04aa: codice stampato", "—", "Ciccio") in changes_of(items)["Mario Rossi"]
-    assert not result["failed"] and codes(db) == {"04aa": "Ciccio", "04ab": ""}
+    assert ("Tessera 04aa: codice stampato", "—", "Delta") in changes_of(items)["Mario Rossi"]
+    assert not result["failed"] and codes(db) == {"04aa": "Delta", "04ab": ""}
 
     # Una tessera tolta dopo il backup e rimessa: anche lei con il suo codice
     await plant.access.delete_card(card_of(db, "04aa")["id"], "admin")
     items, result = await plant.restore(backup["id"], ["persone"])
-    assert ("Tessera 04aa: codice stampato", "—", "Ciccio") in changes_of(items)["Mario Rossi"]
-    assert not result["failed"] and codes(db) == {"04aa": "Ciccio", "04ab": ""}
+    assert ("Tessera 04aa: codice stampato", "—", "Delta") in changes_of(items)["Mario Rossi"]
+    assert not result["failed"] and codes(db) == {"04aa": "Delta", "04ab": ""}
 
 
 async def test_an_old_backup_without_codes_keeps_the_current_ones(plant, db):
@@ -582,31 +582,31 @@ async def test_an_old_backup_without_codes_keeps_the_current_ones(plant, db):
     _, saved = plant.backups.load(backup["id"])
     for card in saved[COMMON]["cards"]:
         del card["printed_code"]
-    plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "Ciccio", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "Delta", "admin")
     await plant.access.delete_card(card_of(db, "04ab")["id"], "admin")
     await plant.access.update_person(mario["id"], "admin", company="Altra")
     items, result = await restore_with(plant, saved)
     shown = changes_of(items)["Mario Rossi"]
     assert all("codice stampato" not in label for label, _, _ in shown)
-    assert not result["failed"] and codes(db) == {"04aa": "Ciccio", "04ab": ""}
+    assert not result["failed"] and codes(db) == {"04aa": "Delta", "04ab": ""}
     # Il confronto dei backup non lo dà per tolto
     current, _ = await plant.backups.snapshot(plant.clients)
     assert all("printed_code" not in json.dumps(i) for i in plan(saved, current, ["persone"], plant.controller_id))
 
 
 async def test_a_code_given_to_another_card_stays_there_and_the_restore_goes_on(plant, db):
-    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio", company="Ditta")
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Delta", company="Ditta")
     anna = await plant.access.create_person("Anna Bianchi", "04bb", "admin", printed_code="Pippo")
     backup = await plant.backup()
-    # Dopo il backup: Ciccio ad Anna, e Pippo di Anna a Ugo, registrato dopo
+    # Dopo il backup: Delta ad Anna, e Pippo di Anna a Ugo, registrato dopo
     plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "Altro", "admin")
-    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "Ciccio", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "Delta", "admin")
     await plant.access.create_person("Ugo Neri", "04cc", "admin", printed_code="Pippo")
     await plant.access.update_person(mario["id"], "admin", company="Altra")
     items, result = await plant.restore(backup["id"], ["persone"])
     rows = {i["label"]: i for i in items}
     assert rows["Mario Rossi"]["warnings"] == [
-        "il Codice Stampato Ciccio della tessera 04aa ora è della tessera 04bb di Anna Bianchi: resta suo, e la "
+        "il Codice Stampato Delta della tessera 04aa ora è della tessera 04bb di Anna Bianchi: resta suo, e la "
         "tessera tiene quello di adesso"
     ]
     assert all("codice stampato" not in c["label"] for c in rows["Mario Rossi"]["changes"])
@@ -616,30 +616,30 @@ async def test_a_code_given_to_another_card_stays_there_and_the_restore_goes_on(
     ]
     # Ugo, registrato dopo il backup, non si elimina di serie: tutti tengono il loro codice, il ripristino va avanti
     assert rows["Ugo Neri"]["default"] is False
-    assert not result["failed"] and codes(db) == {"04aa": "Altro", "04bb": "Ciccio", "04cc": "Pippo"}
+    assert not result["failed"] and codes(db) == {"04aa": "Altro", "04bb": "Delta", "04cc": "Pippo"}
     assert db.get_person(mario["id"])["company"] == "Ditta" and db.get_person(anna["id"])["name"] == "Anna Bianchi"
 
 
 async def test_a_code_left_by_the_other_row_comes_back_when_both_are_restored(plant, db):
-    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio")
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Delta")
     await plant.access.create_person("Anna Bianchi", "04bb", "admin", printed_code="Pippo")
     backup = await plant.backup()
     plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "", "admin")
-    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "Ciccio", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "Delta", "admin")
     # Solo la riga di Mario: Anna tiene il codice, Mario quello di adesso, e il ripristino va avanti
     items, result = await plant.restore(
         backup["id"], ["persone"], keys=[f"persona:{mario['id']}:{mario['created_at']}"]
     )
     [row] = [i for i in items if i["label"] == "Mario Rossi"]
     assert row["warnings"] == [
-        "il Codice Stampato Ciccio della tessera 04aa ora è della tessera 04bb di Anna Bianchi: torna a questa tessera "
+        "il Codice Stampato Delta della tessera 04aa ora è della tessera 04bb di Anna Bianchi: torna a questa tessera "
         "solo ripristinando anche Anna Bianchi"
     ]
-    assert ("Tessera 04aa: codice stampato", "—", "Ciccio") in changes_of(items)["Mario Rossi"]
-    assert not result["failed"] and codes(db) == {"04aa": "", "04bb": "Ciccio"}
+    assert ("Tessera 04aa: codice stampato", "—", "Delta") in changes_of(items)["Mario Rossi"]
+    assert not result["failed"] and codes(db) == {"04aa": "", "04bb": "Delta"}
     # Tutte e due: tornano tutti e due, la riga di Mario dopo quella di Anna, che lascia il codice
     items, result = await plant.restore(backup["id"], ["persone"])
-    assert not result["failed"] and codes(db) == {"04aa": "Ciccio", "04bb": "Pippo"}
+    assert not result["failed"] and codes(db) == {"04aa": "Delta", "04bb": "Pippo"}
     assert [a["label"] for a in result["applied"]] == ["Anna Bianchi", "Mario Rossi"]
 
 
@@ -684,14 +684,14 @@ async def test_an_employee_id_left_by_a_row_that_waits_for_a_code_comes_back(pla
 
 @pytest.mark.parametrize(("first", "second", "third"), CHAIN_NAMES)
 async def test_a_code_left_by_a_row_that_waits_for_an_employee_id_comes_back(plant, db, first, second, third):
-    """Al contrario: il codice Ciccio della prima persona ora è della seconda, che nel backup ha Pippo, libero; la
+    """Al contrario: il codice Delta della prima persona ora è della seconda, che nel backup ha Pippo, libero; la
     matricola M2 della seconda ora è della terza, che nel backup ha M3, libera."""
-    one = await plant.access.create_person(first, "04aa", "admin", printed_code="Ciccio")
+    one = await plant.access.create_person(first, "04aa", "admin", printed_code="Delta")
     two = await plant.access.create_person(second, "04bb", "admin", printed_code="Pippo", employee_id="M2")
     three = await plant.access.create_person(third, "04cc", "admin", employee_id="M3")
     backup = await plant.backup()
     plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "", "admin")
-    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "Ciccio", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "Delta", "admin")
     await plant.access.update_person(two["id"], "admin", employee_id="")
     await plant.access.update_person(three["id"], "admin", employee_id="M2")
     items, result = await plant.restore(backup["id"], ["persone"])
@@ -700,7 +700,7 @@ async def test_a_code_left_by_a_row_that_waits_for_an_employee_id_comes_back(pla
     assert any(f"solo ripristinando anche {third}" in w for w in rows[second]["warnings"])
     assert not result["failed"]
     assert [a["label"] for a in result["applied"]] == [third, second, first]
-    assert codes(db) == {"04aa": "Ciccio", "04bb": "Pippo", "04cc": ""}
+    assert codes(db) == {"04aa": "Delta", "04bb": "Pippo", "04cc": ""}
     assert employee_ids(db) == {first: "", second: "M2", third: "M3"}
     assert one["id"] != two["id"]
 
@@ -739,11 +739,11 @@ async def test_every_row_of_what_will_change_can_be_ticked(plant, db):
     righe insieme, come dice l'avviso, e tutte e due si devono poter spuntare. Prima solo la prima riga di ogni sezione
     aveva la casella (.map(restoreItemHtml) passava l'indice della riga come readonly): «Ripristina Selezionati (1)»
     ripristinava solo Mario, e il suo codice non tornava."""
-    await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio")
-    await plant.access.create_person("Giulia Bianchi", "04bb", "admin", printed_code="1234")
+    await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Delta")
+    await plant.access.create_person("Giulia Bianchi", "04bb", "admin", printed_code="4821")
     backup = await plant.backup()
-    plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "Ciccio Nuovo", "admin")
-    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "ciccio", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "Delta Nuovo", "admin")
+    plant.access.set_card_printed_code(card_of(db, "04bb")["id"], "delta", "admin")
     _, saved = plant.backups.load(backup["id"])
     current, _ = await plant.backups.snapshot(plant.clients)
     items = plan(saved, current, ["persone"], plant.controller_id)
@@ -770,7 +770,7 @@ async def test_every_row_of_what_will_change_can_be_ticked(plant, db):
 
     # Le righe spuntate dalla pagina, insieme: il codice conteso torna
     _, result = await restore_with(plant, saved, keys=[i["key"] for i in items])
-    assert not result["failed"] and codes(db) == {"04aa": "Ciccio", "04bb": "1234"}
+    assert not result["failed"] and codes(db) == {"04aa": "Delta", "04bb": "4821"}
 
 
 async def test_codes_of_the_same_person_moved_around_come_back_and_swapped_ones_stay(plant, db):
@@ -795,19 +795,19 @@ async def test_codes_of_the_same_person_moved_around_come_back_and_swapped_ones_
 
 
 async def test_a_code_of_a_card_added_after_the_backup_comes_back_removing_that_card(plant, db):
-    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Ciccio")
+    mario = await plant.access.create_person("Mario Rossi", "04aa", "admin", printed_code="Delta")
     backup = await plant.backup()
     plant.access.set_card_printed_code(card_of(db, "04aa")["id"], "", "admin")
-    await plant.access.add_card(mario["id"], "04ab", "admin", printed_code="Ciccio")
+    await plant.access.add_card(mario["id"], "04ab", "admin", printed_code="Delta")
     items, _ = await plant.restore(backup["id"], ["persone"], keys=[])
     [row] = [i for i in items if i["key"].startswith("persona:")]
     assert row["warnings"] == [
-        "il Codice Stampato Ciccio della tessera 04aa ora è della tessera 04ab di Mario Rossi: torna a questa tessera "
+        "il Codice Stampato Delta della tessera 04aa ora è della tessera 04ab di Mario Rossi: torna a questa tessera "
         "solo eliminando anche quella tessera"
     ]
     keys = [i["key"] for i in items]
     _, result = await plant.restore(backup["id"], ["persone"], keys=keys)
-    assert not result["failed"] and codes(db) == {"04aa": "Ciccio"}
+    assert not result["failed"] and codes(db) == {"04aa": "Delta"}
 
 
 # CSV esportato
@@ -856,7 +856,7 @@ def test_the_page_names_every_column_the_import_ignores():
 def test_the_log_shows_the_current_code_with_one_query_per_page(client):
     db = client.app.state.db
     mario = post(
-        client, "/api/persons", {"first_name": "Mario", "last_name": "Rossi", "card": "04AA", "printed_code": "Ciccio"}
+        client, "/api/persons", {"first_name": "Mario", "last_name": "Rossi", "card": "04AA", "printed_code": "Delta"}
     ).json()
     post(client, f"/api/persons/{mario['id']}/cards", {"card": "04AB"})
     for n in range(60):
@@ -886,12 +886,12 @@ def test_the_log_shows_the_current_code_with_one_query_per_page(client):
     assert len([s for s in statements if "printed_code" in s]) == 1
     by_card = {(e["card"], e["printed_code"]) for e in events}
     # Il numero del registro anche scritto in un altro modo: il codice è quello della tessera di adesso
-    assert by_card == {("04aa", "Ciccio"), ("04AB", ""), ("04FF", ""), ("", "")}
+    assert by_card == {("04aa", "Delta"), ("04AB", ""), ("04FF", ""), ("", "")}
     # Codice cambiato: il registro mostra quello di adesso
-    client.patch(f"/api/cards/{mario['cards'][0]['id']}", json={"printed_code": "1234"}, headers=ADMIN)
+    client.patch(f"/api/cards/{mario['cards'][0]['id']}", json={"printed_code": "4821"}, headers=ADMIN)
     event = next(e for e in client.get("/api/events?limit=5&kind=concesso", headers=LOG_ONLY).json())
     detail = client.get(f"/api/events/{events[-1]['id']}", headers=LOG_ONLY).json()
-    assert detail["card"] == "04aa" and detail["printed_code"] == "1234"
+    assert detail["card"] == "04aa" and detail["printed_code"] == "4821"
     assert event["printed_code"] == ""  # l'ultimo concesso è della 04AB, senza codice
     # Anche nel cruscotto, per il Dettaglio Evento
     recent = client.get("/api/dashboard", headers=ADMIN).json()["recent"]
@@ -925,23 +925,23 @@ def test_the_page_shows_the_code_next_to_the_card_in_the_log_as_text():
     out = run_page(
         "Europe/Rome",
         {
-            "row": f"logRow({json.dumps({**named, 'printed_code': '<b>Ciccio</b>'})})",
+            "row": f"logRow({json.dumps({**named, 'printed_code': '<b>Delta</b>'})})",
             "plain": f"logRow({json.dumps({**named, 'printed_code': ''})})",
-            "card": f"logRow({json.dumps({**unknown, 'printed_code': '1234'})})",
-            "detail": f"eventDetail({json.dumps({**named, 'printed_code': '<b>Ciccio</b>'})})",
+            "card": f"logRow({json.dumps({**unknown, 'printed_code': '4821'})})",
+            "detail": f"eventDetail({json.dumps({**named, 'printed_code': '<b>Delta</b>'})})",
             "without": f"eventDetail({json.dumps(named)})",
         },
         names=PAGE_NAMES,
         prelude=PAGE_STUBS,
     )
     assert (
-        '<span class="pcode" title="Codice Stampato della tessera 04aa">&lt;b&gt;Ciccio&lt;/b&gt;</span>' in out["row"]
+        '<span class="pcode" title="Codice Stampato della tessera 04aa">&lt;b&gt;Delta&lt;/b&gt;</span>' in out["row"]
     )
-    assert "<b>Ciccio" not in out["row"] and "pcode" not in out["plain"]
+    assert "<b>Delta" not in out["row"] and "pcode" not in out["plain"]
     # Accanto al numero di una tessera senza persona
-    chip = '<span class="pcode" title="Codice Stampato della tessera 04ff">1234</span>'
+    chip = '<span class="pcode" title="Codice Stampato della tessera 04ff">4821</span>'
     assert f"<b>Tessera 04ff</b> {chip}" in out["card"]
-    assert "<dt>Codice Stampato</dt><dd>&lt;b&gt;Ciccio&lt;/b&gt; <span" in out["detail"]
+    assert "<dt>Codice Stampato</dt><dd>&lt;b&gt;Delta&lt;/b&gt; <span" in out["detail"]
     assert "quello di adesso della tessera" in out["detail"] and "Codice Stampato" not in out["without"]
 
 

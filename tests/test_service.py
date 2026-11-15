@@ -981,7 +981,7 @@ async def test_event_from_log_matches_mqtt_topics():
 
 
 async def test_recover_events_from_controller_log(service, controller, db):
-    person = await service.create_person("Ciccio Bello", "04A11A34", "admin", group="profilo_sempre")
+    person = await service.create_person("Elio Ferri", "04A11A34", "admin", group="profilo_sempre")
     controller.log_events = _bench_log(person["cards"][0]["axis_credential_token"])
     rows = []
 
@@ -998,7 +998,7 @@ async def test_recover_events_from_controller_log(service, controller, db):
     assert recovered == 4
     assert all(e["recovered"] for e in events)
     granted = next(e for e in events if e["kind"] == "concesso")
-    assert granted["person_name"] == "Ciccio Bello"
+    assert granted["person_name"] == "Elio Ferri"
     # Una seconda lettura dello stesso registro non duplica niente
     assert await service.recover_events(datetime(2026, 10, 25, 17, 0, tzinfo=UTC)) == 0
     assert len(db.list_events()) == 4
