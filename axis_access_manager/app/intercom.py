@@ -3,18 +3,18 @@
 Gli eventi arrivano dall'add-on Hikvision Doorbell, che li pubblica sullo stesso broker MQTT
 (libreria ha-mqtt-discoverable, topic <prefisso>/<componente>/<dispositivo>/<entità>/state).
 
-Il relè del citofono si collega in uno dei due modi:
-- non alla serratura né al controller: la porta la apre l'app, che quando il citofono segnala un'apertura manda
-  all'A1210 un solo AccessDoor, mai uno sblocco permanente ("Apri" dal Videocitofono Apre Questa Porta);
-- a un ingresso dell'A1210 con il ruolo Relè Citofono: la porta la apre il controller da solo, anche con Home
-  Assistant spento, e l'inoltro dall'app va lasciato spento (Solo Registro). Con l'inoltro acceso un messaggio
-  arrivato in ritardo riapre la porta: il 13/11 sera, dopo un riavvio di Home Assistant, il bridge ha riconsegnato le
-  pressioni già aperte dal controller 22 e 27 secondi dopo l'apertura (20:02:42; messaggi alle 20:03:04 e 20:03:09),
-  e la serratura si è aperta una seconda volta.
+Il relè del citofono non va mai alla serratura. Può essere collegato a un ingresso dell'A1210 con il ruolo Relè
+Citofono: il controller registra ogni pressione come apertura remota, ma apre solo se quell'ingresso ha il permesso di
+aprire. All'Eliseo non ce l'ha, per sicurezza (un relè manomesso non deve aprire): la porta la apre l'app, che quando
+il citofono segnala un'apertura manda all'A1210 un solo AccessDoor, mai uno sblocco permanente ("Apri" dal
+Videocitofono Apre Questa Porta). Dove invece l'ingresso apre, l'app trova la porta già aperta e non manda altro.
 
-Per questo un relè ON non si inoltra se il controller ha appena aperto la stessa porta da un ingresso Relè Citofono,
-né nei primi secondi dopo un ricollegamento (dell'app al broker o del bridge) senza una chiamata arrivata dopo; e se
-ogni relè ON va insieme a un'apertura del controller, una notifica chiede di passare a Solo Registro.
+Il 13/11 sera, dopo un riavvio di Home Assistant, il bridge ha consegnato in ritardo le pressioni dell'Apri fatte con
+Home Assistant spento (20:02:42; messaggi alle 20:03:04 e 20:03:09) e la porta si è aperta 22 s dopo la richiesta,
+con nessuno davanti. Per questo un relè ON non si inoltra nei primi secondi dopo un ricollegamento (dell'app al broker
+o del bridge) senza una chiamata arrivata dopo, né se l'ora dell'evento negli attributi è vecchia. La 0.28.4 non lo
+inoltrava nemmeno se il controller aveva appena registrato una pressione del Relè Citofono: all'Eliseo, dove
+quell'ingresso non apre, così la porta restava chiusa. Tolto nella 0.28.5.
 """
 
 from __future__ import annotations
@@ -24,10 +24,9 @@ import json
 import logging
 import re
 import time
-from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from .db import now_iso
 
@@ -41,10 +40,6 @@ ATTRIBUTES_MAX_AGE_SECONDS = 5.0
 # Una chiamata suona al massimo un minuto: un nuovo "ringing" dopo questo tempo è una chiamata nuova, anche se la fine
 # della precedente non è arrivata
 RING_MAX_SECONDS = 90.0
-# Relè del citofono cablato su un ingresso Relè Citofono dell'A1210: il controller ha già aperto da solo. Un relè ON
-# entro questi secondi dall'apertura del controller (ora dell'evento, anche recuperato dal suo registro) non si
-# inoltra. Il 13/11 il bridge ha riconsegnato le pressioni 22 e 27 s dopo l'apertura vera
-CONTROLLER_OPEN_SECONDS = 60.0
 # Messaggi vecchi dopo un ricollegamento: un relè ON nei primi secondi dopo che l'app si ricollega al broker o che il
 # bridge torna (disponibilità "online" pubblicata adesso, relè "OFF" ripubblicato da un bridge ripartito) non si
 # inoltra, se non c'è una chiamata arrivata dopo il ricollegamento. Il 13/11 il bridge è tornato alle 20:02:57 e
@@ -64,10 +59,6 @@ EVENT_TIME_KEYS = ("time", "event_time", "eventTime", "date_time", "dateTime", "
 BRIDGE_SILENCE_SECONDS = 60.0
 # Righe uguali di aperture non inoltrate (una raffica di messaggi vecchi): una sola nel registro entro questo tempo
 SKIP_REPEAT_SECONDS = 10.0
-# Cablaggio doppio: relè ON e apertura del controller da un suo ingresso Relè Citofono entro questi secondi, in un
-# ordine o nell'altro. Con WIRED_MIN aperture di fila tutte così l'inoltro va spento; una sola senza lo toglie
-WIRED_PAIR_SECONDS = 10.0
-WIRED_MIN = 2
 
 # Valori del sensore "Call state": evento di chiamata o lettura periodica di callStatus
 RINGING_STATES = {"ringing", "ring"}
@@ -142,12 +133,6 @@ def _iso(moment: datetime) -> str:
     return moment.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def _input_label(row: dict) -> str:
-    """L'ingresso che ha aperto, dal dettaglio della riga del controller: «Relè Citofono (REX)»."""
-    parts = (row.get("detail") or "").split(" · ")
-    return f"{parts[0]} ({parts[1]})" if len(parts) > 1 else parts[0]
-
-
 @dataclass(frozen=True)
 class IntercomSettings:
     name: str  # nome del citofono nelle opzioni dell'add-on Hikvision Doorbell
@@ -164,19 +149,13 @@ class IntercomBridge:
         open_door: Callable[[str, str], Awaitable[None]],
         clock: Callable[[], float] = time.monotonic,
         *,
-        controller_openings: Callable[[str, str], list[dict]] | None = None,
         wall: Callable[[], datetime] | None = None,
-        wired: dict | None = None,
-        on_wired: Callable[[dict | None], None] | None = None,
     ) -> None:
-        """controller_openings(dal, al): aperture del controller da un suo ingresso Relè Citofono sulla porta di questo
-        relè tra le due ore (ISO, UTC, sull'orologio del controller), dalla più recente. wall: ora adesso sullo stesso
-        orologio. wired e on_wired: cablaggio doppio già visto (vedi wired_check) e dove salvarlo."""
+        """wall: ora adesso sull'orologio del controller, per l'ora dell'evento negli attributi del relè."""
         self.settings = settings
         self._log = log
         self._open_door = open_door
         self._clock = clock
-        self._controller_openings = controller_openings
         self._wall = wall or (lambda: datetime.now(tz=UTC))
         device = topic_name(settings.name)
         base = f"{settings.state_prefix}"
@@ -213,11 +192,6 @@ class IntercomBridge:
         self._skew: float | None = None
         # Ultima riga di apertura non inoltrata e quando: una raffica fa una riga sola
         self._skipped = ("", float("-inf"))
-        # Cablaggio doppio: ore dei relè ON da confrontare con le aperture del controller e ultimi esiti
-        self._unlocks: deque[datetime] = deque(maxlen=10)
-        self._pairs: deque[bool] = deque(maxlen=WIRED_MIN)
-        self.wired = wired if settings.open_door else None
-        self._on_wired = on_wired
 
     @property
     def topics(self) -> list[str]:
@@ -358,22 +332,13 @@ class IntercomBridge:
             stale = f"messaggio arrivato {round(now - back_at)} s dopo {back_reason}, senza una chiamata in corso"
         elif not live and delay is not None and delay - (self._skew or 0.0) > STALE_SECONDS:
             stale = f"messaggio di {round(delay - (self._skew or 0.0))} s prima (ora del videocitofono)"
-        opened = self._controller_opened()
-        if not stale:
-            self._last_open = now
-            note = self._answer(ring)
-            if opened is None or self._paired(opened):
-                self._observe()
-        if opened is not None:
-            # Relè cablato sul controller: la porta l'ha già aperta lui, un AccessDoor sarebbe un'apertura in più
-            reason = f"la porta l'ha già aperta il controller dal {_input_label(opened)}"
-            self._skip(f"apertura dal citofono non inoltrata: {reason}", attributes, "controller")
-            return
         if stale:
-            # Possibile pressione vecchia riconsegnata in ritardo: mai una seconda apertura che nessuno ha chiesto.
+            # Possibile pressione vecchia consegnata in ritardo: mai un'apertura quando nessuno la aspetta più.
             # Non conta come apertura: un Apri vero subito dopo passa
             self._skip(f"apertura dal citofono non inoltrata: {stale}", attributes, "vecchio")
             return
+        self._last_open = now
+        note = self._answer(ring)
         # Nel registro come le aperture da Home Assistant: chi o cosa, e da dove ("App Hik-Connect (Videocitofono)")
         source = f"{how} (Videocitofono)"
         task = asyncio.get_running_loop().create_task(self._forward(source, note))
@@ -397,61 +362,6 @@ class IntercomBridge:
             return
         self._skipped = (why, now)
         self._event(detail, attributes)
-
-    def _controller_opened(self) -> dict | None:
-        """Apertura del controller da un ingresso Relè Citofono della porta negli ultimi CONTROLLER_OPEN_SECONDS."""
-        if self._controller_openings is None:
-            return None
-        now = self._wall()
-        # Anche qualche secondo dopo adesso: l'ora del controller può essere un poco avanti rispetto a quella stimata
-        rows = self._controller_openings(
-            _iso(now - timedelta(seconds=CONTROLLER_OPEN_SECONDS)), _iso(now + timedelta(seconds=WIRED_PAIR_SECONDS))
-        )
-        return rows[0] if rows else None
-
-    def _paired(self, row: dict) -> bool:
-        """Apertura del controller entro WIRED_PAIR_SECONDS da adesso: lo stesso Apri, arrivato per due strade."""
-        try:
-            at = datetime.fromisoformat(str(row.get("ts") or ""))
-        except ValueError:
-            return False
-        if at.tzinfo is None:
-            return False
-        return abs((self._wall() - at).total_seconds()) <= WIRED_PAIR_SECONDS
-
-    def _observe(self) -> None:
-        """Relè ON dal vivo con l'inoltro attivo: da confrontare con le aperture del controller (vedi wired_check)."""
-        if self.settings.open_door and self._controller_openings is not None:
-            self._unlocks.append(self._wall())
-
-    def wired_check(self) -> dict | None:
-        """Cablaggio doppio: il relè del citofono apre anche dal controller. Si decide WIRED_PAIR_SECONDS dopo ogni relè
-        ON con l'inoltro attivo (l'apertura del controller può arrivare dopo): con le ultime WIRED_MIN tutte insieme a
-        un'apertura del controller da un ingresso Relè Citofono è cablato, con l'ultima senza non lo è più. Restituisce
-        {"since", "input"} o None; ogni cambio va a on_wired."""
-        if not self.settings.open_door or self._controller_openings is None:
-            return None
-        now = self._wall()
-        pair = timedelta(seconds=WIRED_PAIR_SECONDS)
-        changed = False
-        while self._unlocks and now - self._unlocks[0] >= pair:
-            at = self._unlocks.popleft()
-            rows = self._controller_openings(_iso(at - pair), _iso(at + pair + timedelta(seconds=1)))
-            self._pairs.append(bool(rows))
-            if rows and self.wired is None and len(self._pairs) == WIRED_MIN and all(self._pairs):
-                self.wired = {"since": _iso(at), "input": _input_label(rows[0])}
-                changed = True
-                _LOGGER.warning(
-                    "Videocitofono %s: il relè apre la porta anche dal controller (%s), l'inoltro dall'app non serve",
-                    self.settings.name,
-                    self.wired["input"],
-                )
-            elif not rows and self.wired is not None:
-                self.wired = None
-                changed = True
-        if changed and self._on_wired is not None:
-            self._on_wired(self.wired)
-        return self.wired
 
     async def _forward(self, source: str, note: str = "") -> None:
         try:

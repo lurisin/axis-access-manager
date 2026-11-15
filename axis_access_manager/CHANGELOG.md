@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.28.5
+
+Correzione urgente del videocitofono della 0.28.4, da installare al posto della 0.28.4.
+
+- **L'Apri dal monitor apre di nuovo, anche con il relè collegato al controller.** All'Eliseo il relè del videocitofono è collegato all'ingresso Relè Citofono dell'A1210, ma lì non apre la porta, per sicurezza (un relè manomesso non deve aprire): la porta la apre l'app, con «"Apri" dal Videocitofono Apre Questa Porta». Il controller però registra ogni pressione come apertura remota dal Relè Citofono. La 0.28.4 prendeva quella riga per un'apertura già fatta dal controller e non inoltrava l'Apri: quando arrivava prima del messaggio del videocitofono, la porta restava chiusa. Questa regola è tolta: un Apri dal vivo si inoltra sempre. Dove invece l'ingresso del controller apre davvero, l'app trova la porta già aperta a tempo e non manda un secondo comando, come prima.
+- **Tolta la notifica «Videocitofono Cablato sul Controller».** Chiedeva di togliere la spunta dell'inoltro (Solo Registro), cosa che all'Eliseo spegnerebbe l'apertura dal monitor. Un avviso salvato dalla 0.28.4 si cancella all'avvio.
+- **Resta la protezione dai messaggi in ritardo.** Nei primi 30 secondi dopo che l'app si ricollega al broker o che il bridge del videocitofono torna, un Apri senza una chiamata arrivata dopo non si inoltra, e una riga nel registro lo dice. È quello che il 13/11 sera, e dopo le due ore offline del 15/11, ha aperto la porta in ritardo, con le pressioni fatte mentre Home Assistant non c'era.
+- **Documentazione.** Il Relè Citofono e il videocitofono spiegano i due casi: ingresso che non apre (l'inoltro resta, la porta la apre l'app) e ingresso che apre (l'inoltro si può togliere).
+
 ## 0.28.4
 
 Correzioni dopo il riavvio di Home Assistant del 13/11 sera: il videocitofono non riapre più la porta con i messaggi arrivati in ritardo, e il guasto di una telecamera tornata si chiude da solo. Nell'Anagrafica ognuno sceglie e mette in ordine le colonne dell'elenco Persone; la foto ingrandita è larga quanto la foto, le icone sono allineate ai nomi e il suggerimento del Codice Stampato non ha più esempi. La programmazione del controller (utenti, tessere, profili) non cambia rispetto alla 0.28.3, e il confronto in ombra resta senza differenze.

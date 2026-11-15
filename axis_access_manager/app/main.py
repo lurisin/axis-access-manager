@@ -404,8 +404,7 @@ DASHBOARD_WIDGETS = (
 )
 SETTING_DASHBOARD = "dashboard_layout:"
 CAMERA_NAMES_TTL = 300
-# Videocitofoni con il relè cablato anche su un ingresso Relè Citofono del controller, porta → {"since", "input"}:
-# l'inoltro dall'app va spento (vedi IntercomBridge.wired_check e la notifica Videocitofono Cablato sul Controller)
+# Avviso «Videocitofono Cablato sul Controller» della 0.28.4, tolto nella 0.28.5: all'avvio si cancella se c'è
 SETTING_INTERCOM_WIRED = "intercom_wired"
 
 
@@ -2988,10 +2987,9 @@ def _wire(app: FastAPI) -> None:
     service.after_event = after_event
     service.on_change = on_change
     state.intercoms = []
-    # Relè dei videocitofoni cablati anche sul controller, visti finora: solo per le porte con l'inoltro attivo (la
-    # notifica si chiude quando l'inoltro si spegne)
-    forwarding = {d["door_token"] for d in state.doors if d["intercom_name"] and d["intercom_open_door"]}
-    wired = _intercom_wired(state, forwarding)
+    # La 0.28.4 ricordava qui i videocitofoni «cablati sul controller»: una regola tolta nella 0.28.5 (vedi
+    # intercom.py), l'avviso salvato non serve più
+    _forget_intercom_wired(state)
     for door in state.doors:
         if not door["intercom_name"]:
             continue
@@ -3006,13 +3004,7 @@ def _wire(app: FastAPI) -> None:
             open_door=lambda source, note, door_token=door["door_token"]: service.open_door(
                 False, source, door_token, note
             ),
-            # Aperture del controller dal suo ingresso Relè Citofono: con il relè cablato lì, la porta è già aperta
-            controller_openings=lambda since, until, door_token=door["door_token"]: service.intercom_openings(
-                door_token, since, until
-            ),
             wall=service.controller_now,
-            wired=wired.get(door["door_token"]),
-            on_wired=lambda value, door_token=door["door_token"]: _save_intercom_wired(state, door_token, value),
         )
         intercom.door = door
         # Stesso citofono di una porta precedente: la chiamata la segue quella (vedi sotto)
@@ -3085,40 +3077,13 @@ def _wire(app: FastAPI) -> None:
         monitor.on_connect = on_connect
 
 
-def _intercom_wired(state, keep: set[str]) -> dict[str, dict]:
-    """Videocitofoni con il relè cablato anche sul controller (porta → {"since", "input"}), solo delle porte in keep:
-    quelli delle porte con l'inoltro spento si dimenticano."""
+def _forget_intercom_wired(state) -> None:
+    """Toglie l'avviso «Videocitofono Cablato sul Controller» salvato dalla 0.28.4, se c'è."""
     try:
-        saved = json.loads(state.db.get_setting(SETTING_INTERCOM_WIRED) or "{}")
-    except ValueError:
-        saved = {}
-    saved = saved if isinstance(saved, dict) else {}
-    kept = {door: value for door, value in saved.items() if door in keep and isinstance(value, dict)}
-    if kept != saved:
-        _write_intercom_wired(state, kept)
-    return kept
-
-
-def _save_intercom_wired(state, door: str, value: dict | None) -> None:
-    """Cablaggio doppio visto o non più visto da un videocitofono (IntercomBridge.wired_check)."""
-    try:
-        saved = json.loads(state.db.get_setting(SETTING_INTERCOM_WIRED) or "{}")
-    except ValueError:
-        saved = {}
-    saved = saved if isinstance(saved, dict) else {}
-    if value is None:
-        saved.pop(door, None)
-    else:
-        saved[door] = value
-    _write_intercom_wired(state, saved)
-
-
-def _write_intercom_wired(state, value: dict) -> None:
-    try:
-        state.db.set_setting(SETTING_INTERCOM_WIRED, json.dumps(value) if value else "")
+        if state.db.get_setting(SETTING_INTERCOM_WIRED):
+            state.db.set_setting(SETTING_INTERCOM_WIRED, "")
     except sqlite3.Error as err:
-        # Disco pieno: la notifica resta in memoria fino al riavvio
-        _LOGGER.warning("Cablaggio del videocitofono non salvato: %s", err)
+        _LOGGER.warning("Avviso del videocitofono non tolto: %s", err)
 
 
 async def _save_snapshot(state, camera: str, row: dict) -> None:
@@ -3271,11 +3236,6 @@ def _current_notifications(state) -> list[dict]:
             }
             for camera, problem in state.snapshot_errors.items()
             if camera == state.controller_camera or any(d["snapshot_camera"] == camera for d in state.doors)
-        ],
-        intercom_wiring=[
-            {"door": i.door["name"], "door_token": i.door["door_token"], "name": i.settings.name, **wired}
-            for i in getattr(state, "intercoms", [])
-            if (wired := i.wired_check())
         ],
         controllers=_controllers_health(state),
         missing=_missing_summary(state.db),
