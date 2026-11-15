@@ -1,9 +1,11 @@
-"""Videocitofono con messaggi in ritardo: il 13/11 sera una pressione già aperta dal controller è stata inoltrata di
-nuovo all'A1210, e la porta si è aperta una seconda volta senza che nessuno l'avesse chiesto.
+"""Videocitofono con messaggi in ritardo: il 13/11 sera, dopo il riavvio di Home Assistant, il bridge del videocitofono
+ha consegnato in ritardo le pressioni dell'Apri e l'app le ha inoltrate all'A1210: la porta si è aperta 22 s dopo la
+richiesta, con nessuno davanti.
 
-In quell'impianto il relè del citofono è cablato sull'ingresso REX dell'A1210 («Relè Citofono»): il controller apre
-da solo, anche con Home Assistant spento. Orologio finto e messaggi MQTT finti, passati dal monitor come quelli veri;
-solo il FakeController, mai una porta vera. Nomi di fantasia."""
+All'Eliseo il relè del citofono è collegato all'ingresso REX dell'A1210 («Relè Citofono»), ma lì non apre la porta,
+per sicurezza: il controller registra la pressione e la porta la apre solo l'app, con l'inoltro. Orologio finto e
+messaggi MQTT finti, passati dal monitor come quelli veri; solo il FakeController, mai una porta vera. Nomi di
+fantasia."""
 
 import asyncio
 import json
@@ -14,7 +16,6 @@ import pytest
 
 from app.events import Event, EventMonitor
 from app.intercom import IntercomBridge, IntercomSettings
-from app.notifications import NotificationService
 from app.service import AccessService
 
 CALL = "hmd/sensor/Citofono-Cortile/Call-state/state"
@@ -27,7 +28,10 @@ REX_POINT = "ap-citofono"
 # Il 13/11 l'Italia è un'ora avanti rispetto a UTC
 ITALIA = timezone(timedelta(hours=1))
 FORWARDED = ("access_door", "porta", False)
-ALREADY_OPEN = "apertura dal citofono non inoltrata: la porta l'ha già aperta il controller dal Relè Citofono (REX)"
+STALE_APP = (
+    "apertura dal citofono non inoltrata: messaggio arrivato 5 s dopo il ricollegamento dell'app, senza una chiamata "
+    "in corso"
+)
 
 
 class Clock:
@@ -71,7 +75,7 @@ class Plant:
     """Porta, controller con il relè del citofono sull'ingresso REX (se wired) e bridge del videocitofono, collegati
     come in main._wire."""
 
-    def __init__(self, db, controller, settings, clock: Clock, *, wired=True, open_door=True, saved=None):
+    def __init__(self, db, controller, settings, clock: Clock, *, wired=True, open_door=True):
         self.db, self.controller, self.clock = db, controller, clock
         self.monitor = EventMonitor(prefix="accessi/x", door_token="porta")
         self.service = AccessService(db, controller, settings, self.monitor)
@@ -84,16 +88,12 @@ class Plant:
                 "REX",
                 {"name": "Relè Citofono", "role": "intercom", "door_token": "porta", "access_point_token": REX_POINT},
             )
-        self.saved: list = []
         self.bridge = IntercomBridge(
             IntercomSettings("Citofono Cortile", open_door=open_door),
             log=lambda **fields: self.service.log_event(**(fields | {"ts": clock.iso()}), door="porta"),
             open_door=lambda source, note: self.service.open_door(False, source, "porta", note),
             clock=clock,
-            controller_openings=lambda since, until: self.service.intercom_openings("porta", since, until),
             wall=clock.wall,
-            wired=saved,
-            on_wired=self.saved.append,
         )
         for topic in self.bridge.subscriptions:
             self.monitor.extra_subscriptions.setdefault(topic, self.bridge.handle)
@@ -136,8 +136,9 @@ def clock():
 async def test_13_11_late_presses_after_the_restart_do_not_open_the_door_again(db, controller, settings, clock):
     """La cronologia vera del 13/11, dai log del titolare."""
     # 20:01:30 Home Assistant si spegne per l'aggiornamento: broker e bridge del citofono cadono con lui.
-    # 20:02:42 Apri dal monitor del citofono: il relè cablato sul REX apre la porta, anche con Home Assistant spento.
-    # Due pressioni (5 s) che il registro del controller tiene anche senza nessuno collegato
+    # 20:02:42 Apri dal monitor del citofono: il relè, collegato all'ingresso REX, fa registrare la pressione al
+    # controller anche con Home Assistant spento (all'Eliseo quell'ingresso non apre: la porta la apre l'app). Due
+    # pressioni (5 s) che il registro del controller tiene anche senza nessuno collegato
     controller.log_events = [log_entry(868, "20:02:42"), log_entry(869, "20:02:47")]
     # 20:02:57 il bridge torna sul broker; 20:02:58 riparte l'add-on, che si collega al broker e trova gli stati
     # conservati del bridge
@@ -160,16 +161,14 @@ async def test_13_11_late_presses_after_the_restart_do_not_open_the_door_again(d
     await plant.unlock("20:03:09")
     await settle()
 
-    # Prima l'app mandava un AccessDoor e la serratura restava alimentata dalle 20:03:04 alle 20:03:10
+    # Prima l'app mandava un AccessDoor e la serratura restava alimentata dalle 20:03:04 alle 20:03:10, 22 s dopo la
+    # richiesta: con nessuno davanti alla porta. Ora le pressioni arrivate subito dopo il ricollegamento non aprono
     assert FORWARDED not in controller.calls and controller.calls == []
     # Una riga del videocitofono nel registro dice perché, una sola per le due pressioni riconsegnate
     assert plant.rows() == [
         ("apertura_remota", "Relè Citofono · REX · più pressioni", "Relè Citofono"),
-        ("citofono", ALREADY_OPEN, "Citofono Cortile"),
+        ("citofono", STALE_APP, "Citofono Cortile"),
     ]
-    # Non sono aperture dal vivo: niente avviso di cablaggio da queste
-    clock.now += 60
-    assert plant.bridge.wired_check() is None
 
 
 async def test_13_11_without_the_controller_event_the_reconnection_stops_them(db, controller, settings, clock):
@@ -234,8 +233,7 @@ async def test_13_11_with_the_app_still_connected_the_bridge_comeback_stops_them
 async def test_bridge_back_with_online_after_online_stops_the_late_presses(db, controller, settings, wired):
     """Revisione: il bridge che torna con "online" dopo un "online", senza un "offline" visto in mezzo, è un ritorno.
     Succede quando il bridge si chiude in modo ordinato (il broker scarta il testamento) o quando il broker cade con
-    lui e con la persistenza tiene l'ultimo "online". L'Apri vero è di 69 s prima: oltre il minuto in cui conta
-    l'apertura del controller, quindi resta solo il ritorno del bridge."""
+    lui e con la persistenza tiene l'ultimo "online"."""
     clock = Clock("19:00:00")
     plant = Plant(db, controller, settings, clock, wired=wired)
     # L'app è collegata da tempo: disponibilità conservata "online", stati a riposo
@@ -248,7 +246,7 @@ async def test_bridge_back_with_online_after_online_stops_the_late_presses(db, c
     plant.mqtt(CALL, "ringing")
     clock.at("19:30:05")
     plant.mqtt(CALL, "idle")
-    # 20:01:30 il bridge si ferma senza "offline". 20:01:55 Apri dal monitor: con il relè cablato apre il controller
+    # 20:01:30 il bridge si ferma senza "offline". 20:01:55 Apri dal monitor: il controller registra la pressione
     clock.at("20:01:30")
     if wired:
         plant.press("20:01:55")
@@ -317,9 +315,6 @@ async def test_live_open_without_wiring_is_forwarded_at_once(db, controller, set
     plant.monitor.door_mode = "Locked"
     await plant.unlock("21:40:00", control="app")
     assert controller.calls == [FORWARDED, FORWARDED]
-    # Nessuna apertura del controller insieme: nessun avviso di cablaggio
-    clock.now += 60
-    assert plant.bridge.wired_check() is None and plant.saved == []
 
 
 async def test_live_call_right_after_a_reconnection_is_forwarded(db, controller, settings, clock):
@@ -402,91 +397,54 @@ async def test_event_time_in_the_attributes_stops_old_messages(db, controller, s
     assert controller.calls == [FORWARDED] * 3
 
 
-async def test_wired_relay_after_the_controller_opens_once_and_warns(db, controller, settings, clock):
-    """Relè cablato e inoltro attivo, apertura vera dal vivo: il controller apre dal REX, il relè ON arriva dopo.
-    Nessun AccessDoor, e dopo due aperture così l'avviso di cablaggio doppio."""
+async def test_relay_on_a_controller_input_that_does_not_open_never_holds_back_the_open(
+    db, controller, settings, clock
+):
+    """Eliseo (15/11): il relè del videocitofono è collegato all'ingresso Relè Citofono dell'A1210, ma lì non apre la
+    porta, per sicurezza (un relè manomesso non deve aprire): la apre solo l'app, con l'inoltro. Il controller
+    registra comunque la pressione come apertura remota dal Relè Citofono, spesso prima che arrivi il relè ON del
+    videocitofono. Nella 0.28.4 quella riga fermava l'inoltro e la porta restava chiusa: ora un Apri dal vivo si
+    inoltra sempre, con la riga del controller prima o dopo."""
     plant = Plant(db, controller, settings, clock)
     plant.bridge.broker_connected()
-    for start in ("21:15:00", "21:40:00"):
+    for start, controller_first in (("21:15:00", True), ("21:40:00", False), ("22:05:00", True)):
         clock.at(start)
         plant.mqtt(CALL, "ringing")
         clock.now += 6
-        plant.press((clock.wall() + timedelta(seconds=0)).astimezone(ITALIA).strftime("%H:%M:%S"))
-        clock.now += 1
-        await plant.unlock((clock.wall()).astimezone(ITALIA).strftime("%H:%M:%S"))
-        plant.mqtt(CALL, "idle")
-        # Il controller ha già aperto: niente comando in più
-        assert controller.calls == []
-        assert plant.rows()[-1] == ("citofono", ALREADY_OPEN, "Citofono Cortile")
-        if start == "21:15:00":
-            clock.now += 15
-            # Una sola apertura così può essere un caso: ancora niente avviso
-            assert plant.bridge.wired_check() is None
-    clock.now += 15
-    wired = plant.bridge.wired_check()
-    assert wired == {"since": "2026-11-13T20:40:07+00:00", "input": "Relè Citofono (REX)"}
-    assert plant.saved == [wired]
-
-    # La notifica per chi gestisce l'impianto, tra i guasti
-    notifications = NotificationService(db)
-    items = notifications.collect(
-        mqtt_configured=True,
-        mqtt_connected=True,
-        controller_configured=False,
-        controller_online=True,
-        sync={},
-        door_names={"porta": "Ingresso Teatro"},
-        intercom_wiring=[{"door": "Ingresso Teatro", "door_token": "porta", "name": "Citofono Cortile", **wired}],
-        primary_id=1,
-    )
-    [item] = [i for i in items if i["type"] == "intercom"]
-    assert item["title"] == "Videocitofono Cablato sul Controller" and item["severity"] == "crit"
-    assert item["text"] == (
-        "Citofono Cortile · Il relè apre la porta anche dal controller, dall'ingresso Relè Citofono (REX): l'inoltro "
-        'dall\'app non serve e un messaggio in ritardo può riaprirla. In Modifica Videocitofono togli «"Apri" dal '
-        "Videocitofono Apre Questa Porta»: resta Solo Registro."
-    )
-    assert "Solo Registro" in item["text"] and item["link"] == "#impianti/c1/citofoni"
-    assert item["door"] == "Ingresso Teatro" and item["fault"] is True
-    # Chi gestisce l'impianto la vede; il personale senza Impianti no (non la può correggere)
-    assert [i["type"] for i in notifications.listing(items, {"stato", "impianti"})["items"]] == ["intercom"]
-    assert notifications.listing(items, {"stato", "registro"}, plain=True)["items"] == []
-
-
-async def test_wired_relay_before_the_controller_is_forwarded_once_and_warns(db, controller, settings, clock):
-    """Relè ON prima dell'apertura del controller: l'inoltro parte (l'evento non c'è ancora), il controller poi apre
-    dal REX con la porta già aperta e l'app non manda altro. Le due cose insieme fanno l'avviso."""
-    plant = Plant(db, controller, settings, clock)
-    plant.bridge.broker_connected()
-    for start in ("21:15:00", "21:40:00"):
-        clock.at(start)
-        plant.mqtt(CALL, "ringing")
-        await plant.unlock((clock.wall() + timedelta(seconds=6)).astimezone(ITALIA).strftime("%H:%M:%S"))
-        plant.press((clock.wall() - timedelta(seconds=1)).astimezone(ITALIA).strftime("%H:%M:%S"))
+        if controller_first:
+            plant.press(clock.wall().astimezone(ITALIA).strftime("%H:%M:%S"))
+            clock.now += 1
+        await plant.unlock(clock.wall().astimezone(ITALIA).strftime("%H:%M:%S"))
+        if not controller_first:
+            plant.press((clock.wall() - timedelta(seconds=1)).astimezone(ITALIA).strftime("%H:%M:%S"))
         plant.mqtt(CALL, "idle")
         await settle()
+        controller.door = "Locked"
         plant.monitor.door_mode = "Locked"
-    # Un AccessDoor per apertura, mai due
-    assert controller.calls == [FORWARDED, FORWARDED]
-    clock.now += 15
-    assert plant.bridge.wired_check() == {"since": "2026-11-13T20:40:06+00:00", "input": "Relè Citofono (REX)"}
+    assert controller.calls == [FORWARDED] * 3
+    assert [row for row in plant.rows() if "non inoltrata" in row[1]] == []
+    # Nessun avviso che chieda di spegnere l'inoltro: all'Eliseo spegnerebbe l'apertura dal monitor
+    from app.notifications import TYPES
+
+    assert "intercom" not in TYPES
 
 
-async def test_wiring_warning_goes_away_with_an_open_the_controller_did_not_make(db, controller, settings, clock):
-    saved = {"since": "2026-11-13T20:40:06+00:00", "input": "Relè Citofono (REX)"}
-    plant = Plant(db, controller, settings, clock, saved=saved)
+async def test_relay_on_a_controller_input_that_opens_is_not_sent_twice(db, controller, settings, clock):
+    """Dove invece il relè sull'ingresso del controller apre davvero la porta, l'app la trova già aperta a tempo e
+    non manda un secondo comando, come prima della 0.28.4."""
+    plant = Plant(db, controller, settings, clock)
     plant.bridge.broker_connected()
-    assert plant.bridge.wired_check() == saved
-    # Apri dal vivo senza apertura del controller: il relè non è (più) cablato
     clock.at("21:15:00")
     plant.mqtt(CALL, "ringing")
-    await plant.unlock("21:15:06")
-    assert controller.calls == [FORWARDED]
-    clock.now += 15
-    assert plant.bridge.wired_check() is None and plant.saved == [None]
-    # Con l'inoltro spento il cablaggio non conta
-    off = Plant(db, controller, settings, clock, open_door=False, saved=saved)
-    assert off.bridge.wired is None and off.bridge.wired_check() is None
+    clock.now += 6
+    plant.press(clock.wall().astimezone(ITALIA).strftime("%H:%M:%S"))
+    # Il controller ha aperto dal REX: la porta è aperta a tempo
+    controller.door = "Accessed"
+    plant.monitor.door_mode = "Accessed"
+    clock.now += 1
+    await plant.unlock(clock.wall().astimezone(ITALIA).strftime("%H:%M:%S"))
+    await settle()
+    assert FORWARDED not in controller.calls
 
 
 async def test_forwarding_off_still_only_logs(db, controller, settings, clock):
@@ -511,19 +469,26 @@ class FakeMqttClient:
         pass
 
 
-def test_app_follows_the_bridge_and_closes_the_warning_when_forwarding_stops(controller, tmp_path, monkeypatch):
-    """Nell'app: disponibilità del bridge seguita, ricollegamento al broker passato ai videocitofoni, avviso di
-    cablaggio che resta dopo una nuova configurazione e si chiude spegnendo l'inoltro."""
+def test_app_follows_the_bridge_and_forgets_the_old_wiring_warning(controller, tmp_path, monkeypatch):
+    """Nell'app: disponibilità del bridge seguita e ricollegamento al broker passato ai videocitofoni. L'avviso
+    «Videocitofono Cablato sul Controller» della 0.28.4 non c'è più: quello salvato si cancella all'avvio."""
     from fastapi.testclient import TestClient
 
     from app.config import parse_options
+    from app.db import Database
     from app.main import SETTING_INTERCOM_WIRED, create_app
 
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    path = tmp_path / "c.db"
+    old = Database(path)
+    old.set_setting(
+        SETTING_INTERCOM_WIRED, '{"porta": {"since": "2026-11-15T08:00:00+00:00", "input": "Relè Citofono"}}'
+    )
+    old.close()
     settings = parse_options(
         {"a1210_host": "a", "door_token": "porta", "intercom_name": "Citofono Cortile", "intercom_open_door": True}
     )
-    app = create_app(settings, allow_any_client=True, controller=controller, db_path=tmp_path / "c.db")
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=path)
     with TestClient(app) as client:
         app.state.notifications.set_levels({"mqtt": "off"}, "test")
         [intercom] = app.state.intercoms
@@ -533,27 +498,58 @@ def test_app_follows_the_bridge_and_closes_the_warning_when_forwarding_stops(con
         # Collegata al broker (anche di nuovo): i primi messaggi del videocitofono possono essere vecchi
         client.portal.call(app.state.monitor.on_connect, FakeMqttClient())
         assert intercom._back_reason == "il ricollegamento dell'app"
-
-        def warnings():
-            items = client.get("/api/notifications").json()["items"]
-            return [i for i in items if i["type"] == "intercom"]
-
-        assert warnings() == []
-        wired = {"since": "2026-11-13T20:40:06+00:00", "input": "Relè Citofono (REX)"}
-        intercom.wired = wired
-        intercom._on_wired(wired)
-        [warning] = warnings()
-        assert warning["title"] == "Videocitofono Cablato sul Controller" and warning["fault"]
-        # Una nuova configurazione (nome della porta) non la dimentica
-        door = app.state.db.list_doors()[0]
-        assert client.put(f"/api/doors/{door['id']}", json={**door, "name": "Ingresso Teatro"}).status_code == 200
-        [warning] = warnings()
-        assert warning["door"] == "Ingresso Teatro"
-        # Inoltro spento (Solo Registro): la notifica si chiude e non torna
-        door = app.state.db.list_doors()[0]
-        assert client.put(f"/api/doors/{door['id']}", json={**door, "intercom_open_door": False}).status_code == 200
-        assert warnings() == []
         assert not app.state.db.get_setting(SETTING_INTERCOM_WIRED)
+        items = client.get("/api/notifications").json()["items"]
+        assert not [i for i in items if "Cablato" in i["title"]]
+
+
+def test_in_the_app_the_controller_row_of_the_relay_does_not_stop_a_live_open(controller, tmp_path, monkeypatch):
+    """Lo stesso nell'app vera, collegata come in main._wire: la riga del controller per la pressione del relè (Relè
+    Citofono, non apre) arriva prima del relè ON, e l'Apri dal vivo durante la chiamata si inoltra lo stesso. Nella
+    0.28.4 main passava al videocitofono le aperture del controller, e qui la porta restava chiusa."""
+    from fastapi.testclient import TestClient
+
+    from app.config import parse_options
+    from app.main import create_app
+
+    monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    settings = parse_options(
+        {"a1210_host": "a", "door_token": "porta", "intercom_name": "Citofono Cortile", "intercom_open_door": True}
+    )
+    app = create_app(settings, allow_any_client=True, controller=controller, db_path=tmp_path / "c.db")
+    with TestClient(app) as client:
+        db, service, monitor = app.state.db, app.state.service, app.state.monitor
+        fields = {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0}
+        controller_id = db.save_controller(None, fields)
+        db.save_controller_input(
+            controller_id,
+            "REX",
+            {"name": "Relè Citofono", "role": "intercom", "door_token": "porta", "access_point_token": REX_POINT},
+        )
+        service.access_point_doors[REX_POINT] = "porta"
+        controller.door = "Locked"
+        monitor.door_mode = "Locked"
+        controller.calls.clear()
+
+        async def live_open():
+            monitor._dispatch_extra(aiomqtt.Topic(CALL), b"ringing", False)
+            service.record_event(
+                Event(
+                    "AccessControl",
+                    "AccessControl/AccessGranted/Anonymous/",
+                    service.controller_now(),
+                    {"AccessPointToken": REX_POINT},
+                )
+            )
+            monitor._dispatch_extra(aiomqtt.Topic(RELAY_ATTRIBUTES), b'{"unlock_type": "HOUSEHOLDER"}', False)
+            monitor._dispatch_extra(aiomqtt.Topic(RELAY), b"ON", False)
+            await asyncio.sleep(0.2)
+
+        client.portal.call(live_open)
+        assert FORWARDED in controller.calls
+        rows = [(e["kind"], e["source"]) for e in db.list_events()]
+        assert ("apertura_remota", "Relè Citofono") in rows
+        assert not [e for e in db.list_events() if "non inoltrata" in (e["detail"] or "")]
 
 
 async def test_new_texts_are_fine_for_staff_without_technical_permissions(db, controller, settings, clock):
@@ -565,12 +561,9 @@ async def test_new_texts_are_fine_for_staff_without_technical_permissions(db, co
     plant = Plant(db, controller, settings, clock)
     plant.bridge.broker_connected()
     await plant.unlock("20:03:02")
-    plant.press("20:03:40")
-    await plant.unlock("20:03:41")
     clock.now += 60
     await plant.unlock("20:05:00", time="2026-11-13T20:04:00+01:00")
     texts = [detail for kind, detail, _ in plant.rows() if kind == "citofono"]
-    assert len(texts) == 3
+    assert len(texts) == 2
     assert not [t for t in texts if forbidden(t)]
-    assert not forbidden(TYPES["intercom"][0]) and not forbidden(TYPES["intercom"][1])
     assert not forbidden(TYPES["camera"][1])

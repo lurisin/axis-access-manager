@@ -2125,15 +2125,6 @@ class AccessService:
         """Chiamata dal citofono (entità di Home Assistant)."""
         return self.log_event(ts=self.event_now(), kind="citofono", detail=name, source=entity_id)
 
-    def intercom_openings(self, door: str, since: str, until: str) -> list[dict]:
-        """Aperture del controller da un suo ingresso Relè Citofono sulla porta, tra since e until (ISO, ora del
-        controller), dalla più recente, anche recuperate dal suo registro: il relè del videocitofono cablato sul
-        controller apre da solo (vedi intercom.IntercomBridge). Il dettaglio è sempre ruolo e morsetto (input_detail):
-        le aperture dall'app o da Home Assistant, con lo stesso tipo, non ce l'hanno."""
-        prefix = f"{INPUT_SOURCES['intercom']} · "
-        rows = self.db.list_events(kind="apertura_remota", door=door, since=since, until=until, limit=20)
-        return [row for row in rows if (row.get("detail") or "").startswith(prefix)]
-
     def controller_now(self) -> datetime:
         """Adesso sull'orologio del controller, con lo scarto misurato anche senza NTP: per confrontare un'ora con
         quella degli eventi del controller nel registro. Senza misura, l'ora di Home Assistant."""
