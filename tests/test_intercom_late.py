@@ -88,12 +88,15 @@ class Plant:
                 "REX",
                 {"name": "Relè Citofono", "role": "intercom", "door_token": "porta", "access_point_token": REX_POINT},
             )
+        # Controller della porta che non risponde (vedi main._controller_down)
+        self.down = False
         self.bridge = IntercomBridge(
             IntercomSettings("Citofono Cortile", open_door=open_door),
             log=lambda **fields: self.service.log_event(**(fields | {"ts": clock.iso()}), door="porta"),
             open_door=lambda source, note: self.service.open_door(False, source, "porta", note),
             clock=clock,
             wall=clock.wall,
+            controller_down=lambda: self.down,
         )
         for topic in self.bridge.subscriptions:
             self.monitor.extra_subscriptions.setdefault(topic, self.bridge.handle)
@@ -272,6 +275,107 @@ async def test_bridge_back_with_online_after_online_stops_the_late_presses(db, c
     assert controller.calls == [FORWARDED]
 
 
+async def test_14_11_presses_kept_during_the_controller_outage_do_not_open_the_door(db, controller, settings):
+    """La cronologia vera del 14/11, dal log del titolare. La rete della porta cade per circa due ore: il controller
+    non risponde («Sincronizzazione non riuscita: il controller non risponde» ogni minuto fino alle 19:22:46) e il
+    videocitofono, sulla stessa rete, non arriva a Home Assistant; il broker e il bridge restano su. Le pressioni
+    dell'Apri fatte intanto non aprono (l'ingresso REX è disabilitato) e il videocitofono le tiene. Al ritorno le
+    consegna tutte: alle 19:23:54, 19:24:05, 19:24:12 e 19:24:20 l'app le inoltrava e la porta si è aperta quattro
+    volte, con nessuno davanti. Il controller risulta di nuovo raggiungibile alle 19:23:58."""
+    clock = Clock("17:00:00")
+    plant = Plant(db, controller, settings, clock, wired=False)
+    plant.bridge.broker_connected()
+    plant.mqtt(RELAY_AVAILABILITY, "online", retained=True)
+    plant.mqtt(CALL, "idle", retained=True)
+    plant.mqtt(RELAY, "OFF", retained=True)
+    clock.at("17:20:00")
+    plant.down = True
+    # La prima arriva quando l'app non ha ancora visto il controller tornare
+    await plant.unlock("19:23:54")
+    clock.at("19:23:58")
+    plant.down = False
+    plant.bridge.controller_back()
+    for at in ("19:24:05", "19:24:12", "19:24:20"):
+        await plant.unlock(at)
+    await settle()
+
+    assert controller.calls == []
+    texts = [detail for kind, detail, _ in plant.rows() if kind == "citofono"]
+    assert texts[:2] == [
+        "apertura dal citofono non inoltrata: il controller non risponde, senza una chiamata in corso",
+        "apertura dal citofono non inoltrata: messaggio arrivato 7 s dopo il ritorno del controller, senza una "
+        "chiamata in corso",
+    ]
+    assert all("non inoltrata" in text for text in texts)
+    # Passati 30 s dall'ultima pressione vecchia, un Apri dalla portineria senza chiamata passa di nuovo
+    controller.door = "Locked"
+    plant.monitor.door_mode = "Locked"
+    await plant.unlock("19:25:30", unlock_type="CENTER_PLATFORM")
+    assert controller.calls == [FORWARDED]
+
+
+async def test_live_call_while_the_controller_does_not_answer_is_still_tried(db, controller, settings, clock):
+    """Con una chiamata dal vivo l'Apri si prova sempre, anche con il controller segnato come non raggiungibile: se
+    risponde, la porta si apre; se no, l'errore resta nel registro e la richiesta non si ripete dopo."""
+    plant = Plant(db, controller, settings, clock, wired=False)
+    plant.bridge.broker_connected()
+    plant.down = True
+    clock.at("21:15:00")
+    plant.mqtt(CALL, "ringing")
+    await plant.unlock("21:15:06")
+    assert controller.calls == [FORWARDED]
+
+
+async def test_late_presses_that_keep_coming_after_a_reconnection_are_all_held_back(db, controller, settings, clock):
+    """Una coda lunga di pressioni vecchie: ognuna fa ripartire i 30 s, anche oltre i 30 s dal ricollegamento.
+    Finita la raffica, dopo 30 s di silenzio un Apri senza chiamata passa."""
+    plant = Plant(db, controller, settings, clock, wired=False)
+    clock.at("20:02:59")
+    plant.bridge.broker_connected()
+    for at in ("20:03:04", "20:03:25", "20:03:48", "20:04:10"):
+        await plant.unlock(at)
+    await settle()
+    assert controller.calls == []
+    assert plant.rows()[-1][1] == (
+        "apertura dal citofono non inoltrata: altra pressione arrivata insieme a quelle vecchie, senza una chiamata in "
+        "corso"
+    )
+    controller.door = "Locked"
+    plant.monitor.door_mode = "Locked"
+    await plant.unlock("20:04:50", unlock_type="CENTER_PLATFORM")
+    assert controller.calls == [FORWARDED]
+
+
+def test_controllers_back_wake_the_intercoms_of_their_doors():
+    """Nell'app: i controller che tornano a rispondere tra due controlli avvisano i videocitofoni delle loro porte
+    (main._intercoms_after_outage); quelli di un altro controller no."""
+    from types import SimpleNamespace
+
+    from app.health import ControllerHealth
+    from app.main import _controller_down, _controllers_down, _intercoms_after_outage
+
+    calls = []
+    intercoms = [
+        SimpleNamespace(door={"door_token": "a", "controller_id": None}, controller_back=lambda: calls.append("a")),
+        SimpleNamespace(door={"door_token": "b", "controller_id": 2}, controller_back=lambda: calls.append("b")),
+    ]
+    states = {
+        1: ControllerHealth(1, "Portineria", online=False, failures=3),
+        2: ControllerHealth(2, "Cortile", True),
+        # Un solo controllo lento non vuol dire controller fermo
+        3: ControllerHealth(3, "Magazzino", True, failures=1),
+    }
+    state = SimpleNamespace(
+        installation=SimpleNamespace(primary={"id": 1}), health=SimpleNamespace(states=states), intercoms=intercoms
+    )
+    assert _controllers_down(state) == {1}
+    assert _controller_down(state, intercoms[0].door) and not _controller_down(state, intercoms[1].door)
+    before = _controllers_down(state)
+    states[1].online, states[1].failures = True, 0
+    _intercoms_after_outage(state, before - _controllers_down(state))
+    assert calls == ["a"]
+
+
 async def test_idle_republished_by_the_call_state_polling_does_not_hold_back_an_open(db, controller, settings):
     """Revisione: il bridge con call_state_poll rilegge callStatus a intervalli e ripubblica "idle" ogni volta
     (Sensor.set_state con force_update). Un "idle" uguale dopo un minuto di silenzio non è un ritorno del bridge: l'Apri
@@ -349,13 +453,18 @@ async def test_call_from_before_the_reconnection_is_not_a_live_sign(db, controll
 
 
 async def test_skipped_late_message_does_not_hold_back_a_real_open(db, controller, settings, clock):
+    """Dopo una pressione vecchia scartata, un altro Apri senza chiamata subito dopo può essere della stessa coda (il
+    14/11 arrivavano a 7-11 s l'una dall'altra) e resta fermo; con una chiamata passa sempre, e senza chiamata passa
+    dopo 30 s senza pressioni vecchie. Non conta come apertura: non fa partire l'attesa di 5 s."""
     plant = Plant(db, controller, settings, clock, wired=False)
     plant.bridge.broker_connected()
     await plant.unlock("20:03:26")
     assert controller.calls == []
-    # Passato il tempo dopo il ricollegamento, l'Apri senza chiamata (ripetuto da chi era al monitor) passa, anche
-    # meno di 5 s dopo quello scartato
     await plant.unlock("20:03:29")
+    assert controller.calls == []
+    # Il visitatore suona: chi è al monitor risponde e apre, meno di 5 s dopo la pressione scartata
+    plant.mqtt(CALL, "ringing")
+    await plant.unlock("20:03:33")
     assert controller.calls == [FORWARDED]
 
 

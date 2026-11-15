@@ -3005,6 +3005,7 @@ def _wire(app: FastAPI) -> None:
                 False, source, door_token, note
             ),
             wall=service.controller_now,
+            controller_down=lambda door=door: _controller_down(state, door),
         )
         intercom.door = door
         # Stesso citofono di una porta precedente: la chiamata la segue quella (vedi sotto)
@@ -3427,11 +3428,13 @@ async def _health_loop(app: FastAPI) -> None:
             was = state.health.states.get(primary["id"]) if primary else None
             # Anche dopo un controllo fallito che non conta (sincronizzazione): si risincronizza appena risponde
             was_down = bool(was and (was.failures or was.online is False))
+            down_before = _controllers_down(state)
             await state.health.check_all()
             now = state.health.states.get(primary["id"]) if primary else None
             if was_down and now is not None and now.online:
                 _LOGGER.info("Controller di nuovo raggiungibile: rilettura delle tessere")
                 state.sync_wake.set()
+            _intercoms_after_outage(state, down_before - _controllers_down(state))
             _apply_pause(state)
             if before != state.controller.paused:
                 state.service.notify_change()
@@ -3453,6 +3456,33 @@ async def _health_loop(app: FastAPI) -> None:
             _LOGGER.exception("Prese visione dei guasti risolti non aggiornate")
         state.health_ready.set()
         await asyncio.sleep(HEALTH_INTERVAL)
+
+
+def _door_controller(state, door: dict) -> int | None:
+    """Controller della porta: quello indicato, se no il principale (impianti di prima delle porte per controller)."""
+    primary = state.installation.primary
+    return door.get("controller_id") or (primary["id"] if primary else None)
+
+
+def _controllers_down(state) -> set[int]:
+    """Controller che adesso non rispondono: non raggiungibili (due controlli di fila non riusciti) o segnati offline.
+    Un controllo lento da solo non conta: non deve fermare gli Apri senza chiamata della portineria."""
+    return {cid for cid, health in state.health.states.items() if health.unreachable or health.online is False}
+
+
+def _controller_down(state, door: dict) -> bool:
+    """Il controller della porta adesso non risponde: un Apri dal videocitofono senza chiamata non si inoltra."""
+    return _door_controller(state, door) in _controllers_down(state)
+
+
+def _intercoms_after_outage(state, back: set[int]) -> None:
+    """Controller tornati a rispondere: i videocitofoni delle loro porte possono consegnare adesso le pressioni fatte
+    durante l'interruzione, che non devono aprire (vedi IntercomBridge.controller_back)."""
+    if not back:
+        return
+    for intercom in getattr(state, "intercoms", []):
+        if _door_controller(state, intercom.door) in back:
+            intercom.controller_back()
 
 
 def _extended_openings(state) -> dict[str, float]:
