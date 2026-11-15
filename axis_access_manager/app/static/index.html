@@ -2638,12 +2638,16 @@ function scrollbarWidth() {
 // (getBoundingClientRect di html), e non da clientWidth: con la foto ingrandita aperta (html.viewer-open, overflow:
 // hidden) la barra non c'è ma il suo spazio resta (scrollbar-gutter: stable), l'elenco è largo uguale, e Chromium dà
 // a clientWidth la finestra intera. Con clientWidth l'aggiornamento dell'elenco sotto la foto toglieva 17 px (Stato via
-// a 1280 col menu aperto), e chiusa la foto restava così fino al giro dopo
+// a 1280 col menu aperto), e chiusa la foto restava così fino al giro dopo.
+// Della barra conta solo se c'è (almeno metà della sua larghezza), non quanto misura: con lo zoom la barra è larga
+// frazioni di px della pagina (22,33 al 75%) e arrotondarla toglieva 1 px solo con la barra, così alla stessa larghezza
+// una colonna al limite andava e veniva. Con la barra l'elenco conta com'è, senza gli si toglie la barra del riquadro
+// di prova, misurata come l'elenco. Lo zoom col dito (finestra più stretta della pagina) vale senza barra
 function personListWidth(list) {
   const bar = scrollbarWidth();
-  const page = document.documentElement.getBoundingClientRect().width;
-  const shown = Math.min(Math.max(Math.round(window.innerWidth - page), 0), bar);
-  return list.clientWidth - (bar - shown);
+  const root = document.documentElement;
+  const space = Math.max(window.innerWidth - root.getBoundingClientRect().width, window.innerWidth - root.clientWidth);
+  return bar > 0 && space * 2 >= bar ? list.clientWidth : list.clientWidth - bar;
 }
 // Regole delle colonne, dal modello: larghezza delle colonne fisse, colonne tolte per lo spazio (data-hide della
 // tabella) e bordo più largo per la prima e l'ultima in vista (data-first, data-last), con i suoi px in più

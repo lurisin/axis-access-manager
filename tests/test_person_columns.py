@@ -213,6 +213,10 @@ def test_the_list_is_measured_as_with_the_scrollbar_always_there():
             # Una barra della pagina più larga di quella del riquadro di prova, o lo zoom col dito: mai più dell'elenco
             "wider": "at(1024, 1004, 797)",
             "pinch": "at(600, 1024, 817)",
+            # Zoom al 75%: la barra della pagina è di 22,33 px, il riquadro di prova e l'elenco ne contano 23. Con la
+            # barra, senza e con la foto ingrandita la stessa larghezza (arrotondando la barra a 22: 979 con)
+            "fraction": "(BAR = 23, window.devicePixelRatio = 0.75, "
+            "[at(1280, 1257.667, 980, 1257), at(1280, 1280, 1003), at(1280, 1257.667, 980, 1280)])",
         },
         WINDOW,
     )
@@ -221,6 +225,7 @@ def test_the_list_is_measured_as_with_the_scrollbar_always_there():
     assert out["overlay"] == [998, 998, 2]
     assert out["zoom"] == [803, 803, 803, 3]
     assert out["wider"] == 797 and out["pinch"] == 803
+    assert out["fraction"] == [980, 980, 980]
 
 
 def test_same_window_width_same_columns_whatever_happened_before():
