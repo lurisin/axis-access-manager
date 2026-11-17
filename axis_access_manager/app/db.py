@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS doors (
     name TEXT NOT NULL,
     snapshot_camera TEXT NOT NULL DEFAULT '',
     snapshot_on_granted INTEGER NOT NULL DEFAULT 0,
+    snapshot_delay REAL NOT NULL DEFAULT 0,
     ha_buttons INTEGER NOT NULL DEFAULT 1,
     intercom_name TEXT NOT NULL DEFAULT '',
     intercom_open_door INTEGER NOT NULL DEFAULT 0,
@@ -230,6 +231,8 @@ LEGACY_COLUMNS = [
     ("controllers", "area_id", "INTEGER NOT NULL DEFAULT 0"),
     ("controllers", "description", "TEXT NOT NULL DEFAULT ''"),
     ("controllers", "snapshot_camera", "TEXT NOT NULL DEFAULT ''"),
+    # Ritardo della foto della telecamera della porta, in secondi (0.28.7): il flusso video arriva in ritardo
+    ("doors", "snapshot_delay", "REAL NOT NULL DEFAULT 0"),
 ]
 
 # Numeri mai riusati per controller, porte, aree, strutture e tipologie (come le persone): impostazione con il più
@@ -1591,6 +1594,7 @@ class Database:
         "name",
         "snapshot_camera",
         "snapshot_on_granted",
+        "snapshot_delay",
         "ha_buttons",
         "intercom_name",
         "intercom_open_door",
@@ -1599,6 +1603,8 @@ class Database:
         "area_id",
     )
     _DOOR_FLAGS = ("snapshot_on_granted", "ha_buttons", "intercom_open_door")
+    # Valori di campi della porta che i backup di prima non hanno: il ritardo della foto (0.28.7)
+    DOOR_FIELD_DEFAULTS = {"snapshot_delay": 0.0}
 
     def list_controllers(self) -> list[dict]:
         controllers = self._query("SELECT * FROM controllers ORDER BY id")
@@ -1665,13 +1671,14 @@ class Database:
         for door in doors:
             for flag in self._DOOR_FLAGS:
                 door[flag] = bool(door[flag])
+            door["snapshot_delay"] = float(door.get("snapshot_delay") or 0)
         return doors
 
     def get_door(self, door_id: int) -> dict | None:
         return next((d for d in self.list_doors() if d["id"] == door_id), None)
 
     def save_door(self, door_id: int | None, controller_id: int, fields: dict) -> int:
-        fields = {"area_id": 0, **fields}
+        fields = {"area_id": 0, "snapshot_delay": 0.0, **fields}
         values = tuple(fields[f] for f in self.DOOR_FIELDS)
         if door_id:
             sets = ", ".join(f"{f} = ?" for f in self.DOOR_FIELDS)

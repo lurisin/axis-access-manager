@@ -736,8 +736,13 @@ def controller_view(part: dict, ctx: dict) -> dict[str, dict[str, dict]]:
                 fields[field] = door[field]
                 show[field] = _seconds(door[field])
         for key in Database.DOOR_FIELDS:
+            # Un backup di prima di un campo nuovo (il ritardo della foto, 0.28.7) non ce l'ha: vale come di serie,
+            # così tra un backup di prima e uno di dopo non è una differenza (il ripristino lo lascia com'è adesso)
             if key != "door_token" and app:
-                fields[key] = app.get(key)
+                fields[key] = app.get(key, Database.DOOR_FIELD_DEFAULTS.get(key))
+        if "snapshot_delay" in fields:
+            delay = fields["snapshot_delay"] or 0
+            show["snapshot_delay"] = f"{delay:g} s".replace(".", ",") if delay else "nessuno"
         if app:
             show["area_id"] = ctx["areas"].get(app.get("area_id"), "come il controller")
         view["porte"][token] = _item(app.get("name") or door.get("Name") or token, fields, show)

@@ -69,6 +69,7 @@ PRESA_LISTS = (
 DOOR_DEFAULTS = {
     "snapshot_camera": "",
     "snapshot_on_granted": False,
+    "snapshot_delay": 0.0,
     "ha_buttons": True,
     "intercom_name": "",
     "intercom_open_door": False,

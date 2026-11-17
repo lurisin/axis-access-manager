@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.28.7
+
+- **Ritardo della Foto.** Nella finestra della telecamera di una porta c'è la casella **Ritardo della Foto**: spuntata, compare il campo dei secondi, da 0,1 a 10 anche con i decimali (2,5 o 2.5). La foto si chiede quei secondi dopo l'evento, così con un video che arriva in ritardo di 2-3 secondi si vede chi è davanti al lettore e non ancora lontano. Per trovare il valore basta confrontare l'ora scritta sul fotogramma con l'ora dell'evento nel registro. L'evento arriva subito a Home Assistant come prima; il ritardo vale per tutte le foto di quella porta, non per la telecamera del coperchio del controller. Nell'elenco delle telecamere e nella scheda della porta si legge «foto 2,5 s dopo». La tolleranza della foto (5 secondi per riuscire ancora a legarla all'evento) parte da quando la foto si chiede, dopo il ritardo. Un backup di prima di questa versione non ha il ritardo: ripristinandolo resta quello di adesso.
+
 ## 0.28.6
 
 - **Videocitofono, niente aperture in ritardo dopo un'interruzione della rete.** Il 14/11 il controller non ha risposto per circa due ore e il videocitofono, sulla stessa rete, non arrivava a Home Assistant. Le pressioni dell'Apri fatte intanto non hanno aperto, e il videocitofono le ha tenute. Al ritorno, alle 19:23:54, 19:24:05, 19:24:12 e 19:24:20, le ha consegnate tutte e l'app le ha inoltrate: la porta si è aperta quattro volte con nessuno davanti. La 0.28.5 non le fermava, perché né l'app né il bridge si erano ricollegati al broker. Ora un Apri senza chiamata non si inoltra mentre il controller non risponde e nei 30 secondi dopo che torna a rispondere. Le pressioni vecchie che continuano ad arrivare fanno ripartire i 30 secondi ogni volta. Un Apri durante una chiamata passa sempre, e senza chiamata passa di nuovo dopo 30 secondi senza pressioni vecchie. Nel registro una riga del videocitofono dice perché non è stato inoltrato.
