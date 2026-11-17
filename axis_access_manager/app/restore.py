@@ -27,6 +27,7 @@ from .backup import (
     shown_change,
 )
 from .db import Database, compose_name, nocase
+from .presa_in_carico import DOOR_DEFAULTS
 from .programming import ProgrammingService, parse_duration
 from .rules_service import RulesService
 from .service import AccessService, ServiceError, saved_parts
@@ -735,7 +736,8 @@ def _plan_doors(saved: dict, current: dict, saved_ctx: dict, current_ctx: dict) 
         # era nell'app al momento del backup
         fields = {"Name", "Description", *DOOR_TIMES}
         if app:
-            fields |= set(Database.DOOR_FIELDS) - {"door_token"}
+            # Solo i campi che il backup ha: uno di prima del ritardo della foto (0.28.7) lascia quello di adesso
+            fields |= {key for key in Database.DOOR_FIELDS if key != "door_token" and key in app}
             # L'area si riconosce dal nome: il suo numero può essere quello di un'area creata dopo
             area = _same_place(app["area_id"], saved_ctx["areas"], current_ctx["areas"]) if app["area_id"] else 0
             if area is None:
@@ -1015,7 +1017,10 @@ async def _apply_door(item: dict, runtime: Runtime, user: str) -> bool:
         ),
         None,
     )
-    fields = {k: saved[k] for k in Database.DOOR_FIELDS}
+    # Un campo che il backup non ha (più vecchio del campo) resta com'è adesso, o di serie per una porta rimessa
+    fields = {
+        k: saved[k] if k in saved else (current[k] if current else DOOR_DEFAULTS.get(k)) for k in Database.DOOR_FIELDS
+    }
     if current and all(current[k] == fields[k] for k in Database.DOOR_FIELDS):
         return False
     runtime.db.save_door(current["id"] if current else None, runtime.controller_id, fields)

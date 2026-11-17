@@ -708,3 +708,32 @@ async def test_late_nightly_is_called_automatic(plant):
     await plant.backups.set_policy({"night": (now - timedelta(hours=2)).astimezone().strftime("%H:%M")}, "admin")
     made = await plant.backups.run_scheduled(plant.clients, now=now)
     assert made["kind"] == "automatico" and made["summary"] == "Primo backup"
+
+
+async def test_backup_from_before_the_photo_delay_leaves_the_delay_as_it_is(plant, controller, db):
+    """0.28.7: un backup di prima del ritardo della foto non ha il campo. In Cosa Cambierà non è una differenza e il
+    ripristino lascia il ritardo di adesso; un backup nuovo invece lo riporta com'era."""
+    backup = await plant.backup()
+    _, saved = plant.backups.load(backup["id"])
+    for part in saved.values():
+        for door in part.get("app_doors", []):
+            door.pop("snapshot_delay")
+    door = db.get_door(plant.scala)
+    db.save_door(plant.scala, plant.controller_id, {**door, "snapshot_camera": "camera.scala", "snapshot_delay": 2.5})
+    current, _ = await plant.backups.snapshot(plant.clients)
+
+    [item] = [i for i in plan(saved, current, ["porte"], plant.controller_id) if i["key"] == "porta:porta"]
+    assert [c["label"] for c in item["changes"]] == ["Telecamera"]
+    runtime = Runtime(db, plant.access, plant.rules, plant.programming, plant.controller_id)
+    assert not (await apply([item], [item["key"]], runtime, "admin"))["failed"]
+    assert db.get_door(plant.scala)["snapshot_camera"] == "" and db.get_door(plant.scala)["snapshot_delay"] == 2.5
+
+    # Backup con il ritardo: torna com'era
+    door = db.get_door(plant.scala)
+    db.save_door(plant.scala, plant.controller_id, {**door, "snapshot_camera": "camera.scala"})
+    newer = await plant.backup()
+    db.save_door(plant.scala, plant.controller_id, {**db.get_door(plant.scala), "snapshot_delay": 0.0})
+    items, result = await plant.restore(newer["id"], ["porte"])
+    [item] = [i for i in items if i["key"] == "porta:porta"]
+    assert [(c["label"], c["old"], c["new"]) for c in item["changes"]] == [("Ritardo della Foto", "nessuno", "2,5 s")]
+    assert not result["failed"] and db.get_door(plant.scala)["snapshot_delay"] == 2.5

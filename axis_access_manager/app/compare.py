@@ -56,6 +56,7 @@ FIELD_LABELS = {
     "area_id": "Struttura e Area",
     "snapshot_camera": "Telecamera",
     "snapshot_on_granted": "Foto Anche sugli Accessi Concessi",
+    "snapshot_delay": "Ritardo della Foto",
     "ha_buttons": "Pulsanti in Home Assistant",
     "intercom_name": "Nome del Videocitofono",
     "intercom_open_door": '"Apri" dal Videocitofono Apre Questa Porta',

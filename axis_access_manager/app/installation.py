@@ -27,6 +27,29 @@ CAMERA_ERROR = "la telecamera deve essere un'entità camera.* di Home Assistant"
 SETTING_SITES_MIGRATED = "sites_migrated"
 
 
+# Ritardo della foto: il flusso video della telecamera arriva qualche secondo dopo la realtà, e la foto presa subito
+# mostra la persona ancora lontana dal lettore. Secondi con un decimale, al massimo SNAPSHOT_DELAY_MAX: oltre, la
+# foto mostrerebbe l'ingresso dopo il passaggio
+SNAPSHOT_DELAY_MAX = 10.0
+SNAPSHOT_DELAY_ERROR = "ritardo della foto non valido: da 0,1 a 10 secondi"
+
+
+def snapshot_delay(value) -> float:
+    """Secondi di ritardo della foto, da un numero o da un testo con la virgola o il punto («2,5»). 0 vuol dire
+    nessun ritardo (casella non spuntata)."""
+    if value in (None, "", False):
+        return 0.0
+    if isinstance(value, bool):
+        raise ServiceError(SNAPSHOT_DELAY_ERROR)
+    try:
+        seconds = round(float(str(value).strip().replace(",", ".")), 1)
+    except ValueError as err:
+        raise ServiceError(SNAPSHOT_DELAY_ERROR) from err
+    if seconds != seconds or not 0 <= seconds <= SNAPSHOT_DELAY_MAX:
+        raise ServiceError(SNAPSHOT_DELAY_ERROR)
+    return seconds
+
+
 def _flag(value) -> bool:
     return bool(value) and value not in ("0", "false", "False")
 
@@ -397,11 +420,13 @@ class InstallationService:
         camera = (data.get("snapshot_camera") or "").strip()
         if camera and not valid_camera(camera):
             raise ServiceError(CAMERA_ERROR)
+        delay = snapshot_delay(data.get("snapshot_delay")) if camera else 0.0
         return {
             "door_token": token,
             "name": normalize_name(data.get("name") or ""),
             "snapshot_camera": camera,
             "snapshot_on_granted": int(_flag(data.get("snapshot_on_granted"))),
+            "snapshot_delay": delay,
             "ha_buttons": int(_flag(data.get("ha_buttons", True))),
             "intercom_name": intercom[:100],
             "intercom_open_door": int(_flag(data.get("intercom_open_door")) and bool(intercom)),

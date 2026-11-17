@@ -5156,7 +5156,7 @@ function controllerDoors(body, ctrl, p, errors, appDoor) {
     if (!door) return `<p class="muted small-text" style="margin:0">Non gestita dall'app: niente registro per porta, pulsanti in Home Assistant o videocitofono.</p>`;
     return props([
       ["Nome nell'App", esc(door.name)],
-      ["Telecamera", `${door.snapshot_camera ? `${esc(cameraName(door.snapshot_camera))}${door.snapshot_on_granted ? " · anche accessi concessi" : ""}` : '<span class="muted">Nessuna</span>'} · <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a>`],
+      ["Telecamera", `${door.snapshot_camera ? `${esc(cameraName(door.snapshot_camera))}${door.snapshot_on_granted ? " · anche accessi concessi" : ""}${door.snapshot_delay > 0 ? ` · foto ${delayText(door.snapshot_delay)} dopo` : ""}` : '<span class="muted">Nessuna</span>'} · <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a>`],
       ["Videocitofono", `${door.intercom_name ? `${esc(door.intercom_name)} · relè ${door.intercom_relay}${door.intercom_open_door ? ' · <span class="pill ok">Apre la Porta</span>' : ' · <span class="pill">Solo Registro</span>'}` : '<span class="muted">Nessuno</span>'} · <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a>`],
       ["Pulsanti in Home Assistant", door.ha_buttons ? "Apri e Apri a Lungo" : '<span class="muted">Nessuno</span>'],
     ]);
@@ -5595,7 +5595,7 @@ async function controllerCameras(body, ctrl) {
     ${rows.length || ctrlRow ? `<div class="card flush"><div class="list">${ctrlRow}${rows.map((d) => `<div class="item">
         <div class="ev-icon k-accent">${icon("camera")}</div>
         <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}${problem(d.snapshot_camera) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
-          <div class="meta"><span>${esc(named("porta", d.name))}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto su accessi negati, aperture remote, uscite, citofono e allarmi"}</span></div>
+          <div class="meta"><span>${esc(named("porta", d.name))}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto su accessi negati, aperture remote, uscite, citofono e allarmi"}</span>${d.snapshot_delay > 0 ? `<span>foto ${delayText(d.snapshot_delay)} dopo l'evento</span>` : ""}</div>
           ${problem(d.snapshot_camera) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(d.snapshot_camera))}</div>` : ""}</div>
         <button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
@@ -5613,8 +5613,17 @@ async function controllerCameras(body, ctrl) {
     const door = ctrl.doors.find((d) => String(d.id) === (b.dataset.camEdit || b.dataset.camDel));
     if (b.id === "cam-new" || b.dataset.camEdit) return cameraEditor(ctrl, cameras, door);
     if (b.dataset.camDel && await confirmBox("Togli Telecamera", `Togliere la telecamera dalla porta <b>${esc(door.name)}</b>? Le foto già salvate restano nel registro.`, "Togli", true) &&
-        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}), "Telecamera tolta", "Rimozione della telecamera")) { loadSummary(); render(); }
+        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false, snapshot_delay: 0})}), "Telecamera tolta", "Rimozione della telecamera")) { loadSummary(); render(); }
   };
+}
+// Ritardo della foto in secondi, con la virgola: «2,5 s»
+const delayText = (seconds) => `${String(Math.round(Number(seconds) * 10) / 10).replace(".", ",")} s`;
+// Ritardo scritto nella finestra della telecamera («2,5» o «2.5»): secondi con un decimale, da 0,1 a 10; null se non va
+function parseDelay(text) {
+  const clean = String(text || "").trim().replace(",", ".");
+  if (!/^\d+(\.\d+)?$/.test(clean)) return null;
+  const seconds = Math.round(Number(clean) * 10) / 10;
+  return seconds >= 0.1 && seconds <= 10 ? seconds : null;
 }
 async function cameraEditor(ctrl, cameras, door, forController = false) {
   const current = (forController ? ctrl.snapshot_camera : door?.snapshot_camera) || "";
@@ -5632,10 +5641,20 @@ async function cameraEditor(ctrl, cameras, door, forController = false) {
     body: `${field("Telecamera", cameraInput, cameras.length ? "Le telecamere di Home Assistant, con il loro nome. Ferma: non trasmette (con Frigate anche se spenta), la foto potrebbe non riuscire." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
       ${field("Inquadra", targetSelect, "La porta: accessi, aperture, citofono e allarmi di quella porta. Il coperchio del controller: la sua apertura. Se c'è già una telecamera, viene sostituita.")}
       <div data-granted><div class="field inline"><input type="checkbox" name="granted" id="f-cg" ${door?.snapshot_on_granted ? "checked" : ""}><label for="f-cg">Foto Anche sugli Accessi Concessi</label></div>
-      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su accessi negati, aperture remote, uscite dai pulsanti, citofono, allarmi e manomissioni.</p></div>`,
+      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su accessi negati, aperture remote, uscite dai pulsanti, citofono, allarmi e manomissioni.</p>
+      <div class="field inline"><input type="checkbox" name="delay_on" id="f-cd" ${door?.snapshot_delay > 0 ? "checked" : ""}><label for="f-cd">Ritardo della Foto</label></div>
+      <p class="hint" style="margin-top:-8px">Se il video della telecamera arriva in ritardo, la foto si prende qualche secondo dopo l'evento, quando chi passa è davanti al lettore.</p>
+      <div data-delay ${door?.snapshot_delay > 0 ? "" : "hidden"}>${field("Secondi di Ritardo", `<input name="delay" inputmode="decimal" autocomplete="off" maxlength="4" style="max-width:120px" value="${door?.snapshot_delay > 0 ? esc(delayText(door.snapshot_delay).slice(0, -2)) : ""}">`, "Da 0,1 a 10 secondi, anche con i decimali. Confronta l'ora scritta sul fotogramma con l'ora dell'evento nel registro e metti la differenza.")}</div></div>`,
     onOpen: (dlg) => {
-      const sync = () => { $("[data-granted]", dlg).hidden = val(dlg, "door") === "ctrl"; };
+      const sync = () => {
+        $("[data-granted]", dlg).hidden = val(dlg, "door") === "ctrl";
+        $("[data-delay]", dlg).hidden = !val(dlg, "delay_on");
+      };
       $("[name=door]", dlg).addEventListener("change", sync);
+      $("[name=delay_on]", dlg).addEventListener("change", () => {
+        sync();
+        if (val(dlg, "delay_on")) $("[name=delay]", dlg).focus();
+      });
       sync();
     },
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, busy: "Salvataggio della telecamera", onClick: async (dlg) => {
@@ -5643,12 +5662,15 @@ async function cameraEditor(ctrl, cameras, door, forController = false) {
       const target = ctrl.doors.find((d) => String(d.id) === choice);
       const camera = val(dlg, "camera").trim();
       if (!camera) { toast("Scegli la telecamera", true); return false; }
+      // Ritardo solo per la telecamera di una porta, con la casella spuntata
+      const delay = choice !== "ctrl" && val(dlg, "delay_on") ? parseDelay(val(dlg, "delay")) : 0;
+      if (delay === null) { toast("Ritardo della foto: da 0,1 a 10 secondi", true); $("[name=delay]", dlg).focus(); return false; }
       // Prima la nuova posizione: se la rifiuta (entità non valida), quella di prima resta com'era
       if (!await run(() => choice === "ctrl" ? api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera}})
-        : api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, {snapshot_camera: camera, snapshot_on_granted: val(dlg, "granted")})}))) return false;
+        : api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, {snapshot_camera: camera, snapshot_on_granted: val(dlg, "granted"), snapshot_delay: delay})}))) return false;
       written = true;
       // Spostata altrove: solo ora la porta o il controller di prima resta senza telecamera
-      if (door && String(door.id) !== choice && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false})}))) return false;
+      if (door && String(door.id) !== choice && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {snapshot_camera: "", snapshot_on_granted: false, snapshot_delay: 0})}))) return false;
       if (forController && choice !== "ctrl" && !await run(() => api(`api/controllers/${ctrl.id}/camera`, {method: "PUT", body: {camera: ""}}))) return false;
       toast("Telecamera salvata");
       return true;
@@ -5720,7 +5742,7 @@ async function intercomEditor(ctrl, door) {
 // Impostazioni della porta nell'app; l'area viene dal controller
 // Impostazioni complete della porta per il salvataggio, con le modifiche indicate
 function doorBody(door, changes = {}) {
-  const fields = ["name", "door_token", "ha_buttons", "snapshot_camera", "snapshot_on_granted", "intercom_name", "intercom_relay", "intercom_open_door", "intercom_mqtt_prefix", "area_id"];
+  const fields = ["name", "door_token", "ha_buttons", "snapshot_camera", "snapshot_on_granted", "snapshot_delay", "intercom_name", "intercom_relay", "intercom_open_door", "intercom_mqtt_prefix", "area_id"];
   const body = Object.fromEntries(fields.filter((k) => door[k] !== undefined).map((k) => [k, door[k]]));
   return {...body, ...changes};
 }

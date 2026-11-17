@@ -329,6 +329,8 @@ class DoorConfigIn(BaseModel):
     name: str
     snapshot_camera: str = ""
     snapshot_on_granted: bool = False
+    # Secondi (anche «2,5»): il controllo e i limiti sono in installation.snapshot_delay
+    snapshot_delay: float | str = 0.0
     ha_buttons: bool = True
     intercom_name: str = ""
     intercom_open_door: bool = False
@@ -838,6 +840,8 @@ def create_app(
         app.state.backups = BackupService(app.state.db, db_folder / BACKUP_DIR, __version__)
         app.state.ha = home_assistant or HomeAssistant()
         app.state.snapshot_errors = {}
+        # Foto in attesa del loro ritardo: allo spegnimento non si chiedono più
+        app.state.photo_waits = set()
         # Telecamere con la foto non riuscita: si ricontrollano da sole, con la tolleranza dell'avvio
         app.state.camera_watch = CameraWatch(
             app.state.ha, app.state.snapshot_errors, wanted=lambda camera: _camera_used(app.state, camera)
@@ -898,6 +902,8 @@ def create_app(
             except Exception:  # noqa: BLE001 - le chiusure qui sotto devono girare comunque
                 _LOGGER.exception("Attività in background terminata con un errore")
         await app.state.health.aclose()
+        for wait in list(app.state.photo_waits):
+            wait.cancel()
         await _stop_runtime(app)
         await app.state.camera_watch.stop()
         await app.state.ha.aclose()
@@ -2979,6 +2985,11 @@ def _wire(app: FastAPI) -> None:
         kinds = SNAPSHOT_KINDS | (GRANTED_KINDS if door.get("snapshot_on_granted") else set())
         # Evento non salvato (registro non scrivibile): niente riga a cui legare l'istantanea
         if camera and row.get("kind") in kinds and row.get("id") is not None:
+            # Ritardo della foto della porta: il flusso della telecamera arriva in ritardo, e la foto presa subito
+            # mostra chi passa ancora lontano. Vale solo per la telecamera della porta, non per quella del coperchio
+            delay = float(door.get("snapshot_delay") or 0) if camera == door.get("snapshot_camera") else 0.0
+            if delay > 0 and not await _wait_for_photo(state, delay):
+                return
             await _save_snapshot(state, camera, row)
 
     async def on_change() -> None:
@@ -3087,6 +3098,21 @@ def _forget_intercom_wired(state) -> None:
         _LOGGER.warning("Avviso del videocitofono non tolto: %s", err)
 
 
+async def _wait_for_photo(state, delay: float) -> bool:
+    """Attesa del ritardo della foto. False se l'add-on si sta fermando: la foto non si chiede più (Home Assistant e il
+    registro si chiudono). La tolleranza di 5 s della foto (camera_watch) parte dopo, da quando la foto si chiede."""
+    waits = state.photo_waits
+    task = asyncio.current_task()
+    waits.add(task)
+    try:
+        await asyncio.sleep(delay)
+    except asyncio.CancelledError:
+        return False
+    finally:
+        waits.discard(task)
+    return True
+
+
 async def _save_snapshot(state, camera: str, row: dict) -> None:
     """Istantanea di un evento. L'ultimo esito per telecamera va nella scheda Telecamere del controller; una telecamera
     che non risponde si ricontrolla da sola (camera_watch), e la foto si riprova per l'evento solo per pochi secondi."""
@@ -3162,6 +3188,7 @@ def _doors_status(state) -> list[dict]:
             "state": _door_state(state.monitor, d["door_token"]),
             "camera": d["snapshot_camera"],
             "snapshot_on_granted": d["snapshot_on_granted"],
+            "snapshot_delay": d["snapshot_delay"],
             "ha_buttons": d["ha_buttons"],
             "intercom": d["intercom_name"],
         }
