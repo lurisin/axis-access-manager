@@ -1603,6 +1603,8 @@ class Database:
         "area_id",
     )
     _DOOR_FLAGS = ("snapshot_on_granted", "ha_buttons", "intercom_open_door")
+    # Valori di campi della porta che i backup di prima non hanno: il ritardo della foto (0.28.7)
+    DOOR_FIELD_DEFAULTS = {"snapshot_delay": 0.0}
 
     def list_controllers(self) -> list[dict]:
         controllers = self._query("SELECT * FROM controllers ORDER BY id")

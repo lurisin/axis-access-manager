@@ -78,6 +78,16 @@ def test_the_delay_is_saved_with_the_camera_of_the_door(controller, tmp_path, mo
 
 
 def test_the_photo_is_taken_after_the_delay_and_the_event_goes_out_at_once(controller, tmp_path, monkeypatch):
+    import app.main as main_module
+
+    waits = []
+    real_wait = main_module._wait_for_photo
+
+    async def wait(state, delay):
+        waits.append(delay)
+        return await real_wait(state, delay)
+
+    monkeypatch.setattr(main_module, "_wait_for_photo", wait)
     app, ha = make_app(controller, tmp_path, monkeypatch)
     with TestClient(app) as client:
         door = app.state.db.list_doors()[0]
@@ -98,7 +108,7 @@ def test_the_photo_is_taken_after_the_delay_and_the_event_goes_out_at_once(contr
             return row["id"]
 
         denied = event("negato")
-        assert len(ha.shots) == 1 and ha.at[0] - published[0] >= 0.35
+        assert waits == [0.4] and len(ha.shots) == 1 and ha.at[0] - published[0] >= 0.35
         # La foto è dell'evento, come senza ritardo
         row = next(e for e in client.get("/api/events?limit=5").json() if e["id"] == denied)
         assert row["snapshot"] and row["snapshot_error"] == ""
@@ -106,7 +116,7 @@ def test_the_photo_is_taken_after_the_delay_and_the_event_goes_out_at_once(contr
         ctrl = app.state.db.list_controllers()[0]
         assert client.put(f"/api/controllers/{ctrl['id']}/camera", json={"camera": "camera.quadro"}).status_code == 200
         event("manomissione", door="")
-        assert ha.shots[-1][0] == "camera.quadro" and ha.at[-1] - published[-1] < 0.2
+        assert ha.shots[-1][0] == "camera.quadro" and waits == [0.4]
 
 
 def test_a_photo_waiting_for_its_delay_is_not_taken_at_shutdown(controller, tmp_path, monkeypatch):

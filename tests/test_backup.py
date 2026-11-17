@@ -1,10 +1,11 @@
+import copy
 import gzip
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.backup import COMMON, DEFAULT_POLICY, BackupError, BackupService, BackupStore, retention
+from app.backup import COMMON, DEFAULT_POLICY, BackupError, BackupService, BackupStore, compare_parts, retention
 from app.main import create_app
 from app.notifications import NotificationService
 from app.programming import ProgrammingService
@@ -737,3 +738,15 @@ async def test_backup_from_before_the_photo_delay_leaves_the_delay_as_it_is(plan
     [item] = [i for i in items if i["key"] == "porta:porta"]
     assert [(c["label"], c["old"], c["new"]) for c in item["changes"]] == [("Ritardo della Foto", "nessuno", "2,5 s")]
     assert not result["failed"] and db.get_door(plant.scala)["snapshot_delay"] == 2.5
+
+
+async def test_backups_before_and_after_the_photo_delay_are_the_same(plant):
+    """Il primo backup dopo l'aggiornamento alla 0.28.7 ha il ritardo della foto, quello di prima no: il confronto e il
+    riassunto non devono dire che la porta è cambiata."""
+    backup = await plant.backup()
+    _, new = plant.backups.load(backup["id"])
+    old = copy.deepcopy(new)
+    for part in old.values():
+        for door in part.get("app_doors", []):
+            door.pop("snapshot_delay")
+    assert compare_parts(old, new) == []

@@ -27,7 +27,6 @@ from .backup import (
     shown_change,
 )
 from .db import Database, compose_name, nocase
-from .presa_in_carico import DOOR_DEFAULTS
 from .programming import ProgrammingService, parse_duration
 from .rules_service import RulesService
 from .service import AccessService, ServiceError, saved_parts
@@ -1019,7 +1018,8 @@ async def _apply_door(item: dict, runtime: Runtime, user: str) -> bool:
     )
     # Un campo che il backup non ha (più vecchio del campo) resta com'è adesso, o di serie per una porta rimessa
     fields = {
-        k: saved[k] if k in saved else (current[k] if current else DOOR_DEFAULTS.get(k)) for k in Database.DOOR_FIELDS
+        k: saved[k] if k in saved else (current[k] if current else Database.DOOR_FIELD_DEFAULTS.get(k))
+        for k in Database.DOOR_FIELDS
     }
     if current and all(current[k] == fields[k] for k in Database.DOOR_FIELDS):
         return False
