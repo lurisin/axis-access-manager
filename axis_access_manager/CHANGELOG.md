@@ -2,7 +2,7 @@
 
 ## 0.28.9
 
-- **Pulsante rimasto premuto: in Home Assistant subito e sempre.** Un Pulsante Uscita o Relè Citofono rimasto premuto (al Pulsante Portineria è successo il 18/11, con il pulsante incastrato) dopo un riavvio dell'add-on compariva spento, poi acceso solo alla prima pubblicazione per altro, per esempio un evento del contatto porta o un salvataggio nell'interfaccia: sembrava acceso senza motivo. Ora la lettura del controller che lo trova premuto si pubblica subito, al più 30 secondi dopo l'avvio, e resta accesa finché il pulsante non si libera. La lettura del pulsante non cambia: come sempre, acceso mentre il controller lo vede premuto.
+- **Pulsante rimasto premuto: in Home Assistant subito e sempre.** Un Pulsante Uscita o Relè Citofono rimasto premuto (al Pulsante Portineria è successo il 18/11, con il pulsante incastrato) dopo un riavvio dell'add-on compariva spento, poi acceso solo alla prima pubblicazione per altro, per esempio un evento del contatto porta o un salvataggio nell'interfaccia: sembrava acceso senza motivo. Ora la lettura del controller che lo trova premuto si pubblica subito, entro circa un minuto dall'avvio, e resta accesa finché il pulsante non si libera. La lettura del pulsante non cambia: come sempre, acceso mentre il controller lo vede premuto.
 
 ## 0.28.8
 
