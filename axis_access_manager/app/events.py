@@ -543,7 +543,11 @@ class EventMonitor:
                 put(self.io_ports, port, active, ("io", port))
                 # Letto dal controller, il valore è affidabile anche per pulsanti e relè: dopo l'avvio del controller
                 # gli eventi li danno a 0 fino alla prima pressione (vedi input_active)
-                self.io_changed.add(port)
+                if port not in self.io_changed:
+                    self.io_changed.add(port)
+                    # Un pulsante con lo stesso valore può passare a premuto (rimasto incastrato dopo il riavvio
+                    # dell'add-on): è un cambio da pubblicare subito, non alla prima pubblicazione per altro
+                    changed = True
         if snapshot.casing is not None and fresh(("casing",)):
             # Chiuso e riaperto tra due letture, senza eventi in diretta: il valore è lo stesso ma è un'altra apertura.
             # Il controller che si riavvia registra di nuovo il coperchio con lo stesso valore: quello non conta

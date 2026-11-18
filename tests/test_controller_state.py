@@ -187,6 +187,33 @@ async def test_pushbutton_read_from_the_controller_is_at_rest(controller):
     assert monitor.input_active("0") is True
 
 
+async def test_pushbutton_held_through_a_restart_is_published_at_the_next_read(controller):
+    # Impianto 18/11: Pulsante Portineria incastrato (ultimo evento 0, getPorts open come lo stato normale). Dopo il
+    # riavvio dell'add-on lo stato iniziale del WebSocket arriva durante la lettura completa, che lo lascia stare:
+    # spento. Al giro dopo la lettura lo dà premuto con lo stesso valore, e il cambio va pubblicato subito
+    monitor, keeper = keeper_for(controller)
+
+    class WebSocketDuringTheRead:
+        def __getattr__(self, name):
+            return getattr(controller, name)
+
+        async def io_ports(self):
+            ports = await controller.io_ports()
+            monitor.apply_event(
+                Event("Device", "Device/IO/Port/$source/port/0/", datetime.now(tz=UTC), {"port": "0", "state": "0"}),
+                retained=True,
+            )
+            return ports
+
+    assert await keeper.tick(WebSocketDuringTheRead(), ["porta"], True) is True
+    assert monitor.input_active("0", pushbutton=True) is False
+    assert await keeper.tick(controller, ["porta"], True) is True
+    assert monitor.input_active("0", pushbutton=True) is True
+    # Niente di nuovo: nessun cambio
+    assert await keeper.tick(controller, ["porta"], True) is False
+    assert monitor.input_active("0", pushbutton=True) is True
+
+
 async def test_door_unknown_to_the_controller_does_not_stop_the_others(controller):
     monitor, keeper = keeper_for(controller)
     monitor.door_modes["vecchia"] = "Locked"
