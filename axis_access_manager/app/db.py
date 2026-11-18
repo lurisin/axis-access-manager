@@ -231,9 +231,13 @@ LEGACY_COLUMNS = [
     ("controllers", "area_id", "INTEGER NOT NULL DEFAULT 0"),
     ("controllers", "description", "TEXT NOT NULL DEFAULT ''"),
     ("controllers", "snapshot_camera", "TEXT NOT NULL DEFAULT ''"),
-    # Ritardo della foto della telecamera della porta, in secondi (0.28.7): il flusso video arriva in ritardo
-    ("doors", "snapshot_delay", "REAL NOT NULL DEFAULT 0"),
 ]
+# LEGACY_COLUMNS è lo schema 1 e non cambia più: le colonne nuove vanno in una migrazione numerata o qui sotto, aggiunte
+# a ogni avvio se mancano (vedi Database._person_details)
+# Colonne della porta aggiunte dopo lo schema 10: il ritardo della foto della telecamera, in secondi (0.28.7). Nella
+# 0.28.7 stava in LEGACY_COLUMNS, che vale solo per la migrazione 1: sui database esistenti la colonna non c'era e ogni
+# salvataggio di una porta finiva in errore 500
+DOOR_COLUMNS = (("snapshot_delay", "REAL NOT NULL DEFAULT 0"),)
 
 # Numeri mai riusati per controller, porte, aree, strutture e tipologie (come le persone): impostazione con il più
 # alto già dato e righe che citano ancora i numeri degli eliminati (righe di accesso delle tipologie, Storico
@@ -745,6 +749,8 @@ class Database:
                 _LOGGER.info("Matricola e referente aggiunti all'anagrafica")
             if self._add_card_columns():
                 _LOGGER.info("Codice Stampato aggiunto alle tessere")
+            if self._add_columns("doors", DOOR_COLUMNS):
+                _LOGGER.info("Ritardo della foto aggiunto alle porte")
             # Foto di persone che non ci sono più (eliminate senza i vincoli attivi): non si mostrano a nessuno
             orphans = self._conn.execute(
                 "DELETE FROM person_photos WHERE person_id NOT IN (SELECT id FROM persons)"
