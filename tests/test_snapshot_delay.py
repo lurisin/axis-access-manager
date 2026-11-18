@@ -132,31 +132,46 @@ def test_a_photo_waiting_for_its_delay_is_not_taken_at_shutdown(controller, tmp_
     assert ha.shots == []
 
 
-def test_an_older_database_gets_the_delay_column(tmp_path):
+DOOR = {
+    "door_token": "porta",
+    "name": "Porta",
+    "snapshot_camera": "camera.x",
+    "snapshot_on_granted": 0,
+    "ha_buttons": 1,
+    "intercom_name": "",
+    "intercom_open_door": 0,
+    "intercom_relay": 1,
+    "intercom_mqtt_prefix": "hmd",
+}
+
+
+def test_a_database_of_the_0_28_6_gets_the_delay_column_and_saves_doors(tmp_path):
+    """Collaudo della 0.28.7 sull'impianto: un database esistente (già allo schema 10) non riceveva la colonna, che
+    stava solo nelle colonne della migrazione 1, e ogni salvataggio di una porta dava «no such column: snapshot_delay»
+    (errore 500). Il database della 0.28.6 si rifà togliendo la colonna: la versione dello schema resta quella."""
     path = tmp_path / "vecchio.db"
     db = Database(path)
     controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
-    db.save_door(
-        None,
-        controller_id,
-        {
-            "door_token": "porta",
-            "name": "Porta",
-            "snapshot_camera": "camera.x",
-            "snapshot_on_granted": 0,
-            "ha_buttons": 1,
-            "intercom_name": "",
-            "intercom_open_door": 0,
-            "intercom_relay": 1,
-            "intercom_mqtt_prefix": "hmd",
-        },
-    )
+    door_id = db.save_door(None, controller_id, DOOR)
+    version = db._conn.execute("PRAGMA user_version").fetchone()[0]
     db.close()
     with sqlite3.connect(path) as conn:
         conn.execute("ALTER TABLE doors DROP COLUMN snapshot_delay")
+        assert "snapshot_delay" not in {row[1] for row in conn.execute("PRAGMA table_info(doors)")}
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == version
+
     db = Database(path)
     [door] = db.list_doors()
     assert door["snapshot_delay"] == 0.0 and door["snapshot_camera"] == "camera.x"
+    # Salvataggio di una porta esistente (anche solo il videocitofono) e di una porta nuova
+    db.save_door(door_id, controller_id, {**DOOR, "intercom_name": "Citofono", "snapshot_delay": 2.5})
+    db.save_door(None, controller_id, {**DOOR, "door_token": "cantina", "name": "Cantina"})
+    db.close()
+    # Dopo un riavvio il ritardo resta
+    db = Database(path)
+    saved = {d["door_token"]: d for d in db.list_doors()}
+    assert saved["porta"]["snapshot_delay"] == 2.5 and saved["porta"]["intercom_name"] == "Citofono"
+    assert saved["cantina"]["snapshot_delay"] == 0.0
     db.close()
 
 

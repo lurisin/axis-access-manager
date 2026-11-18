@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.28.8
+
+Correzione urgente della 0.28.7.
+
+- **Le porte si salvano di nuovo.** Su un impianto aggiornato dalla 0.28.6, ogni salvataggio di una porta (nome, telecamera, videocitofono, Ritardo della Foto, pulsanti in Home Assistant) dava «Richiesta non riuscita (errore 500)», con «no such column: snapshot_delay» nel log. La colonna del Ritardo della Foto si aggiungeva solo ai database nuovi: ora si aggiunge a ogni avvio se manca, senza toccare il resto. Le porte e le impostazioni di prima restano com'erano; il ritardo parte da nessuno.
+
 ## 0.28.7
 
 - **Ritardo della Foto.** Nella finestra della telecamera di una porta c'è la casella **Ritardo della Foto**: spuntata, compare il campo dei secondi, da 0,1 a 10 anche con i decimali (2,5 o 2.5). La foto si chiede quei secondi dopo l'evento, così con un video che arriva in ritardo di 2-3 secondi si vede chi è davanti al lettore e non ancora lontano. Per trovare il valore basta confrontare l'ora scritta sul fotogramma con l'ora dell'evento nel registro. L'evento arriva subito a Home Assistant come prima; il ritardo vale per tutte le foto di quella porta, non per la telecamera del coperchio del controller. Nell'elenco delle telecamere e nella scheda della porta si legge «foto 2,5 s dopo». La tolleranza della foto (5 secondi per riuscire ancora a legarla all'evento) parte da quando la foto si chiede, dopo il ritardo. Un backup di prima di questa versione non ha il ritardo: ripristinandolo resta quello di adesso.
