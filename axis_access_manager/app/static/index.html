@@ -5586,8 +5586,8 @@ async function controllerCameras(body, ctrl) {
         <div class="grow"><div class="title">${esc(label(entity))}${problem(entity) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
           <div class="meta"><span>${place}</span><span>${when}</span></div>
           ${problem(entity) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(entity))}</div>` : ""}</div>
-        <button type="button" class="small" ${edit}>${icon("edit")}Modifica</button>
-        <button type="button" class="small ghost danger" ${del}>Togli</button></div>`;
+        <div class="row item-actions"><button type="button" class="small" ${edit}>${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost danger" ${del}>Togli</button></div></div>`;
   const ctrlRow = ctrl.snapshot_camera ? cameraRow(ctrl.snapshot_camera, `coperchio di ${esc(ctrl.name)}`, "foto quando si apre il coperchio", 'data-cam-edit="ctrl"', 'data-cam-del="ctrl"') : "";
   body.innerHTML = `
     <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Una telecamera di Home Assistant per porta: l'app salva una foto nel registro su accessi negati, aperture remote, uscite dai pulsanti, chiamate al citofono, allarmi e manomissioni. Se il controller è in un altro locale, può avere la sua telecamera per l'apertura del coperchio. Le foto sono anche in Media → axis_access_manager.</p>
@@ -5597,8 +5597,8 @@ async function controllerCameras(body, ctrl) {
         <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}${problem(d.snapshot_camera) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
           <div class="meta"><span>${esc(named("porta", d.name))}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto su accessi negati, aperture remote, uscite, citofono e allarmi"}</span>${d.snapshot_delay > 0 ? `<span>foto ${delayText(d.snapshot_delay)} dopo l'evento</span>` : ""}</div>
           ${problem(d.snapshot_camera) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(d.snapshot_camera))}</div>` : ""}</div>
-        <button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
-        <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
+        <div class="row item-actions"><button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div></div>`).join("")}</div></div>`
       : `<div class="card"><div class="empty">${icon("camera")}<br>Nessuna telecamera associata alle porte o al controller.</div></div>`}`;
   paintIcons(body);
   body.onclick = async (e) => {
@@ -5695,8 +5695,8 @@ async function controllerIntercoms(body, ctrl) {
         <div class="ev-icon k-accent">${icon("phone")}</div>
         <div class="grow"><div class="title">${esc(d.intercom_name)}</div>
           <div class="meta"><span>${esc(named("porta", d.name))}</span><span>${d.intercom_open_door ? `apre la porta con il relè ${d.intercom_relay}` : "registra le chiamate, non apre la porta"}</span><span>${esc(seen(d))}</span></div></div>
-        <button type="button" class="small" data-ic-edit="${d.id}">${icon("edit")}Modifica</button>
-        <button type="button" class="small ghost danger" data-ic-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
+        <div class="row item-actions"><button type="button" class="small" data-ic-edit="${d.id}">${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost danger" data-ic-del="${d.id}">Togli</button></div></div>`).join("")}</div></div>`
       : `<div class="card"><div class="empty">${icon("phone")}<br>Nessun videocitofono associato alle porte.</div></div>`}`;
   paintIcons(body);
   body.onclick = async (e) => {
