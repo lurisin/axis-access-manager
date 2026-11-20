@@ -130,7 +130,7 @@ def test_stuck_after_a_minute_with_the_input_and_door_names(db):
     [hours] = collect(service, pressed(), T0 + timedelta(hours=4, minutes=1))
     assert hours["weight"] == 1 and hours["id"] == item["id"]
     [relay] = collect(service, pressed(role="intercom"), T0 + timedelta(minutes=2))
-    assert relay["title"] == "Relè del Citofono Bloccato" and relay["text"].endswith("premuto da 2 min")
+    assert relay["title"] == "Relè Citofono Bloccato" and relay["text"].endswith("premuto da 2 min")
     # Rilasciato e premuto di nuovo: un'altra notifica, da gestire anche se la precedente era stata vista
     [again] = collect(service, pressed(T0 + timedelta(hours=2)), T0 + timedelta(hours=3))
     assert again["id"] != item["id"]
@@ -246,3 +246,24 @@ def test_rex_terminal_and_other_roles_are_never_stuck(client, controller):
     read(client, controller, pressed_now=True)
     assert all(state.monitor.input_active(str(n), pushbutton=True) for n in range(2))
     assert stuck(client, datetime.now(tz=UTC) + timedelta(hours=1)) == []
+
+
+def test_input_that_becomes_a_pushbutton_starts_counting_from_the_role_change(client, controller):
+    """Un AUX letto a 0 da ore come contatto, che diventa Pulsante Uscita: niente «premuto da 2 h» subito, si conta dal
+    cambio di ruolo, con il minuto di attesa."""
+    state = client.app.state
+    client.portal.call(state.health.check_all)
+    primary = state.installation.primary["id"]
+    state.db.save_controller_input(primary, "IO1", {"name": "Sensore Prova", "role": "alarm"})
+    client.portal.call(main._input_changed, state)
+    clock = Clock(datetime.now(tz=UTC).replace(microsecond=0))
+    state.monitor.clock = clock
+    read(client, controller, pressed_now=True)
+    assert state.monitor.io_since["0"] == clock.at.isoformat()
+    # Due ore dopo diventa un pulsante
+    clock.at += timedelta(hours=2)
+    state.db.save_controller_input(primary, "IO1", {"name": "Pulsante Prova", "role": "rex", "door_token": "porta"})
+    client.portal.call(main._input_changed, state)
+    assert stuck(client, clock.at + timedelta(seconds=30)) == []
+    [item] = stuck(client, clock.at + timedelta(seconds=61))
+    assert item["text"].endswith("premuto da 1 min")

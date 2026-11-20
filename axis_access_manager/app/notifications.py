@@ -744,7 +744,7 @@ class NotificationService:
                 "stuck_input",
                 _episode_id(f"stuck:{button['controller_id']}:{button['io']}", button["since"]),
                 "warn",
-                "Relè del Citofono Bloccato" if button["role"] == "intercom" else "Pulsante Bloccato",
+                "Relè Citofono Bloccato" if button["role"] == "intercom" else "Pulsante Bloccato",
                 " · ".join(x for x in (button["name"], button["door"], f"premuto da {_duration(now - start)}") if x),
                 button["since"],
                 door_token=button["door_token"],

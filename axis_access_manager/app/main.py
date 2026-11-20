@@ -2747,6 +2747,8 @@ async def _start_runtime(app: FastAPI) -> None:
         # Nuova configurazione (controller cambiato, ripristino): i tempi delle porte si rileggono
         state.service.lock_guard.invalidate_times()
     state.monitor.aux_contacts = _aux_contacts(state)
+    # Per riconoscere, a ogni programmazione, gli ingressi appena diventati pulsanti (vedi _input_changed)
+    state.pushbutton_ports = _pushbutton_ports(state)
     state.monitor.input_contacts = _input_contacts(state)
     if translated := state.db.translate_details("negato", DENIED_REASONS):
         _LOGGER.info("Motivi di %s dinieghi tradotti in italiano", translated)
@@ -3283,6 +3285,16 @@ def _current_notifications(state, now: datetime | None = None) -> list[dict]:
     )
 
 
+def _pushbutton_ports(state) -> set[str]:
+    """Porte I/O del controller principale con il ruolo Pulsante Uscita o Relè Citofono."""
+    primary = state.installation.primary
+    if not primary:
+        return set()
+    rows = state.db.controller_inputs(primary["id"]).items()
+    ports = {CONTROLLER_INPUTS.get(io, ("", None))[1] for io, row in rows if row.get("role") in REX_ROLES}
+    return {port for port in ports if port is not None}
+
+
 def _pressed(state) -> list[dict]:
     """Pulsanti Uscita e Relè Citofono del controller principale premuti adesso, con l'ora dell'app da cui lo sono (per
     la notifica Pulsanti Bloccati). Solo gli AUX, che mandano Device/IO/Port: l'ingresso REX no, e lì non si sa. Con il
@@ -3713,6 +3725,13 @@ def _input_contacts(state) -> dict[str, str]:
 
 async def _input_changed(state) -> None:
     """Dopo aver programmato un ingresso, o annullato la sua programmazione dallo Storico Modifiche."""
+    # Ingresso diventato pulsante o relè (o non più): «premuto da» e il minuto di attesa del Pulsante Bloccato partono
+    # da adesso, non dall'ultimo cambio letto quando era un contatto
+    pushbuttons = _pushbutton_ports(state)
+    for port in pushbuttons ^ state.pushbutton_ports:
+        if port in state.monitor.io_ports:
+            state.monitor._io_now(port)
+    state.pushbutton_ports = pushbuttons
     state.monitor.aux_contacts = _aux_contacts(state)
     state.monitor.input_contacts = _input_contacts(state)
     # I nomi degli ingressi sono anche quelli delle entità di Home Assistant; con il Contatto Porta la porta non ha

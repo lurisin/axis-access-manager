@@ -459,8 +459,9 @@ async def test_aux_contact_of_a_door_not_in_the_app_keeps_its_input_entity(db, s
     monitor.aux_contacts = {"altra": ("1", "nc")}
     bridge = HaBridge(settings, monitor, db)
     assert "altra" not in {d["door_token"] for d in bridge.doors}
-    objects = {o for _, o, _ in bridge._entities()}
-    assert "ingresso_aux_2" in objects
+    configs = {o: c for _, o, c in bridge._entities()}
+    # È il contatto di una porta: aperta o chiusa, come prima
+    assert configs["ingresso_aux_2"]["device_class"] == "door"
     # La porta dell'app con lo stesso AUX come contatto: l'ingresso non ha più la sua entità
     monitor.aux_contacts = {"porta": ("1", "nc")}
     assert "ingresso_aux_2" not in {o for _, o, _ in bridge._entities()}

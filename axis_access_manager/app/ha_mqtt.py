@@ -268,6 +268,8 @@ class HaBridge:
         # aggiunta (o tolta) nell'app resta l'unica entità che mostra quel contatto
         tokens = {d["door_token"] for d in self.doors}
         contact_ports = {port for token, (port, _) in self.monitor.aux_contacts.items() if token in tokens}
+        # Quello di una porta non nell'app resta, ed è una porta: aperta o chiusa
+        door_ports = {port for port, _ in self.monitor.aux_contacts.values()}
         entities = [
             (
                 "sensor",
@@ -371,7 +373,13 @@ class HaBridge:
                         **state,
                         **controller,
                         "name": names.get(port) or name,
-                        **({"device_class": device_class} if device_class else {}),
+                        **(
+                            {"device_class": "door"}
+                            if port in door_ports
+                            else {"device_class": device_class}
+                            if device_class
+                            else {}
+                        ),
                         "icon": "mdi:electric-switch",
                         "value_template": f"{{{{ value_json.ingressi['{port}'] }}}}",
                     },
