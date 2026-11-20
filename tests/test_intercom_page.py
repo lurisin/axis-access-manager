@@ -19,7 +19,16 @@ from test_page_time_zone import needs_node, run_page
 
 from app.direct import _Server
 
-NAMES = ("named", "NO_INTERCOM", "INTERCOM_WAIT", "INTERCOM_CURRENT", "intercomRows", "intercomEmpty", "doorBody")
+NAMES = (
+    "named",
+    "NO_INTERCOM",
+    "INTERCOM_WAIT",
+    "INTERCOM_CURRENT",
+    "intercomRows",
+    "intercomRelayPick",
+    "intercomEmpty",
+    "doorBody",
+)
 MODEL = "DS-KX0000-PROVA"
 # Elenco di api/intercoms/found: l'Ingresso Artisti è delle porte 1 (relè 1) e 2 (relè 2), il Cancello Carraio libero
 FOUND = {
@@ -56,6 +65,14 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
     legacy = {"id": 3, "intercom_name": "Citofono Sottopalco", "intercom_serial": "", "intercom_relay": 2}
     found = json.dumps(FOUND)
     partial = {**FOUND, "devices": [FOUND["devices"][0], {**FOUND["devices"][1], "relays": [1]}]}
+    name_only = {**second, "intercom_relay": 1, "intercom_serial": ""}
+    store = {
+        "id": 4,
+        "name": "Magazzino",
+        "intercom_name": "Citofono Sottopalco",
+        "intercom_serial": "",
+        "intercom_relay": 2,
+    }
     out = run_page(
         "Europe/Rome",
         {
@@ -70,8 +87,19 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
             "legacy_rows": f"intercomRows({found}, {json.dumps(legacy)}, 3)",
             # Broker scollegato: l'elenco è vuoto, ma non si può dire che non c'è
             "legacy_offline": f"intercomRows({{broker: false, since: null, devices: []}}, {json.dumps(legacy)}, 3)",
-            # Porta 2 sullo stesso relè della porta 1: grigio anche per lei
+            # Porta 2 sullo stesso relè della porta 1: già legata al numero di serie lo tiene (salvandola «Apri» resta
+            # alla porta 1); con il solo nome è grigio (salvandola si legherebbe, e «Apri» potrebbe passare a lei)
             "shared": f"intercomRows({found}, {json.dumps({**second, 'intercom_relay': 1})}, 2)[1].relays",
+            "shared_name_only": f"intercomRows({found}, {json.dumps(name_only)}, 2)[1].relays",
+            # Non annunciato: i relè usati si vedono dalle porte del controller
+            "current_shared": f"intercomRows({{broker: false, since: null, devices: []}}, {json.dumps(legacy)}, 3,"
+            f" {json.dumps([store])})[0].relays",
+            # Relè da scegliere: per il videocitofono della porta mai un altro relè da solo
+            "pick": "[[{current: true, relays: [{n: 1, off: true}, {n: 2, off: false}]}, undefined, 1, 2],"
+            " [{current: true, relays: [{n: 1, off: true}, {n: 2, off: false}]}, 1, 2, 1],"
+            " [{current: true, relays: [{n: 1, off: false}, {n: 2, off: false}]}, undefined, 2, 1],"
+            " [{current: false, relays: [{n: 1, off: true}, {n: 2, off: false}]}, undefined, 2, 1],"
+            " [undefined, undefined, 2, 0]].map((a) => intercomRelayPick(...a).pick)",
             # Relè 2 della porta 2 non più annunciato: resta tra quelli da scegliere, Non Trovato
             "relay_missing": f"intercomRows({json.dumps(partial)}, {json.dumps(second)}, 2)[1].relays",
             "empty": "[null, {broker: false, since: null, devices: []}, {broker: true, since: 1, devices: []},"
@@ -99,7 +127,13 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
     ]
     assert out["legacy"] == [["-", "", True], [SERIAL_B, SERIAL_B, False], [SERIAL_A, SERIAL_A, False]]
     assert _rows(out["legacy_rows"])[0] == ("Citofono Sottopalco", "", False, True, [(1, ""), (2, "")])
-    assert [(r["n"], r["off"]) for r in out["shared"]] == [(1, True), (2, False)]
+    assert [(r["n"], r["by"], r["off"]) for r in out["shared"]] == [(1, "Porta Palcoscenico", False), (2, "", False)]
+    assert [(r["n"], r["off"]) for r in out["shared_name_only"]] == [(1, True), (2, False)]
+    assert [(r["n"], r["by"], r["off"]) for r in out["current_shared"]] == [
+        (1, "", False),
+        (2, "Porta Magazzino", True),
+    ]
+    assert out["pick"] == [None, None, 2, 2, 2]
     assert out["relay_missing"] == [
         {"n": 1, "by": "Porta Palcoscenico", "off": True, "missing": False},
         {"n": 2, "by": "", "off": False, "missing": True},
@@ -125,13 +159,18 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
 FLOW = r"""
 const { chromium } = require("playwright");
 const config = JSON.parse(process.argv[1]);
+// Se un passo non riesce: dove era la pagina, per capire perché
+const seen = {page: null, out: null, failed: []};
 (async () => {
   const browser = await chromium.launch();
   const context = await browser.newContext({viewport: {width: 390, height: 844}, extraHTTPHeaders: config.headers});
   const page = await context.newPage();
   const out = {errors: [], puts: []};
+  Object.assign(seen, {page, out});
   page.on("pageerror", (e) => out.errors.push(String(e)));
+  page.on("requestfailed", (r) => seen.failed.push(r.url()));
   page.on("response", async (r) => {
+    if (r.status() >= 400) seen.failed.push(`${r.status()} ${r.url()}`);
     if (r.request().method() === "PUT" && r.url().includes("/api/doors/")) {
       out.puts.push({door: r.url().split("/").pop(), status: r.status(), body: JSON.parse(r.request().postData())});
     }
@@ -216,17 +255,28 @@ const config = JSON.parse(process.argv[1]);
   out.backRelays = await relays();
   await page.click("#modal .dlg-foot button.primary");
   await page.waitForSelector("#modal", {state: "hidden"});
-  // Il relè della porta lo usa anche un'altra porta: grigio, e Salva chiede di sceglierne uno senza salvare
+  // La scheda rifatta dopo il salvataggio
+  await page.waitForSelector(`[data-ic-edit="${config.cellar}"]`, {timeout: 60000});
+  // Il relè della porta, già legata al numero di serie, lo usa anche un'altra porta: resta, e Salva lo tiene
   await page.unroute("**/api/intercoms/found");
   await page.route("**/api/intercoms/found", (route) => route.fulfill({json: config.shared}));
   await page.click(`[data-ic-edit="${config.cellar}"]`);
   await page.waitForSelector("#modal[open] [data-ic-list] label");
   out.sharedRelays = await relays();
-  const before = out.puts.length;
   await page.click("#modal .dlg-foot button.primary");
-  await page.waitForTimeout(400);
-  out.sharedSave = {puts: out.puts.length - before, open: Boolean(await page.$("#modal[open]")),
-    toast: await page.$$eval("#modal .dlg-error", (ts) => ts.map((t) => t.textContent.trim()))};
+  await page.waitForSelector("#modal", {state: "hidden"});
+  // Due videocitofoni annunciati della porta (lo stesso nome): la scelta e il relè di uno restano suoi
+  await page.unroute("**/api/intercoms/found");
+  await page.route("**/api/intercoms/found", (route) => route.fulfill({json: config.twins}));
+  await page.click(`[data-ic-edit="${config.cellar}"]`);
+  await page.waitForSelector("#modal[open] [data-ic-list] label");
+  await page.check('#modal [name=intercom][value="YYYY02"]');
+  await page.selectOption("#modal [name=intercom_relay]", "1");
+  await page.selectOption("#modal [name=door]", String(config.door));
+  out.twins = {checked: await page.$eval("#modal [name=intercom]:checked", (i) => i.value),
+    relay: await page.$eval("#modal [name=intercom_relay]", (s) => s.value)};
+  await page.check('#modal [name=intercom][value="XXXX01"]');
+  out.twins.other = await page.$eval("#modal [name=intercom_relay]", (s) => s.value);
   await page.click("#modal [data-x]");
   await page.waitForSelector("#modal", {state: "hidden"});
   // Indietro del browser mentre l'elenco arriva: la finestra non si apre sopra l'altra pagina
@@ -245,7 +295,17 @@ const config = JSON.parse(process.argv[1]);
   out.back = {hash: await page.evaluate(() => location.hash), open: Boolean(await page.$("#modal[open]"))};
   console.log(JSON.stringify(out));
   await browser.close();
-})().catch((e) => { console.error(e); process.exit(1); });
+})().catch(async (e) => {
+  console.error(e);
+  const state = await seen.page?.evaluate(() => ({
+    hash: location.hash,
+    view: document.querySelector("#view")?.innerText.slice(0, 400),
+    modal: Boolean(document.querySelector("#modal[open]")),
+    busy: Boolean(document.querySelector("#busy[open]")),
+  })).catch(String);
+  console.error(JSON.stringify({state, out: seen.out, failed: seen.failed}));
+  process.exit(1);
+});
 """
 
 
@@ -293,6 +353,21 @@ def test_the_intercom_is_chosen_from_the_broker_and_saved_with_its_serial(served
         "serial": SERIAL_A,
         "name": ARTISTI,
         "other": SERIAL_B,
+        "twins": {
+            "broker": True,
+            "since": 42.0,
+            "devices": [
+                {
+                    "serial": serial,
+                    "name": "Ingresso Artisti",
+                    "names": ["Ingresso Artisti"],
+                    "model": MODEL,
+                    "relays": [1, 2],
+                    "used": [{"door_id": cellar["id"], "door": "Cantina", "relay": 2}],
+                }
+                for serial in ("XXXX01", "YYYY02")
+            ],
+        },
         "shared": {
             "broker": True,
             "since": 42.0,
@@ -353,7 +428,7 @@ def test_the_intercom_is_chosen_from_the_broker_and_saved_with_its_serial(served
     assert not out["dialogScroll"]
     assert out["chosenRelays"] == [["Relè 1 · Porta Palcoscenico", True, False], ["Relè 2", False, True]]
     # Salvato con il numero di serie e il nome annunciato; tolto, senza numero di serie (con, la porta lo rifiuterebbe)
-    [saved, removed, kept] = out["puts"]
+    [saved, removed, kept, shared] = out["puts"]
     assert saved["status"] == 200 and saved["door"] == str(cellar["id"])
     keys = ("intercom_name", "intercom_serial", "intercom_relay", "intercom_mqtt_prefix")
     assert {k: saved["body"][k] for k in keys} == {
@@ -389,11 +464,11 @@ def test_the_intercom_is_chosen_from_the_broker_and_saved_with_its_serial(served
     assert out["backRelays"] == out["partialRelays"]
     assert kept["status"] == 200 and kept["door"] == str(cellar["id"])
     assert (kept["body"]["intercom_serial"], kept["body"]["intercom_relay"]) == (SERIAL_A, 2)
-    # Relè della porta usato anche da un'altra porta: niente relè scelto da solo, Salva non salva
-    assert out["sharedRelays"] == [
-        ["Scegli il relè", True, True],
-        ["Relè 1", False, False],
-        ["Relè 2 · Porta Sottopalco", True, False],
-    ]
-    assert out["sharedSave"] == {"puts": 0, "open": True, "toast": ["Scegli il relè"]}
+    # Relè della porta legata usato anche da un'altra porta: resta, e Salva lo tiene
+    assert out["sharedRelays"] == [["Relè 1", False, False], ["Relè 2 · Porta Sottopalco", False, True]]
+    assert shared["status"] == 200 and (shared["body"]["intercom_serial"], shared["body"]["intercom_relay"]) == (
+        SERIAL_A,
+        2,
+    )
+    assert out["twins"] == {"checked": "YYYY02", "relay": "1", "other": "2"}
     assert out["back"] == {"hash": "#porte", "open": False}

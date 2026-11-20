@@ -3227,15 +3227,18 @@ def _follow_intercoms(state) -> None:
                 if i is not intercom
                 and i.door["intercom_relay"] == door["intercom_relay"]
                 and _uses(i.door, matches[0])
-                and not same_name(i.door["intercom_name"], door["intercom_name"])
+                and not (
+                    same_name(i.door["intercom_name"], door["intercom_name"])
+                    and i.door["intercom_mqtt_prefix"] == door["intercom_mqtt_prefix"]
+                )
             ),
             None,
         )
         if clash is not None:
-            # Lo stesso relè lo usa già un'altra porta con un altro nome del videocitofono (una delle due ha quello
-            # vecchio, e prima la sentiva solo l'altra): con il numero di serie «Apri» andrebbe a una porta sola,
-            # magari quella sbagliata. Le porte restano com'erano. Con lo stesso nome lo sentivano già tutte e due:
-            # «Apri» resta alla prima, come prima
+            # Lo stesso relè lo usa già un'altra porta con un altro nome del videocitofono, o un altro prefisso (una
+            # delle due non lo sentiva, e prima apriva solo l'altra): con il numero di serie «Apri» andrebbe a una
+            # porta sola, magari quella sbagliata. Le porte restano com'erano. Con lo stesso nome e prefisso lo
+            # sentivano già tutte e due: «Apri» resta alla prima, come prima
             key = (door["id"], serial, door["intercom_relay"])
             if key not in state.intercom_clashes:
                 state.intercom_clashes.add(key)
@@ -3306,12 +3309,15 @@ def _may_adopt(state, directory: IntercomDirectory, intercoms: list[IntercomBrid
         _LOGGER.warning("Porte non lette dal database: %s", err)
         _adopt_later(state, INTERCOM_ADOPT_AFTER)
         return False
-    keys = ("intercom_name", "intercom_serial", "intercom_relay")
-    if any(
+    keys = ("intercom_name", "intercom_serial", "intercom_relay", "intercom_mqtt_prefix")
+    controllers = {i.door["controller_id"] for i in intercoms}
+    with_intercom = {d["id"] for d in stored.values() if d["intercom_name"] and d["controller_id"] in controllers}
+    if with_intercom != {i.door["id"] for i in intercoms} or any(
         tuple((stored.get(i.door["id"]) or {}).get(k) for k in keys) != tuple(i.door[k] for k in keys)
         for i in intercoms
     ):
-        # Una porta salvata adesso: la configurazione si sta rifacendo, e la nuova ci riprova con le porte giuste
+        # Una porta salvata o aggiunta adesso: la configurazione si sta rifacendo, e la nuova ci riprova con le porte
+        # giuste
         _adopt_later(state, INTERCOM_ADOPT_AFTER)
         return False
     return True

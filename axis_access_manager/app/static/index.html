@@ -5742,10 +5742,15 @@ const INTERCOM_WAIT = 3;
 const INTERCOM_CURRENT = "-";
 // Righe della scelta del videocitofono: quelli annunciati sul broker (api/intercoms/found) e, prima, quello di adesso
 // della porta se non è tra loro. Le porte che contano sono le altre: non quella in modifica (door) né quella scelta in
-// Porta (targetId), il cui videocitofono si sostituisce. Grigio il videocitofono con tutti i relè usati da altre porte
-function intercomRows(found, door, targetId) {
+// Porta (targetId), il cui videocitofono si sostituisce. Grigio il videocitofono con tutti i relè usati da altre porte.
+// Un relè usato anche da un'altra porta è grigio, salvo quello che la porta ha già con il numero di serie: salvandola
+// così com'è «Apri» resta dov'era (alla prima porta). Con il solo nome invece salvando si legherebbe al numero di serie,
+// e «Apri» potrebbe passare da un'altra porta a questa. doors: le porte del controller, per quello di adesso non
+// annunciato
+function intercomRows(found, door, targetId, doors = []) {
   const other = (u) => u.door_id !== door?.id && u.door_id !== targetId;
-  const doors = (uses) => [...new Set(uses.map((u) => named("Porta", u.door)))].join(", ");
+  const kept = (n) => Boolean(door?.intercom_serial) && n === door.intercom_relay;
+  const names = (uses) => [...new Set(uses.map((u) => named("Porta", u.door)))].join(", ");
   // Non trovato solo con l'elenco completo: broker collegato da qualche secondo
   const complete = Boolean(found?.broker) && (found.since ?? 0) >= INTERCOM_WAIT;
   const rows = (found?.devices || []).map((x) => {
@@ -5756,19 +5761,32 @@ function intercomRows(found, door, targetId) {
     const numbers = new Set(announced.length ? announced : [1, 2]);
     if (current) numbers.add(door.intercom_relay);
     const relays = [...numbers].sort((a, b) => a - b).map((n) => {
-      // Grigio anche il relè della porta se lo usa un'altra porta: «Apri» andrebbe a una sola delle due, e salvando
-      // la porta si legherebbe al numero di serie su quel relè
       const by = x.used.filter((u) => other(u) && u.relay === n);
-      return {n, by: doors(by), off: by.length > 0, missing: complete && !x.relays.includes(n)};
+      return {n, by: names(by), off: by.length > 0 && !(current && kept(n)), missing: complete && !x.relays.includes(n)};
     });
     const off = !current && relays.every((r) => r.off);
-    return {value: x.serial, name: x.name, serial: x.serial, meta: off ? doors(x.used.filter(other)) : x.model, off, current, missing: false, relays};
+    return {value: x.serial, name: x.name, serial: x.serial, meta: off ? names(x.used.filter(other)) : x.model, off, current, missing: false, relays};
   });
   if (door?.intercom_name && !rows.some((r) => r.current)) {
+    // Non annunciato (o broker scollegato): le porte con lo stesso videocitofono si vedono dalle porte del controller
+    const same = (x) => (door.intercom_serial && x.intercom_serial ? x.intercom_serial === door.intercom_serial : x.intercom_name === door.intercom_name);
+    const uses = doors.filter((x) => x.intercom_name && same(x)).map((x) => ({door_id: x.id, door: x.name, relay: x.intercom_relay}));
     rows.unshift({value: INTERCOM_CURRENT, name: door.intercom_name, serial: door.intercom_serial || "", meta: "", off: false, current: true,
-      missing: complete, relays: [1, 2].map((n) => ({n, by: "", off: false, missing: false}))});
+      missing: complete, relays: [1, 2].map((n) => {
+        const by = uses.filter((u) => other(u) && u.relay === n);
+        return {n, by: names(by), off: by.length > 0 && !kept(n), missing: false};
+      })});
   }
   return rows;
+}
+// Relè da mostrare per la riga scelta (row) e quale scegliere. manual: scelto a mano su quella riga; stored: quello
+// della porta; previous: quello scelto adesso nel menu. Mai un relè grigio, e per il videocitofono della porta mai un
+// altro relè da solo: senza uno libero il menu resta vuoto («Scegli il relè») e Salva chiede di sceglierlo
+function intercomRelayPick(row, manual, stored, previous) {
+  const options = row ? row.relays : [1, 2].map((n) => ({n, by: "", off: false, missing: false}));
+  const want = manual ?? (row?.current ? stored : previous || stored || 1);
+  const pick = options.find((r) => r.n === want && !r.off) || (row?.current ? null : options.find((r) => !r.off));
+  return {options, pick: pick ? pick.n : null};
 }
 // Riga sotto l'elenco quando i videocitofoni non ci sono (ancora): una frase sola, o la rotellina appena collegati
 function intercomEmpty(found) {
@@ -5800,32 +5818,29 @@ async function intercomEditor(ctrl, door) {
       const form = $("form", dlg), list = $("[data-ic-list]", form), relay = $("[name=intercom_relay]", form);
       const chosen = () => rows.find((r) => r.value === $("[name=intercom]:checked", form)?.value);
       // Relè scelto a mano per ogni videocitofono: tornando su uno resta quello. Per quello della porta, all'inizio
-      // il relè salvato. Quello della porta ha una chiave sola (""): la sua riga cambia quando l'elenco si rifà
-      // (prima non annunciato, poi trovato)
+      // il relè salvato
       const picked = {};
-      const key = (row) => (row.current ? "" : row.value);
       const relays = () => {
         const row = chosen();
-        const options = row ? row.relays : [1, 2].map((n) => ({n, by: "", off: false, missing: false}));
-        const manual = row ? picked[key(row)] : undefined;
-        const want = manual ?? (row?.current ? d.intercom_relay : Number(relay.value) || d.intercom_relay || 1);
-        // Mai un relè grigio, e il relè della porta non cambia da solo: senza uno libero il menu resta vuoto e Salva
-        // chiede di sceglierlo
-        const pick = options.find((r) => r.n === want && !r.off) || (row?.current && manual === undefined ? null : options.find((r) => !r.off));
+        const {options, pick} = intercomRelayPick(row, row ? picked[row.value] : undefined, d.intercom_relay, Number(relay.value));
         relay.innerHTML = (pick ? "" : '<option value="" disabled hidden>Scegli il relè</option>') + options.map((r) => `<option value="${r.n}" ${r.off ? "disabled" : ""}>Relè ${r.n}${r.by ? ` · ${esc(r.by)}` : r.missing ? " · Non Trovato" : ""}</option>`).join("");
-        relay.value = pick ? String(pick.n) : "";
+        relay.value = pick ? String(pick) : "";
       };
-      relay.addEventListener("change", () => { const row = chosen(); if (row) picked[key(row)] = Number(relay.value); });
+      relay.addEventListener("change", () => { const row = chosen(); if (row) picked[row.value] = Number(relay.value); });
       const mark = () => $$("label", list).forEach((l) => l.classList.toggle("on", $("input", l).checked));
       const draw = () => {
         // All'apertura è scelto quello di adesso; poi la scelta resta anche quando l'elenco si rifà (un'altra porta,
-        // l'elenco richiesto di nuovo). Quello di adesso resta scelto anche se cambia riga: prima non annunciato,
-        // poi trovato (o il contrario)
+        // l'elenco richiesto di nuovo). Quello di adesso resta scelto anche se cambia riga (prima non annunciato, poi
+        // trovato, o il contrario), con il relè scelto a mano
         const before = list.childElementCount ? chosen() : {current: true};
         // Il fuoco da tastiera sull'elenco resta sull'elenco quando si rifà
         const focused = list.contains(document.activeElement);
-        rows = intercomRows(found, door, Number(val(form, "door")));
-        const value = before?.current ? rows.find((r) => r.current)?.value : before?.value;
+        rows = intercomRows(found, door, Number(val(form, "door")), ctrl.doors);
+        let value = before?.value;
+        if (before?.current && !rows.some((r) => r.value === value)) {
+          value = rows.find((r) => r.current)?.value;
+          if (before.value !== undefined && value !== undefined && picked[before.value] !== undefined) picked[value] ??= picked[before.value];
+        }
         const empty = intercomEmpty(found);
         list.innerHTML = rows.map((r) => `<label class="${r.off ? "off" : ""}"><input type="radio" name="intercom" value="${esc(r.value)}" ${r.off ? "disabled" : ""} ${r.value === value && !r.off ? "checked" : ""}>
           <span class="grow"><b>${esc(r.name)}</b>${r.missing ? ' <span class="pill warn">Non Trovato</span>' : ""}${r.meta ? `<span class="ic-meta">${esc(r.meta)}</span>` : ""}</span></label>`).join("")
@@ -5850,7 +5865,7 @@ async function intercomEditor(ctrl, door) {
       const target = ctrl.doors.find((x) => String(x.id) === val(dlg, "door"));
       const row = rows.find((r) => r.value === $("[name=intercom]:checked", dlg)?.value);
       if (!row) { toast("Scegli il videocitofono", true); return false; }
-      if (!val(dlg, "intercom_relay")) { toast("Scegli il relè", true); return false; }
+      if (!val(dlg, "intercom_relay")) { toast($("[name=intercom_relay] option:not([disabled])", dlg) ? "Scegli il relè" : "Relè già usati da altre porte", true); return false; }
       // Il prefisso MQTT resta quello della porta: i topic del videocitofono scelto vengono dal broker
       const changes = {intercom_name: row.name, intercom_serial: row.serial, intercom_open_door: val(dlg, "intercom_open_door"), intercom_relay: Number(val(dlg, "intercom_relay")), intercom_mqtt_prefix: d.intercom_mqtt_prefix || "hmd"};
       // Prima la porta nuova: se la rifiuta, la porta di prima tiene il suo videocitofono
