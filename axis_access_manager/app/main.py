@@ -417,6 +417,9 @@ SETTING_INTERCOM_WIRED = "intercom_wired"
 # Dopo il collegamento al broker le configurazioni conservate dei videocitofoni arrivano subito: prima di questi secondi
 # un videocitofono non ancora arrivato non vuol dire che non c'è
 INTERCOM_FOUND_AFTER = 10.0
+# Una porta con il solo nome prende il numero di serie dopo questi secondi dal collegamento, quando le configurazioni
+# conservate sono arrivate tutte: si sa se quel nome lo hanno due videocitofoni, o se il relè lo usa un'altra porta
+INTERCOM_ADOPT_AFTER = 2.0
 
 
 class ControllerCameraIn(BaseModel):
@@ -850,6 +853,8 @@ def create_app(
         app.state.intercom_directory.on_change = lambda: _follow_intercoms(app.state)
         # Porte con il videocitofono non trovato, e da quando (ora dell'app)
         app.state.intercom_missing = {}
+        # Porte non legate al numero di serie perché un'altra porta usa lo stesso relè, già scritte nel log
+        app.state.intercom_clashes = set()
         db_folder = app.state.db.path.parent if app.state.db.path else Path(tempfile.mkdtemp())
         app.state.backups = BackupService(app.state.db, db_folder / BACKUP_DIR, __version__)
         app.state.ha = home_assistant or HomeAssistant()
@@ -3144,8 +3149,10 @@ def _wire(app: FastAPI) -> None:
         before_directory = monitor.on_connect
 
         async def connect_directory(client) -> None:
-            # Da adesso contano le configurazioni dei videocitofoni che arrivano (quelle conservate subito)
+            # Da adesso contano le configurazioni dei videocitofoni che arrivano (quelle conservate subito); le porte
+            # con il solo nome si legano al numero di serie quando sono arrivate tutte
             directory.connected()
+            asyncio.get_running_loop().call_later(INTERCOM_ADOPT_AFTER + 0.1, _follow_intercoms, state)
             if before_directory is not None:
                 await before_directory(client)
 
@@ -3208,12 +3215,39 @@ def _follow_intercoms(state) -> None:
     if not intercoms or directory is None:
         return
     devices = {d["serial"]: d for d in directory.devices()}
-    for intercom in intercoms:
+    since = directory.since()
+    # Mentre arrivano le configurazioni conservate un nome può sembrare di un videocitofono solo
+    adopt = since is not None and since >= INTERCOM_ADOPT_AFTER
+    for intercom in intercoms if adopt else []:
         door = intercom.door
         matches = [d for d in devices.values() if _uses(door, d)]
         if door["intercom_serial"] or len(matches) != 1:
             continue
         serial = matches[0]["serial"]
+        clash = next(
+            (
+                i.door
+                for i in intercoms
+                if i is not intercom
+                and i.door["intercom_relay"] == door["intercom_relay"]
+                and _uses(i.door, matches[0])
+            ),
+            None,
+        )
+        if clash is not None:
+            # Lo stesso relè lo usa già un'altra porta (una delle due con un nome vecchio del videocitofono): con il
+            # numero di serie «Apri» andrebbe a una porta sola, magari quella sbagliata. Le porte restano com'erano
+            key = (door["id"], serial, door["intercom_relay"])
+            if key not in state.intercom_clashes:
+                state.intercom_clashes.add(key)
+                _LOGGER.warning(
+                    "Videocitofono %s di %s non legato al numero di serie: il relè %s lo usa anche %s",
+                    door["intercom_name"],
+                    door["name"],
+                    door["intercom_relay"],
+                    clash["name"],
+                )
+            continue
         if _save_intercom(state, door, door["intercom_name"], serial):
             _LOGGER.info(
                 "Videocitofono %s di %s trovato sul broker: numero di serie %s",
@@ -3256,14 +3290,19 @@ def _follow_intercoms(state) -> None:
 
 
 def _save_intercom(state, door: dict, name: str, serial: str) -> bool:
-    """Nome e numero di serie del videocitofono nella porta, nel database e in quella della configurazione di adesso."""
+    """Nome e numero di serie del videocitofono nella porta, nel database e in quella della configurazione di adesso.
+    Non se nel database la porta è già cambiata: un salvataggio arrivato mentre la configurazione si rifà (la porta di
+    adesso è ancora quella di prima) resta com'è, e la configurazione nuova la rilegge."""
     try:
-        state.db.set_door_intercom(door["id"], name, serial)
+        saved = state.db.set_door_intercom(
+            door["id"], name, serial, was=(door["intercom_name"], door["intercom_serial"])
+        )
     except sqlite3.Error as err:
         _LOGGER.warning("Videocitofono di %s non aggiornato nel database: %s", door["name"], err)
         return False
-    door["intercom_name"], door["intercom_serial"] = name, serial
-    return True
+    if saved:
+        door["intercom_name"], door["intercom_serial"] = name, serial
+    return saved
 
 
 def _broker_connected(state) -> bool:

@@ -5,6 +5,7 @@ e nessun avviso): il nome salvato nell'app non era più quello dell'add-on Hikvi
 nome. Ora la porta prende il numero di serie del videocitofono annunciato sul broker e lo segue anche quando cambia
 nome. Solo il FakeController, mai una porta vera; nomi e numeri di serie di fantasia."""
 
+import asyncio
 import json
 import time
 
@@ -121,6 +122,8 @@ def site(controller, tmp_path, monkeypatch):
 
     monkeypatch.setattr(main, "resolve_mqtt", resolve)
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
+    # Il broker in memoria manda le configurazioni conservate subito: non serve aspettare i 2 s dell'impianto
+    monkeypatch.setattr(main, "INTERCOM_ADOPT_AFTER", 0.3)
     plant = Site(controller, tmp_path)
     monkeypatch.setattr(events.aiomqtt, "Client", plant.broker.client)
     yield plant
@@ -361,3 +364,119 @@ def test_found_list_status_and_notification(site, controller):
     site.announce(ARTISTI, SERIAL_A)
     assert wait(lambda: notices() == [])
     assert status()["found"] is True
+
+
+def test_after_a_reconnect_the_door_does_not_go_back_to_the_old_name(site, controller):
+    """Dopo il cambio di nome ogni ricollegamento al broker (anche ogni porta salvata, che rifà la configurazione)
+    rimanda le configurazioni conservate, prima quella del nome vecchio. La prova dal vivo del nome vecchio è di un
+    collegamento di prima: la porta tiene il nome nuovo, senza tornare indietro e avanti."""
+    site.retain(ARTISTI, SERIAL_A)
+    client = site.start(intercom_name=ARTISTI)
+    state = site.app.state
+    assert wait(lambda: site.door()["intercom_serial"] == SERIAL_A)
+    # Una chiamata sul nome vecchio, mentre l'add-on lo usa ancora: prova dal vivo del nome vecchio
+    old = topics(ARTISTI)
+    site.publish(old["call"], "ringing")
+    site.publish(old["call"], "idle")
+    assert wait(lambda: state.intercom_directory.devices()[0]["name"] == ARTISTI)
+    site.announce(RENAMED, SERIAL_A)
+    assert wait(lambda: site.door()["intercom_name"] == RENAMED)
+    writes = []
+    original = state.db.set_door_intercom
+
+    def record(*args, **kwargs):
+        writes.append(args[1])
+        return original(*args, **kwargs)
+
+    state.db.set_door_intercom = record
+    door = site.door()
+    assert client.put(f"/api/doors/{door['id']}", json={**door, "ha_buttons": False}).status_code == 200
+    assert wait(lambda: site.app.state.monitor.connected)
+    assert wait(lambda: len(site.app.state.intercom_directory.devices()) == 1)
+    time.sleep(0.3)
+    assert writes == [] and site.door()["intercom_name"] == RENAMED
+    # Dopo il ricollegamento il nome giusto lo dice di nuovo un messaggio dal vivo, e la porta lo sente
+    site.ring_and_open(RENAMED)
+    assert wait(lambda: FORWARDED in controller.calls)
+    assert writes == []
+
+
+def _rename_while_saving(site, name: str, serial: str) -> None:
+    """L'add-on cambia nome proprio mentre l'app rifà la configurazione dopo un salvataggio della porta (le
+    configurazioni arrivano mentre il collegamento di prima si chiude)."""
+    monitor = site.app.state.monitor
+    drain = monitor.drain
+
+    async def renamed_while_draining(timeout):
+        sender = site.broker.client()
+        await sender.__aenter__()
+        try:
+            for entity in ("call", 1, 2):
+                await sender.publish(*config(name, serial, entity), retain=True)
+        finally:
+            await sender.__aexit__(None, None, None)
+        await asyncio.sleep(0.3)
+        return await drain(timeout)
+
+    monitor.drain = renamed_while_draining
+
+
+def test_a_rename_during_a_door_save_does_not_undo_the_save(site):
+    """Il videocitofono tolto, o sostituito con un altro, mentre l'add-on cambia nome a quello di prima: resta quello
+    salvato, mai il videocitofono di prima con «Apri» acceso sul relè nuovo."""
+    site.retain(ARTISTI, SERIAL_A)
+    site.retain(CARRAIO, SERIAL_B)
+    client = site.start(intercom_name=ARTISTI, intercom_open_door=False)
+    assert wait(lambda: site.door()["intercom_serial"] == SERIAL_A)
+    door = site.door()
+    _rename_while_saving(site, RENAMED, SERIAL_A)
+    body = {**door, "intercom_name": CARRAIO, "intercom_serial": SERIAL_B, "intercom_open_door": True}
+    assert client.put(f"/api/doors/{door['id']}", json=body | {"intercom_relay": 2}).status_code == 200
+    after = site.door()
+    assert (after["intercom_name"], after["intercom_serial"], after["intercom_relay"]) == (CARRAIO, SERIAL_B, 2)
+    [bridge] = site.app.state.intercoms
+    assert (bridge.settings.name, bridge.settings.serial) == (CARRAIO, SERIAL_B)
+    # Tolto mentre l'add-on cambia nome di nuovo: resta tolto
+    _rename_while_saving(site, CARRAIO + " Nord", SERIAL_B)
+    body = {**site.door(), "intercom_name": "", "intercom_serial": "", "intercom_open_door": False}
+    assert client.put(f"/api/doors/{door['id']}", json=body).status_code == 200
+    assert (site.door()["intercom_name"], site.door()["intercom_serial"]) == ("", "")
+    assert site.app.state.intercoms == []
+
+
+def test_a_door_left_on_an_old_name_does_not_take_a_relay_another_door_uses(site, controller, caplog):
+    """Prima della 0.28.11 una porta era rimasta sul nome vecchio del videocitofono, con lo stesso relè di un'altra
+    porta sul nome nuovo: sentiva solo la seconda. Legarle tutte e due al numero di serie darebbe «Apri» alla prima
+    in ordine, la porta sbagliata: restano come erano, e il log lo dice una volta per porta."""
+    site.retain(ARTISTI, SERIAL_A)
+    site.retain(RENAMED, SERIAL_A)
+    client = site.start(intercom_name=ARTISTI)
+    state = site.app.state
+    ctrl = state.db.list_controllers()[0]
+    body = {"door_token": "scena", "name": "Scena", "intercom_name": RENAMED, "intercom_relay": 1}
+    assert client.post(f"/api/controllers/{ctrl['id']}/doors", json=body | {"intercom_open_door": True}).status_code
+    # Le due porte come prima della 0.28.11: con il solo nome
+    door = site.door()
+    assert client.put(f"/api/doors/{door['id']}", json={**door, "intercom_serial": ""}).status_code == 200
+    assert wait(lambda: state.monitor.connected and len(state.intercoms) == 2)
+    assert wait(lambda: (state.intercom_directory.since() or 0) > 0.6)
+    assert site.door()["intercom_serial"] == site.door("scena")["intercom_serial"] == ""
+    site.ring_and_open(RENAMED, relay=1)
+    assert wait(lambda: ("access_door", "scena", False) in controller.calls)
+    assert controller.calls == [("access_door", "scena", False)]
+    clashes = [r.getMessage() for r in caplog.records if "non legato al numero di serie" in r.getMessage()]
+    names = sorted([door["name"], "Scena"])
+    assert len(clashes) == 2 and sorted(n for m in clashes for n in names if f" di {n} non " in m) == names
+
+
+def test_a_name_is_bound_only_once_all_the_retained_intercoms_have_arrived(site):
+    """Dopo il collegamento le configurazioni conservate arrivano una alla volta: alla prima, il nome della porta
+    sembra di un videocitofono solo. Un altro videocitofono, con un relè solo, ha preso il nome: sul broker la chiamata
+    e il relè 1 sono suoi, il relè 2 è rimasto del primo. Il nome lo hanno due videocitofoni: la porta resta com'è."""
+    site.retain(ARTISTI, SERIAL_A)
+    site.retain(ARTISTI, SERIAL_B, relays=(1,))
+    site.start(intercom_name=ARTISTI)
+    state = site.app.state
+    assert wait(lambda: (state.intercom_directory.since() or 0) > 0.6)
+    assert len(state.intercom_directory.devices()) == 2
+    assert site.door()["intercom_serial"] == ""

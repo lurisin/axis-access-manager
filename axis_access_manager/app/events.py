@@ -17,6 +17,8 @@ from .config import MqttSettings
 _LOGGER = logging.getLogger(__name__)
 
 RECONNECT_DELAY = 10
+# Attese tra i tentativi di un'iscrizione chiesta con il broker già collegato (vedi add_subscription)
+SUBSCRIBE_RETRY = (2, 5, 15, 30)
 # Filtro di iscrizione rifiutato dalla libreria MQTT (per esempio # o + nel prefisso): si riprova senza traceback
 INVALID_TOPIC = "topic MQTT non valido"
 
@@ -348,11 +350,20 @@ class EventMonitor:
         return True
 
     async def _subscribe(self, client: aiomqtt.Client, topic_filter: str) -> None:
-        try:
-            await client.subscribe(topic_filter, qos=1)
-        except aiomqtt.MqttError as err:
-            # Al prossimo collegamento si chiede di nuovo, con gli altri
-            _LOGGER.warning("Iscrizione a %s non riuscita: %s", topic_filter, err)
+        # Un broker lento può non rispondere in tempo e restare collegato: si riprova, finché il collegamento è lo
+        # stesso. Perso il collegamento, al prossimo si chiedono di nuovo tutti
+        for wait in (0, *SUBSCRIBE_RETRY):
+            if wait:
+                await asyncio.sleep(wait)
+                if self.client is not client or not self.connected:
+                    return
+            try:
+                await client.subscribe(topic_filter, qos=1)
+                return
+            except aiomqtt.MqttError as err:
+                if not wait:
+                    _LOGGER.warning("Iscrizione a %s non riuscita: %s; riprovo", topic_filter, err)
+        _LOGGER.warning("Iscrizione a %s non riuscita: si richiede al prossimo collegamento al broker", topic_filter)
 
     def _lost(self) -> None:
         """Collegamento al broker perso o ascolto fermato."""

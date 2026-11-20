@@ -2,6 +2,7 @@
 raggruppate per numero di serie, nome dal vivo e numero di serie della porta nel database e nei backup. Nomi e numeri
 di serie di fantasia, con la struttura di quelli veri (codici ASCII di modello e numero di serie, 76 cifre)."""
 
+import asyncio
 import json
 import sqlite3
 
@@ -163,6 +164,42 @@ def test_a_subscription_added_while_dispatching_does_not_stop_the_dispatch():
     assert seen == ["primo", "secondo"] and len(monitor.extra_subscriptions) == 7
     # Un filtro già seguito resta a chi lo segue
     assert monitor.add_subscription("hmd/sensor/#", first) is False
+
+
+async def test_a_live_subscription_the_broker_does_not_answer_is_asked_again(monkeypatch):
+    """Il broker lento non risponde in tempo all'iscrizione ai topic di un videocitofono appena riconosciuto e resta
+    collegato: senza un nuovo tentativo la porta non sentirebbe il videocitofono fino al prossimo collegamento."""
+    from app import events
+
+    monkeypatch.setattr(events, "SUBSCRIBE_RETRY", (0.01, 0.01))
+
+    class Client:
+        def __init__(self, failures):
+            self.failures, self.asked = failures, []
+
+        async def subscribe(self, topic_filter, qos=0):
+            self.asked.append(topic_filter)
+            if len(self.asked) <= self.failures:
+                raise aiomqtt.MqttError("Operation timed out")
+
+    monitor = EventMonitor(prefix="accessi/x")
+    monitor.client, monitor.connected = Client(failures=1), True
+    assert monitor.add_subscription("hmd/switch/Nuovo/Door-1-relay/state", lambda *a: None)
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+    assert monitor.client.asked == ["hmd/switch/Nuovo/Door-1-relay/state"] * 2
+    # Mai più di così; e con il collegamento perso si smette (al prossimo si chiedono tutti)
+    monitor.client = Client(failures=9)
+    assert monitor.add_subscription("hmd/switch/Nuovo/Door-2-relay/state", lambda *a: None)
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+    assert len(monitor.client.asked) == 3
+    monitor.client = lost = Client(failures=9)
+    assert monitor.add_subscription("hmd/switch/Nuovo/Door-3-relay/state", lambda *a: None)
+    monitor.connected = False
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+    assert len(lost.asked) == 1
 
 
 async def test_the_monitor_says_when_the_broker_is_lost_or_the_listening_stops(monkeypatch):

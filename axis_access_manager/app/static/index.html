@@ -5746,21 +5746,26 @@ const INTERCOM_CURRENT = "-";
 function intercomRows(found, door, targetId) {
   const other = (u) => u.door_id !== door?.id && u.door_id !== targetId;
   const doors = (uses) => [...new Set(uses.map((u) => named("Porta", u.door)))].join(", ");
+  // Non trovato solo con l'elenco completo: broker collegato da qualche secondo
+  const complete = Boolean(found?.broker) && (found.since ?? 0) >= INTERCOM_WAIT;
   const rows = (found?.devices || []).map((x) => {
     const current = Boolean(door) && x.used.some((u) => u.door_id === door.id);
-    const relays = (x.relays.length ? x.relays : [1, 2]).map((n) => {
+    // L'app usa i relè 1 e 2. Quello della porta resta tra quelli da scegliere anche se non è annunciato: salvando
+    // senza cambiare niente si tiene, e «Apri» non passa a un altro relè (magari di un'altra porta)
+    const announced = x.relays.filter((n) => n === 1 || n === 2);
+    const numbers = new Set(announced.length ? announced : [1, 2]);
+    if (current) numbers.add(door.intercom_relay);
+    const relays = [...numbers].sort((a, b) => a - b).map((n) => {
       const by = x.used.filter((u) => other(u) && u.relay === n);
       // Il relè di adesso resta sceglibile anche se un'altra porta usa lo stesso
-      return {n, by: doors(by), off: by.length > 0 && !(current && n === door.intercom_relay)};
+      return {n, by: doors(by), off: by.length > 0 && !(current && n === door.intercom_relay), missing: complete && !x.relays.includes(n)};
     });
     const off = !current && relays.every((r) => r.off);
     return {value: x.serial, name: x.name, serial: x.serial, meta: off ? doors(x.used.filter(other)) : x.model, off, current, missing: false, relays};
   });
   if (door?.intercom_name && !rows.some((r) => r.current)) {
-    // Non trovato solo con l'elenco completo: broker collegato da qualche secondo
-    const missing = Boolean(found?.broker) && (found.since ?? 0) >= INTERCOM_WAIT;
     rows.unshift({value: INTERCOM_CURRENT, name: door.intercom_name, serial: door.intercom_serial || "", meta: "", off: false, current: true,
-      missing, relays: [1, 2].map((n) => ({n, by: "", off: false}))});
+      missing: complete, relays: [1, 2].map((n) => ({n, by: "", off: false, missing: false}))});
   }
   return rows;
 }
@@ -5773,7 +5778,8 @@ function intercomEmpty(found) {
 }
 async function intercomEditor(ctrl, door) {
   const d = door || {intercom_relay: 1, intercom_mqtt_prefix: "hmd"};
-  let found = await api("api/intercoms/found").catch(() => null);
+  // Con l'elenco in arrivo la pagina non prende clic: la finestra non si apre sopra un'altra pagina, né due volte
+  let found = await busy("", api("api/intercoms/found").catch(() => null));
   const doorSelect = `<select name="door">${ctrl.doors.map((x) => `<option value="${x.id}" ${x.id === door?.id ? "selected" : ""}>${esc(x.name)}${x.intercom_name && x.id !== door?.id ? ` (ora ${esc(x.intercom_name)})` : ""}</option>`).join("")}</select>`;
   let rows = [];
   let written = false;
@@ -5788,26 +5794,35 @@ async function intercomEditor(ctrl, door) {
     onOpen: (dlg) => {
       // La finestra è condivisa: il modulo si rifà a ogni apertura, e l'elenco richiesto dopo resta di questo
       const form = $("form", dlg), list = $("[data-ic-list]", form), relay = $("[name=intercom_relay]", form);
+      const chosen = () => rows.find((r) => r.value === $("[name=intercom]:checked", form)?.value);
+      // Relè scelto a mano per ogni videocitofono: tornando su uno resta quello. Per quello della porta, all'inizio
+      // il relè salvato
+      const picked = {};
       const relays = () => {
-        const row = rows.find((r) => r.value === $("[name=intercom]:checked", form)?.value);
-        const options = row ? row.relays : [1, 2].map((n) => ({n, by: "", off: false}));
-        const before = Number(relay.value) || d.intercom_relay || 1;
-        relay.innerHTML = options.map((r) => `<option value="${r.n}" ${r.off ? "disabled" : ""}>Relè ${r.n}${r.by ? ` · ${esc(r.by)}` : ""}</option>`).join("");
-        const pick = options.find((r) => r.n === before && !r.off) || options.find((r) => !r.off) || options[0];
-        relay.value = String(pick.n);
+        const row = chosen();
+        const options = row ? row.relays : [1, 2].map((n) => ({n, by: "", off: false, missing: false}));
+        const want = (row && picked[row.value]) ?? (row?.current ? d.intercom_relay : Number(relay.value) || d.intercom_relay || 1);
+        // Mai un relè grigio: senza uno libero il menu resta vuoto e Salva chiede di sceglierlo
+        const pick = options.find((r) => r.n === want && !r.off) || options.find((r) => !r.off);
+        relay.innerHTML = (pick ? "" : '<option value="" disabled hidden></option>') + options.map((r) => `<option value="${r.n}" ${r.off ? "disabled" : ""}>Relè ${r.n}${r.by ? ` · ${esc(r.by)}` : r.missing ? " · Non Trovato" : ""}</option>`).join("");
+        relay.value = pick ? String(pick.n) : "";
       };
+      relay.addEventListener("change", () => { const row = chosen(); if (row) picked[row.value] = Number(relay.value); });
       const mark = () => $$("label", list).forEach((l) => l.classList.toggle("on", $("input", l).checked));
       const draw = () => {
         // All'apertura è scelto quello di adesso; poi la scelta resta anche quando l'elenco si rifà (un'altra porta,
         // l'elenco richiesto di nuovo). Quello di adesso resta scelto anche se cambia riga: prima non annunciato,
         // poi trovato (o il contrario)
-        const before = list.childElementCount ? rows.find((r) => r.value === $("[name=intercom]:checked", form)?.value) : {current: true};
+        const before = list.childElementCount ? chosen() : {current: true};
+        // Il fuoco da tastiera sull'elenco resta sull'elenco quando si rifà
+        const focused = list.contains(document.activeElement);
         rows = intercomRows(found, door, Number(val(form, "door")));
-        const chosen = before?.current ? rows.find((r) => r.current)?.value : before?.value;
+        const value = before?.current ? rows.find((r) => r.current)?.value : before?.value;
         const empty = intercomEmpty(found);
-        list.innerHTML = rows.map((r) => `<label class="${r.off ? "off" : ""}"><input type="radio" name="intercom" value="${esc(r.value)}" ${r.off ? "disabled" : ""} ${r.value === chosen && !r.off ? "checked" : ""}>
+        list.innerHTML = rows.map((r) => `<label class="${r.off ? "off" : ""}"><input type="radio" name="intercom" value="${esc(r.value)}" ${r.off ? "disabled" : ""} ${r.value === value && !r.off ? "checked" : ""}>
           <span class="grow"><b>${esc(r.name)}</b>${r.missing ? ' <span class="pill warn">Non Trovato</span>' : ""}${r.meta ? `<span class="ic-meta">${esc(r.meta)}</span>` : ""}</span></label>`).join("")
           + (empty ? `<div class="ic-empty">${empty}</div>` : "");
+        if (focused) ($("[name=intercom]:checked", list) || $("[name=intercom]:not(:disabled)", list))?.focus();
         mark();
         relays();
       };
@@ -5827,6 +5842,7 @@ async function intercomEditor(ctrl, door) {
       const target = ctrl.doors.find((x) => String(x.id) === val(dlg, "door"));
       const row = rows.find((r) => r.value === $("[name=intercom]:checked", dlg)?.value);
       if (!row) { toast("Scegli il videocitofono", true); return false; }
+      if (!val(dlg, "intercom_relay")) { toast("Scegli il relè", true); return false; }
       // Il prefisso MQTT resta quello della porta: i topic del videocitofono scelto vengono dal broker
       const changes = {intercom_name: row.name, intercom_serial: row.serial, intercom_open_door: val(dlg, "intercom_open_door"), intercom_relay: Number(val(dlg, "intercom_relay")), intercom_mqtt_prefix: d.intercom_mqtt_prefix || "hmd"};
       // Prima la porta nuova: se la rifiuta, la porta di prima tiene il suo videocitofono

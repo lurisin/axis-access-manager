@@ -129,6 +129,7 @@ class IntercomDirectory:
         if not retained:
             entry.live_at = entry.seen_at
         elif old is not None and old.serial == entry.serial and old.name == entry.name:
+            # La prova dal vivo resta, ma vale solo nel collegamento in cui è arrivata (vedi _winner)
             entry.live_at = old.live_at
         self._entries[topic] = entry
         if (entry.serial, entry.name) not in self._logged:
@@ -185,8 +186,15 @@ class IntercomDirectory:
         return [e for e in self._entries.values() if since is None or e.seen_at >= since]
 
     def _winner(self, serial: str) -> str:
-        """Nome con la prova dal vivo più recente; "" se ci sono solo configurazioni conservate."""
-        live = [e for e in self._current() if e.serial == serial and e.live_at is not None]
+        """Nome con la prova dal vivo più recente, arrivata con il collegamento di adesso; "" se non ce n'è. Una prova
+        di un collegamento di prima non vale: dopo ogni ricollegamento le configurazioni conservate tornano una alla
+        volta, e se arriva prima quella del nome vecchio la porta tornerebbe al nome vecchio, e poi a quello nuovo."""
+        since = self._last_connected_at
+        live = [
+            e
+            for e in self._current()
+            if e.serial == serial and e.live_at is not None and (since is None or e.live_at >= since)
+        ]
         return max(live, key=lambda e: e.live_at or 0.0).name if live else ""
 
     def _changed(self) -> None:

@@ -55,6 +55,7 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
     second = {"id": 2, "intercom_name": ARTISTI, "intercom_serial": SERIAL_A, "intercom_relay": 2}
     legacy = {"id": 3, "intercom_name": "Citofono Sottopalco", "intercom_serial": "", "intercom_relay": 2}
     found = json.dumps(FOUND)
+    partial = {**FOUND, "devices": [FOUND["devices"][0], {**FOUND["devices"][1], "relays": [1]}]}
     out = run_page(
         "Europe/Rome",
         {
@@ -69,6 +70,8 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
             "legacy_rows": f"intercomRows({found}, {json.dumps(legacy)}, 3)",
             # Broker scollegato: l'elenco è vuoto, ma non si può dire che non c'è
             "legacy_offline": f"intercomRows({{broker: false, since: null, devices: []}}, {json.dumps(legacy)}, 3)",
+            # Relè 2 della porta 2 non più annunciato: resta tra quelli da scegliere, Non Trovato
+            "relay_missing": f"intercomRows({json.dumps(partial)}, {json.dumps(second)}, 2)[1].relays",
             "empty": "[null, {broker: false, since: null, devices: []}, {broker: true, since: 1, devices: []},"
             f" {{broker: true, since: 12, devices: []}}, {found}].map(intercomEmpty)",
             # Ogni porta salvata porta il numero di serie; tolto il videocitofono, anche il numero di serie
@@ -94,6 +97,10 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
     ]
     assert out["legacy"] == [["-", "", True], [SERIAL_B, SERIAL_B, False], [SERIAL_A, SERIAL_A, False]]
     assert _rows(out["legacy_rows"])[0] == ("Citofono Sottopalco", "", False, True, [(1, ""), (2, "")])
+    assert out["relay_missing"] == [
+        {"n": 1, "by": "Porta Palcoscenico", "off": True, "missing": False},
+        {"n": 2, "by": "", "off": False, "missing": True},
+    ]
     assert _rows(out["legacy_offline"]) == [("Citofono Sottopalco", "", False, False, [(1, ""), (2, "")])]
     assert out["empty"] == [
         "Elenco non disponibile.",
@@ -189,6 +196,21 @@ const config = JSON.parse(process.argv[1]);
   out.refetched = await choices();
   out.refetchedRelays = await relays();
   out.asked = asked;
+  // Il relè 2 della cantina non è più annunciato e il relè 1 è di un'altra porta: resta il suo, anche tornando sul
+  // videocitofono dopo averne guardato un altro con un relè solo, e salvando senza cambiare niente
+  await page.click("#modal [data-x]");
+  await page.waitForSelector("#modal", {state: "hidden"});
+  await page.unroute("**/api/intercoms/found");
+  await page.route("**/api/intercoms/found", (route) => route.fulfill({json: config.partial}));
+  await page.click(`[data-ic-edit="${config.cellar}"]`);
+  await page.waitForSelector("#modal[open] [data-ic-list] label");
+  out.partialRelays = await relays();
+  await page.check(`#modal [name=intercom][value="${config.other}"]`);
+  out.otherRelays = await relays();
+  await page.check(`#modal [name=intercom][value="${config.serial}"]`);
+  out.backRelays = await relays();
+  await page.click("#modal .dlg-foot button.primary");
+  await page.waitForSelector("#modal", {state: "hidden"});
   console.log(JSON.stringify(out));
   await browser.close();
 })().catch((e) => { console.error(e); process.exit(1); });
@@ -238,6 +260,25 @@ def test_the_intercom_is_chosen_from_the_broker_and_saved_with_its_serial(served
         "cellar": cellar["id"],
         "serial": SERIAL_A,
         "name": ARTISTI,
+        "other": SERIAL_B,
+        "partial": {
+            "broker": True,
+            "since": 42.0,
+            "devices": [
+                {"serial": SERIAL_B, "name": CARRAIO, "names": [CARRAIO], "model": MODEL, "relays": [1], "used": []},
+                {
+                    "serial": SERIAL_A,
+                    "name": ARTISTI,
+                    "names": [ARTISTI],
+                    "model": MODEL,
+                    "relays": [1],
+                    "used": [
+                        {"door_id": cellar["id"], "door": "Cantina", "relay": 2},
+                        {"door_id": 99, "door": "Sottopalco", "relay": 1},
+                    ],
+                },
+            ],
+        },
     }
     result = subprocess.run(["node", "-e", FLOW, json.dumps(config)], capture_output=True, text=True, timeout=180)
     if result.returncode and "Executable doesn't exist" in result.stderr:
@@ -263,7 +304,7 @@ def test_the_intercom_is_chosen_from_the_broker_and_saved_with_its_serial(served
     assert not out["dialogScroll"]
     assert out["chosenRelays"] == [["Relè 1 · Porta Palcoscenico", True, False], ["Relè 2", False, True]]
     # Salvato con il numero di serie e il nome annunciato; tolto, senza numero di serie (con, la porta lo rifiuterebbe)
-    [saved, removed] = out["puts"]
+    [saved, removed, kept] = out["puts"]
     assert saved["status"] == 200 and saved["door"] == str(cellar["id"])
     keys = ("intercom_name", "intercom_serial", "intercom_relay", "intercom_mqtt_prefix")
     assert {k: saved["body"][k] for k in keys} == {
@@ -293,3 +334,9 @@ def test_the_intercom_is_chosen_from_the_broker_and_saved_with_its_serial(served
     assert out["asked"] == 2
     # Aprendo una finestra il fuoco va sul pallino scelto, come con Tab
     assert out["focus"] == SERIAL_A
+    # Relè della porta non annunciato: resta scelto, mai il relè grigio di un'altra porta
+    assert out["partialRelays"] == [["Relè 1 · Porta Sottopalco", True, False], ["Relè 2 · Non Trovato", False, True]]
+    assert out["otherRelays"] == [["Relè 1", False, True]]
+    assert out["backRelays"] == out["partialRelays"]
+    assert kept["status"] == 200 and kept["door"] == str(cellar["id"])
+    assert (kept["body"]["intercom_serial"], kept["body"]["intercom_relay"]) == (SERIAL_A, 2)

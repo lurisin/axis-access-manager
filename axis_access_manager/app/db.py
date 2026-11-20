@@ -1702,11 +1702,16 @@ class Database:
             (controller_id, *values),
         )
 
-    def set_door_intercom(self, door_id: int, name: str, serial: str) -> None:
-        """Nome e numero di serie del videocitofono della porta, ritrovati sul broker (vedi main._follow_intercoms)."""
-        self._execute(
-            "UPDATE doors SET intercom_name = ?, intercom_serial = ? WHERE id = ?", (name[:100], serial, door_id)
+    def set_door_intercom(self, door_id: int, name: str, serial: str, was: tuple[str, str]) -> bool:
+        """Nome e numero di serie del videocitofono della porta, ritrovati sul broker (vedi main._follow_intercoms).
+        Solo se la porta ha ancora quelli di prima (was: nome e numero di serie): un salvataggio della porta arrivato
+        nel frattempo non si sovrascrive. True se la porta è cambiata."""
+        cursor = self._execute_cursor(
+            "UPDATE doors SET intercom_name = ?, intercom_serial = ? "
+            "WHERE id = ? AND intercom_name = ? AND intercom_serial = ?",
+            (name[:100], serial, door_id, *was),
         )
+        return cursor.rowcount == 1
 
     def delete_door(self, door_id: int) -> None:
         self._execute("DELETE FROM doors WHERE id = ?", (door_id,))
