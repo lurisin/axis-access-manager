@@ -353,9 +353,8 @@ async def test_door_with_aux_contact_has_no_alarm_entities(bridge, monkeypatch):
     bridge.monitor.aux_contacts = {"porta": ("1", "nc")}
     await bridge.refresh_entities()
     assert [(t, p) for t, p in sent if t in conditions] == [(t, b"") for t in sorted(conditions)]
-    # L'ingresso diventa una porta
-    aux2 = next(json.loads(p) for t, p in sent if t.endswith("/ingresso_aux_2/config"))
-    assert aux2["device_class"] == "door"
+    # L'ingresso è già il Contatto Porta: la sua entità si toglie
+    assert [p for t, p in sent if t.endswith("/ingresso_aux_2/config")] == [b""]
     # Niente cambiato: solo le entità degli ingressi
     sent.clear()
     await bridge.refresh_entities()
@@ -370,3 +369,79 @@ async def test_door_with_aux_contact_has_no_alarm_entities(bridge, monkeypatch):
     await bridge.refresh_entities()
     back = {t: json.loads(p) for t, p in sent if t in conditions}
     assert set(back) == set(conditions) and all(c["name"] for c in back.values())
+
+
+async def test_aux_door_contact_has_no_input_entity(db, settings, monkeypatch):
+    """In loco AUX 2 è il Contatto Porta: la sua entità, con lo stesso nome, diceva la stessa cosa del Contatto Porta
+    della porta. Non si pubblica, e quella creata dalle versioni precedenti si toglie a ogni connessione."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    db.save_controller_input(
+        controller_id, "IO2", {"name": "Contatto Porta", "role": "door_contact", "door_token": "porta"}
+    )
+    monitor = EventMonitor(prefix="accessi/x", door_token="porta")
+    monitor.aux_contacts = {"porta": ("1", "nc")}
+    bridge = HaBridge(settings, monitor, db)
+    topic = "homeassistant/binary_sensor/axis_access_manager/{}/config"
+    aux2 = topic.format("ingresso_aux_2")
+    for _ in range(2):
+        client = FakeClient()
+        await bridge.on_connect(client)
+        assert client.published[aux2] == b""
+        # Le altre entità restano con i loro identificativi, il Contatto Porta della porta compreso
+        for object_id in ("ingresso_aux_1", "ingresso_manomissione", "ingresso_allarme", "contatto_porta"):
+            config = json.loads(client.published[topic.format(object_id)])
+            assert config["unique_id"] == f"axis_access_manager_{object_id}"
+        assert json.loads(client.published[topic.format("contatto_porta")])["name"] == "Contatto Porta"
+    # Configurazione conservata dal broker, ricevuta alla connessione: si svuota
+    sent = []
+
+    async def publish(topic, payload, retain=False):
+        sent.append((topic, payload, retain))
+        return True
+
+    monkeypatch.setattr(monitor, "publish", publish)
+    monitor.extra_subscriptions["homeassistant/+/axis_access_manager/+/config"](aux2, b"{}", True)
+    await asyncio.sleep(0)
+    assert sent == [(aux2, b"", True)]
+    # Contatto Porta sull'ingresso Allarme: vale lo stesso
+    monitor.aux_contacts = {"porta": ("3", "nc")}
+    objects = {o for _, o, _ in bridge._entities()}
+    assert "ingresso_allarme" not in objects and "ingresso_aux_2" in objects
+
+
+async def test_input_entity_follows_the_contact_role(bridge, db, monkeypatch):
+    """Ingresso che diventa Contatto Porta e poi pulsante, senza riavvio: l'entità si toglie e torna con lo stesso id.
+    Con una nuova configurazione (bridge nuovo) vale lo stesso alla connessione."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    aux2 = "homeassistant/binary_sensor/axis_access_manager/ingresso_aux_2/config"
+    client = FakeClient()
+    await bridge.on_connect(client)
+    assert json.loads(client.published[aux2])["unique_id"] == "axis_access_manager_ingresso_aux_2"
+    sent = []
+
+    async def publish(topic, payload, retain=False):
+        sent.append((topic, payload))
+        return True
+
+    monkeypatch.setattr(bridge.monitor, "publish", publish)
+    db.save_controller_input(
+        controller_id, "IO2", {"name": "Contatto Porta", "role": "door_contact", "door_token": "porta"}
+    )
+    bridge.monitor.aux_contacts = {"porta": ("1", "nc")}
+    await bridge.refresh_entities()
+    assert [p for t, p in sent if t == aux2] == [b""]
+    # Di nuovo pulsante: l'entità torna, con il nome scelto nell'app
+    sent.clear()
+    db.save_controller_input(controller_id, "IO2", {"name": "Pulsante Magazzino", "role": "rex", "door_token": "porta"})
+    bridge.monitor.aux_contacts = {}
+    await bridge.refresh_entities()
+    back = [json.loads(p) for t, p in sent if t == aux2]
+    assert len(back) == 1 and back[0]["name"] == "Pulsante Magazzino"
+    assert back[0]["unique_id"] == "axis_access_manager_ingresso_aux_2"
+    # Nuova configurazione: il bridge nuovo pubblica o svuota alla connessione
+    for contacts, removed in (({"porta": ("1", "nc")}, True), ({}, False)):
+        monitor = EventMonitor(prefix="accessi/x", door_token="porta")
+        monitor.aux_contacts = contacts
+        client = FakeClient()
+        await HaBridge(bridge.settings, monitor, db).on_connect(client)
+        assert (client.published[aux2] == b"") is removed

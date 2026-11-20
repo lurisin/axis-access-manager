@@ -185,7 +185,7 @@ class HaBridge:
         # Configurazioni conservate dal broker, ricevute a ogni connessione: si svuotano quelle di entità tolte
         monitor.extra_subscriptions[f"{DISCOVERY_PREFIX}/+/{NODE_ID}/+/config"] = self._on_discovery_config
         self._tasks: set[asyncio.Task] = set()
-        # Allarme, Preallarme e Manomissione tolte da Home Assistant (porte con il Contatto Porta): (componente, id)
+        # Entità tolte da Home Assistant (vedi _entities): (componente, id)
         self._hidden: set[tuple[str, str]] = set()
         self._midnight: asyncio.Task | None = None
 
@@ -256,9 +256,10 @@ class HaBridge:
             "availability_mode": "all",
         }
 
-    def _entities(self, all_conditions: bool = False) -> list[tuple[str, str, dict]]:
-        """(componente, id oggetto, configurazione) di ogni entità. all_conditions: anche Allarme, Preallarme e
-        Manomissione delle porte con il Contatto Porta, che non si pubblicano (vedi _shows_conditions)."""
+    def _entities(self, hidden: bool = False) -> list[tuple[str, str, dict]]:
+        """(componente, id oggetto, configurazione) di ogni entità. hidden: anche quelle che non si pubblicano, cioè
+        Allarme, Preallarme e Manomissione delle porte con il Contatto Porta (vedi _shows_conditions) e l'ingresso usato
+        come Contatto Porta, che è già il Contatto Porta della sua porta."""
         common = {"device": self._device()}
         state = {"state_topic": self.state_topic}
         controller = self._availability("controller")
@@ -367,18 +368,13 @@ class HaBridge:
                         **state,
                         **controller,
                         "name": names.get(port) or name,
-                        **(
-                            {"device_class": "door"}
-                            if port in contact_ports
-                            else {"device_class": device_class}
-                            if device_class
-                            else {}
-                        ),
+                        **({"device_class": device_class} if device_class else {}),
                         "icon": "mdi:electric-switch",
                         "value_template": f"{{{{ value_json.ingressi['{port}'] }}}}",
                     },
                 )
                 for port, (object_id, name, device_class) in IO_INPUTS.items()
+                if hidden or port not in contact_ports
             ],
             (
                 "event",
@@ -442,7 +438,7 @@ class HaBridge:
                 )
             )
             for key, (name, device_class, icon) in (
-                DOOR_CONDITIONS.items() if all_conditions or self._shows_conditions(door["door_token"]) else ()
+                DOOR_CONDITIONS.items() if hidden or self._shows_conditions(door["door_token"]) else ()
             ):
                 path = f"value_json.condizioni['{door['door_token']}'].{key}"
                 entities.append(
@@ -512,7 +508,7 @@ class HaBridge:
         return token not in self.monitor.aux_contacts
 
     def _all_object_ids(self) -> list[tuple[str, str]]:
-        ids = [(c, o) for c, o, _ in self._entities(all_conditions=True)]
+        ids = [(c, o) for c, o, _ in self._entities(hidden=True)]
         for extra in (("button", "apri_porta"), ("button", "apri_porta_a_lungo")):
             if extra not in ids:
                 ids.append(extra)
@@ -525,7 +521,7 @@ class HaBridge:
                 await client.publish(self._config_topic(component, object_id), b"", qos=1, retain=True)
             return
         configured = {(c, o) for c, o, _ in self._entities()}
-        self._hidden = {(c, o) for c, o, _ in self._entities(all_conditions=True)} - configured
+        self._hidden = {(c, o) for c, o, _ in self._entities(hidden=True)} - configured
         for component, object_id in self._all_object_ids():
             if (component, object_id) not in configured:
                 await client.publish(self._config_topic(component, object_id), b"", qos=1, retain=True)
@@ -598,12 +594,13 @@ class HaBridge:
 
     async def refresh_entities(self) -> None:
         """Dopo un cambio degli ingressi: ripubblica le entità degli ingressi (nome scelto nell'app, classe), e toglie o
-        rimette Allarme, Preallarme e Manomissione delle porte che hanno appena avuto o perso il Contatto Porta. Le
-        altre restano com'erano: lo stato della porta non passa da "sconosciuto"."""
+        rimette Allarme, Preallarme e Manomissione delle porte che hanno appena avuto o perso il Contatto Porta, e
+        l'ingresso che lo è diventato o non lo è più. Le altre restano com'erano: lo stato della porta non passa da
+        "sconosciuto"."""
         if not self.enabled:
             return
         current = {(c, o): config for c, o, config in self._entities()}
-        every = {(c, o): config for c, o, config in self._entities(all_conditions=True)}
+        every = {(c, o): config for c, o, config in self._entities(hidden=True)}
         hidden = set(every) - set(current)
         for component, object_id in sorted(hidden - self._hidden):
             await self.monitor.publish(self._config_topic(component, object_id), b"", retain=True)
@@ -659,7 +656,7 @@ class HaBridge:
 
     def _inputs_state(self) -> dict[str, str]:
         """Stato degli ingressi I/O. Un Contatto Porta su un AUX vale come il Contatto Porta della sua porta (acceso =
-        porta aperta, con il tipo di contatto): le due entità dicono la stessa cosa."""
+        porta aperta, con il tipo di contatto): la sua entità non si pubblica, lo stato resta per quando torna."""
         doors = {port: door for door, (port, _) in self.monitor.aux_contacts.items()}
         pushbuttons = self._pushbutton_ports()
         return {
