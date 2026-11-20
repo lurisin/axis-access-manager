@@ -264,7 +264,10 @@ class HaBridge:
         state = {"state_topic": self.state_topic}
         controller = self._availability("controller")
         names = self._input_names()
-        contact_ports = {port for port, _ in self.monitor.aux_contacts.values()}
+        # Solo per le porte dell'app, che hanno il loro Contatto Porta: un AUX che fa da contatto a una porta non
+        # aggiunta (o tolta) nell'app resta l'unica entità che mostra quel contatto
+        tokens = {d["door_token"] for d in self.doors}
+        contact_ports = {port for token, (port, _) in self.monitor.aux_contacts.items() if token in tokens}
         entities = [
             (
                 "sensor",

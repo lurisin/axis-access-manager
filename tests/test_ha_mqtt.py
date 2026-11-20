@@ -445,3 +445,22 @@ async def test_input_entity_follows_the_contact_role(bridge, db, monkeypatch):
         client = FakeClient()
         await HaBridge(bridge.settings, monitor, db).on_connect(client)
         assert (client.published[aux2] == b"") is removed
+
+
+async def test_aux_contact_of_a_door_not_in_the_app_keeps_its_input_entity(db, settings):
+    """AUX 2 programmato come Contatto Porta di una porta del controller che nell'app non c'è (mai aggiunta, o
+    tolta): quella porta non ha il suo Contatto Porta in Home Assistant, e l'entità dell'ingresso resta l'unica che lo
+    mostra."""
+    controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
+    db.save_controller_input(
+        controller_id, "IO2", {"name": "Contatto Magazzino", "role": "door_contact", "door_token": "altra"}
+    )
+    monitor = EventMonitor(prefix="accessi/x", door_token="porta")
+    monitor.aux_contacts = {"altra": ("1", "nc")}
+    bridge = HaBridge(settings, monitor, db)
+    assert "altra" not in {d["door_token"] for d in bridge.doors}
+    objects = {o for _, o, _ in bridge._entities()}
+    assert "ingresso_aux_2" in objects
+    # La porta dell'app con lo stesso AUX come contatto: l'ingresso non ha più la sua entità
+    monitor.aux_contacts = {"porta": ("1", "nc")}
+    assert "ingresso_aux_2" not in {o for _, o, _ in bridge._entities()}

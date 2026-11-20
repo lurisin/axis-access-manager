@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.28.10
+
+- **Pulsante Bloccato.** Un Pulsante Uscita o Relè Citofono su un AUX premuto da più di un minuto diventa una notifica, con il nome dell'ingresso, la porta e da quanto è premuto. Resta tra i guasti finché non si libera: intanto la porta non si apre con lui. Il pulsante sul morsetto REX non si controlla, perché il controller non ne manda lo stato.
+- **Niente doppio Contatto Porta in Home Assistant.** Un ingresso usato come Contatto Porta non ha più la sua entità, che ripeteva il Contatto della porta con lo stesso nome: quella già creata sparisce da sola.
+- **Telecamere e Videocitofoni sul telefono.** Modifica e Togli vanno sotto il nome, che non si spezza più a metà.
+
 ## 0.28.9
 
 - **Pulsante rimasto premuto: in Home Assistant subito e sempre.** Un Pulsante Uscita o Relè Citofono rimasto premuto (al Pulsante Portineria è successo il 18/11, con il pulsante incastrato) dopo un riavvio dell'add-on compariva spento, poi acceso solo alla prima pubblicazione per altro, per esempio un evento del contatto porta o un salvataggio nell'interfaccia: sembrava acceso senza motivo. Ora la lettura del controller che lo trova premuto si pubblica subito, entro circa un minuto dall'avvio, e resta accesa finché il pulsante non si libera. La lettura del pulsante non cambia: come sempre, acceso mentre il controller lo vede premuto.
