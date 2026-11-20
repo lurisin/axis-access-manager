@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from test_intercom_directory import ARTISTI, CARRAIO, SERIAL_A, SERIAL_B, config
 from test_main import FakeBroker
 
-from app import events, main
+from app import events, ha_mqtt, main
 from app.config import MqttSettings, parse_options
 from app.intercom import topic_name
 from app.main import create_app
@@ -480,3 +480,86 @@ def test_a_name_is_bound_only_once_all_the_retained_intercoms_have_arrived(site)
     assert wait(lambda: (state.intercom_directory.since() or 0) > 0.6)
     assert len(state.intercom_directory.devices()) == 2
     assert site.door()["intercom_serial"] == ""
+
+
+def _forwarded(controller) -> list[tuple]:
+    return [c for c in controller.calls if c[0] == "access_door"]
+
+
+def test_slow_home_assistant_publishing_does_not_bind_on_half_the_list(site, controller, monkeypatch):
+    """Le configurazioni conservate si leggono solo dopo le pubblicazioni per Home Assistant: se durano più
+    dell'attesa, contare dal collegamento legherebbe la porta con il nome vecchio alla prima configurazione arrivata,
+    prima di sapere che il relè lo usa un'altra porta. Si conta dall'ultima configurazione arrivata."""
+    original = ha_mqtt.HaBridge.on_connect
+
+    async def slow(self, client):
+        await asyncio.sleep(0.6)
+        await original(self, client)
+
+    monkeypatch.setattr(ha_mqtt.HaBridge, "on_connect", slow)
+    site.retain(ARTISTI, SERIAL_A)
+    site.retain(RENAMED, SERIAL_A)
+    client = site.start(intercom_name=ARTISTI)
+    state = site.app.state
+    ctrl = state.db.list_controllers()[0]
+    body = {"door_token": "scena", "name": "Scena", "intercom_name": RENAMED, "intercom_relay": 1}
+    assert client.post(f"/api/controllers/{ctrl['id']}/doors", json=body | {"intercom_open_door": True}).status_code
+    door = site.door()
+    assert client.put(f"/api/doors/{door['id']}", json={**door, "intercom_serial": ""}).status_code == 200
+    assert wait(lambda: state.monitor.connected and (state.intercom_directory.since() or 0) > 1.4, 5)
+    assert site.door()["intercom_serial"] == site.door("scena")["intercom_serial"] == ""
+    site.ring_and_open(RENAMED, relay=1)
+    assert wait(lambda: _forwarded(controller))
+    time.sleep(0.2)
+    assert _forwarded(controller) == [("access_door", "scena", False)]
+
+
+def test_a_relay_saved_while_the_list_arrives_is_checked_on_the_saved_doors(site, controller, monkeypatch):
+    """Il relè cambiato mentre la configurazione si rifà: la porta con il nome vecchio non si lega guardando i relè di
+    prima (Scena sul relè 2), ma quelli salvati (Scena sul relè 1, lo stesso)."""
+    monkeypatch.setattr(main, "INTERCOM_ADOPT_AFTER", 1.0)
+    site.retain(ARTISTI, SERIAL_A)
+    site.retain(RENAMED, SERIAL_A)
+    client = site.start(intercom_name=ARTISTI)
+    state = site.app.state
+    ctrl = state.db.list_controllers()[0]
+    body = {"door_token": "scena", "name": "Scena", "intercom_name": RENAMED, "intercom_relay": 2}
+    assert client.post(f"/api/controllers/{ctrl['id']}/doors", json=body | {"intercom_open_door": True}).status_code
+    assert wait(lambda: state.monitor.connected)
+    assert site.door()["intercom_serial"] == site.door("scena")["intercom_serial"] == ""
+    drain = state.monitor.drain
+
+    async def slow_drain(timeout):
+        # L'attesa finisce mentre la configurazione di prima si ferma
+        while (state.intercom_directory.quiet_for() or 0) < 1.15:
+            await asyncio.sleep(0.02)
+        return await drain(timeout)
+
+    state.monitor.drain = slow_drain
+    scena = site.door("scena")
+    assert client.put(f"/api/doors/{scena['id']}", json={**scena, "intercom_relay": 1}).status_code == 200
+    assert site.door()["intercom_serial"] == ""
+    assert wait(lambda: state.monitor.connected and (state.intercom_directory.since() or 0) > 1.4, 5)
+    assert site.door()["intercom_serial"] == site.door("scena")["intercom_serial"] == ""
+    site.ring_and_open(RENAMED, relay=1)
+    assert wait(lambda: _forwarded(controller))
+    time.sleep(0.2)
+    assert _forwarded(controller) == [("access_door", "scena", False)]
+
+
+def test_two_doors_with_the_same_name_on_one_relay_are_both_bound(site, controller):
+    """Due porte con lo stesso nome e lo stesso relè (una «Solo Registro» rimasta sul relè 1): sentivano già gli
+    stessi messaggi, «Apri» alla prima. Si legano tutte e due e seguono il cambio di nome."""
+    site.retain(ARTISTI, SERIAL_A)
+    client = site.start(intercom_name=ARTISTI)
+    state = site.app.state
+    ctrl = state.db.list_controllers()[0]
+    body = {"door_token": "scena", "name": "Scena", "intercom_name": ARTISTI, "intercom_relay": 1}
+    assert client.post(f"/api/controllers/{ctrl['id']}/doors", json=body).status_code == 200
+    assert wait(lambda: site.door()["intercom_serial"] == SERIAL_A == site.door("scena")["intercom_serial"])
+    site.announce(RENAMED, SERIAL_A)
+    assert wait(lambda: site.door()["intercom_name"] == RENAMED == site.door("scena")["intercom_name"])
+    site.ring_and_open(RENAMED, relay=1)
+    assert wait(lambda: _forwarded(controller))
+    time.sleep(0.2)
+    assert _forwarded(controller) == [FORWARDED]

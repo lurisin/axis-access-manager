@@ -50,11 +50,13 @@ def same_name(name: str, other: str) -> bool:
 
 
 def shown_name(device: dict, stored: str = "") -> str:
-    """Nome da mostrare: quello dal vivo; senza, il nome salvato nella porta se è tra quelli del dispositivo, se no il
-    primo in ordine alfabetico."""
+    """Nome da mostrare: quello dal vivo; senza, il nome salvato nella porta se è tra quelli del dispositivo, poi
+    l'ultimo visto dal vivo (anche prima di un ricollegamento), se no il primo in ordine alfabetico."""
     if device["name"]:
         return device["name"]
-    return stored if stored in device["names"] else device["names"][0]
+    if stored in device["names"]:
+        return stored
+    return device.get("known") or device["names"][0]
 
 
 @dataclass
@@ -89,6 +91,8 @@ class IntercomDirectory:
         self.connected_at: float | None = None
         # Ultimo collegamento, anche dopo che si è perso: senza collegamento valgono le configurazioni di quello
         self._last_connected_at: float | None = None
+        # Ultima configurazione arrivata (vedi quiet_for)
+        self._config_at: float | None = None
         # Videocitofoni (numero di serie e nome) già scritti nel log
         self._logged: set[tuple[str, str]] = set()
         # Chiamata dopo ogni cambiamento
@@ -110,12 +114,22 @@ class IntercomDirectory:
         """Secondi da quando l'app è collegata al broker; None se non lo è."""
         return None if self.connected_at is None else max(0.0, self._clock() - self.connected_at)
 
+    def quiet_for(self) -> float | None:
+        """Secondi senza configurazioni nuove da quando l'app è collegata al broker; None se non lo è. Le configurazioni
+        conservate arrivano una dopo l'altra subito dopo il collegamento (anche dopo che Home Assistant ha finito le
+        sue pubblicazioni): finché ne arrivano, l'elenco può essere a metà."""
+        if self.connected_at is None:
+            return None
+        last = max(self.connected_at, self._config_at or self.connected_at)
+        return max(0.0, self._clock() - last)
+
     def handle_config(self, topic: str, payload: bytes, retained: bool = False) -> None:
         """Configurazione di discovery (filtri di discovery_filters). Una non conservata è pubblicata adesso: l'add-on
         sta usando quel nome. Vuota: tolta."""
         kind = _kind(topic)
         if kind is None:
             return
+        self._config_at = self._clock()
         text = payload.decode(errors="replace").strip()
         if not text:
             if self._entries.pop(topic, None) is not None:
@@ -171,6 +185,8 @@ class IntercomDirectory:
                 {
                     "serial": serial,
                     "name": winner,
+                    # Ultimo nome visto dal vivo, anche con un collegamento di prima: solo da mostrare
+                    "known": self._winner(serial, earlier=True),
                     "names": sorted({e.name for e in entries}, key=str.casefold),
                     "model": latest.model,
                     "relays": sorted(relays),
@@ -185,11 +201,12 @@ class IntercomDirectory:
         since = self._last_connected_at
         return [e for e in self._entries.values() if since is None or e.seen_at >= since]
 
-    def _winner(self, serial: str) -> str:
+    def _winner(self, serial: str, earlier: bool = False) -> str:
         """Nome con la prova dal vivo più recente, arrivata con il collegamento di adesso; "" se non ce n'è. Una prova
-        di un collegamento di prima non vale: dopo ogni ricollegamento le configurazioni conservate tornano una alla
-        volta, e se arriva prima quella del nome vecchio la porta tornerebbe al nome vecchio, e poi a quello nuovo."""
-        since = self._last_connected_at
+        di un collegamento di prima non vale (earlier=True sì, solo per mostrare un nome): dopo ogni ricollegamento le
+        configurazioni conservate tornano una alla volta, e se arriva prima quella del nome vecchio la porta tornerebbe
+        al nome vecchio, e poi a quello nuovo."""
+        since = None if earlier else self._last_connected_at
         live = [
             e
             for e in self._current()

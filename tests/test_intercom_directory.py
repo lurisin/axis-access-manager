@@ -124,6 +124,68 @@ def test_after_a_rename_the_live_name_wins_and_retained_only_keeps_the_stored_on
     assert directory.devices()[0]["name"] == "Ingresso Artisti"
 
 
+def test_after_a_reconnect_only_new_live_evidence_renames_but_the_last_live_name_is_shown():
+    """Dopo un ricollegamento le configurazioni conservate tornano una alla volta, prima quella del nome vecchio: la
+    prova dal vivo di prima non decide più il nome (la porta non torna al nome vecchio), ma per mostrarlo vale ancora
+    l'ultimo visto dal vivo, non il primo in ordine alfabetico."""
+    clock = Clock()
+    directory = IntercomDirectory(clock)
+    directory.connected()
+    announce(directory, "Artisti Ingresso", SERIAL_A)
+    clock.now += 5
+    announce(directory, "Ingresso Artisti", SERIAL_A, retained=False)
+    assert directory.devices()[0]["name"] == "Ingresso Artisti"
+    clock.now += 60
+    directory.connected()
+    announce(directory, "Artisti Ingresso", SERIAL_A)
+    announce(directory, "Ingresso Artisti", SERIAL_A)
+    [device] = directory.devices()
+    assert device["name"] == "" and device["known"] == "Ingresso Artisti"
+    assert shown_name(device) == "Ingresso Artisti" and shown_name(device, "Artisti Ingresso") == "Artisti Ingresso"
+
+
+def test_quiet_for_counts_from_the_last_config():
+    """Le porte con il solo nome si legano quando le configurazioni conservate sono arrivate tutte: si conta
+    dall'ultima arrivata, non dal collegamento (le pubblicazioni per Home Assistant possono venire prima)."""
+    clock = Clock()
+    directory = IntercomDirectory(clock)
+    assert directory.quiet_for() is None
+    directory.connected()
+    clock.now += 3
+    assert directory.quiet_for() == 3
+    announce(directory, ARTISTI, SERIAL_A)
+    clock.now += 0.5
+    assert directory.quiet_for() == 0.5
+    # Anche una configurazione che non è di un videocitofono vuol dire che stanno ancora arrivando
+    directory.handle_config("homeassistant/switch/Luce-Scale/Door-1-relay/config", b'{"device": {}}')
+    assert directory.quiet_for() == 0
+    directory.disconnected()
+    assert directory.quiet_for() is None
+
+
+async def test_a_retried_subscription_ends_with_the_connection():
+    """Un'iscrizione che si riprova non è un'operazione sul controller: non fa aspettare lo spegnimento, e finisce
+    quando il collegamento si perde (al prossimo si chiedono tutte)."""
+
+    class Client:
+        def __init__(self):
+            self.asked = []
+
+        async def subscribe(self, topic_filter, qos=0):
+            self.asked.append(topic_filter)
+            raise aiomqtt.MqttError("Operation timed out")
+
+    monitor = EventMonitor(prefix="accessi/x")
+    monitor.client, monitor.connected = Client(), True
+    assert monitor.add_subscription("hmd/switch/Nuovo/Door-1-relay/state", lambda *a: None)
+    await asyncio.sleep(0.05)
+    assert monitor._tasks == set() and len(monitor._subscribing) == 1
+    [task] = monitor._subscribing
+    monitor._lost()
+    await asyncio.sleep(0.01)
+    assert task.cancelled() and monitor._subscribing == set() and len(monitor.client.asked) == 1
+
+
 def test_only_configs_from_the_current_connection_count():
     clock = Clock()
     directory = IntercomDirectory(clock)

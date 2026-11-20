@@ -417,8 +417,9 @@ SETTING_INTERCOM_WIRED = "intercom_wired"
 # Dopo il collegamento al broker le configurazioni conservate dei videocitofoni arrivano subito: prima di questi secondi
 # un videocitofono non ancora arrivato non vuol dire che non c'è
 INTERCOM_FOUND_AFTER = 10.0
-# Una porta con il solo nome prende il numero di serie dopo questi secondi dal collegamento, quando le configurazioni
-# conservate sono arrivate tutte: si sa se quel nome lo hanno due videocitofoni, o se il relè lo usa un'altra porta
+# Una porta con il solo nome prende il numero di serie quando per questi secondi non arrivano altre configurazioni,
+# cioè quando le configurazioni conservate sono arrivate tutte: si sa se quel nome lo hanno due videocitofoni, o se il
+# relè lo usa un'altra porta
 INTERCOM_ADOPT_AFTER = 2.0
 
 
@@ -3149,10 +3150,8 @@ def _wire(app: FastAPI) -> None:
         before_directory = monitor.on_connect
 
         async def connect_directory(client) -> None:
-            # Da adesso contano le configurazioni dei videocitofoni che arrivano (quelle conservate subito); le porte
-            # con il solo nome si legano al numero di serie quando sono arrivate tutte
+            # Da adesso contano le configurazioni dei videocitofoni che arrivano (quelle conservate subito)
             directory.connected()
-            asyncio.get_running_loop().call_later(INTERCOM_ADOPT_AFTER + 0.1, _follow_intercoms, state)
             if before_directory is not None:
                 await before_directory(client)
 
@@ -3215,10 +3214,7 @@ def _follow_intercoms(state) -> None:
     if not intercoms or directory is None:
         return
     devices = {d["serial"]: d for d in directory.devices()}
-    since = directory.since()
-    # Mentre arrivano le configurazioni conservate un nome può sembrare di un videocitofono solo
-    adopt = since is not None and since >= INTERCOM_ADOPT_AFTER
-    for intercom in intercoms if adopt else []:
+    for intercom in intercoms if _may_adopt(state, directory, intercoms) else []:
         door = intercom.door
         matches = [d for d in devices.values() if _uses(door, d)]
         if door["intercom_serial"] or len(matches) != 1:
@@ -3231,12 +3227,15 @@ def _follow_intercoms(state) -> None:
                 if i is not intercom
                 and i.door["intercom_relay"] == door["intercom_relay"]
                 and _uses(i.door, matches[0])
+                and not same_name(i.door["intercom_name"], door["intercom_name"])
             ),
             None,
         )
         if clash is not None:
-            # Lo stesso relè lo usa già un'altra porta (una delle due con un nome vecchio del videocitofono): con il
-            # numero di serie «Apri» andrebbe a una porta sola, magari quella sbagliata. Le porte restano com'erano
+            # Lo stesso relè lo usa già un'altra porta con un altro nome del videocitofono (una delle due ha quello
+            # vecchio, e prima la sentiva solo l'altra): con il numero di serie «Apri» andrebbe a una porta sola,
+            # magari quella sbagliata. Le porte restano com'erano. Con lo stesso nome lo sentivano già tutte e due:
+            # «Apri» resta alla prima, come prima
             key = (door["id"], serial, door["intercom_relay"])
             if key not in state.intercom_clashes:
                 state.intercom_clashes.add(key)
@@ -3287,6 +3286,55 @@ def _follow_intercoms(state) -> None:
             _LOGGER.info(
                 "Videocitofono di %s rinominato nell'add-on Hikvision: %s → %s", door["name"], old, device["name"]
             )
+
+
+def _may_adopt(state, directory: IntercomDirectory, intercoms: list[IntercomBridge]) -> bool:
+    """Le porte con il solo nome possono prendere il numero di serie: configurazioni conservate arrivate tutte (nessuna
+    nuova da INTERCOM_ADOPT_AFTER) e porte in memoria uguali a quelle nel database. Prima si riprova più tardi."""
+    if all(i.door["intercom_serial"] for i in intercoms):
+        return False
+    quiet = directory.quiet_for()
+    if quiet is None:
+        # Senza broker: si riprova quando si ricollega (le configurazioni arrivano di nuovo)
+        return False
+    if quiet < INTERCOM_ADOPT_AFTER:
+        _adopt_later(state, INTERCOM_ADOPT_AFTER - quiet + 0.1)
+        return False
+    try:
+        stored = {d["id"]: d for d in state.db.list_doors()}
+    except sqlite3.Error as err:
+        _LOGGER.warning("Porte non lette dal database: %s", err)
+        _adopt_later(state, INTERCOM_ADOPT_AFTER)
+        return False
+    keys = ("intercom_name", "intercom_serial", "intercom_relay")
+    if any(
+        tuple((stored.get(i.door["id"]) or {}).get(k) for k in keys) != tuple(i.door[k] for k in keys)
+        for i in intercoms
+    ):
+        # Una porta salvata adesso: la configurazione si sta rifacendo, e la nuova ci riprova con le porte giuste
+        _adopt_later(state, INTERCOM_ADOPT_AFTER)
+        return False
+    return True
+
+
+def _adopt_later(state, delay: float) -> None:
+    """Riprova a legare le porte con il solo nome tra delay secondi (uno solo in attesa)."""
+    timer = getattr(state, "intercom_adopt_timer", None)
+    if timer is not None:
+        timer.cancel()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    state.intercom_adopt_timer = loop.call_later(delay, _follow_later, state)
+
+
+def _follow_later(state) -> None:
+    try:
+        _follow_intercoms(state)
+    except Exception:
+        # Come nell'aggiornamento dall'elenco (IntercomDirectory._changed): mai fermare l'ascolto
+        _LOGGER.exception("Errore nell'aggiornamento dei videocitofoni")
 
 
 def _save_intercom(state, door: dict, name: str, serial: str) -> bool:

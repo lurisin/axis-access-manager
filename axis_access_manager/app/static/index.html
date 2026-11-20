@@ -5756,9 +5756,10 @@ function intercomRows(found, door, targetId) {
     const numbers = new Set(announced.length ? announced : [1, 2]);
     if (current) numbers.add(door.intercom_relay);
     const relays = [...numbers].sort((a, b) => a - b).map((n) => {
+      // Grigio anche il relè della porta se lo usa un'altra porta: «Apri» andrebbe a una sola delle due, e salvando
+      // la porta si legherebbe al numero di serie su quel relè
       const by = x.used.filter((u) => other(u) && u.relay === n);
-      // Il relè di adesso resta sceglibile anche se un'altra porta usa lo stesso
-      return {n, by: doors(by), off: by.length > 0 && !(current && n === door.intercom_relay), missing: complete && !x.relays.includes(n)};
+      return {n, by: doors(by), off: by.length > 0, missing: complete && !x.relays.includes(n)};
     });
     const off = !current && relays.every((r) => r.off);
     return {value: x.serial, name: x.name, serial: x.serial, meta: off ? doors(x.used.filter(other)) : x.model, off, current, missing: false, relays};
@@ -5778,8 +5779,11 @@ function intercomEmpty(found) {
 }
 async function intercomEditor(ctrl, door) {
   const d = door || {intercom_relay: 1, intercom_mqtt_prefix: "hmd"};
-  // Con l'elenco in arrivo la pagina non prende clic: la finestra non si apre sopra un'altra pagina, né due volte
+  // Con l'elenco in arrivo la pagina non prende clic: la finestra non si apre sopra un'altra pagina, né due volte. Con
+  // Indietro del browser intanto si cambia pagina: allora niente finestra
+  const hash = location.hash;
   let found = await busy("", api("api/intercoms/found").catch(() => null));
+  if (location.hash !== hash) return;
   const doorSelect = `<select name="door">${ctrl.doors.map((x) => `<option value="${x.id}" ${x.id === door?.id ? "selected" : ""}>${esc(x.name)}${x.intercom_name && x.id !== door?.id ? ` (ora ${esc(x.intercom_name)})` : ""}</option>`).join("")}</select>`;
   let rows = [];
   let written = false;
@@ -5796,18 +5800,22 @@ async function intercomEditor(ctrl, door) {
       const form = $("form", dlg), list = $("[data-ic-list]", form), relay = $("[name=intercom_relay]", form);
       const chosen = () => rows.find((r) => r.value === $("[name=intercom]:checked", form)?.value);
       // Relè scelto a mano per ogni videocitofono: tornando su uno resta quello. Per quello della porta, all'inizio
-      // il relè salvato
+      // il relè salvato. Quello della porta ha una chiave sola (""): la sua riga cambia quando l'elenco si rifà
+      // (prima non annunciato, poi trovato)
       const picked = {};
+      const key = (row) => (row.current ? "" : row.value);
       const relays = () => {
         const row = chosen();
         const options = row ? row.relays : [1, 2].map((n) => ({n, by: "", off: false, missing: false}));
-        const want = (row && picked[row.value]) ?? (row?.current ? d.intercom_relay : Number(relay.value) || d.intercom_relay || 1);
-        // Mai un relè grigio: senza uno libero il menu resta vuoto e Salva chiede di sceglierlo
-        const pick = options.find((r) => r.n === want && !r.off) || options.find((r) => !r.off);
-        relay.innerHTML = (pick ? "" : '<option value="" disabled hidden></option>') + options.map((r) => `<option value="${r.n}" ${r.off ? "disabled" : ""}>Relè ${r.n}${r.by ? ` · ${esc(r.by)}` : r.missing ? " · Non Trovato" : ""}</option>`).join("");
+        const manual = row ? picked[key(row)] : undefined;
+        const want = manual ?? (row?.current ? d.intercom_relay : Number(relay.value) || d.intercom_relay || 1);
+        // Mai un relè grigio, e il relè della porta non cambia da solo: senza uno libero il menu resta vuoto e Salva
+        // chiede di sceglierlo
+        const pick = options.find((r) => r.n === want && !r.off) || (row?.current && manual === undefined ? null : options.find((r) => !r.off));
+        relay.innerHTML = (pick ? "" : '<option value="" disabled hidden>Scegli il relè</option>') + options.map((r) => `<option value="${r.n}" ${r.off ? "disabled" : ""}>Relè ${r.n}${r.by ? ` · ${esc(r.by)}` : r.missing ? " · Non Trovato" : ""}</option>`).join("");
         relay.value = pick ? String(pick.n) : "";
       };
-      relay.addEventListener("change", () => { const row = chosen(); if (row) picked[row.value] = Number(relay.value); });
+      relay.addEventListener("change", () => { const row = chosen(); if (row) picked[key(row)] = Number(relay.value); });
       const mark = () => $$("label", list).forEach((l) => l.classList.toggle("on", $("input", l).checked));
       const draw = () => {
         // All'apertura è scelto quello di adesso; poi la scelta resta anche quando l'elenco si rifà (un'altra porta,

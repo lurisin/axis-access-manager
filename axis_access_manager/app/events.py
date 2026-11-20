@@ -295,6 +295,9 @@ class EventMonitor:
     # Ora dell'app per io_since (i test la cambiano)
     clock: Callable[[], datetime] = field(default=_app_now, repr=False)
     _tasks: set = field(default_factory=set, repr=False)
+    # Iscrizioni chieste con il broker già collegato (vedi add_subscription): non sono operazioni sul controller, e
+    # finiscono con il collegamento
+    _subscribing: set = field(default_factory=set, repr=False)
     # Pubblicazioni partite e non ancora confermate (vedi drain)
     _publishing: int = field(default=0, repr=False)
 
@@ -345,8 +348,8 @@ class EventMonitor:
         client = self.client
         if client is not None and self.connected:
             task = asyncio.get_running_loop().create_task(self._subscribe(client, topic_filter))
-            self._tasks.add(task)
-            task.add_done_callback(self._tasks.discard)
+            self._subscribing.add(task)
+            task.add_done_callback(self._subscribing.discard)
         return True
 
     async def _subscribe(self, client: aiomqtt.Client, topic_filter: str) -> None:
@@ -367,6 +370,9 @@ class EventMonitor:
 
     def _lost(self) -> None:
         """Collegamento al broker perso o ascolto fermato."""
+        for task in list(self._subscribing):
+            # Al prossimo collegamento si chiedono comunque tutti
+            task.cancel()
         if self.on_disconnect is None:
             return
         try:
