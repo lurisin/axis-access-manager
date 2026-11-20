@@ -795,6 +795,22 @@
   .perm-list { display: grid; gap: 8px; margin-top: 4px; }
   .perm-list label { display: flex; gap: 10px; align-items: flex-start; color: var(--text); font-size: 14px; }
   .perm-list input { margin-top: 2px; }
+  /* Scelta del videocitofono tra quelli annunciati sul broker: grigi quelli con i relè già usati da altre porte */
+  .ic-list { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .ic-list > label, .ic-list > .ic-empty { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--border); }
+  .ic-list > :first-child { border-top: none; }
+  .ic-list > label { cursor: pointer; font-size: 14px; }
+  .ic-list > label.on { background: var(--accent-soft); }
+  .ic-list > label.off { cursor: default; color: var(--muted); background: var(--surface-2); }
+  .ic-list > label.off b { font-weight: 500; }
+  .ic-list > label.off input { opacity: .5; }
+  .field .ic-list input[type=radio] { width: 18px; height: 18px; accent-color: var(--accent); flex: none; margin: 0; padding: 0; }
+  /* Anello solo da tastiera: la riga scelta si vede già dallo sfondo */
+  .field .ic-list input[type=radio]:focus { outline: none; }
+  .field .ic-list input[type=radio]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .ic-list .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .ic-list .ic-meta { display: block; color: var(--muted); font-size: 13px; }
+  .ic-list > .ic-empty { color: var(--muted); font-size: 14px; }
 
   @media (max-width: 1000px) {
     .grid.kpi { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1628,7 +1644,8 @@ function modal({title, body = "", actions = [], wide = false, cls = "", onOpen})
     };
     dlg.showModal();
     if (onOpen) onOpen(dlg);
-    const first = $(".dlg-body input:not([type=checkbox]), .dlg-body select, .dlg-body textarea", dlg);
+    // Tra i pallini, quello scelto (come con Tab): senza una scelta, il campo dopo
+    const first = $(".dlg-body input:not([type=checkbox]):not([type=radio]), .dlg-body input[type=radio]:checked, .dlg-body select, .dlg-body textarea", dlg);
     if (first && !("ontouchstart" in window)) first.focus();
   });
 }
@@ -5689,9 +5706,11 @@ async function cameraEditor(ctrl, cameras, door, forController = false) {
 
 // Scheda Videocitofoni: citofoni Hikvision collegati alle porte
 async function controllerIntercoms(body, ctrl) {
-  const status = await api("api/status?controller=false").catch(() => null);
+  const [status, found] = await Promise.all([api("api/status?controller=false").catch(() => null), api("api/intercoms/found").catch(() => null)]);
   if (!body.isConnected) return;
   const live = (d) => (status?.intercoms || []).find((i) => i.name === d.intercom_name && i.door === d.name);
+  // Modello del videocitofono annunciato sul broker, se c'è
+  const model = (d) => (found?.devices || []).find((x) => x.used.some((u) => u.door_id === d.id))?.model || "";
   const rows = ctrl.doors.filter((d) => d.intercom_name);
   const seen = (d) => { const i = live(d); return i?.last_message_at ? `ultimo messaggio ${relTime(i.last_message_at)}` : "nessun messaggio dall'avvio"; };
   body.innerHTML = `
@@ -5700,8 +5719,8 @@ async function controllerIntercoms(body, ctrl) {
     ${!ctrl.doors.length ? '<div class="card"><div class="empty">Prima aggiungi una porta all\'app nella scheda Porte.</div></div>'
       : rows.length ? `<div class="card flush"><div class="list">${rows.map((d) => `<div class="item">
         <div class="ev-icon k-accent">${icon("phone")}</div>
-        <div class="grow"><div class="title">${esc(d.intercom_name)}</div>
-          <div class="meta"><span>${esc(named("porta", d.name))}</span><span>${d.intercom_open_door ? `apre la porta con il relè ${d.intercom_relay}` : "registra le chiamate, non apre la porta"}</span><span>${esc(seen(d))}</span></div></div>
+        <div class="grow"><div class="title">${esc(d.intercom_name)}${live(d)?.found === false ? ' <span class="pill warn">Non Trovato</span>' : ""}</div>
+          <div class="meta">${model(d) ? `<span>${esc(model(d))}</span>` : ""}<span>${esc(named("porta", d.name))}</span><span>${d.intercom_open_door ? `apre la porta con il relè ${d.intercom_relay}` : "registra le chiamate, non apre la porta"}</span><span>${esc(seen(d))}</span></div></div>
         <div class="row item-actions"><button type="button" class="small" data-ic-edit="${d.id}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost danger" data-ic-del="${d.id}">Togli</button></div></div>`).join("")}</div></div>`
       : `<div class="card"><div class="empty">${icon("phone")}<br>Nessun videocitofono associato alle porte.</div></div>`}`;
@@ -5712,32 +5731,109 @@ async function controllerIntercoms(body, ctrl) {
     const door = ctrl.doors.find((d) => String(d.id) === (b.dataset.icEdit || b.dataset.icDel));
     if (b.id === "ic-new" || b.dataset.icEdit) return intercomEditor(ctrl, door);
     if (b.dataset.icDel && await confirmBox("Togli Videocitofono", `Togliere il videocitofono dalla porta <b>${esc(door.name)}</b>? Le chiamate non finiranno più nel registro.`, "Togli", true) &&
-        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}), "Videocitofono tolto", "Rimozione del videocitofono")) { loadSummary(); render(); }
+        await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, NO_INTERCOM)}), "Videocitofono tolto", "Rimozione del videocitofono")) { loadSummary(); render(); }
   };
+}
+// Porta senza videocitofono: anche senza il numero di serie, che senza un nome l'app rifiuta
+const NO_INTERCOM = {intercom_name: "", intercom_serial: "", intercom_open_door: false};
+// Dopo il collegamento al broker i videocitofoni arrivano subito: entro questi secondi l'elenco si chiede di nuovo
+const INTERCOM_WAIT = 3;
+// Valore della riga del videocitofono di adesso quando non è tra quelli annunciati
+const INTERCOM_CURRENT = "-";
+// Righe della scelta del videocitofono: quelli annunciati sul broker (api/intercoms/found) e, prima, quello di adesso
+// della porta se non è tra loro. Le porte che contano sono le altre: non quella in modifica (door) né quella scelta in
+// Porta (targetId), il cui videocitofono si sostituisce. Grigio il videocitofono con tutti i relè usati da altre porte
+function intercomRows(found, door, targetId) {
+  const other = (u) => u.door_id !== door?.id && u.door_id !== targetId;
+  const doors = (uses) => [...new Set(uses.map((u) => named("Porta", u.door)))].join(", ");
+  const rows = (found?.devices || []).map((x) => {
+    const current = Boolean(door) && x.used.some((u) => u.door_id === door.id);
+    const relays = (x.relays.length ? x.relays : [1, 2]).map((n) => {
+      const by = x.used.filter((u) => other(u) && u.relay === n);
+      // Il relè di adesso resta sceglibile anche se un'altra porta usa lo stesso
+      return {n, by: doors(by), off: by.length > 0 && !(current && n === door.intercom_relay)};
+    });
+    const off = !current && relays.every((r) => r.off);
+    return {value: x.serial, name: x.name, serial: x.serial, meta: off ? doors(x.used.filter(other)) : x.model, off, current, missing: false, relays};
+  });
+  if (door?.intercom_name && !rows.some((r) => r.current)) {
+    // Non trovato solo con l'elenco completo: broker collegato da qualche secondo
+    const missing = Boolean(found?.broker) && (found.since ?? 0) >= INTERCOM_WAIT;
+    rows.unshift({value: INTERCOM_CURRENT, name: door.intercom_name, serial: door.intercom_serial || "", meta: "", off: false, current: true,
+      missing, relays: [1, 2].map((n) => ({n, by: "", off: false}))});
+  }
+  return rows;
+}
+// Riga sotto l'elenco quando i videocitofoni non ci sono (ancora): una frase sola, o la rotellina appena collegati
+function intercomEmpty(found) {
+  if (!found) return "Elenco non disponibile.";
+  if (!found.broker) return "Broker MQTT non collegato.";
+  if (found.devices.length) return "";
+  return (found.since ?? 0) < INTERCOM_WAIT ? '<span class="spinner" aria-label="Ricerca"></span>' : "Nessun videocitofono trovato.";
 }
 async function intercomEditor(ctrl, door) {
   const d = door || {intercom_relay: 1, intercom_mqtt_prefix: "hmd"};
+  let found = await api("api/intercoms/found").catch(() => null);
   const doorSelect = `<select name="door">${ctrl.doors.map((x) => `<option value="${x.id}" ${x.id === door?.id ? "selected" : ""}>${esc(x.name)}${x.intercom_name && x.id !== door?.id ? ` (ora ${esc(x.intercom_name)})` : ""}</option>`).join("")}</select>`;
+  let rows = [];
   let written = false;
   const result = await modal({
     title: door ? "Modifica Videocitofono" : "Aggiungi Videocitofono",
     wide: true,
-    body: `<div class="fields-2">${field("Nome del Videocitofono", `<input name="intercom_name" value="${esc(d.intercom_name || "")}" required>`, "Lo stesso nome dato al videocitofono nell'add-on Hikvision Doorbell.")}
-      ${field("Porta", doorSelect, "Se la porta ha già un videocitofono, viene sostituito.")}</div>
+    body: `${field("Videocitofono", '<div class="ic-list" role="radiogroup" aria-label="Videocitofono" data-ic-list></div>')}
+      <div class="fields-2">${field("Porta", doorSelect, "Se la porta ha già un videocitofono, viene sostituito.")}
+      ${field("Relè del Tasto Apri", '<select name="intercom_relay"></select>')}</div>
       <div class="field inline"><input type="checkbox" name="intercom_open_door" id="f-iod" ${d.intercom_open_door ? "checked" : ""}><label for="f-iod">"Apri" dal Videocitofono Apre Questa Porta</label></div>
-      <p class="hint" style="margin-top:-8px">"Apri" dal monitor o da Hik-Connect: l'app manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Disattivata: le chiamate finiscono solo nel registro.</p>
-      <div class="fields-2">${field("Relè del Tasto Apri", `<select name="intercom_relay"><option value="1" ${d.intercom_relay === 1 ? "selected" : ""}>Relè 1</option><option value="2" ${d.intercom_relay === 2 ? "selected" : ""}>Relè 2</option></select>`)}
-      ${field("Prefisso MQTT del Videocitofono", `<input name="intercom_mqtt_prefix" class="mono" value="${esc(d.intercom_mqtt_prefix || "hmd")}">`, "Lascia hmd se non l'hai cambiato nell'add-on Hikvision Doorbell.")}</div>`,
+      <p class="hint" style="margin-top:-8px">"Apri" dal monitor o da Hik-Connect: l'app manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Disattivata: le chiamate finiscono solo nel registro.</p>`,
+    onOpen: (dlg) => {
+      // La finestra è condivisa: il modulo si rifà a ogni apertura, e l'elenco richiesto dopo resta di questo
+      const form = $("form", dlg), list = $("[data-ic-list]", form), relay = $("[name=intercom_relay]", form);
+      const relays = () => {
+        const row = rows.find((r) => r.value === $("[name=intercom]:checked", form)?.value);
+        const options = row ? row.relays : [1, 2].map((n) => ({n, by: "", off: false}));
+        const before = Number(relay.value) || d.intercom_relay || 1;
+        relay.innerHTML = options.map((r) => `<option value="${r.n}" ${r.off ? "disabled" : ""}>Relè ${r.n}${r.by ? ` · ${esc(r.by)}` : ""}</option>`).join("");
+        const pick = options.find((r) => r.n === before && !r.off) || options.find((r) => !r.off) || options[0];
+        relay.value = String(pick.n);
+      };
+      const mark = () => $$("label", list).forEach((l) => l.classList.toggle("on", $("input", l).checked));
+      const draw = () => {
+        // All'apertura è scelto quello di adesso; poi la scelta resta anche quando l'elenco si rifà (un'altra porta,
+        // l'elenco richiesto di nuovo). Quello di adesso resta scelto anche se cambia riga: prima non annunciato,
+        // poi trovato (o il contrario)
+        const before = list.childElementCount ? rows.find((r) => r.value === $("[name=intercom]:checked", form)?.value) : {current: true};
+        rows = intercomRows(found, door, Number(val(form, "door")));
+        const chosen = before?.current ? rows.find((r) => r.current)?.value : before?.value;
+        const empty = intercomEmpty(found);
+        list.innerHTML = rows.map((r) => `<label class="${r.off ? "off" : ""}"><input type="radio" name="intercom" value="${esc(r.value)}" ${r.off ? "disabled" : ""} ${r.value === chosen && !r.off ? "checked" : ""}>
+          <span class="grow"><b>${esc(r.name)}</b>${r.missing ? ' <span class="pill warn">Non Trovato</span>' : ""}${r.meta ? `<span class="ic-meta">${esc(r.meta)}</span>` : ""}</span></label>`).join("")
+          + (empty ? `<div class="ic-empty">${empty}</div>` : "");
+        mark();
+        relays();
+      };
+      list.addEventListener("change", () => { mark(); relays(); });
+      $("[name=door]", form).addEventListener("change", draw);
+      draw();
+      if (found?.broker && (found.since ?? 0) < INTERCOM_WAIT) {
+        // Appena collegati al broker: i videocitofoni stanno arrivando, l'elenco si chiede ancora una volta
+        setTimeout(async () => {
+          if (!form.isConnected) return;
+          found = await api("api/intercoms/found").catch(() => found);
+          if (form.isConnected) draw();
+        }, INTERCOM_WAIT * 1000);
+      }
+    },
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, busy: "Salvataggio del videocitofono", onClick: async (dlg) => {
       const target = ctrl.doors.find((x) => String(x.id) === val(dlg, "door"));
-      const name = val(dlg, "intercom_name").trim();
-      if (!name) { toast("Scrivi il nome del videocitofono", true); return false; }
-      const changes = {intercom_name: name, intercom_open_door: val(dlg, "intercom_open_door"), intercom_relay: Number(val(dlg, "intercom_relay")), intercom_mqtt_prefix: val(dlg, "intercom_mqtt_prefix")};
-      // Prima la porta nuova: se la rifiuta (prefisso non valido), la porta di prima tiene il suo videocitofono
+      const row = rows.find((r) => r.value === $("[name=intercom]:checked", dlg)?.value);
+      if (!row) { toast("Scegli il videocitofono", true); return false; }
+      // Il prefisso MQTT resta quello della porta: i topic del videocitofono scelto vengono dal broker
+      const changes = {intercom_name: row.name, intercom_serial: row.serial, intercom_open_door: val(dlg, "intercom_open_door"), intercom_relay: Number(val(dlg, "intercom_relay")), intercom_mqtt_prefix: d.intercom_mqtt_prefix || "hmd"};
+      // Prima la porta nuova: se la rifiuta, la porta di prima tiene il suo videocitofono
       if (!await run(() => api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, changes)}))) return false;
       written = true;
       // Spostato su un'altra porta: solo ora la porta di prima resta senza
-      if (door && door.id !== target.id && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, {intercom_name: "", intercom_open_door: false})}))) return false;
+      if (door && door.id !== target.id && !await run(() => api(`api/doors/${door.id}`, {method: "PUT", body: doorBody(door, NO_INTERCOM)}))) return false;
       toast("Videocitofono salvato");
       return true;
     }}],
@@ -5749,7 +5845,7 @@ async function intercomEditor(ctrl, door) {
 // Impostazioni della porta nell'app; l'area viene dal controller
 // Impostazioni complete della porta per il salvataggio, con le modifiche indicate
 function doorBody(door, changes = {}) {
-  const fields = ["name", "door_token", "ha_buttons", "snapshot_camera", "snapshot_on_granted", "snapshot_delay", "intercom_name", "intercom_relay", "intercom_open_door", "intercom_mqtt_prefix", "area_id"];
+  const fields = ["name", "door_token", "ha_buttons", "snapshot_camera", "snapshot_on_granted", "snapshot_delay", "intercom_name", "intercom_relay", "intercom_open_door", "intercom_mqtt_prefix", "intercom_serial", "area_id"];
   const body = Object.fromEntries(fields.filter((k) => door[k] !== undefined).map((k) => [k, door[k]]));
   return {...body, ...changes};
 }
