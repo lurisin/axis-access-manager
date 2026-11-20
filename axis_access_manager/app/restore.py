@@ -1021,6 +1021,10 @@ async def _apply_door(item: dict, runtime: Runtime, user: str) -> bool:
         k: saved[k] if k in saved else (current[k] if current else Database.DOOR_FIELD_DEFAULTS.get(k))
         for k in Database.DOOR_FIELDS
     }
+    if "intercom_serial" not in saved and fields["intercom_name"] != (current or {}).get("intercom_name"):
+        # Backup di prima del numero di serie (0.28.11) con un altro videocitofono: quello di adesso non è suo. Si
+        # ritrova dal nome, se sul broker c'è (vedi main._follow_intercoms)
+        fields["intercom_serial"] = ""
     if current and all(current[k] == fields[k] for k in Database.DOOR_FIELDS):
         return False
     runtime.db.save_door(current["id"] if current else None, runtime.controller_id, fields)

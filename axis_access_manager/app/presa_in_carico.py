@@ -75,6 +75,7 @@ DOOR_DEFAULTS = {
     "intercom_open_door": False,
     "intercom_relay": 1,
     "intercom_mqtt_prefix": "hmd",
+    "intercom_serial": "",
     "area_id": 0,
 }
 SURPRISE_REX = "pulsante fatto a mano sul controller"

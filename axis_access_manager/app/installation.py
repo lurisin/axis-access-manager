@@ -11,6 +11,7 @@ import httpx
 
 from .config import Settings, normalize_host
 from .db import Database
+from .intercom_directory import valid_serial
 from .service import ServiceError, normalize_name
 
 # Per ora l'app gestisce un controller; il database è già pronto per averne di più
@@ -48,6 +49,16 @@ def snapshot_delay(value) -> float:
     if seconds != seconds or not 0 <= seconds <= SNAPSHOT_DELAY_MAX:
         raise ServiceError(SNAPSHOT_DELAY_ERROR)
     return seconds
+
+
+def intercom_serial(name: str, value) -> str:
+    """Numero di serie del videocitofono scelto dall'elenco (vedi intercom_directory): senza videocitofono non c'è."""
+    serial = str(value or "").strip()
+    if serial and not name:
+        raise ServiceError("scegli il videocitofono")
+    if serial and not valid_serial(serial):
+        raise ServiceError("numero di serie del videocitofono non valido")
+    return serial if name else ""
 
 
 def _flag(value) -> bool:
@@ -432,6 +443,7 @@ class InstallationService:
             "intercom_open_door": int(_flag(data.get("intercom_open_door")) and bool(intercom)),
             "intercom_relay": relay,
             "intercom_mqtt_prefix": prefix,
+            "intercom_serial": intercom_serial(intercom[:100], data.get("intercom_serial")),
             "area_id": self._area(data.get("area_id")),
         }
 
@@ -453,6 +465,11 @@ class InstallationService:
             raise ServiceError("porta non trovata")
         if data.get("area_id") is None and existing:
             data = {**data, "area_id": existing["area_id"]}
+        if data.get("intercom_serial") is None:
+            # Richiesta senza il numero di serie (pagina di prima): resta quello di adesso se il videocitofono è lo
+            # stesso; con un altro nome si ritrova dal nome, se sul broker c'è
+            same = existing and (data.get("intercom_name") or "").strip() == existing["intercom_name"]
+            data = {**data, "intercom_serial": existing["intercom_serial"] if same else ""}
         # Senza un'area scelta la porta eredita quella del controller
         fields = self.door_fields(data)
         clash = next(

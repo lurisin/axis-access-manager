@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import json
 import logging
@@ -74,7 +75,7 @@ from .ha import (
     disk_space,
     low_space,
 )
-from .ha_mqtt import DOOR_PHYSICAL, OFFLINE_TIMEOUT, HaBridge, parse_command, topic_base
+from .ha_mqtt import DISCOVERY_PREFIX, DOOR_PHYSICAL, OFFLINE_TIMEOUT, HaBridge, parse_command, topic_base
 from .health import (
     HEALTH_INTERVAL,
     HealthMonitor,
@@ -86,11 +87,13 @@ from .health import (
 )
 from .installation import MAX_CONTROLLERS, InstallationService, check_host, same_controller
 from .intercom import IntercomBridge, IntercomSettings
+from .intercom_directory import IntercomDirectory, discovery_filters, same_name, shown_name
 from .live_events import LiveEvents
 from .lock_guard import CHECK_EVERY, MAX_EXTENDED, LockGuard
 from .notifications import (
     EXPIRING,
     SETTING_CATEGORIES_PENDING,
+    SETTLE,
     NotificationService,
     recovery_hint,
     recovery_title,
@@ -336,6 +339,9 @@ class DoorConfigIn(BaseModel):
     intercom_open_door: bool = False
     intercom_relay: int = 1
     intercom_mqtt_prefix: str = "hmd"
+    # Numero di serie del videocitofono scelto dall'elenco; None (pagina di prima): resta quello di adesso se il nome
+    # è lo stesso (vedi InstallationService.save_door)
+    intercom_serial: str | None = None
     area_id: int | None = None
 
 
@@ -408,6 +414,9 @@ SETTING_DASHBOARD = "dashboard_layout:"
 CAMERA_NAMES_TTL = 300
 # Avviso «Videocitofono Cablato sul Controller» della 0.28.4, tolto nella 0.28.5: all'avvio si cancella se c'è
 SETTING_INTERCOM_WIRED = "intercom_wired"
+# Dopo il collegamento al broker le configurazioni conservate dei videocitofoni arrivano subito: prima di questi secondi
+# un videocitofono non ancora arrivato non vuol dire che non c'è
+INTERCOM_FOUND_AFTER = 10.0
 
 
 class ControllerCameraIn(BaseModel):
@@ -836,6 +845,11 @@ def create_app(
         app.state.installation.ensure_default_site()
         app.state.installation.update_controller_event_names()
         app.state.notifications = NotificationService(app.state.db)
+        # Videocitofoni annunciati sul broker: restano gli stessi con una nuova configurazione (vedi _follow_intercoms)
+        app.state.intercom_directory = IntercomDirectory()
+        app.state.intercom_directory.on_change = lambda: _follow_intercoms(app.state)
+        # Porte con il videocitofono non trovato, e da quando (ora dell'app)
+        app.state.intercom_missing = {}
         db_folder = app.state.db.path.parent if app.state.db.path else Path(tempfile.mkdtemp())
         app.state.backups = BackupService(app.state.db, db_folder / BACKUP_DIR, __version__)
         app.state.ha = home_assistant or HomeAssistant()
@@ -1079,7 +1093,7 @@ def create_app(
                 "ha_topic_prefix": cfg.ha_topic_prefix,
                 "mqtt_override": bool(state.options.mqtt),
             },
-            "intercoms": [_intercom_status(i) for i in state.intercoms],
+            "intercoms": [_intercom_status(state, i) for i in state.intercoms],
             "controllers": _controllers_health(state),
             "recovery": state.last_recovery,
             "database": {
@@ -1910,6 +1924,29 @@ def create_app(
             for c in service.controllers()
         ]
         return {"controllers": controllers, "max_controllers": MAX_CONTROLLERS}
+
+    @app.get("/api/intercoms/found", dependencies=[need("impianti")])
+    async def intercoms_found(request: Request) -> dict:
+        """Videocitofoni annunciati sul broker dall'add-on Hikvision Doorbell, con le porte che li usano."""
+        state = request.app.state
+        broker = _broker_connected(state)
+        since = state.intercom_directory.since() if broker else None
+        doors = [d for d in state.doors if d["intercom_name"]]
+        devices = []
+        for device in state.intercom_directory.devices() if broker else []:
+            used = [d for d in doors if _uses(d, device)]
+            stored = next((d["intercom_name"] for d in used if d["intercom_serial"] == device["serial"]), "")
+            devices.append(
+                {
+                    "serial": device["serial"],
+                    "name": shown_name(device, stored),
+                    "names": device["names"],
+                    "model": device["model"],
+                    "relays": device["relays"],
+                    "used": [{"door_id": d["id"], "door": d["name"], "relay": d["intercom_relay"]} for d in used],
+                }
+            )
+        return {"broker": broker, "since": None if since is None else round(since, 1), "devices": devices}
 
     @app.post("/api/controllers/test", dependencies=[need("impianti")])
     async def test_controller(body: ControllerTestIn, request: Request) -> dict:
@@ -3004,12 +3041,19 @@ def _wire(app: FastAPI) -> None:
     # La 0.28.4 ricordava qui i videocitofoni «cablati sul controller»: una regola tolta nella 0.28.5 (vedi
     # intercom.py), l'avviso salvato non serve più
     _forget_intercom_wired(state)
+    directory: IntercomDirectory = state.intercom_directory
+    intercoms: list[IntercomBridge] = state.intercoms
+    state.intercom_route = _intercom_router(state, intercoms)
     for door in state.doors:
         if not door["intercom_name"]:
             continue
         intercom = IntercomBridge(
             IntercomSettings(
-                door["intercom_name"], door["intercom_open_door"], door["intercom_relay"], door["intercom_mqtt_prefix"]
+                door["intercom_name"],
+                door["intercom_open_door"],
+                door["intercom_relay"],
+                door["intercom_mqtt_prefix"],
+                door["intercom_serial"],
             ),
             # Con l'ora del controller, come gli altri eventi della porta (vedi AccessService.event_now)
             log=lambda door_token=door["door_token"], **fields: service.log_event(
@@ -3022,13 +3066,19 @@ def _wire(app: FastAPI) -> None:
             controller_down=lambda door=door: _controller_down(state, door),
         )
         intercom.door = door
-        # Stesso citofono di una porta precedente: la chiamata la segue quella (vedi sotto)
-        intercom.call = next((i for i in state.intercoms if i.call_topic == intercom.call_topic), None)
-        state.intercoms.append(intercom)
+        # Stesso citofono di una porta precedente: la chiamata la segue quella (vedi _intercom_router)
+        intercom.call = _leader(intercoms, intercom)
+        if intercom.call:
+            intercom.call.take_calls(intercom)
+        intercoms.append(intercom)
+    for intercom in intercoms:
         for topic in intercom.subscriptions:
-            # Stesso citofono su due porte (relè 1 e 2): la chiamata è una e la tiene la prima porta, invece di
-            # passare all'ultima; ogni relè resta della sua porta
-            monitor.extra_subscriptions.setdefault(topic, intercom.handle)
+            monitor.extra_subscriptions.setdefault(topic, state.intercom_route)
+    if state.mqtt:
+        # Videocitofoni annunciati dall'add-on Hikvision: servono anche senza videocitofoni, per sceglierne uno
+        for topic_filter in discovery_filters(DISCOVERY_PREFIX):
+            monitor.extra_subscriptions[topic_filter] = directory.handle_config
+        monitor.on_disconnect = directory.disconnected
     if cfg.ha_integration:
         monitor.will = bridge.will()
         monitor.on_connect = bridge.on_connect
@@ -3090,6 +3140,191 @@ def _wire(app: FastAPI) -> None:
                 await ha_connect(client)
 
         monitor.on_connect = on_connect
+    if state.mqtt:
+        before_directory = monitor.on_connect
+
+        async def connect_directory(client) -> None:
+            # Da adesso contano le configurazioni dei videocitofoni che arrivano (quelle conservate subito)
+            directory.connected()
+            if before_directory is not None:
+                await before_directory(client)
+
+        monitor.on_connect = connect_directory
+    # Videocitofoni già annunciati: le porte li seguono subito, senza aspettare il prossimo cambiamento
+    _follow_intercoms(state)
+
+
+def _same_intercom(a: IntercomBridge, b: IntercomBridge) -> bool:
+    """Stesso videocitofono: per numero di serie se lo hanno tutti e due, se no per il topic della chiamata."""
+    if a.settings.serial and b.settings.serial:
+        return a.settings.serial == b.settings.serial
+    return a.call_topic == b.call_topic
+
+
+def _leader(intercoms: list[IntercomBridge], intercom: IntercomBridge) -> IntercomBridge | None:
+    """Bridge di una porta precedente con lo stesso videocitofono: segue la chiamata anche per questa."""
+    match = next((i for i in intercoms if i is not intercom and _same_intercom(i, intercom)), None)
+    return (match.call or match) if match else None
+
+
+def _intercom_router(state, intercoms: list[IntercomBridge]) -> Callable[[str, bytes, bool], None]:
+    """Messaggi dei videocitofoni: al primo bridge, in ordine di porta, che segue il topic. Stesso videocitofono su
+    due porte (relè 1 e 2): la chiamata è una e la tiene la prima porta, invece di passare all'ultima; ogni relè resta
+    della sua porta. Un messaggio non conservato su un topic di stato dice anche qual è il nome dal vivo."""
+
+    def route(topic: str, payload: bytes, retained: bool = False) -> None:
+        bridge = next((i for i in intercoms if i.listens(topic)), None)
+        if bridge is not None:
+            bridge.handle(topic, payload, retained)
+        if not retained:
+            state.intercom_directory.mark_live(topic)
+
+    return route
+
+
+def _device_topics(device: dict) -> set[str]:
+    topics: set[str] = set()
+    for group in (device["call"], *device["relay_topics"].values()):
+        for values in group.values():
+            topics.update(values)
+    return topics
+
+
+def _uses(door: dict, device: dict) -> bool:
+    """La porta usa il videocitofono: per numero di serie, o per nome se non lo ha ancora."""
+    if door["intercom_serial"]:
+        return door["intercom_serial"] == device["serial"]
+    return any(same_name(door["intercom_name"], name) for name in device["names"])
+
+
+def _follow_intercoms(state) -> None:
+    """Videocitofoni annunciati sul broker cambiati: le porte seguono il loro per numero di serie, con tutti i suoi
+    nomi. Una porta con il solo nome (versioni prima della 0.28.11) prende il numero di serie dell'unico videocitofono
+    con quel nome; quando il nome cambia nell'add-on Hikvision (visto dal vivo, mai dalle sole configurazioni
+    conservate) la porta prende quello nuovo. Il 17/11 il nome dell'app non era più quello dell'add-on e per un giorno
+    chiamate e aperture non sono arrivate. Niente nuova configurazione: i bridge restano quelli."""
+    intercoms: list[IntercomBridge] = getattr(state, "intercoms", None) or []
+    directory: IntercomDirectory | None = getattr(state, "intercom_directory", None)
+    if not intercoms or directory is None:
+        return
+    devices = {d["serial"]: d for d in directory.devices()}
+    for intercom in intercoms:
+        door = intercom.door
+        matches = [d for d in devices.values() if _uses(door, d)]
+        if door["intercom_serial"] or len(matches) != 1:
+            continue
+        serial = matches[0]["serial"]
+        if _save_intercom(state, door, door["intercom_name"], serial):
+            _LOGGER.info(
+                "Videocitofono %s di %s trovato sul broker: numero di serie %s",
+                door["intercom_name"],
+                door["name"],
+                serial,
+            )
+    for index, intercom in enumerate(intercoms):
+        if intercom.settings.serial != intercom.door["intercom_serial"]:
+            intercom.settings = dataclasses.replace(intercom.settings, serial=intercom.door["intercom_serial"])
+        intercom.call = _leader(intercoms[:index], intercom)
+    added: list[str] = []
+
+    def others(serial: str) -> set[str]:
+        """Topic che annuncia un altro videocitofono (che ha preso il nome che aveva questo): mai a questa porta."""
+        return {t for d in devices.values() if d["serial"] != serial for t in _device_topics(d)} if serial else set()
+
+    for intercom in intercoms:
+        serial = intercom.settings.serial
+        intercom.forget(others(serial))
+        if serial in devices:
+            added += intercom.bind(devices[serial], exclude=others(serial))
+    for intercom in intercoms:
+        if intercom.call:
+            added += intercom.call.take_calls(intercom, exclude=others(intercom.call.settings.serial))
+    for topic in dict.fromkeys(added):
+        state.monitor.add_subscription(topic, state.intercom_route)
+    for intercom in intercoms:
+        door = intercom.door
+        device = devices.get(door["intercom_serial"])
+        # Nome dal vivo diverso: cambiato nell'add-on. Con le sole configurazioni conservate il nome non c'è
+        if device is None or not device["name"] or device["name"] == door["intercom_name"]:
+            continue
+        old = door["intercom_name"]
+        if _save_intercom(state, door, device["name"], device["serial"]):
+            intercom.rename(device["name"])
+            _LOGGER.info(
+                "Videocitofono di %s rinominato nell'add-on Hikvision: %s → %s", door["name"], old, device["name"]
+            )
+
+
+def _save_intercom(state, door: dict, name: str, serial: str) -> bool:
+    """Nome e numero di serie del videocitofono nella porta, nel database e in quella della configurazione di adesso."""
+    try:
+        state.db.set_door_intercom(door["id"], name, serial)
+    except sqlite3.Error as err:
+        _LOGGER.warning("Videocitofono di %s non aggiornato nel database: %s", door["name"], err)
+        return False
+    door["intercom_name"], door["intercom_serial"] = name, serial
+    return True
+
+
+def _broker_connected(state) -> bool:
+    return bool(state.mqtt) and state.monitor.connected
+
+
+def _intercom_check(state, door: dict, devices: list[dict] | None = None) -> tuple[bool, dict | None]:
+    """Il videocitofono della porta è tra quelli annunciati, con il relè della porta, e il dispositivo trovato."""
+    devices = state.intercom_directory.devices() if devices is None else devices
+    found = [d for d in devices if _uses(door, d)]
+    with_relay = [d for d in found if door["intercom_relay"] in d["relays"]]
+    return bool(with_relay), (with_relay or found or [None])[0]
+
+
+def _intercom_found(state, door: dict) -> bool | None:
+    """Videocitofono della porta trovato sul broker; None se non si sa ancora (broker non collegato o appena
+    collegato)."""
+    since = state.intercom_directory.since()
+    if not _broker_connected(state) or since is None or since < INTERCOM_FOUND_AFTER:
+        return None
+    return _intercom_check(state, door)[0]
+
+
+def _intercoms_settled(state) -> bool:
+    """I videocitofoni annunciati si possono controllare: broker collegato da almeno SETTLE. Dopo un riavvio del
+    broker le configurazioni arrivano subito, ma niente falsi allarmi."""
+    since = state.intercom_directory.since()
+    return _broker_connected(state) and since is not None and since >= SETTLE.total_seconds()
+
+
+def _intercoms_missing(state, now: datetime | None = None) -> list[dict]:
+    """Porte con il videocitofono che non è tra quelli annunciati sul broker, o senza il relè della porta."""
+    tracked: dict[int, str] = state.intercom_missing
+    doors = [d for d in state.doors if d["intercom_name"]]
+    for door_id in set(tracked) - {d["id"] for d in doors}:
+        tracked.pop(door_id)
+    if not _intercoms_settled(state):
+        return []
+    devices = state.intercom_directory.devices()
+    stored = {d["intercom_serial"]: d["intercom_name"] for d in doors if d["intercom_serial"]}
+    names = [shown_name(d, stored.get(d["serial"], "")) for d in devices]
+    result = []
+    for door in doors:
+        ok, device = _intercom_check(state, door, devices)
+        if ok:
+            tracked.pop(door["id"], None)
+            continue
+        since = tracked.setdefault(door["id"], (now or datetime.now(tz=UTC)).isoformat(timespec="seconds"))
+        result.append(
+            {
+                "door_id": door["id"],
+                "controller_id": door["controller_id"],
+                "door": door["name"],
+                "door_token": door["door_token"],
+                "name": door["intercom_name"],
+                "relay": door["intercom_relay"] if device else None,
+                "found": names,
+                "since": since,
+            }
+        )
+    return result
 
 
 def _forget_intercom_wired(state) -> None:
@@ -3257,6 +3492,7 @@ def _current_notifications(state, now: datetime | None = None) -> list[dict]:
         ha_integration=bool(state.settings.ha_integration),
         intercoms=any(d["intercom_name"] for d in state.doors),
         door_names={d["door_token"]: d["name"] for d in state.doors},
+        intercoms_missing=_intercoms_missing(state, now),
         cameras=[
             {
                 "camera": camera,
@@ -3366,11 +3602,14 @@ def _events_out(request: Request, events: list[dict]) -> list[dict]:
     return result
 
 
-def _intercom_status(intercom: IntercomBridge) -> dict:
+def _intercom_status(state, intercom: IntercomBridge) -> dict:
     return {
         "configured": True,
         "door": intercom.door["name"],
         "name": intercom.settings.name,
+        "serial": intercom.door["intercom_serial"],
+        # Tra i videocitofoni annunciati sul broker, con il relè della porta; None: non si sa ancora
+        "found": _intercom_found(state, intercom.door),
         "open_door": intercom.settings.open_door,
         "topics": intercom.topics,
         "call_state": intercom.call_state,
@@ -3600,6 +3839,9 @@ def _unknown_faults(state) -> set[str]:
         if controller_id == primary_id and (health.online is not True or state.monitor.casing_open is None):
             # Coperchio: lo stato si rilegge per intero solo dopo il ritorno del controller
             unknown.add(f"casing:{controller_id}")
+    if not _intercoms_settled(state):
+        # Videocitofoni: si controllano solo con il broker collegato da un po' (anche dopo ogni nuova configurazione)
+        unknown |= {f"intercom_missing:{d['id']}" for d in state.doors if d["intercom_name"]}
     return unknown
 
 
