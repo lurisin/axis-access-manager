@@ -4221,7 +4221,7 @@ async function viewHolidays(body) {
 }
 
 // ---------- Notifiche ----------
-const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", programming: "lock", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", casing: "shield", clock: "clock", missing_cards: "card", backup: "history", database: "history"};
+const NOTIF_ICONS = {door_alarm: "alert", stuck_input: "exit", controller: "chip", programming: "lock", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", casing: "shield", clock: "clock", missing_cards: "card", backup: "history", database: "history"};
 // Manomissioni, coperchio aperto e controller inclinato: lo scudo; gli allarmi delle porte: il triangolo
 const notifIcon = (i) => i.type === "door_alarm" && !i.title.startsWith("Allarme Porta") ? "shield" : NOTIF_ICONS[i.type] || "bell";
 const SEVERITY = {crit: "Critica", warn: "Media", low: "Bassa"};
@@ -5037,7 +5037,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     const supervisable = (r) => i.can_supervise && ["rex", "intercom"].includes(r);
     const ok = await modal({title: i.name,
       body: `${i.problem ? `<div class="alert" style="margin:0 0 12px">${icon("alert")}<div class="grow"><b>Da Riscrivere</b>${esc(i.problem[0].toUpperCase() + i.problem.slice(1))}. Premi Scrivi sul Controller: anche con le stesse impostazioni l'app completa la programmazione.</div></div>` : ""}
-        ${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? " È anche il nome dell'entità in Home Assistant." : ""} Compare nel registro per le aperture da questo ingresso.`)}
+        ${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? `<span data-ha-name ${role === "door_contact" && appDoor(door || i.door) ? "hidden" : ""}> È anche il nome dell'entità in Home Assistant.</span>` : ""} Compare nel registro per le aperture da questo ingresso.`)}
         ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(inputRoleHint(i.io, role))}</span>`)}
         <div data-door-field ${DOOR_INPUT_ROLES.includes(role) ? "" : "hidden"}>${field("Porta", `<select name="door">${doorOptions}</select>`)}</div>
         <div data-wiring ${wired(role) ? "" : "hidden"}>${field("Modalità Ingresso", `<select name="contact">${contactOptions.map(([k, v]) => `<option value="${esc(k)}" ${k === startContact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role, startContact))}</span>`)}
@@ -5050,6 +5050,12 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
         contact.onchange = showContact;
         showContact();
         let shown = role;
+        // Il Contatto Porta di una porta dell'app non ha una sua entità in Home Assistant: è il Contatto della porta
+        const showHaName = () => {
+          const haName = $("[data-ha-name]", dlg);
+          if (haName) haName.hidden = select.value === "door_contact" && !!appDoor($('[name="door"]', dlg).value);
+        };
+        $('[name="door"]', dlg).addEventListener("change", showHaName);
         select.onchange = () => {
           // Il nome segue il ruolo finché è quello di serie
           if (!name.value.trim() || name.value.trim() === i.default_name || Object.values(p.input_roles).includes(name.value.trim())) {
@@ -5057,6 +5063,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
           }
           $("[data-door-field]", dlg).hidden = !DOOR_INPUT_ROLES.includes(select.value);
           $("[data-role-hint]", dlg).textContent = inputRoleHint(i.io, select.value);
+          showHaName();
           $("[data-wiring]", dlg).hidden = !wired(select.value);
           // Tornati al ruolo di partenza: la sua modalità. Con un altro cablaggio quella proposta per il ruolo (Contatto
           // Porta NC se l'ingresso non era già un contatto della porta, Ingresso Generico come la lettura di adesso);
@@ -5586,8 +5593,8 @@ async function controllerCameras(body, ctrl) {
         <div class="grow"><div class="title">${esc(label(entity))}${problem(entity) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
           <div class="meta"><span>${place}</span><span>${when}</span></div>
           ${problem(entity) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(entity))}</div>` : ""}</div>
-        <button type="button" class="small" ${edit}>${icon("edit")}Modifica</button>
-        <button type="button" class="small ghost danger" ${del}>Togli</button></div>`;
+        <div class="row item-actions"><button type="button" class="small" ${edit}>${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost danger" ${del}>Togli</button></div></div>`;
   const ctrlRow = ctrl.snapshot_camera ? cameraRow(ctrl.snapshot_camera, `coperchio di ${esc(ctrl.name)}`, "foto quando si apre il coperchio", 'data-cam-edit="ctrl"', 'data-cam-del="ctrl"') : "";
   body.innerHTML = `
     <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Una telecamera di Home Assistant per porta: l'app salva una foto nel registro su accessi negati, aperture remote, uscite dai pulsanti, chiamate al citofono, allarmi e manomissioni. Se il controller è in un altro locale, può avere la sua telecamera per l'apertura del coperchio. Le foto sono anche in Media → axis_access_manager.</p>
@@ -5597,8 +5604,8 @@ async function controllerCameras(body, ctrl) {
         <div class="grow"><div class="title">${esc(label(d.snapshot_camera))}${problem(d.snapshot_camera) ? ' <span class="pill warn">Da Controllare</span>' : ""}</div>
           <div class="meta"><span>${esc(named("porta", d.name))}</span><span>${d.snapshot_on_granted ? "foto a ogni passaggio" : "foto su accessi negati, aperture remote, uscite, citofono e allarmi"}</span>${d.snapshot_delay > 0 ? `<span>foto ${delayText(d.snapshot_delay)} dopo l'evento</span>` : ""}</div>
           ${problem(d.snapshot_camera) ? `<div class="small-text" style="color:var(--warn);margin-top:2px">${esc(problem(d.snapshot_camera))}</div>` : ""}</div>
-        <button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
-        <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
+        <div class="row item-actions"><button type="button" class="small" data-cam-edit="${d.id}">${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost danger" data-cam-del="${d.id}">Togli</button></div></div>`).join("")}</div></div>`
       : `<div class="card"><div class="empty">${icon("camera")}<br>Nessuna telecamera associata alle porte o al controller.</div></div>`}`;
   paintIcons(body);
   body.onclick = async (e) => {
@@ -5695,8 +5702,8 @@ async function controllerIntercoms(body, ctrl) {
         <div class="ev-icon k-accent">${icon("phone")}</div>
         <div class="grow"><div class="title">${esc(d.intercom_name)}</div>
           <div class="meta"><span>${esc(named("porta", d.name))}</span><span>${d.intercom_open_door ? `apre la porta con il relè ${d.intercom_relay}` : "registra le chiamate, non apre la porta"}</span><span>${esc(seen(d))}</span></div></div>
-        <button type="button" class="small" data-ic-edit="${d.id}">${icon("edit")}Modifica</button>
-        <button type="button" class="small ghost danger" data-ic-del="${d.id}">Togli</button></div>`).join("")}</div></div>`
+        <div class="row item-actions"><button type="button" class="small" data-ic-edit="${d.id}">${icon("edit")}Modifica</button>
+        <button type="button" class="small ghost danger" data-ic-del="${d.id}">Togli</button></div></div>`).join("")}</div></div>`
       : `<div class="card"><div class="empty">${icon("phone")}<br>Nessun videocitofono associato alle porte.</div></div>`}`;
   paintIcons(body);
   body.onclick = async (e) => {

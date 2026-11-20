@@ -519,6 +519,8 @@ def test_aux_door_contact_in_home_assistant_and_door_state(settings, controller,
         assert inputs["IO1"]["door_open"] is True
         ha = state.bridge.state()
         assert ha["contatti"]["porta"] == "ON" and ha["ingressi"]["0"] == "ON"
+        # In Home Assistant c'è il Contatto della porta, non anche l'entità dell'ingresso
+        assert "ingresso_aux_1" not in {o for _, o, _ in state.bridge._entities()}
         assert ha["disponibilita"]["contatti"]["porta"] == ("online" if monitor.reachable else "offline")
         # Il controller senza contatto porta (DoorMonitor) non cambia niente: vale l'AUX
         monitor.door_contacts["porta"] = False
@@ -528,6 +530,7 @@ def test_aux_door_contact_in_home_assistant_and_door_state(settings, controller,
         body["role"] = ""
         assert client.put("/api/programming/inputs/IO1", json=body).status_code == 200
         assert monitor.aux_contacts == {} and monitor.contact_configured("porta") is False
+        assert "ingresso_aux_1" in {o for _, o, _ in state.bridge._entities()}
 
 
 async def test_aux_door_contact_and_door_monitors_outside_the_app(db, controller):
