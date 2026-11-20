@@ -4221,7 +4221,7 @@ async function viewHolidays(body) {
 }
 
 // ---------- Notifiche ----------
-const NOTIF_ICONS = {door_alarm: "alert", controller: "chip", programming: "lock", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", casing: "shield", clock: "clock", missing_cards: "card", backup: "history", database: "history"};
+const NOTIF_ICONS = {door_alarm: "alert", stuck_input: "exit", controller: "chip", programming: "lock", mqtt: "refresh", unknown_card: "question", expiring: "clock", denied: "block", camera: "camera", controller_changed: "shield", casing: "shield", clock: "clock", missing_cards: "card", backup: "history", database: "history"};
 // Manomissioni, coperchio aperto e controller inclinato: lo scudo; gli allarmi delle porte: il triangolo
 const notifIcon = (i) => i.type === "door_alarm" && !i.title.startsWith("Allarme Porta") ? "shield" : NOTIF_ICONS[i.type] || "bell";
 const SEVERITY = {crit: "Critica", warn: "Media", low: "Bassa"};

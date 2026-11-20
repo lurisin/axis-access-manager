@@ -2672,6 +2672,7 @@ MONITOR_STATE = (
     "io_ports",
     "io_normal",
     "io_changed",
+    "io_since",
     "categories",
     "last_card",
 )
@@ -3239,7 +3240,8 @@ def _dashboard_key(request: Request) -> str:
     return SETTING_DASHBOARD + (current_user(request).username or "-")
 
 
-def _current_notifications(state) -> list[dict]:
+def _current_notifications(state, now: datetime | None = None) -> list[dict]:
+    """Notifiche di adesso; now: ora dell'app (i test la cambiano)."""
     return state.notifications.collect(
         mqtt_configured=bool(state.mqtt),
         mqtt_connected=state.monitor.connected,
@@ -3265,6 +3267,7 @@ def _current_notifications(state) -> list[dict]:
             for camera, problem in state.snapshot_errors.items()
             if camera == state.controller_camera or any(d["snapshot_camera"] == camera for d in state.doors)
         ],
+        pressed=_pressed(state),
         controllers=_controllers_health(state),
         missing=_missing_summary(state.db),
         backup=state.backups.last_error(),
@@ -3276,7 +3279,38 @@ def _current_notifications(state) -> list[dict]:
         db_copy_error=(getattr(state, "db_copy_error", None) or {}).get("text", ""),
         low_space=_low_space(state),
         write_error=state.service.write_error,
+        now=now,
     )
+
+
+def _pressed(state) -> list[dict]:
+    """Pulsanti Uscita e Relè Citofono del controller principale premuti adesso, con l'ora dell'app da cui lo sono (per
+    la notifica Pulsanti Bloccati). Solo gli AUX, che mandano Device/IO/Port: l'ingresso REX no, e lì non si sa. Con il
+    controller che non risponde lo stato non si sa: nessuno."""
+    primary, monitor = state.installation.primary, state.monitor
+    if not primary or monitor.reachable is not True:
+        return []
+    doors = {d["door_token"]: d["name"] for d in state.doors}
+    result = []
+    for io, row in state.db.controller_inputs(primary["id"]).items():
+        port = CONTROLLER_INPUTS.get(io, ("", None))[1]
+        if row.get("role") not in REX_ROLES or port is None or not monitor.input_active(port, pushbutton=True):
+            continue
+        since = monitor.io_since.get(port)
+        if since:
+            door = row.get("door_token") or ""
+            result.append(
+                {
+                    "controller_id": primary["id"],
+                    "io": io,
+                    "name": row.get("name") or CONTROLLER_INPUTS[io][0],
+                    "role": row["role"],
+                    "door": doors.get(door, ""),
+                    "door_token": door,
+                    "since": since,
+                }
+            )
+    return result
 
 
 def _low_space(state) -> tuple[int, int] | None:

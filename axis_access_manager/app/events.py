@@ -206,6 +206,11 @@ DOOR_CONDITIONS = {
 IO_PORT_MARKER = "/port/"
 
 
+def _app_now() -> datetime:
+    """Ora dell'app (di Home Assistant), non del controller: il suo orologio può essere sbagliato."""
+    return datetime.now(tz=UTC)
+
+
 @dataclass
 class CategoryStats:
     count: int = 0
@@ -242,6 +247,10 @@ class EventMonitor:
     io_normal: dict[str, str] = field(default_factory=dict)
     # Ingressi I/O cambiati dopo il primo valore ricevuto (dall'avvio dell'app o del controller)
     io_changed: set[str] = field(default_factory=set)
+    # Da quando ogni ingresso I/O è com'è (ISO, ora dell'app e non del controller): ultimo cambio del valore, o
+    # ingresso appena entrato in io_changed, che per un pulsante può voler dire premuto (vedi input_active). Per la
+    # notifica Pulsanti Bloccati
+    io_since: dict[str, str] = field(default_factory=dict)
     # Porta aperta o chiusa secondo il contatto porta (DoorPhysicalState: Open, Closed, Fault...), per token
     door_physical: dict[str, str] = field(default_factory=dict)
     # Porte con il contatto porta configurato sul controller (DoorMonitor), per token: senza, il contatto non si sa
@@ -279,6 +288,8 @@ class EventMonitor:
     extra_subscriptions: dict[str, Callable[[str, bytes, bool], None]] = field(default_factory=dict)
     # Interruzioni (broker perso o controller offline): dopo ognuna si recuperano gli eventi persi
     outages: int = 0
+    # Ora dell'app per io_since (i test la cambiano)
+    clock: Callable[[], datetime] = field(default=_app_now, repr=False)
     _tasks: set = field(default_factory=set, repr=False)
     # Pubblicazioni partite e non ancora confermate (vedi drain)
     _publishing: int = field(default=0, repr=False)
@@ -356,6 +367,7 @@ class EventMonitor:
                 # Con il WebSocket collegato il controller non si è riavviato: è solo scollegato dal broker
                 self.io_ports.clear()
                 self.io_changed.clear()
+                self.io_since.clear()
                 self.recent.clear()
             self.controller_online = online
             if self.on_status:
@@ -454,8 +466,11 @@ class EventMonitor:
         elif topic.startswith("Device/IO/Port") and IO_PORT_MARKER in topic and "state" in data:
             port = topic.rsplit(IO_PORT_MARKER, 1)[1].split("/", 1)[0]
             active = str(data["state"]) == "1"
-            if port in self.io_ports and self.io_ports[port] != active:
-                self.io_changed.add(port)
+            if self.io_ports.get(port) != active:
+                if port in self.io_ports:
+                    self.io_changed.add(port)
+                # Lo stesso valore ripetuto (stato iniziale del WebSocket, doppioni) non sposta l'ora
+                self._io_now(port)
             self.io_ports[port] = active
             self._mark(("io", port))
         elif topic.startswith("Door/State/DoorPhysicalState") and "State" in data:
@@ -486,6 +501,9 @@ class EventMonitor:
         self.seq += 1
         self.changed[key] = self.seq
 
+    def _io_now(self, port: str) -> None:
+        self.io_since[port] = self.clock().astimezone(UTC).isoformat(timespec="seconds")
+
     def forget_state(self) -> None:
         """Controller che non risponde: porte, contatti, allarmi, ingressi e coperchio tornano sconosciuti."""
         self.door_modes.clear()
@@ -495,6 +513,7 @@ class EventMonitor:
         self.casing_since = ""
         self.io_ports.clear()
         self.io_changed.clear()
+        self.io_since.clear()
         # Al ritorno il controller rimanda lo stato con le ore di prima: non sono doppioni da scartare
         self.recent.clear()
 
@@ -540,6 +559,9 @@ class EventMonitor:
             changed = True
         for port, active in snapshot.io.items():
             if fresh(("io", port)):
+                if self.io_ports.get(port) != active or port not in self.io_changed:
+                    # Valore diverso, o pulsante che da adesso si legge: da qui conta quanto resta premuto
+                    self._io_now(port)
                 put(self.io_ports, port, active, ("io", port))
                 # Letto dal controller, il valore è affidabile anche per pulsanti e relè: dopo l'avvio del controller
                 # gli eventi li danno a 0 fino alla prima pressione (vedi input_active)

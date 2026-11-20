@@ -28,6 +28,7 @@ _LOGGER = logging.getLogger(__name__)
 # Tipo → nome, descrizione, livello predefinito
 TYPES = {
     "door_alarm": ("Allarmi delle Porte", "Porta forzata o aperta troppo a lungo, manomissioni.", "urgent"),
+    "stuck_input": ("Pulsanti Bloccati", "Pulsante Uscita o Relè Citofono premuto da più di un minuto.", "urgent"),
     "controller": ("Controller Non Raggiungibile", "Il controller non risponde all'app.", "urgent"),
     "casing": ("Coperchio del Controller Aperto", "Resta finché il coperchio non si chiude.", "urgent"),
     "programming": (
@@ -83,6 +84,7 @@ EVENTS_PLAIN = (
 FAULT_TYPES = (
     "controller",
     "casing",
+    "stuck_input",
     "programming",
     "mqtt",
     "camera",
@@ -111,6 +113,8 @@ EXPIRING = timedelta(days=7)
 GROUP_WINDOW = timedelta(minutes=5)
 # Un guasto di collegamento preso visione torna da gestire ogni tanto, finché dura
 REMIND_AFTER = timedelta(hours=4)
+# Pulsante Uscita o Relè Citofono premuto da più di così: bloccato, e la porta non si apre più con lui
+STUCK_AFTER = timedelta(seconds=60)
 # Il WebSocket che non si collega diventa un guasto dopo questo tempo: un tentativo fallito e riuscito al successivo
 # non lo è (lo stesso tempo dell'interfaccia)
 WS_GRACE = timedelta(seconds=FAULT_AFTER)
@@ -220,6 +224,7 @@ class NotificationService:
         intercoms: bool = False,
         door_names: dict[str, str],
         cameras: list[dict] | None = None,
+        pressed: list[dict] | None = None,
         controllers: list[dict] | None = None,
         missing: dict | None = None,
         backup: dict | None = None,
@@ -241,6 +246,7 @@ class NotificationService:
         low_space: spazio libero e totale del disco, se è quasi esaurito.
         write_error: registro non scrivibile ({"since", "error"}, vedi AccessService.write_error).
         ws: stato del WebSocket degli eventi (LiveEvents.status), None se l'app non lo usa.
+        pressed: Pulsanti Uscita e Relè Citofono premuti adesso, con l'ora dell'app da cui lo sono (main._pressed).
         ha_integration: l'integrazione con Home Assistant, che passa dal broker MQTT, è attiva.
         intercoms: ci sono videocitofoni, i cui eventi arrivano dal broker MQTT.
 
@@ -728,6 +734,23 @@ class NotificationService:
                 door=", ".join(cam.get("doors") or []),
                 link="#impianti",
             )
+        for button in pressed or []:
+            # Rimasto premuto: il controller non vede più le pressioni, e la porta non si apre finché non si libera.
+            # Durata con l'ora dell'app, da quando l'app lo vede premuto (il controller può avere l'ora sbagliata)
+            start = _parse(button["since"])
+            if start is None or now - start <= STUCK_AFTER:
+                continue
+            add(
+                "stuck_input",
+                _episode_id(f"stuck:{button['controller_id']}:{button['io']}", button["since"]),
+                "warn",
+                "Relè del Citofono Bloccato" if button["role"] == "intercom" else "Pulsante Bloccato",
+                " · ".join(x for x in (button["name"], button["door"], f"premuto da {_duration(now - start)}") if x),
+                button["since"],
+                door_token=button["door_token"],
+                link=f"#impianti/c{button['controller_id']}",
+                weight=_reminder_weight(button["since"], now),
+            )
         if levels["expiring"] != "off":
             for person in self.db.list_persons():
                 ends = []
@@ -876,6 +899,13 @@ def _offset_text(seconds: float) -> str:
     if value >= 120:
         return f"{round(value / 60)} min {way}"
     return f"{round(value)} s {way}"
+
+
+def _duration(delta: timedelta) -> str:
+    """Durata breve: "2 min", "1 h", "1 h 5 min"."""
+    minutes = max(1, int(delta.total_seconds() // 60))
+    hours, minutes = divmod(minutes, 60)
+    return " ".join(x for x in (f"{hours} h" if hours else "", f"{minutes} min" if minutes else "") if x)
 
 
 def _reminder_weight(since: str, now: datetime) -> int:
