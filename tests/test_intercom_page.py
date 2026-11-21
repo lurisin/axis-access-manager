@@ -8,12 +8,13 @@ broker in memoria. Solo il FakeController; nomi e numeri di serie di fantasia.""
 import json
 import socket
 import subprocess
+import time
 
 import pytest
 import uvicorn
 from test_direct import ADMIN
 from test_intercom_directory import ARTISTI, CARRAIO, SERIAL_A, SERIAL_B
-from test_intercom_serial import site, wait  # noqa: F401
+from test_intercom_serial import RENAMED, site, wait  # noqa: F401
 from test_page_morph import _has_playwright
 from test_page_time_zone import needs_node, run_page
 
@@ -26,6 +27,7 @@ NAMES = (
     "INTERCOM_CURRENT",
     "intercomRows",
     "intercomRelayPick",
+    "intercomChanges",
     "intercomEmpty",
     "doorBody",
 )
@@ -71,7 +73,7 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
         "name": "Magazzino",
         "intercom_name": "Citofono Sottopalco",
         "intercom_serial": "",
-        "intercom_relay": 2,
+        "intercom_relay": 1,
     }
     out = run_page(
         "Europe/Rome",
@@ -87,10 +89,15 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
             "legacy_rows": f"intercomRows({found}, {json.dumps(legacy)}, 3)",
             # Broker scollegato: l'elenco è vuoto, ma non si può dire che non c'è
             "legacy_offline": f"intercomRows({{broker: false, since: null, devices: []}}, {json.dumps(legacy)}, 3)",
-            # Porta 2 sullo stesso relè della porta 1: già legata al numero di serie lo tiene (salvandola «Apri» resta
-            # alla porta 1); con il solo nome è grigio (salvandola si legherebbe, e «Apri» potrebbe passare a lei)
+            # Porta 2 sullo stesso relè della porta 1: lo tiene, legata al numero di serie o con il solo nome
             "shared": f"intercomRows({found}, {json.dumps({**second, 'intercom_relay': 1})}, 2)[1].relays",
             "shared_name_only": f"intercomRows({found}, {json.dumps(name_only)}, 2)[1].relays",
+            # Salvata così com'è con il solo nome: resta con il solo nome (non si lega al numero di serie, «Apri» resta
+            # dov'è); con un altro relè o su un'altra porta si lega
+            "changes": f"(() => {{ const d = {json.dumps(name_only)};"
+            " const row = intercomRows(" + found + ", d, 2)[1];"
+            " return [[1, 2], [2, 2], [1, 1]].map(([relay, target]) => intercomChanges(row, d, relay, target, true));"
+            " })()",
             # Non annunciato: i relè usati si vedono dalle porte del controller
             "current_shared": f"intercomRows({{broker: false, since: null, devices: []}}, {json.dumps(legacy)}, 3,"
             f" {json.dumps([store])})[0].relays",
@@ -128,10 +135,15 @@ def test_the_choice_greys_the_intercoms_whose_relays_other_doors_use():
     assert out["legacy"] == [["-", "", True], [SERIAL_B, SERIAL_B, False], [SERIAL_A, SERIAL_A, False]]
     assert _rows(out["legacy_rows"])[0] == ("Citofono Sottopalco", "", False, True, [(1, ""), (2, "")])
     assert [(r["n"], r["by"], r["off"]) for r in out["shared"]] == [(1, "Porta Palcoscenico", False), (2, "", False)]
-    assert [(r["n"], r["off"]) for r in out["shared_name_only"]] == [(1, True), (2, False)]
+    assert [(r["n"], r["off"]) for r in out["shared_name_only"]] == [(1, False), (2, False)]
+    assert [(c["intercom_name"], c["intercom_serial"], c["intercom_relay"]) for c in out["changes"]] == [
+        (ARTISTI, "", 1),
+        (ARTISTI, SERIAL_A, 2),
+        (ARTISTI, SERIAL_A, 1),
+    ]
     assert [(r["n"], r["by"], r["off"]) for r in out["current_shared"]] == [
-        (1, "", False),
-        (2, "Porta Magazzino", True),
+        (1, "Porta Magazzino", True),
+        (2, "", False),
     ]
     assert out["pick"] == [None, None, 2, 2, 2]
     assert out["relay_missing"] == [
@@ -184,6 +196,15 @@ const seen = {page: null, out: null, failed: []};
     disabled: Boolean(i.querySelector("input:disabled"))})));
   const relays = () => page.$$eval("#modal [name=intercom_relay] option",
     (os) => os.map((o) => [o.textContent, o.disabled, o.selected]));
+  // Salva e la scheda rifatta: la sua richiesta dell'elenco arriva prima di cambiare le risposte finte (una richiesta
+  // in corso mentre si toglie la risposta finta resta appesa, e la scheda non si rifà)
+  const saveAndRender = async () => {
+    const rendered = page.waitForResponse((r) => r.url().includes("/api/intercoms/found"));
+    await page.click("#modal .dlg-foot button.primary");
+    await page.waitForSelector("#modal", {state: "hidden"});
+    await rendered;
+    await page.waitForSelector(`[data-ic-edit="${config.cellar}"]`);
+  };
   await page.goto(tab);
   await page.waitForSelector("[data-ic-edit]");
   out.tab = await rows();
@@ -253,18 +274,14 @@ const seen = {page: null, out: null, failed: []};
   out.otherRelays = await relays();
   await page.check(`#modal [name=intercom][value="${config.serial}"]`);
   out.backRelays = await relays();
-  await page.click("#modal .dlg-foot button.primary");
-  await page.waitForSelector("#modal", {state: "hidden"});
-  // La scheda rifatta dopo il salvataggio
-  await page.waitForSelector(`[data-ic-edit="${config.cellar}"]`, {timeout: 60000});
+  await saveAndRender();
   // Il relè della porta, già legata al numero di serie, lo usa anche un'altra porta: resta, e Salva lo tiene
   await page.unroute("**/api/intercoms/found");
   await page.route("**/api/intercoms/found", (route) => route.fulfill({json: config.shared}));
   await page.click(`[data-ic-edit="${config.cellar}"]`);
   await page.waitForSelector("#modal[open] [data-ic-list] label");
   out.sharedRelays = await relays();
-  await page.click("#modal .dlg-foot button.primary");
-  await page.waitForSelector("#modal", {state: "hidden"});
+  await saveAndRender();
   // Due videocitofoni annunciati della porta (lo stesso nome): la scelta e il relè di uno restano suoi
   await page.unroute("**/api/intercoms/found");
   await page.route("**/api/intercoms/found", (route) => route.fulfill({json: config.twins}));
@@ -472,3 +489,73 @@ def test_the_intercom_is_chosen_from_the_broker_and_saved_with_its_serial(served
     )
     assert out["twins"] == {"checked": "YYYY02", "relay": "1", "other": "2"}
     assert out["back"] == {"hash": "#porte", "open": False}
+
+
+def _opener(plant, controller, name: str) -> list[tuple]:
+    """Chiamata e «Apri» sul relè 1 del videocitofono con il nome di adesso: quale porta apre."""
+    controller.calls.clear()
+    plant.ring_and_open(name, relay=1)
+    wait(lambda: any(c[0] == "access_door" for c in controller.calls), 2)
+    time.sleep(0.2)
+    return [c for c in controller.calls if c[0] == "access_door"]
+
+
+def _settled(plant) -> bool:
+    state = plant.app.state
+    return wait(lambda: state.monitor.connected and (state.intercom_directory.quiet_for() or 0) > 0.6, 5)
+
+
+@needs_node
+@pytest.mark.parametrize("edited", ["porta", "scena"])
+@pytest.mark.parametrize(
+    "pair, opener",
+    [("legate", "porta"), ("legata_e_nome", "porta"), ("nome_e_legata", "scena"), ("solo_nomi", "scena")],
+)
+def test_saving_a_door_unchanged_never_moves_the_open_to_another_door(site, controller, pair, opener, edited):  # noqa: F811
+    """Due porte sullo stesso relè dello stesso videocitofono (legate al numero di serie, o con il solo nome di prima
+    della 0.28.11, con il nome vecchio e quello nuovo): la finestra del videocitofono aperta su una delle due e salvata
+    senza cambiare niente, con il codice della pagina, non cambia quale porta apre «Apri»."""
+    site.retain(ARTISTI, SERIAL_A)
+    current = ARTISTI
+    if pair != "legate":
+        site.retain(RENAMED, SERIAL_A)
+        current = RENAMED
+    client = site.start(intercom_name=ARTISTI)
+    ctrl = site.app.state.db.list_controllers()[0]
+    scena = {"door_token": "scena", "name": "Scena", "intercom_name": current, "intercom_relay": 1}
+    if pair == "nome_e_legata":
+        scena["intercom_serial"] = SERIAL_A
+    assert wait(lambda: site.door()["intercom_serial"] == SERIAL_A)
+    response = client.post(f"/api/controllers/{ctrl['id']}/doors", json=scena | {"intercom_open_door": True})
+    assert response.status_code == 200, response.text
+    if pair in ("nome_e_legata", "solo_nomi"):
+        door = site.door()
+        assert client.put(f"/api/doors/{door['id']}", json={**door, "intercom_serial": ""}).status_code == 200
+    assert _settled(site)
+    serials = (site.door()["intercom_serial"], site.door("scena")["intercom_serial"])
+    assert (
+        serials
+        == {
+            "legate": (SERIAL_A, SERIAL_A),
+            "legata_e_nome": (SERIAL_A, ""),
+            "nome_e_legata": ("", SERIAL_A),
+            "solo_nomi": ("", ""),
+        }[pair]
+    )
+    before = _opener(site, controller, current)
+    assert before == [("access_door", opener, False)]
+    # La finestra sulla porta, come all'apertura: la riga scelta, il relè, cosa salva
+    found = client.get("/api/intercoms/found").json()
+    doors = client.get("/api/installation").json()["controllers"][0]["doors"]
+    door = next(d for d in doors if d["door_token"] == edited)
+    expression = (
+        f"(() => {{ const d = {json.dumps(door)}; const rows = intercomRows({json.dumps(found)}, d, d.id,"
+        f" {json.dumps(doors)}); const row = rows.find((r) => r.current && !r.off); if (!row) return null;"
+        " const pick = intercomRelayPick(row, undefined, d.intercom_relay, 0).pick; if (!pick) return null;"
+        " return doorBody(d, intercomChanges(row, d, pick, d.id, d.intercom_open_door)); })()"
+    )
+    body = run_page("Europe/Rome", {"body": expression}, names=NAMES)["body"]
+    assert body is not None, "la porta non si salva così com'è"
+    assert client.put(f"/api/doors/{door['id']}", json=body).status_code == 200
+    assert _settled(site)
+    assert _opener(site, controller, current) == before

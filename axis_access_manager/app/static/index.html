@@ -5743,13 +5743,11 @@ const INTERCOM_CURRENT = "-";
 // Righe della scelta del videocitofono: quelli annunciati sul broker (api/intercoms/found) e, prima, quello di adesso
 // della porta se non è tra loro. Le porte che contano sono le altre: non quella in modifica (door) né quella scelta in
 // Porta (targetId), il cui videocitofono si sostituisce. Grigio il videocitofono con tutti i relè usati da altre porte.
-// Un relè usato anche da un'altra porta è grigio, salvo quello che la porta ha già con il numero di serie: salvandola
-// così com'è «Apri» resta dov'era (alla prima porta). Con il solo nome invece salvando si legherebbe al numero di serie,
-// e «Apri» potrebbe passare da un'altra porta a questa. doors: le porte del controller, per quello di adesso non
-// annunciato
+// Un relè usato anche da un'altra porta è grigio, salvo quello che la porta ha già: salvandola così com'è «Apri» resta
+// dov'era (vedi intercomChanges). doors: le porte del controller, per quello di adesso non annunciato
 function intercomRows(found, door, targetId, doors = []) {
   const other = (u) => u.door_id !== door?.id && u.door_id !== targetId;
-  const kept = (n) => Boolean(door?.intercom_serial) && n === door.intercom_relay;
+  const kept = (n) => n === door?.intercom_relay;
   const names = (uses) => [...new Set(uses.map((u) => named("Porta", u.door)))].join(", ");
   // Non trovato solo con l'elenco completo: broker collegato da qualche secondo
   const complete = Boolean(found?.broker) && (found.since ?? 0) >= INTERCOM_WAIT;
@@ -5787,6 +5785,14 @@ function intercomRelayPick(row, manual, stored, previous) {
   const want = manual ?? (row?.current ? stored : previous || stored || 1);
   const pick = options.find((r) => r.n === want && !r.off) || (row?.current ? null : options.find((r) => !r.off));
   return {options, pick: pick ? pick.n : null};
+}
+// Cosa salvare nella porta targetId con il videocitofono scelto (row) e il relè. Il videocitofono che la porta ha con il
+// solo nome (porte di prima della 0.28.11), con lo stesso relè, non si lega al numero di serie: salvando senza cambiare
+// niente «Apri» resta alla porta che apre adesso. Lo lega l'app da sola, quando è sicuro
+function intercomChanges(row, door, relay, targetId, openDoor) {
+  const same = Boolean(door) && row.current && !door.intercom_serial && relay === door.intercom_relay && targetId === door.id;
+  return {intercom_name: same ? door.intercom_name : row.name, intercom_serial: same ? "" : row.serial, intercom_open_door: openDoor,
+    intercom_relay: relay, intercom_mqtt_prefix: door?.intercom_mqtt_prefix || "hmd"};
 }
 // Riga sotto l'elenco quando i videocitofoni non ci sono (ancora): una frase sola, o la rotellina appena collegati
 function intercomEmpty(found) {
@@ -5867,7 +5873,7 @@ async function intercomEditor(ctrl, door) {
       if (!row) { toast("Scegli il videocitofono", true); return false; }
       if (!val(dlg, "intercom_relay")) { toast($("[name=intercom_relay] option:not([disabled])", dlg) ? "Scegli il relè" : "Relè già usati da altre porte", true); return false; }
       // Il prefisso MQTT resta quello della porta: i topic del videocitofono scelto vengono dal broker
-      const changes = {intercom_name: row.name, intercom_serial: row.serial, intercom_open_door: val(dlg, "intercom_open_door"), intercom_relay: Number(val(dlg, "intercom_relay")), intercom_mqtt_prefix: d.intercom_mqtt_prefix || "hmd"};
+      const changes = intercomChanges(row, door, Number(val(dlg, "intercom_relay")), target.id, val(dlg, "intercom_open_door"));
       // Prima la porta nuova: se la rifiuta, la porta di prima tiene il suo videocitofono
       if (!await run(() => api(`api/doors/${target.id}`, {method: "PUT", body: doorBody(target, changes)}))) return false;
       written = true;
