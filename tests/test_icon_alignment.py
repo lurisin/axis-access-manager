@@ -174,7 +174,7 @@ def test_icons_sit_in_the_middle_of_the_capitals_next_to_them(plant, ingress_ser
         assert extra["errors"] == [], extra
         assert extra["camera"] == "-2px", extra
     menu = {(r["width"], r["text"]) for r in rows if r["menu"]}
-    names = {"Controllo Accessi", "Cruscotto", "Porte", "Anagrafica", "Da Registrare", "Registro", "Fasce Orarie"}
+    names = {"Controllo Accessi", "Cruscotto", "Porte", "Anagrafica", "Tessere", "Registro", "Fasce Orarie"}
     for width in (1280, 390):
         assert names <= {text for w, text in menu if w == width}, menu
     # Pulsanti con icona: Nuova Persona, Colonne, Rileggi dal Controller, Aggiungi e Codice della scheda, Esporta…

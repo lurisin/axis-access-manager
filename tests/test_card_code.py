@@ -855,7 +855,7 @@ def test_the_page_names_every_column_the_import_ignores():
     page = (Path(__file__).resolve().parents[1] / "axis_access_manager" / "app" / "static" / "index.html").read_text()
     [shown] = re.findall(r"Il file esportato ha in più <code>([^<]*)</code>, che l'importazione ignora", page)
     assert shown.split("; ") == EXPORT_COLUMNS
-    assert "il Nome Tessera con Codice sulla riga della tessera" in page
+    assert "il Nome Tessera con Nome sulla riga della tessera" in page
 
 
 # Registro

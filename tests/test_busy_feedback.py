@@ -620,7 +620,7 @@ def test_the_box_is_never_used_for_reading_pages_and_searches():
     aggiornamenti automatici non passano da run né da busy."""
     page = PAGE.read_text(encoding="utf-8")
     assert 'const data = await run(() => api("api/events?" + params), "", false);' in page
-    automatic = ("loadSummary", "refreshView", "refreshPersons", "refreshUnknown", "refreshLog", "refreshNotifications")
+    automatic = ("loadSummary", "refreshView", "refreshPersons", "refreshCards", "refreshLog", "refreshNotifications")
     for name in automatic:
         body = re.search(rf"^async function {name}\(.*?^\}}$", page, re.M | re.S).group(0)
         assert not re.search(r"\b(?:run|runPerson|busy)\(", body), name

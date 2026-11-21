@@ -240,6 +240,12 @@ class CardIn(BaseModel):
     printed_code: str = ""
 
 
+class CardLoadIn(BaseModel):
+    card: str
+    # Nome Tessera; None: quello proposto dall'app (vedi AccessService.next_card_name), "" nessuno
+    printed_code: str | None = None
+
+
 class CardStateIn(BaseModel):
     # None: non cambia. Lo stato va sul controller, il Nome Tessera resta nell'app (vedi AccessService.update_card)
     enabled: bool | None = None
@@ -1477,7 +1483,7 @@ def create_app(
         return {"cards": request.app.state.db.list_cards(), "next_name": service.next_card_name()}
 
     @app.post("/api/cards", dependencies=[need("persone_modifica")])
-    async def load_card(body: CardIn, request: Request) -> dict:
+    async def load_card(body: CardLoadIn, request: Request) -> dict:
         """Carica una tessera nell'elenco, Libera: solo nell'app, mai sul controller."""
         service = request.app.state.service
         card = service.load_card(body.card, request_user(request), body.printed_code)

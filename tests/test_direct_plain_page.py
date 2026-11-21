@@ -25,7 +25,7 @@ ROUTES = (
     "#persone",
     "#persone/tipologie",
     "#persone/{person}",
-    "#da-registrare",
+    "#tessere",
     "#registro",
     "#regole",
     "#regole/tipologie",

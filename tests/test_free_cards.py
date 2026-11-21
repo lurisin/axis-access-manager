@@ -7,10 +7,16 @@ Solo il FakeController; codici e nomi di fantasia."""
 
 import json
 import sqlite3
+import subprocess
 from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
+from test_direct import ADMIN as PAGE_ADMIN
+from test_direct import clients, fast_hash  # noqa: F401
+from test_direct_plain import plant  # noqa: F401
+from test_direct_plain_page import ingress_server  # noqa: F401
+from test_page_morph import _has_playwright
 
 from app.db import SCHEMA_VERSION, Database
 from app.events import Event
@@ -310,17 +316,18 @@ def test_a_free_card_at_a_door_is_an_invalid_card_with_its_name(client, controll
         client.post("/api/cards", json={"card": "04bb", "printed_code": "Numero 2"}, headers=ADMIN).status_code == 200
     )
     service = state.service
-    service.record_event(event("IdPoint/Request/IdData/x", {"Card": "04BB"}))
-    service.record_event(
-        event("AccessControl/Denied/CredentialNotFound/Card", {"Card": "04BB", "AccessPointToken": "ap"})
-    )
-    service.record_event(event("IdPoint/Request/IdData/x", {"Card": "05ff"}, 5))
+
+    def record(passage: Event) -> None:
+        # Nel ciclo dell'app, come gli eventi veri
+        client.portal.call(service.record_event, passage)
+
+    record(event("IdPoint/Request/IdData/x", {"Card": "04BB"}))
+    record(event("AccessControl/Denied/CredentialNotFound/Card", {"Card": "04BB", "AccessPointToken": "ap"}))
+    record(event("IdPoint/Request/IdData/x", {"Card": "05ff"}, 5))
     service._recovering = True
     try:
-        service.record_event(event("IdPoint/Request/IdData/x", {"Card": "04BB"}, 30))
-        service.record_event(
-            event("AccessControl/Denied/CredentialNotFound/Card", {"Card": "04BB", "AccessPointToken": "ap"}, 30)
-        )
+        record(event("IdPoint/Request/IdData/x", {"Card": "04BB"}, 30))
+        record(event("AccessControl/Denied/CredentialNotFound/Card", {"Card": "04BB", "AccessPointToken": "ap"}, 30))
     finally:
         service._recovering = False
     rows = client.get("/api/events", headers=ADMIN).json()
@@ -375,3 +382,94 @@ async def test_backups_carry_free_cards_and_stay_the_same_without(service, db):
     assert json.dumps(common_snapshot(db, []), sort_keys=True) == before
     with pytest.raises(ServiceError, match="tessera non trovata"):
         service.delete_free_card(loaded["id"], "admin")
+
+
+LOADING = r"""
+const { chromium } = require("playwright");
+const config = JSON.parse(process.argv[1]);
+(async () => {
+  const browser = await chromium.launch();
+  const context = await browser.newContext({viewport: {width: 1280, height: 900}, extraHTTPHeaders: config.headers});
+  const page = await context.newPage();
+  const out = {errors: [], posts: []};
+  page.on("pageerror", (e) => out.errors.push(String(e)));
+  // Il salvataggio dura più del tempo tra una tessera e l'altra: il lettore intanto scrive già la successiva
+  await page.route("**/api/cards", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    out.posts.push(JSON.parse(route.request().postData()));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return route.continue();
+  });
+  await page.goto(`${config.base}/#tessere`);
+  await page.waitForSelector("#c-load [name=card]");
+  out.focus = await page.evaluate(() => document.activeElement?.name || "");
+  out.proposed = await page.inputValue("#c-load [name=printed_code]");
+  // Il lettore da banco: i caratteri del codice e Invio, una tessera dietro l'altra, senza aspettare
+  for (const code of config.codes) {
+    await page.keyboard.type(code, {delay: 5});
+    await page.keyboard.press("Enter");
+  }
+  // Un secondo Invio a campo vuoto non salva niente
+  await page.keyboard.press("Enter");
+  await page.waitForFunction((n) => document.querySelectorAll("#c-list > .item").length === n, config.codes.length);
+  const rows = () => page.$$eval("#c-list > .item", (items) => items.map((i) => [
+    i.querySelector(".title").textContent.trim(), i.querySelector(".mono").textContent.trim()]));
+  out.rows = await rows();
+  out.count = await page.textContent("#c-count");
+  out.next = await page.inputValue("#c-load [name=printed_code]");
+  out.focusAfter = await page.evaluate(() => document.activeElement?.name || "");
+  out.field = await page.inputValue("#c-load [name=card]");
+  // Già caricata: lo dice subito, e il campo resta pronto
+  await page.keyboard.type(config.codes[0].toUpperCase());
+  await page.keyboard.press("Enter");
+  await page.waitForSelector("#c-note.alert.err");
+  out.again = await page.textContent("#c-note");
+  // Un nome scritto a mano vale per la tessera dopo, poi si torna alla serie
+  await page.fill("#c-load [name=printed_code]", "Ospite Blu");
+  await page.focus("#c-load [name=card]");
+  await page.keyboard.type(config.extra);
+  await page.keyboard.press("Enter");
+  await page.waitForFunction((n) => document.querySelectorAll("#c-list > .item").length === n, config.codes.length + 1);
+  out.note = await page.textContent("#c-note");
+  out.nextAfter = await page.inputValue("#c-load [name=printed_code]");
+  out.rowsAfter = await rows();
+  out.scroll = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
+  console.log(JSON.stringify(out));
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
+def test_cards_swiped_one_after_the_other_are_all_loaded(plant, ingress_server, controller):  # noqa: F811
+    """Nella pagina vera: il lettore da banco scrive come una tastiera e manda Invio. Tre tessere di fila, più veloci
+    del salvataggio: nessun carattere perso, ognuna con il suo nome, il campo sempre pronto, il controller mai
+    toccato."""
+    app = plant[3]
+    controller.attempts.clear()
+    codes = ["04a1b2c3", "04a1b2c4", "04a1b2c5"]
+    config = {"base": ingress_server, "headers": PAGE_ADMIN, "codes": codes, "extra": "04a1b2c6"}
+    result = subprocess.run(["node", "-e", LOADING, json.dumps(config)], capture_output=True, text=True, timeout=180)
+    if result.returncode and "Executable doesn't exist" in result.stderr:
+        pytest.skip("Chromium di Playwright non installato")
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert out["errors"] == [] and not out["scroll"]
+    assert (out["focus"], out["proposed"]) == ("card", "Numero 1")
+    # Il nome lo sceglie l'app al salvataggio: ognuna il suo, anche se sono partite insieme
+    assert out["posts"][:3] == [{"card": code, "printed_code": None} for code in codes]
+    assert out["rows"] == [["Numero 1", "04a1b2c3"], ["Numero 2", "04a1b2c4"], ["Numero 3", "04a1b2c5"]]
+    assert out["count"] == "3 tessere · 3 libere"
+    assert (out["next"], out["focusAfter"], out["field"]) == ("Numero 4", "card", "")
+    assert out["again"] == "04A1B2C3: Tessera già caricata (Numero 1): libera"
+    assert out["posts"][4] == {"card": "04a1b2c6", "printed_code": "Ospite Blu"}
+    assert out["note"] == "Caricata: Ospite Blu · 04a1b2c6" and out["nextAfter"] == "Numero 4"
+    assert out["rowsAfter"][-1] == ["Ospite Blu", "04a1b2c6"]
+    stored = {c["number"]: (c["printed_code"], c["person_id"]) for c in app.state.db.list_cards()}
+    assert stored == {
+        "04a1b2c3": ("Numero 1", None),
+        "04a1b2c4": ("Numero 2", None),
+        "04a1b2c5": ("Numero 3", None),
+        "04a1b2c6": ("Ospite Blu", None),
+    }
+    assert writes(controller) == [] and controller.credentials == {}

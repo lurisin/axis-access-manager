@@ -996,16 +996,17 @@ class AccessService:
         number = next(n for n in range(1, len(used) + 2) if n not in used)
         return f"{prefix}{str(number).zfill(width)}"[:PRINTED_CODE_MAX]
 
-    def load_card(self, card: str, user: str, printed_code: str = "") -> dict:
+    def load_card(self, card: str, user: str, printed_code: str | None = "") -> dict:
         """Carica una tessera fisica nell'elenco, Libera: solo nell'app, niente controller e niente attesa delle sue
-        operazioni. Una tessera già caricata si dice subito, con il suo Nome Tessera e di chi è."""
+        operazioni. Una tessera già caricata si dice subito, con il suo Nome Tessera e di chi è. printed_code None: il
+        nome proposto (vedi next_card_name), così più tessere passate di fila prendono ognuna il suo."""
         number = normalize_card(card)
-        printed_code = normalize_printed_code(printed_code)
         existing = self.db.any_card_by_number(number)
         if existing is not None:
             name = f" ({existing['printed_code']})" if existing["printed_code"] else ""
             whose = f"assegnata a {existing['person_name']}" if existing["person_id"] is not None else "libera"
             raise ServiceError(f"tessera già caricata{name}: {whose}")
+        printed_code = self.next_card_name() if printed_code is None else normalize_printed_code(printed_code)
         self.check_printed_code(printed_code)
         try:
             card_id = self.db.add_free_card(number, printed_code)

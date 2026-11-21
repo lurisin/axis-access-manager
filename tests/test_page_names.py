@@ -80,11 +80,13 @@ def test_menu_and_titles_with_the_old_addresses():
     )
     assert nav["persone"] == "Anagrafica"
     assert nav["regole"] == "Fasce Orarie"
-    assert nav["da-registrare"] == "Da Registrare"
+    assert nav["tessere"] == "Tessere" and "da-registrare" not in nav
     assert 'data-route="persone" title="Anagrafica"' in page and 'data-route="regole" title="Fasce Orarie"' in page
     # Titolo della pagina (anche quello del browser, «Anagrafica · Controllo Accessi»)
     assert _route(page, "persone") == "Anagrafica"
-    assert _route(page, '"da-registrare"') == "Tessere da Registrare"
+    assert _route(page, "tessere") == "Tessere"
+    # Il vecchio indirizzo di Da Registrare porta all'elenco delle tessere
+    assert 'if (name === "da-registrare") name = "tessere";' in page
     assert _route(page, "regole") == "Fasce Orarie e Festività"
     assert "document.title = `${title} · Controllo Accessi`;" in page
     # Le schede dentro le pagine restano con i loro nomi

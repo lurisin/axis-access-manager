@@ -401,7 +401,7 @@
   .n-table tbody tr:hover td, .n-table tbody tr:focus-visible td { background: var(--surface-2); }
   .n-time { font-variant-numeric: tabular-nums; white-space: nowrap; width: 80px; }
   .n-ev { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
-  /* Gialla come la tessera sconosciuta nel registro, in Da Registrare e nel cruscotto */
+  /* Gialla come la tessera non valida nel registro e nel cruscotto */
   .n-unk { font-size: 12px; padding: 1px 8px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); }
   .n-reason { color: var(--muted); }
   .n-state { font-size: 13px; font-weight: 600; color: var(--warn); white-space: nowrap; }
@@ -863,7 +863,7 @@
     <a href="#cruscotto" data-route="cruscotto" title="Cruscotto"><span data-icon="dashboard"></span><span class="lbl">Cruscotto</span></a>
     <a href="#porte" data-route="porte" title="Porte"><span data-icon="door"></span><span class="lbl">Porte</span></a>
     <a href="#persone" data-route="persone" title="Anagrafica"><span data-icon="people"></span><span class="lbl">Anagrafica</span></a>
-    <a href="#da-registrare" data-route="da-registrare" title="Da Registrare"><span data-icon="cardplus"></span><span class="lbl">Da Registrare</span><span class="count" id="nav-unknown" hidden></span></a>
+    <a href="#tessere" data-route="tessere" title="Tessere"><span data-icon="card"></span><span class="lbl">Tessere</span></a>
     <a href="#registro" data-route="registro" title="Registro"><span data-icon="list"></span><span class="lbl">Registro</span></a>
     <a href="#regole" data-route="regole" title="Fasce Orarie"><span data-icon="clock"></span><span class="lbl">Fasce Orarie</span></a>
     <a href="#impianti" data-route="impianti" title="Impianti"><span data-icon="building"></span><span class="lbl">Impianti</span></a>
@@ -1068,7 +1068,7 @@ const KINDS = {
   concesso: ["Accesso Concesso", "k-ok", "check"],
   negato: ["Accesso Negato", "k-warn", "block"],
   lettura: ["Tessera Letta", "k-accent", "card"],
-  sconosciuta: ["Tessera Sconosciuta", "k-warn", "question"],
+  sconosciuta: ["Tessera Non Valida", "k-warn", "question"],
   apertura_remota: ["Apertura Remota", "k-ok", "dooropen"],
   uscita: ["Uscita", "k-ok", "exit"],
   allarme: ["Allarme Porta", "k-err", "alert"],
@@ -1582,7 +1582,7 @@ async function run(action, success, wait = "") {
   }
 }
 // Come run, per le modifiche dalla scheda di una persona. Se intanto la persona è cambiata (per esempio una tessera
-// assegnata da un'altra scheda, dalla pagina Da Registrare o da un'importazione) il server rifiuta con 409 senza
+// assegnata da un'altra scheda, dall'elenco delle tessere o da un'importazione) il server rifiuta con 409 senza
 // modificare niente: il risultato è {stale: motivo}, e chi chiama rilegge la scheda e lo mostra
 async function runPerson(action, success, wait = "") {
   try {
@@ -1847,7 +1847,7 @@ async function loadSummary() {
     store.summary = s;
     $("#offline-pill").hidden = true;
     reloadIfUpdated(s.version);
-    const badges = [["#nav-unknown", s.unknown_cards], ["#nav-notif", s.notifications]];
+    const badges = [["#nav-notif", s.notifications]];
     badges.forEach(([sel, n]) => { const b = $(sel); b.hidden = !n; b.textContent = n > 99 ? "99+" : n; });
     $("#nav [data-route=notifiche]").title = s.notifications ? `Notifiche: ${s.notifications} da gestire` : "Notifiche";
     renderTopStatus();
@@ -1930,7 +1930,7 @@ const ROUTES = {
   cruscotto: ["Cruscotto", viewDashboard, "stato"],
   porte: ["Porte", viewDoorsPage, "stato"],
   persone: ["Anagrafica", viewPersons, "persone"],
-  "da-registrare": ["Tessere da Registrare", viewUnknown, "persone"],
+  tessere: ["Tessere", viewCards, "persone"],
   registro: ["Registro Accessi", viewLog, "registro"],
   regole: ["Fasce Orarie e Festività", viewRules, "regole"],
   impianti: ["Impianti", viewInstallation, ["impianti", "backup"]],
@@ -1944,7 +1944,9 @@ const allowedRoute = (name) => { const need = ROUTES[name]?.[2]; return Boolean(
 const homeRoute = () => Object.keys(ROUTES).find((k) => k !== "nessun-accesso" && allowedRoute(k)) || "nessun-accesso";
 let route = {name: "cruscotto", sub: ""};
 function parseHash() {
-  const [name, ...rest] = location.hash.replace(/^#/, "").split("/");
+  let [name, ...rest] = location.hash.replace(/^#/, "").split("/");
+  // Fino alla 0.28.11 c'era «Da Registrare»: i segnalibri portano all'elenco delle tessere
+  if (name === "da-registrare") name = "tessere";
   const sub = rest.join("/");
   return name !== "nessun-accesso" && allowedRoute(name) ? {name, sub} : {name: homeRoute(), sub: ""};
 }
@@ -2032,7 +2034,7 @@ async function refreshView() {
   if (route.name === "cruscotto" && dash.editing) return;
   // Solo i dati, senza ridisegnare la pagina: prima ogni 15 secondi la pagina lampeggiava e perdeva scroll e focus
   if (route.name === "cruscotto") await (dash.reload && $("#dash") ? dash.reload() : render());
-  if (route.name === "da-registrare") await refreshUnknown();
+  if (route.name === "tessere") await refreshCards();
   // Elenco e avviso delle tessere non presenti seguono le riletture dal controller (niente da fare in Tipologie)
   if (route.name === "persone") await refreshPersons();
   if (route.name === "notifiche") await refreshNotifications();
@@ -2066,14 +2068,14 @@ function bindEventRows(list, open) {
 const WIDGETS = {
   da_gestire: {title: "Da Gestire", desc: "Le notifiche aperte, dalla più grave.", size: 2, height: 5, minSize: 2, minHeight: 2},
   accessi_oggi: {title: "Accessi Oggi", desc: "Passaggi con tessera, aperture remote e uscite di oggi.", size: 1, height: 1, maxHeight: 2},
-  negati_oggi: {title: "Negati Oggi", desc: "Accessi negati e tessere sconosciute di oggi.", size: 1, height: 1, maxHeight: 2},
+  negati_oggi: {title: "Negati Oggi", desc: "Accessi negati e tessere non valide di oggi.", size: 1, height: 1, maxHeight: 2},
   allarmi_oggi: {title: "Allarmi Oggi", desc: "Porte forzate, aperte troppo a lungo, manomissioni.", size: 1, height: 1, maxHeight: 2},
   persone: {title: "Persone", desc: "Persone e tessere registrate.", size: 1, height: 1, maxHeight: 2},
   porte: {title: "Porte", desc: "Stato di ogni porta e passaggi di oggi.", size: 2, height: 3, minHeight: 3},
   settimana: {title: "Ultimi 7 Giorni", desc: "Grafico di accessi e negati per giorno.", size: 2, height: 3, minSize: 2, minHeight: 3},
   ultimi_eventi: {title: "Ultimi Eventi", desc: "Gli ultimi passaggi del registro.", size: 2, height: 5, minSize: 2, minHeight: 2, perm: "registro"},
   scadenze: {title: "Tessere in Scadenza", desc: "Persone con tessere che scadono nei prossimi 7 giorni.", size: 2, height: 3, minHeight: 2, perm: "persone"},
-  da_registrare: {title: "Tessere da Registrare", desc: "Tessere passate sul lettore ma non ancora di nessuno.", size: 2, height: 3, minHeight: 2, perm: "persone"},
+  tessere_libere: {title: "Tessere Libere", desc: "Tessere caricate e non ancora date a nessuno.", size: 2, height: 3, minHeight: 2, perm: "persone"},
   impianto: {title: "Stato Impianto", get desc() { return `Controller, eventi ${hideHA() ? "in diretta" : "MQTT"}, coperchio e ultimo evento.`; }, size: 2, height: 3, minHeight: 3},
   backup: {title: "Backup", desc: "Ultimo backup, backup automatico e verifica dei file.", size: 2, height: 3, minHeight: 3, perm: "backup"},
 };
@@ -2091,10 +2093,10 @@ const fitWidget = (w) => {
 // Cruscotti predefiniti per ruolo, a griglia piena: [riquadro, larghezza, altezza] nell'ordine di riempimento
 const DEFAULT_DASHES = {
   // Amministratore: tessere da sistemare, numeri del giorno, andamento, registro e cose da gestire
-  admin: [["scadenze", 1, 5], ["da_registrare", 1, 5], ["accessi_oggi", 1, 1], ["persone", 1, 1], ["negati_oggi", 1, 1],
+  admin: [["scadenze", 1, 5], ["tessere_libere", 1, 5], ["accessi_oggi", 1, 1], ["persone", 1, 1], ["negati_oggi", 1, 1],
     ["allarmi_oggi", 1, 1], ["settimana", 2, 3], ["ultimi_eventi", 2, 4], ["da_gestire", 2, 4]],
-  // Operatore (registra e modifica tessere): prima le tessere da registrare e da gestire
-  operatore: [["da_registrare", 2, 4], ["da_gestire", 2, 4], ["persone", 1, 1], ["accessi_oggi", 1, 1], ["negati_oggi", 1, 1],
+  // Operatore (registra e modifica tessere): prima le tessere libere e le cose da gestire
+  operatore: [["tessere_libere", 2, 4], ["da_gestire", 2, 4], ["persone", 1, 1], ["accessi_oggi", 1, 1], ["negati_oggi", 1, 1],
     ["allarmi_oggi", 1, 1], ["ultimi_eventi", 2, 5], ["scadenze", 2, 2], ["settimana", 2, 3]],
   // Consultazione (vede registro e persone): numeri del giorno e registro in grande
   registro: [["accessi_oggi", 1, 1], ["negati_oggi", 1, 1], ["allarmi_oggi", 1, 1], ["persone", 1, 1],
@@ -2136,7 +2138,7 @@ const WIDGET_BODY = {
     const others = [t.remote ? plural(t.remote, "apertura remota", "aperture remote") : "", t.exits ? plural(t.exits, "uscita", "uscite") : ""].filter(Boolean).join(" e ");
     return kpi("Accessi Oggi", t.granted + t.remote + (t.exits || 0), `${others ? `di cui ${others}` : "con tessera"}${!t.granted && t.reads ? ` · ${plural(t.reads, "lettura", "letture")}` : ""}`);
   },
-  negati_oggi: ({d: {today: t}}) => kpi("Negati Oggi", t.denied, t.unknown ? plural(t.unknown, "tessera sconosciuta", "tessere sconosciute") : "nessuna tessera sconosciuta", t.denied ? "var(--warn)" : ""),
+  negati_oggi: ({d: {today: t}}) => kpi("Negati Oggi", t.denied, t.unknown ? plural(t.unknown, "tessera non valida", "tessere non valide") : "nessuna tessera non valida", t.denied ? "var(--warn)" : ""),
   allarmi_oggi: ({d: {today: t}}) => kpi("Allarmi Oggi", t.alarms, t.alarms ? "forzature, aperture lunghe, manomissioni" : "nessun allarme", t.alarms ? "var(--err)" : ""),
   persone: ({d}) => kpi("Persone", d.persons, `${plural(d.cards, "tessera", "tessere")}${d.cards_suspended ? `, ${plural(d.cards_suspended, "sospesa", "sospese")}` : ""}${can("persone") ? ' · <a href="#persone">Anagrafica</a>' : ""}`),
   porte: ({doors}) => !doors ? '<h2>Porte<span class="spacer"></span><a class="small-text" href="#porte">Tutte le Porte</a></h2><div class="empty">Porte non leggibili: riprovo tra poco.</div>'
@@ -2148,7 +2150,7 @@ const WIDGET_BODY = {
       const total = w.granted + w.denied;
       const h = (n) => `${(n / max) * 100}%`;
       const label = fmtDay(w.day, {weekday: "short"});
-      return `<div class="col" title="${esc(fmtDay(w.day, {day: "numeric", month: "short", year: "numeric"}))}: ${plural(w.granted, "accesso", "accessi")}, ${plural(w.denied, "negato", "negati")}${w.unknown ? `, ${plural(w.unknown, "tessera sconosciuta", "tessere sconosciute")}` : ""}">
+      return `<div class="col" title="${esc(fmtDay(w.day, {day: "numeric", month: "short", year: "numeric"}))}: ${plural(w.granted, "accesso", "accessi")}, ${plural(w.denied, "negato", "negati")}${w.unknown ? `, ${plural(w.unknown, "tessera non valida", "tessere non valide")}` : ""}">
         <div class="num">${total || ""}</div>
         <div class="bars"><div class="bar g" style="height:${h(w.granted)}"></div><div class="bar d" style="height:${h(w.denied)}"></div></div>
         <div class="lbl">${esc(label)}</div></div>`;
@@ -2162,10 +2164,10 @@ const WIDGET_BODY = {
   scadenze: ({d}) => `<h2>Tessere in Scadenza<span class="spacer"></span><a class="small-text" href="#persone">Anagrafica</a></h2>
     ${d.expiring.length ? `<div class="list">${d.expiring.slice(0, 6).map((e) => `<a class="item" href="#persone/${e.id}"><div class="ev-icon k-warn">${icon("clock")}</div><div class="grow"><div class="title">${esc(e.name)}</div><div class="meta">scade il ${esc(fmtDateTime(e.valid_to))}</div></div></a>`).join("")}</div>${d.expiring.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">${d.expiring.length === 7 ? "e un'altra" : `e altre ${d.expiring.length - 6}`}</p>` : ""}`
       : '<div class="empty">Nessuna tessera scade nei prossimi 7 giorni.</div>'}`,
-  // Come nella pagina Da Registrare: stessa icona, stesse parole
-  da_registrare: ({unknown}) => `<h2>Tessere da Registrare<span class="spacer"></span><a class="small-text" href="#da-registrare">Tutte</a></h2>
-    ${!unknown ? '<div class="empty">Tessere da registrare non leggibili: riprovo tra poco.</div>' : unknown.length ? `<div class="list">${unknown.slice(0, 6).map((c) => `<a class="item" href="#da-registrare"><div class="ev-icon k-warn">${icon("question")}</div><div class="grow"><div class="title"><code>${esc(c.number)}</code></div><div class="meta"><span>ultima lettura ${esc(relTime(c.last_seen))}</span><span>${plural(c.count, "lettura", "letture")}</span></div></div></a>`).join("")}</div>`
-      : '<div class="empty">Nessuna tessera da registrare.</div>'}`,
+  // Come nell'elenco delle tessere: stessa icona, stesse parole
+  tessere_libere: ({free}) => `<h2>Tessere Libere<span class="spacer"></span><a class="small-text" href="#tessere">Tutte</a></h2>
+    ${!free ? '<div class="empty">Tessere non leggibili: riprovo tra poco.</div>' : free.length ? `<div class="list">${free.slice(0, 6).map((c) => `<a class="item" href="#tessere"><div class="ev-icon k-muted">${icon("card")}</div><div class="grow"><div class="title">${c.printed_code ? esc(c.printed_code) : `<code>${esc(c.number)}</code>`}</div>${c.printed_code ? `<div class="meta"><span class="mono">${esc(c.number)}</span></div>` : ""}</div></a>`).join("")}</div>${free.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">${free.length === 7 ? "e un'altra" : `e altre ${free.length - 6}`}</p>` : ""}`
+      : '<div class="empty">Nessuna tessera libera.</div>'}`,
   impianto({d: {system: s}, notif}) {
     const row = (cls, label, value, title = "") => `<div class="dw-sys"${title ? ` title="${esc(title)}"` : ""}><span class="dot ${cls}"></span><span class="grow" style="flex:1;min-width:0">${label}</span><b>${value}</b></div>`;
     if (!s.configured) return `<h2>Stato Impianto</h2><div class="empty">Nessun controller configurato.</div>`;
@@ -2197,9 +2199,9 @@ function kpi(label, value, sub, color = "") {
 // Dati dei riquadri del cruscotto
 async function dashData() {
   // Riquadro non letto: null, non vuoto («Tutto in Ordine», «Nessuna porta configurata» sarebbero falsi)
-  const [d, doors, notif, unknown] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => null),
-    api("api/notifications").catch(() => null), can("persone") ? api("api/unknown-cards").catch(() => null) : []]);
-  return {d, doors, notif, unknown};
+  const [d, doors, notif, free] = await Promise.all([api("api/dashboard"), api("api/door-overview").catch(() => null),
+    api("api/notifications").catch(() => null), can("persone") ? freeCards().catch(() => null) : []]);
+  return {d, doors, notif, free};
 }
 async function viewDashboard(el) {
   let ctx, saved;
@@ -2510,7 +2512,7 @@ async function viewDoorDetail(el, id, doors) {
     ${d.errors.length ? `<div class="alert">${icon("alert")}<div class="grow"><b>Dati Parziali</b>${d.errors.map((x) => esc(cap(x))).join("<br>")}</div></div>` : ""}
     <div class="grid kpi" style="margin-bottom:16px">
       ${kpi("Accessi Oggi", d.today.granted, "concessi, aperture remote e uscite, come nel cruscotto")}
-      ${kpi("Negati Oggi", d.today.denied, "comprese le tessere sconosciute", d.today.denied ? "var(--warn)" : "")}
+      ${kpi("Negati Oggi", d.today.denied, "comprese le tessere non valide", d.today.denied ? "var(--warn)" : "")}
       ${kpi("Allarmi Oggi", d.today.alarms, "forzature e aperture troppo lunghe", d.today.alarms ? "var(--err)" : "")}
       ${kpi("Ultimo Passaggio", d.last ? esc(lastLabel(d.last)) : "—", d.last ? esc(relTime(d.last.ts)) : can("registro") ? "nessuno" : "serve il permesso di vedere il registro")}
     </div>
@@ -2964,7 +2966,7 @@ function renderPersonList() {
   const pick = $("#p-sort");
   if (pick && pick.value !== personFilters.sort) pick.value = personFilters.sort;
   if (!rows.length) {
-    morph(list, `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : can("persone_modifica") ? "Nessuna persona registrata: aggiungila con Nuova Persona, anche senza tessera, oppure passa una tessera sul lettore e registrala dalla pagina Da Registrare." : "Nessuna persona registrata."}</div>`);
+    morph(list, `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : can("persone_modifica") ? "Nessuna persona registrata: aggiungila con Nuova Persona, anche senza tessera." : "Nessuna persona registrata."}</div>`);
     return;
   }
   const sorted = sortPersons(rows, personFilters.sort);
@@ -3201,10 +3203,10 @@ function renderMissingBanner() {
   // Rosso come la notifica di gravità Critica (service.mass_missing: tutte, o almeno 3 e più del 10%), altrimenti giallo
   const mass = cards.length === total || (cards.length >= 3 && cards.length > total * 0.1);
   morph(box, `<div class="alert ${mass ? "err " : ""}stack">${icon("alert")}<div class="grow"><b>${plural(cards.length, "Tessera Non Presente", "Tessere Non Presenti")} sul Controller</b>
-      ${plural(persons, "persona ha", "persone hanno")} tessere che l'app conosce ma che sul controller non ci sono più, per esempio dopo un reset o una sostituzione. L'app non le cancella da sola: riscrivile sul controller con il profilo di accesso e la validità salvati, oppure toglile dall'app.
+      ${plural(persons, "persona ha", "persone hanno")} tessere che l'app conosce ma che sul controller non ci sono più, per esempio dopo un reset o una sostituzione. L'app non le cancella da sola: riscrivile sul controller con il profilo di accesso e la validità salvati, oppure toglile alle persone (tornano libere).
       ${reset ? "<br>Controller resettato o sostituito? Il Ripristino Completo rimette anche porte, lettori, ingressi e profili, poi le tessere." : ""}
       ${personFilters.state === "mancanti" ? "" : ' <a href="#persone/mancanti">Mostra Solo Queste</a>'}</div>
-    <div class="row w-persone">${reset ? '<a class="btn small primary" href="#impianti/ripristino">Ripristino Completo</a>' : ""}<button type="button" class="small${reset ? "" : " primary"}" id="m-restore">Riscrivi sul Controller</button><button type="button" class="small danger" id="m-forget">Togli dall'App</button></div></div>`);
+    <div class="row w-persone">${reset ? '<a class="btn small primary" href="#impianti/ripristino">Ripristino Completo</a>' : ""}<button type="button" class="small${reset ? "" : " primary"}" id="m-restore">Riscrivi sul Controller</button><button type="button" class="small danger" id="m-forget">Togli alle Persone</button></div></div>`);
   // Solo le tessere contate nell'avviso, non anche quelle segnate dopo (reset con la pagina aperta)
   $("#m-restore").onclick = () => restoreMissing(cards.map((c) => c.id));
   $("#m-forget").onclick = () => forgetMissing();
@@ -3233,11 +3235,11 @@ async function forgetMissing() {
   const n = cards.length;
   const total = store.persons.reduce((k, p) => k + p.cards.length, 0);
   const reset = n * 2 > total ? " Manca più della metà delle tessere: se il controller è stato resettato o sostituito, serve invece il Ripristino Completo, che le rimette." : "";
-  if (!await confirmBox("Togli dall'App", `Togliere dall'app ${n === 1 ? "la tessera non presente" : `le ${n} tessere non presenti`} sul controller? Le persone restano in anagrafica, anche senza tessere. Il registro dei passaggi resta.${reset}`, "Togli", true)) return false;
+  if (!await confirmBox("Togli alle Persone", `Togliere alle persone ${n === 1 ? "la tessera non presente" : `le ${n} tessere non presenti`} sul controller? ${n === 1 ? "Torna libera" : "Tornano libere"}; le persone restano in anagrafica.${reset}`, "Togli", true)) return false;
   const r = await run(() => api("api/missing-cards/forget", {method: "POST", body: {ids: cards.map((c) => c.id)}}), "",
-    n === 1 ? "Rimozione della tessera dall'app" : "Rimozione delle tessere dall'app");
+    n === 1 ? "Rimozione della tessera" : "Rimozione delle tessere");
   if (!r) return false;
-  toast(`${plural(r.cards, "tessera tolta", "tessere tolte")} dall'app`);
+  toast(plural(r.cards, "tessera ora libera", "tessere ora libere"));
   loadSummary();
   await loadPersons();
   renderPersonList();
@@ -3288,10 +3290,15 @@ const contactFields = (p = {}) => `<div class="fields-2">${field("Telefono", `<i
 // Matricola (codice interno, unica) e referente interno: anche loro solo nell'app
 const idFields = (p = {}) => `<div class="fields-2">${field("Matricola", `<input name="employee_id" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(p.employee_id || "")}" placeholder="facoltativa">`)}
   ${field("Referente Interno", `<input name="referent" autocomplete="off" maxlength="100" value="${esc(p.referent || "")}" placeholder="facoltativo">`)}</div>`;
-// Nome della tessera: quello scritto sopra la tessera fisica (sono tutte bianche), facoltativo e unico. Solo
-// nell'app: mai sul controller. Si scrive aggiungendo o registrando una tessera, e dopo dalla scheda (Codice). Lo stesso
-// suggerimento ovunque, senza esempi inventati: ogni impianto scrive i suoi codici
-const PRINTED_CODE_HINT = "Il codice scritto sulla tessera. Resta solo nell'app.";
+// Nome Tessera: quello scritto sopra la tessera fisica (sono tutte bianche), facoltativo e unico. Solo nell'app: mai sul
+// controller. Si scrive caricando la tessera, e dopo dall'elenco delle tessere o dalla scheda (Nome). Lo stesso
+// suggerimento ovunque, senza esempi inventati: ogni impianto scrive i suoi nomi
+const PRINTED_CODE_HINT = "Quello scritto sulla tessera. Resta solo nell'app.";
+// Tessere Libere dell'elenco: quelle da dare a una persona
+const freeCards = async () => (await api("api/cards")).cards.filter((c) => c.person_id === null);
+// Campo del Codice Tessera di una tessera da dare: passata sul lettore da banco, o scelta tra le Libere per nome
+const cardField = (free, value = "", hint = "") => field("Codice Tessera", `<input name="card" class="mono" autocomplete="off" spellcheck="false" list="free-cards" value="${esc(value)}" placeholder="passala sul lettore">
+  <datalist id="free-cards">${free.map((c) => `<option value="${esc(c.number)}" label="${esc(c.printed_code)}"></option>`).join("")}</datalist>`, hint);
 const printedCodeField = (value = "", hint = PRINTED_CODE_HINT) =>
   field("Nome Tessera", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo">`, hint);
 // Telefono ed email incollati da una pagina web, da un PDF o da Word, puliti come fa il server mentre si scrivono:
@@ -3315,13 +3322,14 @@ const mailtoHref = (email) => "mailto:" + encodeURIComponent(email).replace(/%40
 const telHref = (phone) => "tel:" + phone.replace(/[^\d+]/g, "");
 async function newPerson(card = "") {
   await loadCategories();
+  const free = await freeCards().catch(() => []);
   const created = await modal({
     title: "Nuova Persona",
     body: `${nameFields()}
       ${field("Ditta o Reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
       ${contactFields()}
       ${idFields()}
-      ${field("Codice Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
+      ${cardField(free, card, card ? "" : "Senza tessera la persona non apre nessuna porta: si aggiunge dopo dalla sua scheda.")}
       <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField()}</div>
       ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Anagrafica → Tipologie.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
@@ -3447,8 +3455,8 @@ async function openPerson(id) {
           <div class="ev-icon ${cardActive(c) ? "k-accent" : "k-muted"}">${icon("card")}</div>
           <div class="grow">${c.printed_code ? `<div class="title" title="Nome Tessera">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="title mono">${esc(c.number)}</div>`}<div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
-          <button type="button" class="small" data-card-code="${c.id}" aria-label="Nome della tessera ${esc(c.number)}" title="Nome Tessera">${icon("edit")}Codice</button>
-          <button type="button" class="small danger" data-del-card="${c.id}" data-refocus="[data-add-card]">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
+          <button type="button" class="small" data-card-code="${c.id}" aria-label="Nome della tessera ${esc(c.number)}" title="Nome Tessera">${icon("edit")}Nome</button>
+          <button type="button" class="small danger" data-del-card="${c.id}" data-refocus="[data-add-card]">Togli</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
         <dl class="props"><dt>Foto</dt><dd>${photoCell}</dd>
           <dt>Nome</dt><dd>${esc(p.first_name || "—")}</dd><dt>Cognome</dt><dd>${esc(p.last_name || "—")}</dd>
@@ -3461,7 +3469,7 @@ async function openPerson(id) {
           <dl class="props" style="margin-top:8px"><dt>Codice sul Controller</dt><dd><code>${esc(p.axis_user_token)}</code></dd></dl></details>` : ""}</div>
       ${can("registro") ? `<div class="card flush"><h2>Ultimi Passaggi<span class="spacer"></span><a class="small-text" href="#registro" data-person-log>Apri nel Registro</a></h2>
         <div class="list" style="margin-top:6px">${p.events.length ? p.events.map((e) => eventItem(e)).join("") : '<div class="empty">Nessun passaggio registrato.</div>'}</div></div>` : ""}
-      <div class="w-persone" style="text-align:center;margin:8px 0 20px"><button type="button" class="danger" data-del-person>${icon("trash")}${p.cards.length ? "Elimina Persona e Tessere" : "Elimina Persona"}</button></div>
+      <div class="w-persone" style="text-align:center;margin:8px 0 20px"><button type="button" class="danger" data-del-person>${icon("trash")}Elimina Persona</button></div>
     </div></div>`;
   const close = () => { sheet.close(); };
   sheet.onclose = () => { if (location.hash.startsWith("#persone/")) history.replaceState(null, "", "#persone"); };
@@ -3549,11 +3557,12 @@ async function openPerson(id) {
     if (ok) reload();
   };
   $("[data-add-card]", sheet).onclick = async () => {
+    const free = await freeCards().catch(() => []);
     const ok = await modal({
       title: "Aggiungi Tessera a " + p.name,
-      body: `<div class="fields-2">${field("Codice Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`)}
-        ${printedCodeField()}</div>
-        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.</p>`,
+      body: `<div class="fields-2">${cardField(free)}
+        ${printedCodeField("", PRINTED_CODE_HINT + " Vuoto: resta quello che ha già.")}</div>
+        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."}</p>`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
         (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card"), printed_code: val(dlg, "printed_code")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false}],
     });
@@ -3568,7 +3577,7 @@ async function openPerson(id) {
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
         const code = val(dlg, "printed_code");
         if (code === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
-        return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code}}), code ? "Codice stampato salvato" : "Codice stampato tolto", "Salvataggio del nome tessera")) || false;
+        return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code}}), code ? "Nome tessera salvato" : "Nome tessera tolto", "Salvataggio del nome tessera")) || false;
       }}],
     });
     if (ok) reload();
@@ -3584,17 +3593,17 @@ async function openPerson(id) {
   $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
     const last = p.cards.length === 1;
-    if (!await confirmBox("Elimina Tessera", `Eliminare la tessera <code>${esc(card.number)}</code> ${card.missing_since ? "dall'app? Sul controller non c'è già più." : "dal controller?"}` + (last ? ` È l'unica tessera: <b>${esc(p.name)}</b> resta in anagrafica senza tessere, e si elimina solo con Elimina Persona.` : ""), "Elimina", true)) return;
-    if (await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), last ? "Tessera eliminata: la persona resta in anagrafica" : "Tessera eliminata",
-      card.missing_since ? "Eliminazione della tessera dall'app" : "Eliminazione della tessera dal controller")) reload();
+    if (!await confirmBox("Togli Tessera", `Togliere la tessera <code>${esc(card.number)}</code> a <b>${esc(p.name)}</b>? Torna tra le tessere libere${card.missing_since ? "." : " e non apre più."}` + (last ? ` È l'unica: <b>${esc(p.name)}</b> resta in anagrafica senza tessere.` : ""), "Togli", true)) return;
+    if (await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), "Tessera tolta: ora è libera",
+      card.missing_since ? "Rimozione della tessera" : "Rimozione della tessera dal controller")) reload();
   });
   $("[data-del-person]", sheet).onclick = async () => {
-    const what = p.cards.length ? `<b>${esc(p.name)}</b> e ${plural(p.cards.length, "tessera", "tessere")} dal controller? Non apriranno più la porta.` : `<b>${esc(p.name)}</b> dall'anagrafica? Non ha tessere.`;
+    const what = p.cards.length ? `<b>${esc(p.name)}</b>? ${p.cards.length === 1 ? "La sua tessera torna libera e non apre più." : `Le sue ${p.cards.length} tessere tornano libere e non aprono più.`}` : `<b>${esc(p.name)}</b> dall'anagrafica? Non ha tessere.`;
     if (!await confirmBox("Elimina Persona", `Eliminare ${what} Il registro dei passaggi resta.`, "Elimina", true)) return;
     // Con le tessere contate nella conferma: se intanto sono cambiate (per esempio «Non ha tessere» e una appena
     // assegnata) il server non elimina niente
     const result = await runPerson(() => api(`api/persons/${id}?cards=${p.cards.map(c => c.id).join(",")}`, {method: "DELETE"}), "Persona eliminata",
-      p.cards.length ? "Eliminazione della persona e delle tessere dal controller" : "Eliminazione della persona");
+      p.cards.length ? "Eliminazione della persona e rimozione delle tessere dal controller" : "Eliminazione della persona");
     if (result?.stale) reloadStale(result.stale);
     else if (result) { close(); await loadPersons(); renderPersonList(); }
   };
@@ -3603,49 +3612,149 @@ async function openPerson(id) {
   if (!sheet.open) sheet.showModal();
 }
 
-// ---------- Da registrare ----------
-function unknownList(data) {
-  return data.length ? data.map((u) => `<div class="item" data-key="${esc(u.number)}">
-      <div class="ev-icon k-warn">${icon("question")}</div>
-      <div class="grow"><div class="title mono">${esc(u.number)}</div>
-        <div class="meta"><span>ultima lettura ${esc(relTime(u.last_seen))}</span><span>${plural(u.count, "lettura", "letture")}</span>${u.first_seen !== u.last_seen ? `<span>prima ${esc(fmtDateTime(u.first_seen))}</span>` : ""}</div></div>
-      <div class="row w-persone item-actions">
-        <button type="button" class="small primary" data-new="${esc(u.number)}">Nuova Persona</button>
-        <button type="button" class="small" data-assign="${esc(u.number)}">A Persona Esistente</button>
-        <button type="button" class="small ghost" data-ignore="${esc(u.number)}">Ignora</button></div></div>`).join("")
-    : `<div class="empty">${icon("check")}<br>Nessuna tessera da registrare.<br>Passa una tessera nuova sul lettore: comparirà qui in pochi secondi.</div>`;
+// ---------- Tessere ----------
+// Elenco delle tessere fisiche: Libere (solo nell'app, mai sul controller) o assegnate a una persona. Si caricano con il
+// lettore da banco, che scrive il Codice Tessera come una tastiera e manda Invio: il campo resta pronto per la
+// tessera dopo, anche mentre la precedente si sta ancora salvando
+const cardFilters = {q: "", state: ""};
+const cardsView = {cards: [], next: "", queue: [], saving: false};
+// Per nome come si legge («Numero 2» prima di «Numero 10»), poi quelle senza nome per codice
+const compareCards = (a, b) => (!a.printed_code - !b.printed_code) || (a.printed_code || "").localeCompare(b.printed_code || "", "it", {numeric: true, sensitivity: "base"}) || a.number.localeCompare(b.number);
+function cardMatches(c) {
+  if (cardFilters.state === "libere" && c.person_id !== null) return false;
+  if (cardFilters.state === "assegnate" && c.person_id === null) return false;
+  const q = cardFilters.q.trim().toLowerCase();
+  return !q || [c.printed_code, c.number, c.person_name].some((v) => (v || "").toLowerCase().includes(q));
 }
-async function refreshUnknown() {
-  if (!$("#unk-list")) return render();
-  const data = await api("api/unknown-cards").catch(() => null);
-  if (data && $("#unk-list")) morph($("#unk-list"), unknownList(data));
+function cardRow(c) {
+  const free = c.person_id === null;
+  const state = free ? '<span class="pill ok">Libera</span>'
+    : `<a href="#persone/${c.person_id}">${esc(c.person_name)}</a>${c.enabled ? "" : ' <span class="pill warn">Sospesa</span>'}${c.missing_since ? ' <span class="pill err">Non sul Controller</span>' : ""}`;
+  return `<div class="item" data-key="${c.id}">
+      <div class="ev-icon ${free ? "k-muted" : "k-accent"}">${icon("card")}</div>
+      <div class="grow"><div class="title">${c.printed_code ? esc(c.printed_code) : '<span class="muted">Senza Nome</span>'}</div>
+        <div class="meta"><span class="mono">${esc(c.number)}</span><span>${state}</span></div></div>
+      <div class="row w-persone item-actions"><button type="button" class="small" data-card-name="${c.id}">${icon("edit")}Nome</button>
+        ${free ? `<button type="button" class="small" data-card-give="${c.id}">Assegna</button><button type="button" class="small ghost danger" data-card-del="${c.id}">Elimina</button>` : ""}</div></div>`;
 }
-async function viewUnknown(el) {
-  let data;
-  try { [data] = await Promise.all([api("api/unknown-cards"), loadPersons()]); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
-  el.innerHTML = `<p class="muted" style="margin-top:0">Tessere passate sul lettore che non sono registrate. Assegnale a una persona nuova o a una già presente: diventano subito attive sul controller.</p>
-    <div class="card flush"><div class="list" id="unk-list">${unknownList(data)}</div></div>`;
+function cardRows() {
+  const rows = cardsView.cards.filter(cardMatches).sort(compareCards);
+  return rows.length ? rows.map(cardRow).join("") : `<div class="empty">${cardsView.cards.length ? "Nessuna tessera corrisponde." : "Nessuna tessera caricata."}</div>`;
+}
+// Elenco e conteggio ridisegnati; il nome proposto nel modulo, se nessuno lo sta scrivendo
+function paintCards() {
+  if (!$("#c-list")) return;
+  morph($("#c-list"), cardRows());
+  const free = cardsView.cards.filter((c) => c.person_id === null).length;
+  $("#c-count").textContent = `${plural(cardsView.cards.length, "tessera", "tessere")} · ${plural(free, "libera", "libere")}`;
+  const name = $("#c-load [name=printed_code]");
+  if (name && !name.dataset.edited) name.value = cardsView.next;
+}
+async function loadCards() {
+  const data = await api("api/cards");
+  Object.assign(cardsView, {cards: data.cards, next: data.next_name});
+}
+async function refreshCards() {
+  if (!$("#c-list")) return render();
+  // Con tessere ancora da salvare l'elenco lo aggiorna chi le salva
+  if (cardsView.saving || !await loadCards().then(() => true, () => false)) return;
+  paintCards();
+}
+// Esito dell'ultima tessera caricata, sotto il modulo: un errore resta finché non se ne carica un'altra
+function cardNote(text, error = false) {
+  const note = $("#c-note");
+  if (!note) return;
+  note.className = error ? "alert err" : "small-text muted";
+  note.setAttribute("role", error ? "alert" : "status");
+  note.innerHTML = error ? `${icon("alert")}<div class="grow">${esc(text)}</div>` : esc(text);
+  paintIcons(note);
+}
+// Salva una alla volta le tessere in attesa. Senza il riquadro di attesa, che fermerebbe i tasti: il lettore scrive già
+// la tessera dopo
+async function saveLoadedCards() {
+  if (cardsView.saving) return;
+  cardsView.saving = true;
+  while (cardsView.queue.length) {
+    const body = cardsView.queue.shift();
+    try {
+      const saved = await busy(false, () => api("api/cards", {method: "POST", body}));
+      cardsView.next = saved.next_name;
+      cardsView.cards.push({...saved.card, person_name: ""});
+      cardNote(`Caricata: ${saved.card.printed_code || "senza nome"} · ${saved.card.number}`);
+    } catch (err) {
+      cardNote(`${body.card}: ${cap(err.message)}`, true);
+    }
+    paintCards();
+  }
+  cardsView.saving = false;
+}
+async function viewCards(el) {
+  try { await loadCards(); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
+  if (!el.isConnected) return;
+  Object.assign(cardsView, {queue: [], saving: false});
+  el.innerHTML = `<form class="card w-persone" id="c-load" autocomplete="off"><h2>Carica Tessere</h2>
+      <div class="fields-2">${field("Codice Tessera", '<input name="card" class="mono" autocomplete="off" spellcheck="false" maxlength="80">', "Passa la tessera sul lettore da banco.")}
+        ${field("Nome Tessera", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(cardsView.next)}">`, PRINTED_CODE_HINT)}</div>
+      <div class="row"><button type="submit" class="primary">${icon("plus")}Carica</button></div>
+      <div id="c-note" class="small-text muted" role="status" style="margin-top:10px"></div></form>
+    <div class="toolbar"><input type="search" id="c-q" placeholder="Cerca nome, codice, persona…" aria-label="Cerca tessere" value="${esc(cardFilters.q)}">
+      <select id="c-state" aria-label="Mostra"><option value="">Tutte le Tessere</option><option value="libere">Libere</option><option value="assegnate">Assegnate</option></select></div>
+    <div class="card flush"><h2 style="padding-bottom:12px"><span id="c-count" class="muted small-text"></span></h2><div class="list" id="c-list"></div></div>`;
+  $("#c-state").value = cardFilters.state;
+  paintCards();
+  const form = $("#c-load"), code = $("[name=card]", form), name = $("[name=printed_code]", form);
+  // Scritto a mano: vale per la prossima tessera. Se no il nome lo propone l'app al salvataggio, così più tessere
+  // passate di fila prendono ognuna il suo
+  name.oninput = () => { name.dataset.edited = "1"; };
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const card = code.value.trim();
+    // Invio senza tessera (un secondo Invio del lettore): niente da salvare
+    if (!card) { code.focus(); return; }
+    cardsView.queue.push({card, printed_code: name.dataset.edited ? name.value.trim() : null});
+    code.value = "";
+    delete name.dataset.edited;
+    name.value = cardsView.next;
+    code.focus();
+    saveLoadedCards();
+  };
+  $("#c-q").oninput = (e) => { cardFilters.q = e.target.value; paintCards(); };
+  $("#c-state").onchange = (e) => { cardFilters.state = e.target.value; paintCards(); };
   el.onclick = async (e) => {
-    const b = e.target.closest("button");
+    const b = e.target.closest("button[data-card-name], button[data-card-give], button[data-card-del]");
     if (!b) return;
-    if (b.dataset.new) {
-      if (await newPerson(b.dataset.new)) render();
-    } else if (b.dataset.assign) {
-      const number = b.dataset.assign;
+    const card = cardsView.cards.find((c) => c.id === Number(b.dataset.cardName || b.dataset.cardGive || b.dataset.cardDel));
+    if (!card) return;
+    const shown = `${card.printed_code ? `<b>${esc(card.printed_code)}</b> ` : ""}<code>${esc(card.number)}</code>`;
+    let done = false;
+    if (b.dataset.cardName) {
+      done = await modal({
+        title: "Nome Tessera",
+        body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", PRINTED_CODE_HINT + " Vuoto per toglierlo.")}`,
+        actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
+          const value = val(dlg, "printed_code");
+          if (value === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
+          return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: value}}), value ? "Nome tessera salvato" : "Nome tessera tolto", "Salvataggio del nome tessera")) || false;
+        }}],
+      });
+    } else if (b.dataset.cardGive) {
+      if (!await run(() => loadPersons())) return;
       // Nello stesso ordine dell'elenco Persone: per cognome
       const options = [...store.persons].sort(comparePersons).map((p) => `<option value="${p.id}">${esc(p.name)}${p.company ? " · " + esc(p.company) : ""}</option>`).join("");
-      const ok = await modal({
-        title: "Assegna Tessera " + number,
-        body: store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "La tessera avrà lo stesso accesso e la stessa validità delle altre tessere della persona; a chi non ne ha, quelli della sua tipologia.")
-          + printedCodeField() : '<p class="muted">Nessuna persona registrata.</p>',
-        actions: [{label: "Annulla", value: null}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
-          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: number, printed_code: val(dlg, "printed_code")}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
+      done = await modal({
+        title: "Assegna Tessera",
+        body: `<p style="margin:0 0 12px">Tessera ${shown}</p>` + (store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "Avrà l'accesso delle altre tessere della persona, o della sua tipologia.") : '<p class="muted">Nessuna persona registrata.</p>'),
+        actions: [{label: "Annulla", value: null}, {label: "Nuova Persona", value: "new"}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
+          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: card.number}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
       });
-      if (ok) { loadSummary(); render(); }
-    } else if (b.dataset.ignore) {
-      if (await run(() => api(`api/unknown-cards/${encodeURIComponent(b.dataset.ignore)}`, {method: "DELETE"}), "", "Rimozione della tessera dall'elenco")) { loadSummary(); render(); }
+      if (done === "new") done = await newPerson(card.number);
+    } else if (await confirmBox("Elimina Tessera", `Eliminare per sempre la tessera ${shown}? Solo se è rotta o persa: per darla a un'altra persona basta assegnarla.`, "Elimina", true)) {
+      done = await run(() => api(`api/cards/${card.id}/forever`, {method: "DELETE"}), "Tessera eliminata", "Eliminazione della tessera");
     }
+    if (done) { loadSummary(); render(); }
   };
+  // Con un mouse (la postazione con il lettore da banco) il campo è già pronto; sul telefono non si apre la tastiera
+  if (can("persone_modifica") && matchMedia("(pointer: fine)").matches) code.focus();
 }
 
 // ---------- Registro ----------
@@ -3726,7 +3835,6 @@ function eventDetail(e) {
     ${props(rows)}
     <div class="row" style="margin-top:14px">
       ${e.person_id && can("persone") ? `<a class="btn small" href="#persone/${e.person_id}">${icon("user")}Scheda Persona</a>` : ""}
-      ${e.kind === "sconosciuta" && can("persone_modifica") ? `<a class="btn small primary" href="#da-registrare">${icon("cardplus")}Registra Tessera</a>` : ""}
       ${e.person_name ? `<button type="button" class="small" data-same="${esc(e.person_name)}" data-same-id="${e.person_id || ""}">Tutti i Suoi Eventi</button>` : ""}
     </div>`;
 }
@@ -4263,7 +4371,7 @@ function notifCard(i) {
     i.count > 1 ? `${i.count} ${["denied", "unknown_card"].includes(i.type) ? "tentativi" : "volte"} in ${plural(minutes, "minuto", "minuti")}` : "",
     i.count > 1 ? `${esc(dayTime(i.first_ts))} – ${esc(fmtTime(i.ts))}` : i.type === "expiring" ? "" : `<span title="${esc(fmtFull(i.ts))}">${esc(dayTime(i.ts))}</span>`,
   ].filter(Boolean).join(" · ");
-  // Solo verso una pagina permessa (#persone/tipologie, #da-registrare, #impianti/stato…): le altre portano alla home.
+  // Solo verso una pagina permessa (#persone/tipologie, #tessere, #impianti/stato…): le altre portano alla home.
   // Di Impianti chi ha solo il permesso Backup vede solo la scheda Backup
   const allowed = (l) => allowedRoute(l.slice(1).split("/")[0]) && (!l.startsWith("#impianti") || can("impianti") || l === "#impianti/backup");
   const target = i.link === "#persone/tipologie" ? categoriesLink() : i.link;
@@ -4310,7 +4418,7 @@ function notifRow(e) {
   return `<tr data-event="${e.id}" tabindex="0" title="${esc(fmtFull(e.ts))}">
     <td class="n-time">${esc(plantDay(e.ts) === plantDay() ? fmtTime(e.ts) : dayTime(e.ts))}</td>
     <td><span class="n-ev"><span class="dot ${e.kind === "negato" ? "warn" : "err"}"></span>${esc(label)}</span></td>
-    <td>${who}${unknown && e.card ? ' <span class="n-unk">Sconosciuta</span>' : ""}</td>
+    <td>${who}${unknown && e.card ? ' <span class="n-unk">Non Valida</span>' : ""}</td>
     <td class="n-reason">${esc(e.detail || "")}</td>
     ${multiDoor() ? `<td>${esc(eventPlace(e))}</td>` : ""}
     <td>${n ? (n.seen ? '<span class="muted small-text">Visto</span>' : '<span class="n-state">Da Gestire</span>') : '<span class="muted small-text" title="Non è diventato una notifica: tipo disattivato o già passato">—</span>'}</td>
@@ -6278,7 +6386,7 @@ async function viewSettings(el, sub) {
   const ioCard = `<div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio, «Nome Cognome» in una colonna, diviso al primo spazio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. Il file esportato ha in più <code>ultimo_accesso; telefono; email; matricola; referente; nome_tessera</code>, che l'importazione ignora: telefono, email, matricola e referente si scrivono nella scheda della persona, il Nome Tessera con Codice sulla riga della tessera. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>`;
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio, «Nome Cognome» in una colonna, diviso al primo spazio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. Il file esportato ha in più <code>ultimo_accesso; telefono; email; matricola; referente; nome_tessera</code>, che l'importazione ignora: telefono, email, matricola e referente si scrivono nella scheda della persona, il Nome Tessera con Nome sulla riga della tessera. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>`;
   // Dall'accesso diretto senza permessi tecnici: le opzioni dell'app ed Esporta e Importa, senza Home Assistant, broker
   // e database dell'add-on (il server non li manda)
   if (hideHA()) body.innerHTML = `
