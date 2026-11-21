@@ -45,6 +45,11 @@ TYPES = {
     "denied": ("Accessi Negati", "Accessi negati a persone registrate.", "urgent"),
     "expiring": ("Tessere in Scadenza", "Tessere che scadono nei prossimi 7 giorni.", "urgent"),
     "camera": ("Telecamere Non Disponibili", "Una telecamera non risponde: l'app la ricontrolla da sola.", "urgent"),
+    "intercom_missing": (
+        "Videocitofoni Non Trovati",
+        "Il videocitofono scelto per una porta non è tra quelli annunciati sul broker.",
+        "urgent",
+    ),
     "controller_changed": (
         "Controller Cambiato",
         "All'indirizzo del controller risponde un apparecchio diverso.",
@@ -72,6 +77,7 @@ PLAIN_TYPES = {
         "Eventi del controller non in arrivo in diretta o videocitofoni senza collegamento all'app.",
     ),
     "clock": ("Orologio Sbagliato", "Ora o fuso orario diversi tra controller e server."),
+    "intercom_missing": ("Videocitofoni Non Trovati", "Il videocitofono scelto per una porta non è collegato all'app."),
     "database": ("Database dell'App", TYPES["database"][1]),
 }
 # Eventi del controller che non arrivano, detto senza WebSocket e MQTT: il recupero dal registro del controller li porta
@@ -88,6 +94,7 @@ FAULT_TYPES = (
     "programming",
     "mqtt",
     "camera",
+    "intercom_missing",
     "controller_changed",
     "clock",
     "missing_cards",
@@ -224,6 +231,7 @@ class NotificationService:
         intercoms: bool = False,
         door_names: dict[str, str],
         cameras: list[dict] | None = None,
+        intercoms_missing: list[dict] | None = None,
         pressed: list[dict] | None = None,
         controllers: list[dict] | None = None,
         missing: dict | None = None,
@@ -249,6 +257,9 @@ class NotificationService:
         pressed: Pulsanti Uscita e Relè Citofono premuti adesso, con l'ora dell'app da cui lo sono (main._pressed).
         ha_integration: l'integrazione con Home Assistant, che passa dal broker MQTT, è attiva.
         intercoms: ci sono videocitofoni, i cui eventi arrivano dal broker MQTT.
+        intercoms_missing: porte il cui videocitofono non è tra quelli annunciati sul broker, o non ha il relè della
+        porta (main._intercoms_missing): door_id, controller_id, door, door_token, name, relay (None: videocitofono
+        non trovato), found (nomi dei videocitofoni annunciati) e since.
 
         plain: come la notifica si mostra a chi entra dall'accesso diretto senza permessi tecnici (vedi plain.py e
         listing): False la nasconde (riguarda solo Home Assistant o MQTT e non ci possono fare niente), un dizionario
@@ -733,6 +744,27 @@ class NotificationService:
                 cam["ts"],
                 door=", ".join(cam.get("doors") or []),
                 link="#impianti",
+            )
+        for missing in intercoms_missing or []:
+            # Nome cambiato nell'add-on Hikvision senza il numero di serie nella porta, videocitofono tolto: chiamate e
+            # aperture non arrivano più (17/11). Un add-on fermo non si vede: le configurazioni restano sul broker
+            where = f"{missing['door']} · {missing['name']}"
+            if missing["relay"] is not None:
+                text = f"{where} · relè {missing['relay']} non trovato"
+            elif missing["found"]:
+                text = f"{where} · trovati: {', '.join(missing['found'])}"
+            else:
+                text = f"{where} · nessun videocitofono annunciato"
+            add(
+                "intercom_missing",
+                _episode_id(f"intercom_missing:{missing['door_id']}", missing["since"]),
+                "warn",
+                "Videocitofono Non Trovato",
+                text,
+                missing["since"],
+                door_token=missing["door_token"],
+                link=f"#impianti/c{missing['controller_id']}/citofoni",
+                plain={"text": f"{where}. {ASK_ADMIN[0].upper()}{ASK_ADMIN[1:]}."},
             )
         for button in pressed or []:
             # Rimasto premuto: il controller non vede più le pressioni, e la porta non si apre finché non si libera.

@@ -62,6 +62,7 @@ FIELD_LABELS = {
     "intercom_open_door": '"Apri" dal Videocitofono Apre Questa Porta',
     "intercom_relay": "Relè del Tasto Apri",
     "intercom_mqtt_prefix": "Prefisso MQTT del Videocitofono",
+    "intercom_serial": "Numero di Serie del Videocitofono",
     "mqtt_topic_prefix": "Prefisso MQTT",
     "model": "Modello",
     "serial": "Numero di Serie",

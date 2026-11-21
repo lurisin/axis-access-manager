@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.28.11
+
+- **Videocitofono scelto dall'elenco.** Nella finestra del videocitofono non si scrive più il nome: si sceglie tra quelli che l'add-on Hikvision Doorbell annuncia sul broker. Sono grigi quelli con i relè già usati da altre porte. Il Prefisso MQTT non c'è più.
+- **Legato al numero di serie.** Se cambi il nome nell'add-on Hikvision, la porta lo segue da sola: il 17/11 il nome cambiato ha fatto perdere chiamate e aperture per un giorno. Le porte già configurate prendono il numero di serie dal nome, senza fare niente.
+- **Videocitofono Non Trovato.** Etichetta nella scheda Videocitofoni e notifica quando il videocitofono di una porta, o il suo relè, non è più annunciato sul broker. Un add-on Hikvision fermo non si vede: i videocitofoni restano annunciati.
+
 ## 0.28.10
 
 - **Pulsante Bloccato.** Un Pulsante Uscita o Relè Citofono su un AUX premuto da più di un minuto diventa una notifica, con il nome dell'ingresso, la porta e da quanto è premuto. Resta tra i guasti finché non si libera: intanto la porta non si apre con lui. Il pulsante sul morsetto REX non si controlla, perché il controller non ne manda lo stato.

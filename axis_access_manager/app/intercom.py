@@ -20,11 +20,12 @@ quell'ingresso non apre, così la porta restava chiusa. Tolto nella 0.28.5.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import logging
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -144,6 +145,8 @@ class IntercomSettings:
     open_door: bool = False
     relay: int = 1
     state_prefix: str = "hmd"
+    # Numero di serie del videocitofono (vedi intercom_directory): "" se la porta lo conosce solo per nome
+    serial: str = ""
 
 
 class IntercomBridge:
@@ -174,6 +177,13 @@ class IntercomBridge:
         # Disponibilità pubblicata da ha-mqtt-discoverable (manual_availability): un "online" non conservato è il
         # bridge che torna
         self.availability_topics = [f"{call}/availability", f"{base}/switch/{device}/{relay}/availability"]
+        # Topic seguiti davvero: quelli del nome e, riconosciuto il videocitofono dal numero di serie, quelli di tutti
+        # i suoi nomi (vedi bind). Il relè è sempre quello della porta: mai i messaggi di un altro videocitofono
+        self._call_topics = {self.call_topic}
+        self._call_availability = {self.availability_topics[0]}
+        self._relay_topics = {self.relay_topic}
+        self._attributes_topics = {self.relay_attributes_topic}
+        self._relay_availability = {self.availability_topics[1]}
         # Stesso citofono su due porte (relè 1 e 2): la chiamata è una e la segue il bridge della prima porta
         self.call: IntercomBridge | None = None
         self._call_state = "idle"
@@ -210,7 +220,65 @@ class IntercomBridge:
     @property
     def subscriptions(self) -> list[str]:
         """Topic da seguire: chiamata, relè e disponibilità del bridge."""
-        return [*self.topics, *self.availability_topics]
+        known = [*self.topics, *self.availability_topics]
+        others = sorted(set().union(*self._sets()) - set(known))
+        return [topic for topic in known if self.listens(topic)] + others
+
+    def _sets(self) -> tuple[set[str], ...]:
+        return (
+            self._call_topics,
+            self._call_availability,
+            self._relay_topics,
+            self._attributes_topics,
+            self._relay_availability,
+        )
+
+    def listens(self, topic: str) -> bool:
+        return any(topic in topics for topics in self._sets())
+
+    def bind(self, device: dict, exclude: Collection[str] = ()) -> list[str]:
+        """Videocitofono riconosciuto dal numero di serie (un dispositivo di IntercomDirectory.devices): si seguono
+        anche la chiamata e il relè della porta con tutti i nomi che ha sul broker, così un cambio di nome nell'add-on
+        non lo fa più perdere. exclude: topic di altri videocitofoni. Restituisce i topic nuovi, da seguire."""
+        if self.settings.serial != device["serial"]:
+            self.settings = dataclasses.replace(self.settings, serial=device["serial"])
+        call = device["call"]
+        relay = device["relay_topics"].get(self.settings.relay) or {}
+        added: list[str] = []
+        for own, topics in (
+            (self._call_topics, call["state"]),
+            (self._call_availability, call["availability"]),
+            (self._relay_topics, relay.get("state", [])),
+            (self._attributes_topics, relay.get("attributes", [])),
+            (self._relay_availability, relay.get("availability", [])),
+        ):
+            added += self._listen(own, (t for t in topics if t not in exclude))
+        return added
+
+    def take_calls(self, other: IntercomBridge, exclude: Collection[str] = ()) -> list[str]:
+        """Stesso videocitofono di una porta che viene dopo (relè 2): la chiamata la segue questo bridge, anche sui
+        topic che conosce solo l'altro. exclude: topic di altri videocitofoni. Restituisce i topic nuovi."""
+        added = self._listen(self._call_topics, (t for t in other._call_topics if t not in exclude))
+        added += self._listen(self._call_availability, (t for t in other._call_availability if t not in exclude))
+        return added
+
+    def forget(self, topics: set[str]) -> None:
+        """Topic che adesso annuncia un altro videocitofono (ha preso il nome che aveva questo): non si seguono più."""
+        for own in self._sets():
+            own -= topics
+
+    def rename(self, name: str) -> None:
+        """Nome cambiato nell'add-on: il registro usa quello nuovo."""
+        self.settings = dataclasses.replace(self.settings, name=name)
+
+    def _listen(self, own: set[str], topics: Iterable[str]) -> list[str]:
+        added = [topic for topic in dict.fromkeys(topics) if topic and topic not in own]
+        if added:
+            own.update(added)
+            # Topic appena seguiti: i primi messaggi possono essere pressioni vecchie (l'«online» del bridge è
+            # arrivato prima, o solo conservato), come dopo un ricollegamento
+            self._came_back("il ritorno del videocitofono")
+        return added
 
     @property
     def call_state(self) -> str:
@@ -229,20 +297,22 @@ class IntercomBridge:
         # Gli stati sono conservati dal broker: alla riconnessione non sono eventi nuovi. La fine chiamata arrivata
         # mentre l'app era scollegata allinea però lo stato, senza eventi: altrimenti la chiamata dopo si perde
         text = payload.decode(errors="replace").strip()
-        if topic in self.availability_topics:
+        if topic in self._call_availability or topic in self._relay_availability:
             self._on_availability(text.lower(), retained)
             return
+        if not self.listens(topic):
+            return
         if retained:
-            if topic == self.call_topic and text.lower() in IDLE_STATES:
+            if topic in self._call_topics and text.lower() in IDLE_STATES:
                 self._call_state, self._ring_at, self._answered = text.lower(), None, False
             return
         now = self._clock()
         quiet = self._heard_at is None or now - self._heard_at >= BRIDGE_SILENCE_SECONDS
         self._heard_at = now
         self.last_message_at = now_iso()
-        if topic == self.call_topic:
+        if topic in self._call_topics:
             self._on_call_state(text)
-        elif topic == self.relay_attributes_topic:
+        elif topic in self._attributes_topics:
             try:
                 attributes = json.loads(text)
             except ValueError:
@@ -250,7 +320,7 @@ class IntercomBridge:
             if isinstance(attributes, dict):
                 self._attributes = attributes
                 self._attributes_at = self._clock()
-        elif topic == self.relay_topic:
+        elif topic in self._relay_topics:
             state = text.upper()
             if quiet and state == "OFF" and self._relay_state != "ON":
                 # Relè spento ripubblicato dopo un silenzio: il bridge è ripartito

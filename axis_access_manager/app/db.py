@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS doors (
     intercom_open_door INTEGER NOT NULL DEFAULT 0,
     intercom_relay INTEGER NOT NULL DEFAULT 1,
     intercom_mqtt_prefix TEXT NOT NULL DEFAULT 'hmd',
+    intercom_serial TEXT NOT NULL DEFAULT '',
     UNIQUE (controller_id, door_token)
 );
 CREATE TABLE IF NOT EXISTS sites (
@@ -236,8 +237,9 @@ LEGACY_COLUMNS = [
 # a ogni avvio se mancano (vedi Database._person_details)
 # Colonne della porta aggiunte dopo lo schema 10: il ritardo della foto della telecamera, in secondi (0.28.7). Nella
 # 0.28.7 stava in LEGACY_COLUMNS, che vale solo per la migrazione 1: sui database esistenti la colonna non c'era e ogni
-# salvataggio di una porta finiva in errore 500
-DOOR_COLUMNS = (("snapshot_delay", "REAL NOT NULL DEFAULT 0"),)
+# salvataggio di una porta finiva in errore 500. Il numero di serie del videocitofono (0.28.11): la porta lo segue anche
+# quando il nome cambia nell'add-on Hikvision
+DOOR_COLUMNS = (("snapshot_delay", "REAL NOT NULL DEFAULT 0"), ("intercom_serial", "TEXT NOT NULL DEFAULT ''"))
 
 # Numeri mai riusati per controller, porte, aree, strutture e tipologie (come le persone): impostazione con il più
 # alto già dato e righe che citano ancora i numeri degli eliminati (righe di accesso delle tipologie, Storico
@@ -749,8 +751,8 @@ class Database:
                 _LOGGER.info("Matricola e referente aggiunti all'anagrafica")
             if self._add_card_columns():
                 _LOGGER.info("Codice Stampato aggiunto alle tessere")
-            if self._add_columns("doors", DOOR_COLUMNS):
-                _LOGGER.info("Ritardo della foto aggiunto alle porte")
+            if added := self._add_columns("doors", DOOR_COLUMNS):
+                _LOGGER.info("Colonne aggiunte alle porte: %s", added)
             # Foto di persone che non ci sono più (eliminate senza i vincoli attivi): non si mostrano a nessuno
             orphans = self._conn.execute(
                 "DELETE FROM person_photos WHERE person_id NOT IN (SELECT id FROM persons)"
@@ -1606,11 +1608,13 @@ class Database:
         "intercom_open_door",
         "intercom_relay",
         "intercom_mqtt_prefix",
+        "intercom_serial",
         "area_id",
     )
     _DOOR_FLAGS = ("snapshot_on_granted", "ha_buttons", "intercom_open_door")
-    # Valori di campi della porta che i backup di prima non hanno: il ritardo della foto (0.28.7)
-    DOOR_FIELD_DEFAULTS = {"snapshot_delay": 0.0}
+    # Valori di campi della porta che i backup di prima non hanno: il ritardo della foto (0.28.7) e il numero di serie
+    # del videocitofono (0.28.11)
+    DOOR_FIELD_DEFAULTS = {"snapshot_delay": 0.0, "intercom_serial": ""}
 
     def list_controllers(self) -> list[dict]:
         controllers = self._query("SELECT * FROM controllers ORDER BY id")
@@ -1684,7 +1688,7 @@ class Database:
         return next((d for d in self.list_doors() if d["id"] == door_id), None)
 
     def save_door(self, door_id: int | None, controller_id: int, fields: dict) -> int:
-        fields = {"area_id": 0, "snapshot_delay": 0.0, **fields}
+        fields = {"area_id": 0, **self.DOOR_FIELD_DEFAULTS, **fields}
         values = tuple(fields[f] for f in self.DOOR_FIELDS)
         if door_id:
             sets = ", ".join(f"{f} = ?" for f in self.DOOR_FIELDS)
@@ -1697,6 +1701,17 @@ class Database:
             f"INSERT INTO doors (id, controller_id, {columns}) VALUES (?, ?, {marks})",
             (controller_id, *values),
         )
+
+    def set_door_intercom(self, door_id: int, name: str, serial: str, was: tuple[str, str]) -> bool:
+        """Nome e numero di serie del videocitofono della porta, ritrovati sul broker (vedi main._follow_intercoms).
+        Solo se la porta ha ancora quelli di prima (was: nome e numero di serie): un salvataggio della porta arrivato
+        nel frattempo non si sovrascrive. True se la porta è cambiata."""
+        cursor = self._execute_cursor(
+            "UPDATE doors SET intercom_name = ?, intercom_serial = ? "
+            "WHERE id = ? AND intercom_name = ? AND intercom_serial = ?",
+            (name[:100], serial, door_id, *was),
+        )
+        return cursor.rowcount == 1
 
     def delete_door(self, door_id: int) -> None:
         self._execute("DELETE FROM doors WHERE id = ?", (door_id,))

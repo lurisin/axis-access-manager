@@ -17,6 +17,8 @@ from .config import MqttSettings
 _LOGGER = logging.getLogger(__name__)
 
 RECONNECT_DELAY = 10
+# Attese tra i tentativi di un'iscrizione chiesta con il broker già collegato (vedi add_subscription)
+SUBSCRIBE_RETRY = (2, 5, 15, 30)
 # Filtro di iscrizione rifiutato dalla libreria MQTT (per esempio # o + nel prefisso): si riprova senza traceback
 INVALID_TOPIC = "topic MQTT non valido"
 
@@ -280,6 +282,8 @@ class EventMonitor:
     on_event: Callable[[Event, bool], None] | None = None
     # Integrazione con Home Assistant: chiamata a ogni connessione, comandi ricevuti e messaggio di addio
     on_connect: Callable[[aiomqtt.Client], Awaitable[None]] | None = None
+    # Chiamata quando il collegamento al broker si perde o l'ascolto si ferma
+    on_disconnect: Callable[[], None] | None = None
     command_topic: str = ""
     on_command: Callable[[str], Awaitable[None]] | None = None
     will: aiomqtt.Will | None = None
@@ -291,6 +295,9 @@ class EventMonitor:
     # Ora dell'app per io_since (i test la cambiano)
     clock: Callable[[], datetime] = field(default=_app_now, repr=False)
     _tasks: set = field(default_factory=set, repr=False)
+    # Iscrizioni chieste con il broker già collegato (vedi add_subscription): non sono operazioni sul controller, e
+    # finiscono con il collegamento
+    _subscribing: set = field(default_factory=set, repr=False)
     # Pubblicazioni partite e non ancora confermate (vedi drain)
     _publishing: int = field(default=0, repr=False)
 
@@ -332,9 +339,51 @@ class EventMonitor:
         while self._publishing and loop.time() < end:
             await asyncio.sleep(0.02)
 
+    def add_subscription(self, topic_filter: str, handler: Callable[[str, bytes, bool], None]) -> bool:
+        """Un altro topic da seguire, anche mentre l'ascolto è già partito: con il broker collegato si chiede subito
+        (a ogni collegamento si chiedono comunque tutti). Un filtro già seguito resta a chi lo segue già: False."""
+        if topic_filter in self.extra_subscriptions:
+            return False
+        self.extra_subscriptions[topic_filter] = handler
+        client = self.client
+        if client is not None and self.connected:
+            task = asyncio.get_running_loop().create_task(self._subscribe(client, topic_filter))
+            self._subscribing.add(task)
+            task.add_done_callback(self._subscribing.discard)
+        return True
+
+    async def _subscribe(self, client: aiomqtt.Client, topic_filter: str) -> None:
+        # Un broker lento può non rispondere in tempo e restare collegato: si riprova, finché il collegamento è lo
+        # stesso. Perso il collegamento, al prossimo si chiedono di nuovo tutti
+        for wait in (0, *SUBSCRIBE_RETRY):
+            if wait:
+                await asyncio.sleep(wait)
+                if self.client is not client or not self.connected:
+                    return
+            try:
+                await client.subscribe(topic_filter, qos=1)
+                return
+            except aiomqtt.MqttError as err:
+                if not wait:
+                    _LOGGER.warning("Iscrizione a %s non riuscita: %s; riprovo", topic_filter, err)
+        _LOGGER.warning("Iscrizione a %s non riuscita: si richiede al prossimo collegamento al broker", topic_filter)
+
+    def _lost(self) -> None:
+        """Collegamento al broker perso o ascolto fermato."""
+        for task in list(self._subscribing):
+            # Al prossimo collegamento si chiedono comunque tutti
+            task.cancel()
+        if self.on_disconnect is None:
+            return
+        try:
+            self.on_disconnect()
+        except Exception:
+            _LOGGER.exception("Errore dopo la perdita del collegamento MQTT")
+
     def _dispatch_extra(self, topic: aiomqtt.Topic, payload: bytes, retained: bool = False) -> bool:
         handled = False
-        for topic_filter, handler in self.extra_subscriptions.items():
+        # Su una copia: chi gestisce un messaggio può aggiungere altri topic da seguire (videocitofono riconosciuto)
+        for topic_filter, handler in list(self.extra_subscriptions.items()):
             if topic.matches(topic_filter):
                 handled = True
                 try:
@@ -602,7 +651,8 @@ class EventMonitor:
                     await client.subscribe(f"{self.prefix}/eventi/#", qos=1)
                     if self.command_topic:
                         await client.subscribe(self.command_topic, qos=1)
-                    for topic_filter in self.extra_subscriptions:
+                    # Su una copia: durante le iscrizioni se ne possono aggiungere (vedi add_subscription)
+                    for topic_filter in list(self.extra_subscriptions):
                         await client.subscribe(topic_filter, qos=1)
                     self.client = client
                     self.connected = True
@@ -627,6 +677,7 @@ class EventMonitor:
                 # non prova più a pubblicare con lui (publish restituisce False, senza WARNING)
                 self.client = None
                 self.connected = False
+                self._lost()
                 raise
             except Exception as err:  # noqa: BLE001
                 # Errori del broker, ma anche imprevisti: si risulta scollegati e si riprova, così l'interruzione
@@ -638,6 +689,7 @@ class EventMonitor:
                     self.disconnected_since = datetime.now(tz=UTC).isoformat(timespec="seconds")
                 self.client = None
                 self.connected = False
+                self._lost()
                 self.last_error = mqtt_error_text(err)
                 if isinstance(err, aiomqtt.MqttError) or self.last_error == INVALID_TOPIC:
                     _LOGGER.warning("MQTT non disponibile: %s; riprovo tra %s s", err, RECONNECT_DELAY)
