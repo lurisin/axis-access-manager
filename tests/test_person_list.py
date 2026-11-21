@@ -415,7 +415,7 @@ def test_text_to_search_is_prepared_once_per_person():
     assert out == {"same": True, "fresh": True}
 
 
-# Codici Stampati di fantasia: una persona con due tessere con il codice, una con una tessera senza codice, una con un
+# Nomi Tessera di fantasia: una persona con due tessere con il codice, una con una tessera senza codice, una con un
 # codice che contiene l'altro, una senza tessere
 CODED = [
     person(
@@ -698,7 +698,7 @@ def test_photo_is_prepared_in_the_browser_and_sent_inside_the_waiting_box():
     assert 'e.person_id && can("persone") ? `<div class="ev-face"' in page
 
 
-# Chromium vero (Playwright, se c'è): l'elenco con i Codici Stampati disegnato con le regole CSS della pagina com'è (e
+# Chromium vero (Playwright, se c'è): l'elenco con i Nomi Tessera disegnato con le regole CSS della pagina com'è (e
 # quelle delle colonne, personColumnCss), a 1280 e 680 px (tabella) e a 390 px (righe del telefono), in tema chiaro e
 # scuro
 LAYOUT = r"""

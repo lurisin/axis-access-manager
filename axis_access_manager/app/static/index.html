@@ -447,10 +447,10 @@
   .pill.accent { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
   /* Pallino senza colore proprio dentro un'etichetta: prende quello dell'etichetta (verde se collegato) */
   .pill .dot { background: currentColor; }
-  /* Codice Stampato di una tessera (quello scritto sopra la tessera fisica) accanto al nome o al numero nel registro */
+  /* Nome Tessera di una tessera (quello scritto sopra la tessera fisica) accanto al nome o al numero nel registro */
   .pcode { display: inline-block; border: 1px solid var(--border-strong); border-radius: 6px; padding: 0 6px; font-size: 12px;
            font-weight: 600; color: var(--text); line-height: 1.5; max-width: 100%; overflow-wrap: anywhere; vertical-align: 1px; }
-  /* Scheda: il numero esadecimale sotto il Codice Stampato, più piccolo */
+  /* Scheda: il numero esadecimale sotto il Nome Tessera, più piccolo */
   .item .card-no { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; display: inline-block; }
   .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
@@ -549,7 +549,7 @@
   table.table.p-table td.c-photo { text-overflow: clip; }
   .p-table td.c-photo img { cursor: zoom-in; }
   .p-table tbody tr:last-child td { border-bottom: none; }
-  /* Tessere come nella scheda: il Codice Stampato sopra, il numero sotto più piccolo; una tessera sotto l'altra */
+  /* Tessere come nella scheda: il Nome Tessera sopra, il numero sotto più piccolo; una tessera sotto l'altra */
   .p-card { line-height: 1.25; }
   .p-card + .p-card { margin-top: 5px; }
   .p-card > div { overflow: hidden; text-overflow: ellipsis; }
@@ -2786,7 +2786,7 @@ const PHONE_MARKS = /[\s.\-\/()]/g;
 // Campo o ricerca come si confrontano: minuscolo, senza accenti e con gli spazi di fila contati come uno
 const searchFold = (text) => foldText(String(text || "").replace(/\s+/g, " "));
 // Testo in cui cercare, preparato una volta per persona (l'elenco nuovo, ogni 15 secondi, sono oggetti nuovi): nome
-// completo, nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono, email, numeri e Codici Stampati delle
+// completo, nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono, email, numeri e Nomi Tessera delle
 // tessere e note. Un campo per riga: una ricerca non trova la fine di un campo unita all'inizio del successivo
 const personTexts = new WeakMap();
 function personHaystack(p) {
@@ -2806,7 +2806,7 @@ function personMatches(p, q) {
   const digits = text.replace(PHONE_MARKS, "");
   return Boolean(digits && p.phone && p.phone.replace(PHONE_MARKS, "").includes(digits));
 }
-// Tessere della persona che la ricerca trova, per Codice Stampato o per numero, con lo stesso confronto di
+// Tessere della persona che la ricerca trova, per Nome Tessera o per numero, con lo stesso confronto di
 // personMatches: sul telefono compaiono sotto il nome, perché si capisca perché la persona è nell'elenco, e nella
 // tabella la colonna Tessere resta in vista
 function searchedCards(p, q) {
@@ -2814,7 +2814,7 @@ function searchedCards(p, q) {
   if (!text) return [];
   return (p.cards || []).filter((c) => searchFold(c.number).includes(text) || searchFold(c.printed_code).includes(text));
 }
-// Tessera nell'elenco come nella scheda: il Codice Stampato in evidenza e sotto il numero, più piccolo; senza codice
+// Tessera nell'elenco come nella scheda: il Nome Tessera in evidenza e sotto il numero, più piccolo; senza codice
 // il numero. Nella cella, con poco spazio, i puntini e tutto nel title
 const cardTag = (c) => `<div class="p-card">${c.printed_code ? `<div class="p-code">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="mono">${esc(c.number)}</div>`}</div>`;
 const cardTitle = (cards) => cards.map((c) => c.printed_code ? `${c.printed_code} · ${c.number}` : c.number).join("\n");
@@ -2831,7 +2831,7 @@ async function viewPersons(el, sub) {
   if (!el.isConnected) return;
   el.innerHTML = `${personTabs("")}
     <div class="toolbar p-tools">
-      <input type="search" id="p-q" placeholder="Cerca nome, tessera, matricola…" aria-label="Cerca persone" title="Cerca per nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono (anche senza spazi), email, note, numero o Codice Stampato della tessera" value="${esc(personFilters.q)}">
+      <input type="search" id="p-q" placeholder="Cerca nome, tessera, matricola…" aria-label="Cerca persone" title="Cerca per nome, cognome, «Cognome Nome», matricola, ditta, referente, telefono (anche senza spazi), email, note, numero o Nome della tessera" value="${esc(personFilters.q)}">
       <select id="p-state" aria-label="Mostra">
         <option value="">Tutte le Persone</option><option value="attive">Con Tessere Attive</option><option value="sospese">Con Tessere Sospese</option>
         <option value="in_scadenza">In Scadenza</option><option value="scaduta">Scadute</option><option value="futura">Non Ancora Valide</option>
@@ -3288,12 +3288,12 @@ const contactFields = (p = {}) => `<div class="fields-2">${field("Telefono", `<i
 // Matricola (codice interno, unica) e referente interno: anche loro solo nell'app
 const idFields = (p = {}) => `<div class="fields-2">${field("Matricola", `<input name="employee_id" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(p.employee_id || "")}" placeholder="facoltativa">`)}
   ${field("Referente Interno", `<input name="referent" autocomplete="off" maxlength="100" value="${esc(p.referent || "")}" placeholder="facoltativo">`)}</div>`;
-// Codice Stampato della tessera: quello scritto sopra la tessera fisica (sono tutte bianche), facoltativo e unico. Solo
+// Nome della tessera: quello scritto sopra la tessera fisica (sono tutte bianche), facoltativo e unico. Solo
 // nell'app: mai sul controller. Si scrive aggiungendo o registrando una tessera, e dopo dalla scheda (Codice). Lo stesso
 // suggerimento ovunque, senza esempi inventati: ogni impianto scrive i suoi codici
 const PRINTED_CODE_HINT = "Il codice scritto sulla tessera. Resta solo nell'app.";
 const printedCodeField = (value = "", hint = PRINTED_CODE_HINT) =>
-  field("Codice Stampato", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo">`, hint);
+  field("Nome Tessera", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo">`, hint);
 // Telefono ed email incollati da una pagina web, da un PDF o da Word, puliti come fa il server mentre si scrivono:
 // senza caratteri invisibili, con gli spazi non separabili come lo spazio e i trattini tipografici («–» di Word) come
 // il trattino. L'email anche senza spazi ai lati, che il browser altrimenti rifiuta prima di mandarla
@@ -3321,7 +3321,7 @@ async function newPerson(card = "") {
       ${field("Ditta o Reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
       ${contactFields()}
       ${idFields()}
-      ${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
+      ${field("Codice Tessera", `<input name="card" class="mono" autocomplete="off" value="${esc(card)}" placeholder="facoltativo, es. 04A1B2C3D4E5F6">`, card ? "" : "Senza tessera la persona resta solo nell'app e non apre nessuna porta: la tessera si aggiunge dopo dalla sua scheda. Più comodo: passa la tessera sul lettore e registrala dalla pagina Da Registrare.")}
       <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField()}</div>
       ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Anagrafica → Tipologie.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
@@ -3329,7 +3329,7 @@ async function newPerson(card = "") {
       <p class="hint">La Foto della Persona si aggiunge dalla sua scheda, dopo averla registrata. Telefono, email, matricola, referente e foto restano solo nell'app.</p>`,
     actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
       const body = {first_name: val(dlg, "first_name"), last_name: val(dlg, "last_name"), card: val(dlg, "card"), company: val(dlg, "company"), phone: val(dlg, "phone"), email: val(dlg, "email"), employee_id: val(dlg, "employee_id"), referent: val(dlg, "referent"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0)};
-      // Validità e Codice Stampato sono della tessera: senza, la durata della tipologia parte dalla prima tessera
+      // Validità e Nome Tessera sono della tessera: senza, la durata della tipologia parte dalla prima tessera
       if (body.card) Object.assign(body, readValidity(dlg), {printed_code: val(dlg, "printed_code")});
       if (!body.first_name && !body.last_name) { toast("Serve il nome o il cognome", true); return false; }
       const person = await run(() => api("api/persons", {method: "POST", body}), body.card ? "Persona registrata: la tessera è attiva sul controller" : "Persona registrata senza tessera",
@@ -3445,9 +3445,9 @@ async function openPerson(id) {
       <div class="card flush"><h2>Tessere<span class="spacer"></span><button type="button" class="small w-persone" data-add-card>${icon("plus")}Aggiungi</button></h2>
         <div class="list" style="margin-top:6px">${p.cards.map((c) => `<div class="item">
           <div class="ev-icon ${cardActive(c) ? "k-accent" : "k-muted"}">${icon("card")}</div>
-          <div class="grow">${c.printed_code ? `<div class="title" title="Codice Stampato">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="title mono">${esc(c.number)}</div>`}<div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
+          <div class="grow">${c.printed_code ? `<div class="title" title="Nome Tessera">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="title mono">${esc(c.number)}</div>`}<div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
-          <button type="button" class="small" data-card-code="${c.id}" aria-label="Codice Stampato della tessera ${esc(c.number)}" title="Codice Stampato">${icon("edit")}Codice</button>
+          <button type="button" class="small" data-card-code="${c.id}" aria-label="Nome della tessera ${esc(c.number)}" title="Nome Tessera">${icon("edit")}Codice</button>
           <button type="button" class="small danger" data-del-card="${c.id}" data-refocus="[data-add-card]">Elimina</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
         <dl class="props"><dt>Foto</dt><dd>${photoCell}</dd>
@@ -3551,7 +3551,7 @@ async function openPerson(id) {
   $("[data-add-card]", sheet).onclick = async () => {
     const ok = await modal({
       title: "Aggiungi Tessera a " + p.name,
-      body: `<div class="fields-2">${field("Numero Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`)}
+      body: `<div class="fields-2">${field("Codice Tessera", `<input name="card" class="mono" autocomplete="off" placeholder="es. 04A1B2C3D4E5F6">`)}
         ${printedCodeField()}</div>
         <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."} Puoi anche passarla sul lettore e assegnarla dalla pagina Da Registrare.</p>`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
@@ -3559,16 +3559,16 @@ async function openPerson(id) {
     });
     if (ok) reload();
   };
-  // Codice Stampato: solo nell'app, non scrive sul controller (veloce anche con il controller spento)
+  // Nome Tessera: solo nell'app, non scrive sul controller (veloce anche con il controller spento)
   $$("[data-card-code]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.cardCode));
     const ok = await modal({
-      title: "Codice Stampato",
+      title: "Nome Tessera",
       body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", PRINTED_CODE_HINT + " Vuoto per toglierlo.")}`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
         const code = val(dlg, "printed_code");
         if (code === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
-        return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code}}), code ? "Codice stampato salvato" : "Codice stampato tolto", "Salvataggio del codice stampato")) || false;
+        return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code}}), code ? "Codice stampato salvato" : "Codice stampato tolto", "Salvataggio del nome tessera")) || false;
       }}],
     });
     if (ok) reload();
@@ -3696,8 +3696,8 @@ function logRow(e, {place = true} = {}) {
   const who = e.person_name || (e.card ? `Tessera ${e.card}` : e.kind === "citofono" ? e.source || "Citofono" : e.kind === "apertura_remota" ? e.source || "Home Assistant" : e.kind === "uscita" ? e.source || "Pulsante" : inputDenied(e) ? e.source : "");
   let what = who ? LOG_ROW_WHAT[e.kind] || label.replace(/^Accesso /, "").replace(/^Tessera /, "") : label;
   if (what.toLowerCase() === who.toLowerCase()) what = "";
-  // Codice Stampato che la tessera ha adesso (il registro salva solo il numero)
-  const code = e.printed_code ? ` <span class="pcode" title="Codice Stampato della tessera ${esc(e.card)}">${esc(e.printed_code)}</span>` : "";
+  // Nome Tessera che la tessera ha adesso (il registro salva solo il numero)
+  const code = e.printed_code ? ` <span class="pcode" title="Nome della tessera ${esc(e.card)}">${esc(e.printed_code)}</span>` : "";
   return `<div class="ev ${e.id === logSelected ? "sel" : ""}" data-event="${e.id}" role="button" tabindex="0" title="${esc(fmtFull(e.ts))}">
     <span class="time">${esc(fmtTime(e.ts))}</span><span class="dot ${KIND_DOT[cls] || ""}"></span>
     <span class="what">${who ? `<b>${esc(who)}</b>${code} <span class="muted">${esc(what.toLowerCase())}</span>` : `<b>${esc(label)}</b>`}${e.snapshot ? ` <span class="muted" title="Con foto">${icon("camera", "icon")}</span>` : ""}${e.recovered ? ' <span class="muted small-text" title="Recuperato dal registro interno del controller">· recuperato</span>' : ""}</span>
@@ -3713,7 +3713,7 @@ function eventDetail(e) {
     e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
     // Quello che la tessera ha adesso: il registro salva solo il numero
-    e.printed_code ? ["Codice Stampato", `${esc(e.printed_code)} <span class="muted small-text">· quello di adesso della tessera</span>`] : null,
+    e.printed_code ? ["Nome Tessera", `${esc(e.printed_code)} <span class="muted small-text">· quello di adesso della tessera</span>`] : null,
     e.detail ? ["Dettaglio", `${esc(e.detail)}${DETAIL_HINTS[e.detail] ? ` <span class="muted">· ${esc(DETAIL_HINTS[e.detail])}</span>` : ""}`] : null,
     e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
     e.recovered ? ["Recuperato", hideHA() ? "Arrivato in ritardo dal registro interno del controller: senza foto"
@@ -6278,7 +6278,7 @@ async function viewSettings(el, sub) {
   const ioCard = `<div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio, «Nome Cognome» in una colonna, diviso al primo spazio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. Il file esportato ha in più <code>ultimo_accesso; telefono; email; matricola; referente; codice_stampato</code>, che l'importazione ignora: telefono, email, matricola e referente si scrivono nella scheda della persona, il Codice Stampato con Codice sulla riga della tessera. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>`;
+          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio, «Nome Cognome» in una colonna, diviso al primo spazio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. Il file esportato ha in più <code>ultimo_accesso; telefono; email; matricola; referente; nome_tessera</code>, che l'importazione ignora: telefono, email, matricola e referente si scrivono nella scheda della persona, il Nome Tessera con Codice sulla riga della tessera. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>`;
   // Dall'accesso diretto senza permessi tecnici: le opzioni dell'app ed Esporta e Importa, senza Home Assistant, broker
   // e database dell'add-on (il server non li manda)
   if (hideHA()) body.innerHTML = `

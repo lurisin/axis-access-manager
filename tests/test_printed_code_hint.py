@@ -1,4 +1,4 @@
-"""Suggerimento del Codice Stampato (0.28.4): senza gli esempi inventati della 0.28.3 («Ciccio», «1234»,
+"""Suggerimento del Nome Tessera (0.28.4): senza gli esempi inventati della 0.28.3 («Ciccio», «1234»,
 «Cicciobello») in tutto quello che il titolare può leggere (pagina, messaggi e commenti del server, DOCS, CHANGELOG che
 Home Assistant mostra all'aggiornamento, opzioni dell'add-on), e lo stesso testo professionale in Nuova Persona, Tessere
 da Registrare, finestra Codice e Aggiungi Tessera. Niente «1234» neanche dentro un numero di esempio («+39 333 1234567»,

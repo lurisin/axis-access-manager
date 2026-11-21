@@ -133,7 +133,7 @@ def test_database_of_0_28_2_gets_first_and_last_names_without_changing_names(tmp
     path = tmp_path / DB_NAME
     ids = database_0_28_2(path)
     db = Database(path, "0.28.3")
-    assert db.schema_version == SCHEMA_VERSION == 10
+    assert db.schema_version == SCHEMA_VERSION == 11
     persons = {p["id"]: p for p in db.all_persons()}
     # Il nome completo di ogni persona è quello di prima, carattere per carattere
     assert {i: p["name"] for i, p in persons.items()} == ids
@@ -372,14 +372,14 @@ async def test_import_splits_the_full_name_and_registration_from_the_reader(serv
     assert_invariant(db)
 
 
-def test_registration_from_da_registrare_and_the_old_requests(settings, controller, tmp_path, monkeypatch):
-    """Da Registrare manda nome e cognome con il numero della tessera letta; una richiesta con il solo nome completo
-    (versioni precedenti, script) vale ancora."""
+def test_registration_with_a_free_card_and_the_old_requests(settings, controller, tmp_path, monkeypatch):
+    """Nuova Persona manda nome e cognome con il codice di una tessera Libera dell'elenco; una richiesta con il solo
+    nome completo (versioni precedenti, script) vale ancora."""
     monkeypatch.delenv("SUPERVISOR_TOKEN", raising=False)
     app = create_app(settings, allow_any_client=True, controller=controller, db_path=tmp_path / "api.db")
     with TestClient(app) as client:
         db = client.app.state.db
-        db.note_unknown_card("04dd", TS)
+        assert client.post("/api/cards", json={"card": "04dd"}).status_code == 200
         body = {"first_name": "Gian Luca", "last_name": "De Santis", "card": "04dd", "phone": PHONE}
         person = client.post("/api/persons", json=body).json()
         assert (person["name"], person["first_name"], person["last_name"]) == (
@@ -387,7 +387,7 @@ def test_registration_from_da_registrare_and_the_old_requests(settings, controll
             "Gian Luca",
             "De Santis",
         )
-        assert db.list_unknown_cards() == []
+        assert [c["person_id"] for c in db.list_cards()] == [person["id"]]
         old = client.post("/api/persons", json={"name": "Mario Rossi", "card": "04ee"}).json()
         assert (old["first_name"], old["last_name"], old["phone"], old["email"]) == ("Mario", "Rossi", "", "")
         response = client.patch(f"/api/persons/{old['id']}", json={"name": "Mario Rossi Bianchi"})
@@ -850,7 +850,7 @@ async def test_exported_file_has_phone_and_email_and_imports_as_before(service, 
     assert lines[0].split(";")[-6:-1] == ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
     # Ogni telefono come formula di testo, perché il foglio di calcolo lo mostri com'è: lo zero iniziale resta, il + non
     # ha davanti l'apostrofo che resterebbe in vista, «06.555.019» non diventa il numero 6482156. In fondo matricola e
-    # referente, qui vuoti, e il Codice Stampato della tessera (vedi test_card_code)
+    # referente, qui vuoti, e il Nome della tessera (vedi test_card_code)
     by_name = {line.split(";")[0]: line for line in lines[1:]}
     assert by_name["Mario Rossi"].endswith(';"=""0655501908""";mario@example.it;;;')
     assert by_name["Anna Maria Bianchi"] == f'Anna Maria Bianchi;;;;;;;;;;"=""{PHONE}""";;;;'
@@ -1021,7 +1021,7 @@ def test_database_of_the_first_part_gets_employee_id_referent_and_photos(tmp_pat
     with caplog.at_level(logging.INFO):
         db = Database(path, "0.28.3")
     try:
-        assert db.schema_version == SCHEMA_VERSION == 10
+        assert db.schema_version == SCHEMA_VERSION == 11
         [row] = db.all_persons()
         assert (row["id"], row["first_name"], row["last_name"], row["phone"]) == (
             person,
@@ -1229,7 +1229,7 @@ async def test_exported_file_has_employee_id_and_referent_and_imports_as_before(
     assert lines[0].split(";")[-6:-1] == ["ultimo_accesso", "telefono", "email", "matricola", "referente"]
     by_name = {line.split(";")[0]: line for line in lines[1:]}
     # La matricola come formula di testo: il foglio di calcolo tiene gli zeri; il referente non diventa una formula.
-    # Dopo, il Codice Stampato della tessera (vuoto)
+    # Dopo, il Nome della tessera (vuoto)
     assert by_name["Mario Rossi"].endswith(';;"=""000123""";\'=Ufficio Tecnico;')
     # Con le virgolette non si può: testo normale
     assert by_name["Anna Bianchi"].endswith(';;"MAT ""A""";Bruno Neri;')

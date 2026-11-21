@@ -123,7 +123,7 @@ def test_notifications(db):
     assert alarm["title"] == "Allarme Porta" and alarm["text"] == "Porta forzata" and alarm["door"] == "Scala"
     denied = items[-1]
     assert denied["text"] == "Luca · fuori fascia oraria" and denied["count"] == 1
-    assert items[3]["text"] == "Tessera 04AA" and items[3]["link"] == "#da-registrare"
+    assert (items[3]["title"], items[3]["text"], items[3]["link"]) == ("Tessera Non Valida", "Tessera 04AA", "")
 
     listing = service.listing(items)
     assert listing["open"] == 5
@@ -284,7 +284,7 @@ def test_seen_notifications_go_in_the_audit_log(client):
     unknown = next(i for i in items if i["type"] == "unknown_card")
     client.post("/api/notifications/seen", json={"ids": [unknown["id"]]})
     [last] = db.list_audit(limit=1)
-    assert last["action"] == "notifica segnata come vista" and last["detail"] == "Tessera Sconosciuta ×2 (Tessera 04AA)"
+    assert last["action"] == "notifica segnata come vista" and last["detail"] == "Tessera Non Valida ×2 (Tessera 04AA)"
     client.post("/api/notifications/seen", json={})
     [last] = db.list_audit(limit=1)
     assert last["action"] == "notifica segnata come vista" and last["detail"] == "Allarme Porta (Porta forzata)"

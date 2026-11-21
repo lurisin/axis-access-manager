@@ -304,16 +304,6 @@ class HaBridge:
             ),
             (
                 "sensor",
-                "tessere_da_registrare",
-                {
-                    **state,
-                    "name": "Tessere da Registrare",
-                    "icon": "mdi:card-plus",
-                    "value_template": "{{ value_json.da_registrare }}",
-                },
-            ),
-            (
-                "sensor",
                 "persone_registrate",
                 {
                     **state,
@@ -520,7 +510,8 @@ class HaBridge:
 
     def _all_object_ids(self) -> list[tuple[str, str]]:
         ids = [(c, o) for c, o, _ in self._entities(hidden=True)]
-        for extra in (("button", "apri_porta"), ("button", "apri_porta_a_lungo")):
+        # Entità di versioni precedenti: si tolgono da Home Assistant. «Tessere da Registrare» fino alla 0.28.11
+        for extra in (("button", "apri_porta"), ("button", "apri_porta_a_lungo"), ("sensor", "tessere_da_registrare")):
             if extra not in ids:
                 ids.append(extra)
         return ids
@@ -653,7 +644,6 @@ class HaBridge:
             "accessi_oggi": counts.get("concesso", 0) + counts.get("apertura_remota", 0) + counts.get("uscita", 0),
             # Una tessera sconosciuta dà anche il diniego del controller: si conta quello
             "negati_oggi": counts.get("negato", 0),
-            "da_registrare": len(self.db.list_unknown_cards()),
             "persone": len(self.db.all_persons()),
             "controller": {
                 "raggiungibile": on_off(self.monitor.reachable),

@@ -344,7 +344,7 @@ def rules_label(item: dict) -> str:
 
 
 def _card_item(card: dict, profile: str) -> dict:
-    """Tessera da confrontare; profile: il suo accesso come si mostra. Il Codice Stampato si mostra com'è."""
+    """Tessera da confrontare; profile: il suo accesso come si mostra. Il Nome Tessera si mostra com'è."""
     return _item(
         card["number"],
         {"enabled": card["enabled"], **{k: card[k] for k in CARD_FIELDS}, "printed_code": card.get("printed_code")},
@@ -353,7 +353,7 @@ def _card_item(card: dict, profile: str) -> dict:
 
 
 def _codes_back(wanted: dict[str, str], codes: dict[str, str]) -> set[str]:
-    """Tessere di una persona (numeri in maiuscolo) che riprendono il Codice Stampato del backup, con gli stessi giri
+    """Tessere di una persona (numeri in maiuscolo) che riprendono il Nome Tessera del backup, con gli stessi giri
     di AccessService._restore_printed_codes: un codice preso da un'altra tessera della persona torna quando quella
     lascia il suo, due codici scambiati restano come sono. wanted: numero → codice del backup; codes: codici di adesso
     (vedi nocase) → numero della tessera che li ha."""
@@ -408,13 +408,14 @@ def _plan_persons(
     if default is not None and not default.get("group_token"):
         default = None
     in_backup = {c["number"].upper() for c in saved.get("cards", [])}
+    # Le tessere Libere del backup (senza persona) non sono di nessuna riga: restano nell'elenco come sono adesso
     saved_cards: dict[int, list[dict]] = {}
     for card in saved.get("cards", []):
         saved_cards.setdefault(card["person_id"], []).append(card)
     # Matricole di adesso, senza distinguere le maiuscole come il database
     employee_ids = {nocase(p["employee_id"]): p for p in current.get("persons", []) if p.get("employee_id")}
     saved_persons = {(p["id"], p["created_at"]): p for p in saved.get("persons", [])}
-    # Codici Stampati di adesso (come le matricole) e tessere del backup per numero
+    # Nomi Tessera di adesso (come le matricole) e tessere del backup per numero
     codes = {nocase(c["printed_code"]): c for c in current.get("cards", []) if c.get("printed_code")}
     saved_by_number = {c["number"].upper(): c for c in saved.get("cards", [])}
     items, matched_persons = [], set()
@@ -463,7 +464,8 @@ def _plan_persons(
         cards = []
         for card in saved_cards.get(person["id"], []):
             owner = current_cards.get(card["number"].upper())
-            if owner and (now is None or owner["person_id"] != now["id"]):
+            # Una tessera ora Libera si può ridare: torna alla persona con il ripristino
+            if owner and owner["person_id"] is not None and (now is None or owner["person_id"] != now["id"]):
                 item["warnings"].append(
                     f"la tessera {card['number']} ora è di "
                     f"{current_names.get(owner['person_id'], 'un altro')}: resta sua"
@@ -471,7 +473,7 @@ def _plan_persons(
                 continue
             cards.append(dict(card))
         mine = {c["number"].upper(): c for c in current.get("cards", []) if now and c["person_id"] == now["id"]}
-        # Codice Stampato di ogni tessera come lo lascia il ripristino (_code): quello del backup, se c'è e torna (vedi
+        # Nome Tessera di ogni tessera come lo lascia il ripristino (_code): quello del backup, se c'è e torna (vedi
         # _plan_codes), se no quello di adesso o nessuno per una tessera rimessa
         item["_needs"] += _plan_codes(item, cards, mine, codes, saved_by_number, saved_persons, current_names)
         lost = []
@@ -615,13 +617,19 @@ def _plan_persons(
                 person["name"],
                 "Elimina: registrata dopo il backup",
                 _target=person["id"],
+                # Le sue tessere che nel backup non ci sono si eliminano con lei; le altre tornano Libere
+                _gone=[
+                    c["number"]
+                    for c in current.get("cards", [])
+                    if c["person_id"] == person["id"] and c["number"].upper() not in in_backup
+                ],
             )
         )
     return items
 
 
 def _code_change(card: dict) -> dict:
-    """Riga di Cosa Cambierà del Codice Stampato di una tessera rimessa o ricreata."""
+    """Riga di Cosa Cambierà del Nome Tessera di una tessera rimessa o ricreata."""
     label = f"Tessera {card['number']}: {FIELD_LABELS['printed_code'].lower()}"
     return {"label": label, "old": "—", "new": card["_code"]}
 
@@ -635,7 +643,7 @@ def _plan_codes(
     saved_persons: dict[tuple, dict],
     current_names: dict[int, str],
 ) -> list[str]:
-    """Codice Stampato che ogni tessera da ripristinare avrà (card["_code"]) e avvisi della riga, come per la matricola
+    """Nome Tessera che ogni tessera da ripristinare avrà (card["_code"]) e avvisi della riga, come per la matricola
     (vedi AccessService._saved_printed_code). Un codice del backup dato nel frattempo a un'altra tessera resta suo e il
     ripristino non si ferma; se quella tessera lo lascia ripristinando anche la sua persona, o eliminandola perché
     aggiunta dopo il backup, torna a questa quando si applicano insieme. Restituisce le chiavi delle righe che lo
@@ -656,8 +664,16 @@ def _plan_codes(
             continue
         holder = codes[nocase(code)]
         held = holder["number"].upper()
+        if holder["person_id"] is None:
+            # Di una tessera Libera dell'elenco: nessuna riga glielo toglie
+            kept = "la tessera tiene quello di adesso" if have else "la tessera torna senza"
+            item["warnings"].append(
+                f"il Nome Tessera {code} della tessera {card['number']} ora è della tessera libera "
+                f"{holder['number']}: resta suo, e {kept}"
+            )
+            continue
         owner = current_names.get(holder["person_id"], "un'altra persona")
-        what = f"il Codice Stampato {code} della tessera {card['number']} ora è della tessera {holder['number']}"
+        what = f"il Nome Tessera {code} della tessera {card['number']} ora è della tessera {holder['number']}"
         what += f" di {owner}"
         theirs = saved_by_number.get(held)
         if theirs is None:
@@ -807,7 +823,7 @@ def _plan_doors(saved: dict, current: dict, saved_ctx: dict, current_ctx: dict) 
 
 def _in_order(chosen: list[dict]) -> tuple[list[dict], list[dict]]:
     """Righe scelte nell'ordine di ALL_SECTIONS e, dentro una sezione, in quello dell'anteprima, che mette prima chi è
-    usato da altri; una persona che riprende una matricola o un Codice Stampato lasciati da altre righe va dopo di
+    usato da altri; una persona che riprende una matricola o un Nome Tessera lasciati da altre righe va dopo di
     loro (_needs), anche in catena: la matricola lasciata da chi aspetta a sua volta un codice. Due righe che si
     aspettano a vicenda (la matricola dell'una all'altra, il codice dell'altra all'una) non hanno un ordine giusto:
     la prima nell'ordine dell'anteprima va per prima e si riapplica dopo le altre (la seconda lista)."""
@@ -935,12 +951,16 @@ def _resolved_rules(rules: list[dict], db: Database) -> list[dict]:
 
 async def _apply_person(item: dict, runtime: Runtime, user: str, again: bool = False) -> None:
     """again: seconda passata di una riga applicata prima di quella che aspettava (vedi _in_order): solo la matricola
-    e i Codici Stampati che l'altra ha lasciato."""
+    e i Nomi Tessera che l'altra ha lasciato."""
     if item["key"].startswith("tessera-nuova:"):
         await _remove_card(item, runtime, user)
         return
     if item["action"] == "togli":
         await runtime.access.delete_person(item["_target"], user)
+        for number in item.get("_gone", ()):
+            card = runtime.db.any_card_by_number(number)
+            if card is not None and card["person_id"] is None:
+                runtime.access.delete_free_card(card["id"], user)
         return
     if again:
         codes = [{"number": c["number"], "printed_code": c.get("printed_code")} for c in item["_cards"]]
@@ -972,7 +992,7 @@ async def _apply_person(item: dict, runtime: Runtime, user: str, again: bool = F
                     f"il profilo di accesso della tessera {card['number']} non c'è più sul controller: rifai "
                     "l'anteprima"
                 )
-        # Codice Stampato del backup (None da uno di prima: resta quello di adesso), controllato di nuovo dal servizio
+        # Nome Tessera del backup (None da uno di prima: resta quello di adesso), controllato di nuovo dal servizio
         cards.append(
             {"number": card["number"], "enabled": card["enabled"], **access, "printed_code": card.get("printed_code")}
         )
@@ -990,13 +1010,15 @@ async def _apply_person(item: dict, runtime: Runtime, user: str, again: bool = F
 
 
 async def _remove_card(item: dict, runtime: Runtime, user: str) -> None:
-    """Tessera aggiunta dopo il backup, da eliminare. Anche l'ultima: la persona resta, senza tessere."""
+    """Tessera aggiunta dopo il backup, da eliminare: nel backup non c'era, quindi se ne va anche dall'elenco delle
+    tessere, con il suo Nome Tessera. Anche l'ultima: la persona resta, senza tessere."""
     card = runtime.db.card_by_number(item["_target"])
     if card is None:
         return
     if card["person_id"] != item["_owner"]:
         raise ServiceError(f"la tessera {card['number']} ora è di {card['person_name']}: resta sua")
     await runtime.access.delete_card(card["id"], user)
+    runtime.access.delete_free_card(card["id"], user)
 
 
 async def _apply_door(item: dict, runtime: Runtime, user: str) -> bool:

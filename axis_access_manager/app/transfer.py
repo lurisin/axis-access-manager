@@ -16,7 +16,7 @@ EVENT_LABELS = {
     "concesso": "Accesso Concesso",
     "negato": "Accesso Negato",
     "lettura": "Tessera Letta",
-    "sconosciuta": "Tessera Sconosciuta",
+    "sconosciuta": "Tessera Non Valida",
     "apertura_remota": "Apertura Remota",
     "uscita": "Uscita",
     "allarme": "Allarme Porta",
@@ -27,7 +27,7 @@ EVENT_LABELS = {
 IMPORT_COLUMNS = ["nome", "tessera", "gruppo", "valida_dal", "valida_al", "ditta", "note", "tipologia", "stato"]
 # Colonne in più del file esportato, in fondo: l'importazione non le usa (telefono, email, matricola, referente e Codice
 # Stampato della tessera si scrivono a mano nella scheda della persona), e il file esportato si reimporta com'è
-EXPORT_COLUMNS = ["ultimo_accesso", "telefono", "email", "matricola", "referente", "codice_stampato"]
+EXPORT_COLUMNS = ["ultimo_accesso", "telefono", "email", "matricola", "referente", "nome_tessera"]
 # Con i secondi come nel file esportato, o senza come lo risalva spesso un foglio di calcolo
 DATE_FORMATS = [
     "%d/%m/%Y %H:%M:%S",
@@ -138,7 +138,7 @@ def persons_csv(
     last_access: dict[int, str],
     categories: dict[int, str] | None = None,
 ) -> str:
-    """Stesse colonne dell'importazione, più ultimo accesso, telefono, email, matricola, referente e Codice Stampato
+    """Stesse colonne dell'importazione, più ultimo accesso, telefono, email, matricola, referente e Nome Tessera
     della tessera (in fondo, che l'importazione ignora): il file si può reimportare. Una riga per tessera; chi non ne ha
     una riga con tessera, gruppo, validità, stato e codice vuoti. Il codice come formula di testo (vedi _formula_text):
     «0042» resta con gli zeri."""
@@ -359,7 +359,7 @@ def _card_number(value: str) -> str:
     value = value.removeprefix("'")
     if re.fullmatch(r"\d+(?:[.,]\d+)?[eE][+-]\d+", value):
         raise ServiceError(
-            f"numero tessera in notazione scientifica ({value}): il foglio di calcolo l'ha letto come un numero, "
+            f"codice tessera in notazione scientifica ({value}): il foglio di calcolo l'ha letto come un numero, "
             "riesporta le persone o scrivi la tessera come testo"
         )
     return normalize_card(value)
