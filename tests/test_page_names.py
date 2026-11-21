@@ -117,7 +117,9 @@ def test_documentation_uses_the_new_names():
     for old in ("Regole → Festività", "**Persone → Tipologie**", "permesso Persone", "pagina Persone", "**Regole**:"):
         assert old not in docs, old
     assert "**Anagrafica → Tipologie**" in docs and "**Fasce Orarie → Festività**" in docs
-    assert "Tessere da Registrare" in docs and "Fasce Orarie e Festività" in docs
+    assert "Fasce Orarie e Festività" in docs
+    # Dalla 0.29 la pagina è Tessere: «Da Registrare» resta solo dove si dice che non c'è più
+    assert "- **Tessere**: l'elenco di tutte le tessere fisiche" in docs and "- **Da Registrare**" not in docs
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     current = changelog.split("\n## 0.28.2")[0]
     assert "**Menu: Anagrafica e Fasce Orarie.**" in current

@@ -4,7 +4,7 @@ Add-on di Home Assistant per gestire persone, tessere e registro degli accessi d
 L'interfaccia compare nella barra laterale di Home Assistant tramite Ingress; il controller resta la fonte
 di verità per le aperture, quindi la porta funziona anche se Home Assistant è spento.
 
-Cosa fa: persone, tessere e tipologie sincronizzate con l'A1210, tessere da registrare, fasce orarie e festività,
+Cosa fa: persone, tessere e tipologie sincronizzate con l'A1210, tessere libere da assegnare, fasce orarie e festività,
 validità temporanea, cruscotto personalizzabile, notifiche di guasti e allarmi, registro con foto ed esportazione CSV,
 impianti con schema lettori ↔ porte e ingressi (pulsanti, relè del citofono, contatto porta), videocitofoni Hikvision,
 entità ed eventi in Home Assistant, importazione CSV, utenti con ruoli e permessi, backup con confronto, ripristino e
