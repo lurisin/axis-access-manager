@@ -2165,7 +2165,7 @@ const WIDGET_BODY = {
     ${d.expiring.length ? `<div class="list">${d.expiring.slice(0, 6).map((e) => `<a class="item" href="#persone/${e.id}"><div class="ev-icon k-warn">${icon("clock")}</div><div class="grow"><div class="title">${esc(e.name)}</div><div class="meta">scade il ${esc(fmtDateTime(e.valid_to))}</div></div></a>`).join("")}</div>${d.expiring.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">${d.expiring.length === 7 ? "e un'altra" : `e altre ${d.expiring.length - 6}`}</p>` : ""}`
       : '<div class="empty">Nessuna tessera scade nei prossimi 7 giorni.</div>'}`,
   // Come nell'elenco delle tessere: stessa icona, stesse parole
-  tessere_libere: ({free}) => `<h2>Tessere Libere<span class="spacer"></span><a class="small-text" href="#tessere">Tutte</a></h2>
+  tessere_libere: ({free}) => `<h2>Tessere Libere${free?.length ? ` <span class="muted">· ${free.length}</span>` : ""}<span class="spacer"></span><a class="small-text" href="#tessere">Tutte</a></h2>
     ${!free ? '<div class="empty">Tessere non leggibili: riprovo tra poco.</div>' : free.length ? `<div class="list">${free.slice(0, 6).map((c) => `<a class="item" href="#tessere"><div class="ev-icon k-muted">${icon("card")}</div><div class="grow"><div class="title">${c.printed_code ? esc(c.printed_code) : `<code>${esc(c.number)}</code>`}</div>${c.printed_code ? `<div class="meta"><span class="mono">${esc(c.number)}</span></div>` : ""}</div></a>`).join("")}</div>${free.length > 6 ? `<p class="muted small-text" style="margin:8px 0 0">${free.length === 7 ? "e un'altra" : `e altre ${free.length - 6}`}</p>` : ""}`
       : '<div class="empty">Nessuna tessera libera.</div>'}`,
   impianto({d: {system: s}, notif}) {
