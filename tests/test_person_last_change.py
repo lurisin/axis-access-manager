@@ -367,7 +367,7 @@ async def test_synchronization_changes_it_only_for_real_news(plant, db, clock, c
     assert step.changed() == {pid, anna["id"]}
 
 
-async def test_import_and_da_registrare_change_it(plant, db, clock, controller):
+async def test_import_and_a_free_card_change_it(plant, db, clock, controller):
     mario = await plant.access.create_person("Mario Rossi", "04aa", "admin")
     anna = await plant.access.create_person("Anna Bianchi", "", "admin")
     text = persons_csv(db.list_persons(), {"profilo_sempre": "Sempre"}, {})
@@ -383,11 +383,16 @@ async def test_import_and_da_registrare_change_it(plant, db, clock, controller):
         result = await import_persons(plant.access, edited, GROUPS, "admin", apply=True)
     assert result["riepilogo"]["saltate"] == 2 and step.changed() == set()
 
-    # Da Registrare: la tessera letta dal lettore assegnata a una persona che c'è (A Persona Esistente)
-    db.note_unknown_card("04ff", clock())
+    # Tessera Libera dell'elenco: caricarla non cambia nessuno, assegnarla e toglierla cambiano chi la riceve
     with watch(db, clock) as step:
-        await plant.access.add_card(anna["id"], "04ff", "admin")
-    assert step.changed() == {anna["id"]} and db.list_unknown_cards() == []
+        loaded = plant.access.load_card("04ff0000", "admin", "Numero 7")
+    assert step.changed() == set()
+    with watch(db, clock) as step:
+        await plant.access.add_card(anna["id"], "04ff0000", "admin")
+    assert step.changed() == {anna["id"]}
+    with watch(db, clock) as step:
+        await plant.access.delete_card(loaded["id"], "admin")
+    assert step.changed() == {anna["id"]} and db.get_card(loaded["id"])["person_id"] is None
 
 
 async def test_restore_from_a_backup_changes_it_only_when_something_comes_back(plant, db, clock):

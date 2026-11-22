@@ -80,11 +80,13 @@ def test_menu_and_titles_with_the_old_addresses():
     )
     assert nav["persone"] == "Anagrafica"
     assert nav["regole"] == "Fasce Orarie"
-    assert nav["da-registrare"] == "Da Registrare"
+    assert nav["tessere"] == "Tessere" and "da-registrare" not in nav
     assert 'data-route="persone" title="Anagrafica"' in page and 'data-route="regole" title="Fasce Orarie"' in page
     # Titolo della pagina (anche quello del browser, «Anagrafica · Controllo Accessi»)
     assert _route(page, "persone") == "Anagrafica"
-    assert _route(page, '"da-registrare"') == "Tessere da Registrare"
+    assert _route(page, "tessere") == "Tessere"
+    # Il vecchio indirizzo di Da Registrare porta all'elenco delle tessere
+    assert 'if (name === "da-registrare") name = "tessere";' in page
     assert _route(page, "regole") == "Fasce Orarie e Festività"
     assert "document.title = `${title} · Controllo Accessi`;" in page
     # Le schede dentro le pagine restano con i loro nomi
@@ -115,7 +117,9 @@ def test_documentation_uses_the_new_names():
     for old in ("Regole → Festività", "**Persone → Tipologie**", "permesso Persone", "pagina Persone", "**Regole**:"):
         assert old not in docs, old
     assert "**Anagrafica → Tipologie**" in docs and "**Fasce Orarie → Festività**" in docs
-    assert "Tessere da Registrare" in docs and "Fasce Orarie e Festività" in docs
+    assert "Fasce Orarie e Festività" in docs
+    # Dalla 0.29 la pagina è Tessere: «Da Registrare» resta solo dove si dice che non c'è più
+    assert "- **Tessere**: l'elenco di tutte le tessere fisiche" in docs and "- **Da Registrare**" not in docs
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     current = changelog.split("\n## 0.28.2")[0]
     assert "**Menu: Anagrafica e Fasce Orarie.**" in current

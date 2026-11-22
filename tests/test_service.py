@@ -164,10 +164,13 @@ async def test_create_person_rolls_back_user_on_card_error(service, controller, 
     assert db.list_persons() == []
 
 
-async def test_create_person_clears_unknown_card(service, db):
-    db.note_unknown_card("04aa", "2026-10-25T00:00:00+00:00")
-    await service.create_person("Mario Rossi", "04AA", "admin")
-    assert db.list_unknown_cards() == []
+async def test_create_person_takes_the_free_card_of_the_list(service, db, controller):
+    """La tessera caricata nell'elenco passa alla persona: stessa riga, stesso nome, codice scritto come caricato."""
+    loaded = service.load_card("04aa0000", "admin", "Numero 4")
+    person = await service.create_person("Mario Rossi", "04AA0000", "admin")
+    [card] = person["cards"]
+    assert (card["id"], card["number"], card["printed_code"]) == (loaded["id"], "04aa0000", "Numero 4")
+    assert [c["IdData"][0]["Value"] for c in controller.credentials.values()] == ["04aa0000"]
 
 
 async def test_rename_updates_user_and_credentials(service, controller):
@@ -455,7 +458,7 @@ async def test_deleting_a_person_without_cards_says_so(service, db):
     assert (db.list_audit()[0]["action"], db.list_audit()[0]["detail"]) == ("persona eliminata", "Zeno, senza tessere")
     anna = await service.create_person("Anna", "04aa", "admin")
     await service.delete_person(anna["id"], "admin")
-    assert db.list_audit()[0]["detail"] == "Anna (04aa)"
+    assert db.list_audit()[0]["detail"] == "Anna (04aa), tessera ora libera"
 
 
 async def test_request_prepared_without_cards_does_not_touch_a_card_added_meanwhile(service, controller, db):
@@ -657,7 +660,6 @@ async def test_card_read_events(service, db):
     events = db.list_events()
     assert [e["kind"] for e in events] == ["sconosciuta", "sconosciuta", "lettura"]
     assert events[2]["person_name"] == "Mario Rossi"
-    assert db.list_unknown_cards()[0]["count"] == 2
 
 
 async def test_access_control_events(service, db):
@@ -1002,7 +1004,6 @@ async def test_recover_events_from_controller_log(service, controller, db):
     # Una seconda lettura dello stesso registro non duplica niente
     assert await service.recover_events(datetime(2026, 10, 25, 17, 0, tzinfo=UTC)) == 0
     assert len(db.list_events()) == 4
-    assert db.list_unknown_cards()[0]["count"] == 1
 
 
 async def test_live_event_after_recovery_is_not_duplicated(service, controller, db):
@@ -1059,9 +1060,9 @@ async def test_recovery_does_not_duplicate_events_of_a_card_removed_meanwhile(se
         ("concesso", 0),
         ("lettura", 0),
     ]
-    # Nome leggibile al posto del token dell'utente, e la tessera in Da Registrare solo per la lettura persa
+    # Nome leggibile al posto del token dell'utente; la tessera, tornata libera, è solo una lettura non valida
     assert events[0]["person_name"] == "Prova Stabilità (tolta dall'app)"
-    assert db.list_unknown_cards()[0]["count"] == 1
+    assert (events[1]["person_name"], events[1]["detail"]) == ("", "tessera libera")
 
 
 DOOR = {
@@ -1179,7 +1180,6 @@ async def test_card_on_a_door_outside_its_category_is_not_enabled_live(service, 
         "dettaglio": "",
         "ora": (MORNING + timedelta(minutes=3)).isoformat(timespec="seconds"),
     }
-    assert db.list_unknown_cards() == []
 
 
 async def test_not_enabled_from_the_controller_log(service, controller, db):
@@ -1349,7 +1349,6 @@ async def test_not_enabled_only_where_the_category_decides(service, controller, 
     denied, read = db.list_events()[:2]
     assert (read["kind"], read["person_name"], read["detail"]) == ("sconosciuta", "", "")
     assert (denied["kind"], denied["person_name"], denied["detail"]) == ("negato", "", "tessera non registrata")
-    assert db.list_unknown_cards()[0]["number"] == "05ff"
 
 
 async def test_not_enabled_in_notifications_search_and_csv(service, controller, db):

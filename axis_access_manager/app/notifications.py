@@ -17,11 +17,11 @@ from collections.abc import Collection
 from datetime import UTC, datetime, timedelta
 
 from .backup_copy import RESTORED, STARTED_EMPTY
-from .db import Database
+from .db import Database, nocase
 from .ha import MIN_FREE_SPACE
 from .live_events import FAULT_AFTER
 from .plain import ASK_ADMIN, Names, forbidden, once, plain_source, plain_text
-from .service import CASING_OPEN, TILTED, ServiceError, plural
+from .service import CASING_OPEN, FREE_CARD_DETAIL, TILTED, ServiceError, plural
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ TYPES = {
         "Eventi del controller non in arrivo o broker MQTT non collegato.",
         "urgent",
     ),
-    "unknown_card": ("Tessere Sconosciute", "Tessere non registrate passate sul lettore.", "urgent"),
+    "unknown_card": ("Tessere Non Valide", "Tessere sconosciute o libere passate a una porta.", "urgent"),
     "denied": ("Accessi Negati", "Accessi negati a persone registrate.", "urgent"),
     "expiring": ("Tessere in Scadenza", "Tessere che scadono nei prossimi 7 giorni.", "urgent"),
     "camera": ("Telecamere Non Disponibili", "Una telecamera non risponde: l'app la ricontrolla da sola.", "urgent"),
@@ -728,10 +728,16 @@ class NotificationService:
                         plain={"text": shown or "Accesso negato senza tessera"},
                     )
                 else:
-                    # Tessera non registrata: ripetuta è un tentativo insistito
+                    # Tessera Non Valida, cioè non di una persona: ripetuta è un tentativo insistito. Una Libera
+                    # dell'elenco si riconosce dal suo Nome Tessera
                     text = f"Tessera {last['card']}"
+                    link = ""
+                    if reason == FREE_CARD_DETAIL:
+                        code = self.db.printed_codes([last["card"]]).get(nocase(last["card"]), "")
+                        text = " · ".join(x for x in (text, code, "libera") if x)
+                        link = "#tessere"
                     severity = "crit" if len(group) > 1 else "warn"
-                    add_group("unknown_card", severity, "Tessera Sconosciuta", text, group, "#da-registrare")
+                    add_group("unknown_card", severity, "Tessera Non Valida", text, group, link)
         for cam in cameras or []:
             # Telecamera di una porta che non risponde: l'app la ricontrolla da sola (camera_watch), e la notifica
             # sparisce quando una foto riesce, di un evento o di prova

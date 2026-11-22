@@ -210,7 +210,7 @@ class PersonIn(BaseModel):
     email: str = ""
     employee_id: str = ""
     referent: str = ""
-    # Codice Stampato della tessera (solo con card), controllato da AccessService (normalize_printed_code)
+    # Nome della tessera (solo con card), controllato da AccessService (normalize_printed_code)
     printed_code: str = ""
 
 
@@ -236,14 +236,26 @@ class AccessIn(BaseModel):
 
 class CardIn(BaseModel):
     card: str
-    # Codice Stampato sulla tessera fisica, facoltativo (vedi AccessService.add_card)
+    # Nome Tessera sulla tessera fisica, facoltativo (vedi AccessService.add_card)
     printed_code: str = ""
+    # La tessera Libera dell'elenco che si sta assegnando: se non c'è più non si ricrea
+    card_id: int | None = None
+
+
+class CardLoadIn(BaseModel):
+    card: str
+    # Nome Tessera; None: quello proposto dall'app (vedi AccessService.next_card_name), "" nessuno
+    printed_code: str | None = None
 
 
 class CardStateIn(BaseModel):
-    # None: non cambia. Lo stato va sul controller, il Codice Stampato resta nell'app (vedi AccessService.update_card)
+    # None: non cambia. Lo stato va sul controller, il Nome Tessera resta nell'app (vedi AccessService.update_card)
     enabled: bool | None = None
     printed_code: str | None = None
+    # La persona della scheda da cui si chiede: se la tessera non è più sua non si tocca
+    person_id: int | None = None
+    # Il codice della tessera che si vede (elenco Tessere): se l'id è passato a un'altra tessera non si tocca
+    number: str | None = None
 
 
 class ScheduleRuleIn(BaseModel):
@@ -406,7 +418,7 @@ DASHBOARD_WIDGETS = (
     "settimana",
     "ultimi_eventi",
     "scadenze",
-    "da_registrare",
+    "tessere_libere",
     "impianto",
     "backup",
 )
@@ -440,6 +452,8 @@ class DashboardLayoutIn(BaseModel):
 class MissingCardsIn(BaseModel):
     # Nessun elenco = tutte le tessere non presenti
     ids: list[int] | None = None
+    # La persona della scheda da cui si chiede: una tessera passata a un'altra non si riscrive
+    person_id: int | None = None
 
 
 class HardwareAccessPointIn(BaseModel):
@@ -624,7 +638,7 @@ FIELD_LABELS = {
     "email": "email",
     "employee_id": "matricola",
     "referent": "referente interno",
-    "printed_code": "Codice Stampato",
+    "printed_code": "Nome Tessera",
     "person_columns": "colonne dell'elenco",
 }
 # Campi delle persone che non finiscono nel log neanche quando sono rifiutati (vedi db.PERSON_COLUMNS), a qualsiasi
@@ -1136,7 +1150,6 @@ def create_app(
             "doors": doors if status else [{**d, "mode": None, "state": None} for d in doors],
             "configured": bool(state.settings.a1210_host),
             "mqtt_connected": state.monitor.connected if status else None,
-            "unknown_cards": len(state.db.list_unknown_cards()) if user.can("persone") else 0,
             "sync": state.last_sync,
             "notifications": listing["open"] if listing else 0,
             # Barra in alto: guasti finché durano, allarmi finché non se ne prende visione. Il coperchio ancora aperto
@@ -1238,10 +1251,11 @@ def create_app(
             "persons": len(persons),
             "cards": len(cards),
             "cards_suspended": sum(1 for c in cards if not c["enabled"]),
-            "unknown_cards": len(db.list_unknown_cards()),
+            # Tessere caricate nell'elenco e non assegnate a nessuno
+            "free_cards": sum(1 for c in db.all_cards() if c["person_id"] is None),
             # Nomi e passaggi solo a chi può vedere anagrafica e registro
             "expiring": expiring if user.can("persone") else [],
-            # Con il Codice Stampato di adesso delle tessere, per il Dettaglio Evento
+            # Con il Nome Tessera di adesso delle tessere, per il Dettaglio Evento
             "recent": _events_out(request, db.with_printed_codes(db.list_events(limit=8)))
             if user.can("registro")
             else [],
@@ -1308,7 +1322,7 @@ def create_app(
 
     @app.post("/api/missing-cards/restore", dependencies=[need("persone_modifica")])
     async def restore_missing_cards(body: MissingCardsIn, request: Request) -> dict:
-        return await request.app.state.service.restore_missing(request_user(request), body.ids)
+        return await request.app.state.service.restore_missing(request_user(request), body.ids, body.person_id)
 
     @app.post("/api/missing-cards/forget", dependencies=[need("persone_modifica")])
     async def forget_missing_cards(body: MissingCardsIn, request: Request) -> dict:
@@ -1449,31 +1463,51 @@ def create_app(
     @app.post("/api/persons/{person_id}/cards", dependencies=[need("persone_modifica")])
     async def add_card(person_id: int, body: CardIn, request: Request) -> dict:
         return await request.app.state.service.add_card(
-            person_id, body.card, request_user(request), printed_code=body.printed_code
+            person_id, body.card, request_user(request), printed_code=body.printed_code, card_id=body.card_id
         )
 
     @app.patch("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
     async def set_card_state(card_id: int, body: CardStateIn, request: Request) -> dict:
-        """Stato (sospesa o attiva, sul controller) e Codice Stampato (solo nell'app: da solo non chiama il
+        """Stato (sospesa o attiva, sul controller) e Nome Tessera (solo nell'app: da solo non chiama il
         controller) di una tessera; quello che non si manda non cambia."""
         if body.enabled is None and body.printed_code is None:
             raise HTTPException(400, "indica cosa cambiare della tessera")
-        return await request.app.state.service.update_card(
-            card_id, request_user(request), enabled=body.enabled, printed_code=body.printed_code
+        person = await request.app.state.service.update_card(
+            card_id,
+            request_user(request),
+            enabled=body.enabled,
+            printed_code=body.printed_code,
+            person_id=body.person_id,
+            number=body.number,
         )
+        # Tessera Libera: non ha una persona da restituire
+        return person if person is not None else {"card": request.app.state.db.get_card(card_id)}
 
     @app.delete("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
-    async def delete_card(card_id: int, request: Request) -> dict:
-        person = await request.app.state.service.delete_card(card_id, request_user(request))
+    async def delete_card(card_id: int, request: Request, person_id: int | None = None) -> dict:
+        """Toglie la tessera alla persona: torna Libera nell'elenco delle tessere. person_id: la persona della scheda
+        da cui si chiede; se la tessera non è più sua non si tocca."""
+        person = await request.app.state.service.delete_card(card_id, request_user(request), person_id)
         return {"ok": True, "person": person}
 
-    @app.get("/api/unknown-cards", dependencies=[need("persone")])
-    async def unknown_cards(request: Request) -> list[dict]:
-        return request.app.state.db.list_unknown_cards()
+    @app.get("/api/cards", dependencies=[need("persone")])
+    async def list_cards(request: Request) -> dict:
+        """Elenco delle tessere fisiche, Libere e assegnate, e il Nome Tessera proposto per la prossima."""
+        service = request.app.state.service
+        return {"cards": request.app.state.db.list_cards(), "next_name": service.next_card_name()}
 
-    @app.delete("/api/unknown-cards/{number}", dependencies=[need("persone_modifica")])
-    async def ignore_unknown_card(number: str, request: Request) -> dict:
-        request.app.state.db.forget_unknown_card(number)
+    @app.post("/api/cards", dependencies=[need("persone_modifica")])
+    async def load_card(body: CardLoadIn, request: Request) -> dict:
+        """Carica una tessera nell'elenco, Libera: solo nell'app, mai sul controller."""
+        service = request.app.state.service
+        card = service.load_card(body.card, request_user(request), body.printed_code)
+        return {"card": card, "next_name": service.next_card_name()}
+
+    @app.delete("/api/cards/{card_id}/forever", dependencies=[need("persone_modifica")])
+    async def delete_free_card(card_id: int, request: Request, number: str | None = None) -> dict:
+        """Elimina per sempre una tessera Libera (rotta o persa). number: il codice che si vede; se l'id è passato a
+        un'altra tessera non si elimina."""
+        request.app.state.service.delete_free_card(card_id, request_user(request), number)
         return {"ok": True}
 
     # Registro
@@ -1505,7 +1539,7 @@ def create_app(
             person_id=person_id,
             door=door,
         )
-        # Codice Stampato di adesso delle tessere della pagina: una query per tutta la pagina
+        # Nome Tessera di adesso delle tessere della pagina: una query per tutta la pagina
         return _events_out(request, db.with_printed_codes(events))
 
     @app.get("/api/events/count", dependencies=[need("registro")])
@@ -4322,7 +4356,8 @@ def _missing_summary(db: Database) -> dict:
         "count": len(cards),
         "persons": len({c["person_id"] for c in cards}),
         "since": min(c["missing_since"] for c in cards),
-        "mass": mass_missing(len(db.all_cards()), len(cards)),
+        # Le tessere Libere non sono sul controller: non contano nel totale
+        "mass": mass_missing(sum(1 for c in db.all_cards() if c["person_id"] is not None), len(cards)),
     }
 
 

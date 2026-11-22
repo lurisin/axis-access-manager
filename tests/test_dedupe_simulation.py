@@ -202,6 +202,3 @@ def test_each_passage_once_from_websocket_mqtt_and_controller_log(app_client, co
     recovered = app_client.portal.call(state.service.recover_events, first - timedelta(minutes=1))
     assert recovered == 0
     assert _rows(state) == sorted(EXPECTED)
-    # Tessera sconosciuta da registrare: una lettura sola per passaggio
-    unknown = {c["number"]: c for c in state.db.list_unknown_cards()}
-    assert unknown["c0110b18"]["count"] == 1

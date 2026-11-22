@@ -163,7 +163,7 @@ def test_controller_test_reports_serial_and_certificate(client, controller):
 def test_errors_are_reported_in_italian(client):
     response = client.post("/api/persons", json={"name": "Anna", "card": "non-hex"})
     assert response.status_code == 400
-    assert "numero tessera non valido" in response.json()["detail"]
+    assert "codice tessera non valido" in response.json()["detail"]
 
 
 def test_door_cannot_be_opened_from_the_app(client, controller):
@@ -235,7 +235,8 @@ def test_sections_follow_permissions(client):
     for path in ("/api/dashboard", "/api/door-overview", "/api/notifications", "/api/status", "/api/persons"):
         assert client.get(path, headers=log).status_code == 403, path
     summary = client.get("/api/summary", headers=log).json()
-    assert summary["notifications"] == 0 and summary["door_mode"] is None and summary["unknown_cards"] == 0
+    assert summary["notifications"] == 0 and summary["door_mode"] is None and "unknown_cards" not in summary
+    assert client.get("/api/cards", headers=log).status_code == 403
     assert summary["doors"] and all(d["mode"] is None for d in summary["doors"])
 
     # Tessere: anagrafica, tipologie e fasce orarie, senza registro né stato

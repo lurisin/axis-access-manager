@@ -1,9 +1,9 @@
-"""Suggerimento del Codice Stampato (0.28.4): senza gli esempi inventati della 0.28.3 («Ciccio», «1234»,
+"""Suggerimento del Nome Tessera (0.28.4): senza gli esempi inventati della 0.28.3 («Ciccio», «1234»,
 «Cicciobello») in tutto quello che il titolare può leggere (pagina, messaggi e commenti del server, DOCS, CHANGELOG che
-Home Assistant mostra all'aggiornamento, opzioni dell'add-on), e lo stesso testo professionale in Nuova Persona, Tessere
-da Registrare, finestra Codice e Aggiungi Tessera. Niente «1234» neanche dentro un numero di esempio («+39 333 1234567»,
-«04123456»): in un software professionale gli esempi sono neutri (+39 333 5550190, A-07). Nei test i valori restano:
-sono dati scritti dagli utenti."""
+Home Assistant mostra all'aggiornamento, opzioni dell'add-on), e lo stesso testo professionale in Nuova Persona,
+nell'elenco delle tessere, nella finestra Nome e in Aggiungi Tessera. Niente «1234» neanche dentro un numero di esempio
+(«+39 333 1234567», «04123456»): in un software professionale gli esempi sono neutri (+39 333 5550190, A-07). Nei test i
+valori restano: sono dati scritti dagli utenti."""
 
 import json
 import re
@@ -20,7 +20,7 @@ from test_page_time_zone import needs_node
 ROOT = Path(__file__).resolve().parents[1]
 ADDON = ROOT / "axis_access_manager"
 PAGE = ADDON / "app" / "static" / "index.html"
-HINT = "Il codice scritto sulla tessera. Resta solo nell'app."
+HINT = "Quello scritto sulla tessera. Resta solo nell'app."
 # Esempi buttati lì: «Ciccio», e «1234» anche dentro le parole e i numeri («+39 333 1234567», «04123456»,
 # «password1234»), o le cifre in fila con il punto delle migliaia («06.123.456»)
 EXAMPLES = re.compile(r"ciccio|1234|123\.456", re.I)
@@ -131,16 +131,18 @@ const config = JSON.parse(process.argv[1]);
       await page.keyboard.press("Escape");
       await dlg.waitFor({state: "hidden"});
     };
-    await page.goto(`${config.base}/#da-registrare`);
-    await page.locator("[data-new]").first().click();
+    await page.goto(`${config.base}/#tessere`);
+    await page.locator("[data-card-give]").first().click();
+    await page.locator("#modal .dlg-foot button", {hasText: "Nuova Persona"}).click();
+    await page.locator('#modal [name="first_name"]').waitFor();
     await read("Nuova Persona");
-    await page.locator("[data-assign]").first().click();
-    await read("A Persona Esistente");
+    await page.locator("[data-card-name]").first().click();
+    await read("Nome dall'Elenco");
     await page.goto(`${config.base}/#persone/${config.person}`);
     await page.locator("#sheet [data-add-card]").click();
     await read("Aggiungi Tessera");
     await page.locator("#sheet [data-card-code]").first().click();
-    await read("Codice");
+    await read("Nome");
     out.push({width, errors});
     await context.close();
   }
@@ -152,15 +154,15 @@ const config = JSON.parse(process.argv[1]);
 
 @pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
 def test_the_four_dialogs_show_the_same_professional_hint(plant, ingress_server):  # noqa: F811
-    """Nella pagina vera, a 390 e a 1280 px: Nuova Persona e A Persona Esistente da Tessere da Registrare, Aggiungi
-    Tessera e Codice dalla scheda. Stesso suggerimento, segnaposto «facoltativo» e nessun esempio inventato."""
+    """Nella pagina vera, a 390 e a 1280 px: Nuova Persona e Nome dall'elenco delle tessere, Aggiungi Tessera e Nome
+    dalla scheda. Stesso suggerimento, segnaposto «facoltativo» e nessun esempio inventato."""
     ingress, _, _, app = plant
     person = ingress.post(
         "/api/persons",
         json={"first_name": "Marta", "last_name": "Colombo", "card": "04a1b2c3", "printed_code": "A-07"},
         headers=ADMIN,
     ).json()
-    app.state.db.note_unknown_card("04ddeeff", "2026-11-14T08:00:00+00:00")
+    app.state.db.add_free_card("04ddeeff", "A-08")
     config = {"base": ingress_server, "headers": ADMIN, "person": person["id"]}
     result = subprocess.run(["node", "-e", DIALOGS, json.dumps(config)], capture_output=True, text=True, timeout=180)
     if result.returncode and "Executable doesn't exist" in result.stderr:
@@ -172,11 +174,12 @@ def test_the_four_dialogs_show_the_same_professional_hint(plant, ingress_server)
     assert [(d["width"], d["name"]) for d in dialogs] == [
         (width, name)
         for width in (390, 1280)
-        for name in ("Nuova Persona", "A Persona Esistente", "Aggiungi Tessera", "Codice")
+        for name in ("Nuova Persona", "Nome dall'Elenco", "Aggiungi Tessera", "Nome")
     ]
     for d in dialogs:
         assert d["placeholder"] == "facoltativo", d
-        expected = HINT + (" Vuoto per toglierlo." if d["name"] == "Codice" else "")
+        extra = {"Aggiungi Tessera": " Vuoto: resta quello che ha già.", "Nuova Persona": ""}
+        expected = HINT + extra.get(d["name"], " Vuoto per toglierlo.")
         assert d["hint"] == expected, d
         assert not EXAMPLES.search(d["all"]), d
         assert not d["scroll"], d

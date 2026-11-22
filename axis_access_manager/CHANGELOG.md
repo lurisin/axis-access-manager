@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.29.0
+
+- **Pagina Tessere.** Prende il posto di «Da Registrare»: è l'elenco di tutte le tessere, ognuna **Libera** oppure assegnata a una persona. Una tessera libera non è sul controller e alla porta non apre.
+- **Caricare le tessere con il lettore da banco.** In Tessere il campo del codice è già selezionato: passi le tessere una dopo l'altra sul lettore da banco (OmniKey) e sono caricate. Il nome è proposto da solo, «Numero 1», «Numero 2» e così via. Una tessera già caricata viene segnalata subito.
+- **Togliere una tessera non la perde.** Tolta a una persona, o eliminata la persona, la tessera torna Libera con lo stesso codice e lo stesso nome. Si elimina per sempre solo dalla pagina Tessere.
+- **Nome Tessera e Codice Tessera.** «Codice Stampato» ora si chiama **Nome Tessera**: è quello scritto sopra la tessera. **Codice Tessera** è il numero che legge il lettore. Nel file esportato la colonna `codice_stampato` diventa `nome_tessera`.
+- **Tessera Non Valida.** Una tessera mai caricata, o libera, passata a una porta è un evento «Tessera Non Valida» con la foto. Prima si chiamava «Tessera Sconosciuta». L'elenco delle tessere da registrare non c'è più.
+- **Cruscotto.** Il riquadro **Tessere Libere** prende il posto di «Tessere da Registrare».
+- **Home Assistant.** Il sensore «Tessere da Registrare» sparisce da solo: se lo usi in una scheda o in un'automazione, toglilo. Il tipo di evento `tessera_sconosciuta` resta com'è.
+- **Dopo l'aggiornamento.** Se tenevi le tessere non consegnate sotto una persona finta, eliminala: le sue tessere tornano Libere ed escono dal controller.
+- **Tornare alla 0.28.11.** Con tessere libere caricate non si torna indietro installando la versione vecchia. Si torna indietro solo con la copia del database che l'app salva da sola prima dell'aggiornamento.
+
 ## 0.28.11
 
 - **Videocitofono scelto dall'elenco.** Nella finestra del videocitofono non si scrive più il nome: si sceglie tra quelli che l'add-on Hikvision Doorbell annuncia sul broker. Sono grigi quelli con i relè già usati da altre porte. Il Prefisso MQTT non c'è più.

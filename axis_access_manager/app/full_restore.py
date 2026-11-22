@@ -413,7 +413,10 @@ def _plan_cards(current: dict, common: dict) -> list[dict]:
             _row("tessere", "tessere", "ricrea", "Tessere", "", blocked="le tessere del controller ora non si leggono")
         ]
     present = {str(c.get("card") or "").upper() for c in current.get("credentials") or []}
-    missing = [c for c in common.get("cards") or [] if c["number"].upper() not in present]
+    # Le tessere Libere dell'elenco non vanno sul controller
+    missing = [
+        c for c in common.get("cards") or [] if c["person_id"] is not None and c["number"].upper() not in present
+    ]
     if not missing:
         return []
     names = {p["id"]: p["name"] for p in common.get("persons") or []}

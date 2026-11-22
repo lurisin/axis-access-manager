@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS persons (
 );
 CREATE TABLE IF NOT EXISTS cards (
     id INTEGER PRIMARY KEY,
-    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    person_id INTEGER REFERENCES persons(id) ON DELETE SET NULL,
     number TEXT NOT NULL UNIQUE COLLATE NOCASE,
     enabled INTEGER NOT NULL DEFAULT 1,
     axis_credential_token TEXT UNIQUE,
@@ -50,12 +50,6 @@ CREATE TABLE IF NOT EXISTS events (
     raw TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
-CREATE TABLE IF NOT EXISTS unknown_cards (
-    number TEXT PRIMARY KEY COLLATE NOCASE,
-    first_seen TEXT NOT NULL,
-    last_seen TEXT NOT NULL,
-    count INTEGER NOT NULL DEFAULT 1
-);
 CREATE TABLE IF NOT EXISTS schedule_rules (
     schedule_token TEXT PRIMARY KEY,
     rules TEXT NOT NULL,
@@ -350,12 +344,60 @@ SCHEMA_STEPS: list[tuple[int, str, list[str]]] = [
     # delle foto sta in SCHEMA
     (
         10,
-        "nome e cognome separati, telefono, email, matricola, referente e foto delle persone, codice stampato delle "
+        "nome e cognome separati, telefono, email, matricola, referente e foto delle persone, nome tessera delle "
         "tessere",
         [],
     ),
+    # La tabella delle tessere si rifà con la persona facoltativa: vedi _cards_without_person. «Da Registrare» non c'è
+    # più: una tessera sconosciuta passata a una porta resta solo un evento del registro
+    (
+        11,
+        "tessere libere (senza persona), via le tessere da registrare",
+        [
+            "DROP TABLE IF EXISTS unknown_cards",
+            "UPDATE app_settings SET value = replace(value, '\"da_registrare\"', '\"tessere_libere\"') "
+            "WHERE key LIKE 'dashboard_layout:%'",
+        ],
+    ),
 ]
 SCHEMA_VERSION = SCHEMA_STEPS[-1][0]
+# Tabella delle tessere dalla 0.29.0 (migrazione 11), con tutte le sue colonne: la persona può mancare. Una tessera
+# senza persona è Libera: sta nell'elenco delle tessere con il suo codice e il suo nome, e non è sul controller (né
+# token né accesso). SCHEMA ne ha solo le prime colonne, le altre si aggiungono con le migrazioni: la 2 aggiunge
+# missing_since senza controllare se c'è
+CARDS_TABLE = """
+CREATE TABLE cards_new (
+    id INTEGER PRIMARY KEY,
+    person_id INTEGER REFERENCES persons(id) ON DELETE SET NULL,
+    number TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    axis_credential_token TEXT UNIQUE,
+    created_at TEXT NOT NULL,
+    access_profile TEXT NOT NULL DEFAULT '',
+    valid_from TEXT NOT NULL DEFAULT '',
+    valid_to TEXT NOT NULL DEFAULT '',
+    missing_since TEXT NOT NULL DEFAULT '',
+    printed_code TEXT NOT NULL DEFAULT ''
+)
+"""
+CARDS_COLUMNS = (
+    "id",
+    "person_id",
+    "number",
+    "enabled",
+    "axis_credential_token",
+    "created_at",
+    "access_profile",
+    "valid_from",
+    "valid_to",
+    "missing_since",
+    "printed_code",
+)
+# Tessera Libera: senza persona, senza token del controller, attiva e senza accesso
+FREE_CARD = (
+    "person_id = NULL, axis_credential_token = NULL, enabled = 1, access_profile = '', valid_from = '', "
+    "valid_to = '', missing_since = ''"
+)
 # Ultimo accesso di ogni persona e passaggi di una persona senza leggere tutto il registro (un anno: 1,5 milioni).
 # Fuori da SCHEMA: crearlo legge tutto il registro (vedi _open)
 PERSON_INDEX = "CREATE INDEX IF NOT EXISTS events_person ON events(person_id, kind, ts)"
@@ -391,12 +433,12 @@ EMPLOYEE_ID_INDEX = (
     "CREATE UNIQUE INDEX IF NOT EXISTS persons_employee_id ON persons(employee_id COLLATE NOCASE) "
     "WHERE employee_id != ''"
 )
-# Codice Stampato della tessera (0.28.3, migrazione 10): il codice scritto sulla tessera fisica (per esempio «A-07»),
+# Nome della tessera (0.28.3, migrazione 10): il codice scritto sulla tessera fisica (per esempio «A-07»),
 # messo da chi la consegna perché le tessere sono tutte bianche. Solo nell'app: mai sul controller (né utenti
 # né tessere, quindi neanche nel confronto in ombra) e mai in Home Assistant. Non è un dato personale. Si aggiunge anche
 # a ogni avvio, se manca (vedi _person_details), come matricola e referente
 CARD_COLUMNS = (("printed_code", "TEXT NOT NULL DEFAULT ''"),)
-# Codice Stampato unico tra quelli scritti, senza distinguere maiuscole come la matricola: il servizio lo controlla
+# Nome Tessera unico tra quelli scritti, senza distinguere maiuscole come la matricola: il servizio lo controlla
 # prima, con il nome di chi ha la tessera (vedi AccessService.check_printed_code)
 PRINTED_CODE_INDEX = (
     "CREATE UNIQUE INDEX IF NOT EXISTS cards_printed_code ON cards(printed_code COLLATE NOCASE) "
@@ -608,6 +650,8 @@ class Database:
                         self._new_install_id()
                     if step == 10:
                         self._person_columns()
+                    if step == 11:
+                        self._cards_without_person()
                     for sql in statements:
                         self._conn.execute(sql)
                     self._conn.execute(f"PRAGMA user_version = {step}")
@@ -720,6 +764,32 @@ class Database:
         self._add_card_columns()
         self._repair_person_names()
 
+    def _cards_without_person(self) -> None:
+        """Migrazione 11: la persona della tessera diventa facoltativa (tessera Libera). SQLite non toglie un NOT NULL
+        con ALTER: la tabella si rifà, con gli stessi numeri (id) e le stesse righe. Non due volte: un database nuovo, o
+        riportato a mano allo schema di prima, ha già la colonna facoltativa. Una tessera rimasta senza la sua persona
+        (eliminata senza i vincoli attivi) diventa Libera. L'indice del Nome Tessera lo ricrea _person_details."""
+        info = {row["name"]: row for row in self._conn.execute("PRAGMA table_info(cards)")}
+        if not info["person_id"]["notnull"]:
+            return
+        # Un database allo schema 10 di prima del Nome Tessera (le prove della 0.28.3) non ha la colonna
+        self._add_card_columns()
+        have = {row["name"] for row in self._conn.execute("PRAGMA table_info(cards)")}
+        columns = ", ".join(column for column in CARDS_COLUMNS if column in have)
+        self._conn.execute(CARDS_TABLE)
+        self._conn.execute(
+            f"INSERT INTO cards_new ({columns}) SELECT {columns} FROM cards "
+            "WHERE person_id IN (SELECT id FROM persons)"
+        )
+        kept = ", ".join(column for column in ("id", "number", "created_at", "printed_code") if column in have)
+        orphans = self._conn.execute(
+            f"INSERT INTO cards_new ({kept}) SELECT {kept} FROM cards WHERE person_id NOT IN (SELECT id FROM persons)"
+        ).rowcount
+        self._conn.execute("DROP TABLE cards")
+        self._conn.execute("ALTER TABLE cards_new RENAME TO cards")
+        if orphans:
+            _LOGGER.warning("%s tessere senza la loro persona: ora sono Libere", orphans)
+
     def _add_columns(self, table: str, wanted: tuple[tuple[str, str], ...]) -> int:
         """Colonne di wanted che mancano alla tabella, con il loro valore predefinito; restituisce quante."""
         columns = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
@@ -733,13 +803,13 @@ class Database:
         return self._add_columns("persons", PERSON_COLUMNS)
 
     def _add_card_columns(self) -> int:
-        """Colonne di CARD_COLUMNS che mancano (il Codice Stampato), vuote; restituisce quante."""
+        """Colonne di CARD_COLUMNS che mancano (il Nome Tessera), vuote; restituisce quante."""
         return self._add_columns("cards", CARD_COLUMNS)
 
     def _person_details(self) -> None:
         """A ogni avvio, dopo le migrazioni: le colonne di PERSON_COLUMNS e CARD_COLUMNS che mancano a un database già
-        allo schema 10 (matricola, referente e Codice Stampato si sono aggiunti dopo, nella stessa 0.28.3), le foto
-        rimaste senza persona e gli indici della matricola e del Codice Stampato unici. Ogni cosa si fa una volta sola.
+        allo schema 10 (matricola, referente e Nome Tessera si sono aggiunti dopo, nella stessa 0.28.3), le foto
+        rimaste senza persona e gli indici della matricola e del Nome Tessera unici. Ogni cosa si fa una volta sola.
         Con due matricole o due codici uguali messi a mano nel database il loro indice non si crea: l'app parte lo
         stesso, e il controllo del servizio non ne lascia scrivere altri."""
         if self._conn.execute("PRAGMA user_version").fetchone()[0] < 10:
@@ -750,7 +820,7 @@ class Database:
             if self._add_person_columns():
                 _LOGGER.info("Matricola e referente aggiunti all'anagrafica")
             if self._add_card_columns():
-                _LOGGER.info("Codice Stampato aggiunto alle tessere")
+                _LOGGER.info("Nome Tessera aggiunto alle tessere")
             if added := self._add_columns("doors", DOOR_COLUMNS):
                 _LOGGER.info("Colonne aggiunte alle porte: %s", added)
             # Foto di persone che non ci sono più (eliminate senza i vincoli attivi): non si mostrano a nessuno
@@ -763,7 +833,7 @@ class Database:
             raise
         if orphans:
             _LOGGER.info("Tolte %s foto di persone che non ci sono più", orphans)
-        for index, what in ((EMPLOYEE_ID_INDEX, "della matricola"), (PRINTED_CODE_INDEX, "del Codice Stampato")):
+        for index, what in ((EMPLOYEE_ID_INDEX, "della matricola"), (PRINTED_CODE_INDEX, "del Nome Tessera")):
             try:
                 self._conn.execute(index)
             except sqlite3.IntegrityError as err:
@@ -941,6 +1011,7 @@ class Database:
         photos = self.person_photo_versions()
         by_person: dict[int, list[dict]] = {}
         for card in cards:
+            # Le tessere Libere (senza persona) non sono di nessuno: stanno solo nell'elenco delle tessere
             card["enabled"] = bool(card["enabled"])
             by_person.setdefault(card["person_id"], []).append(card)
         for person in persons:
@@ -1093,6 +1164,8 @@ class Database:
         va con la persona (ON DELETE CASCADE)."""
         with self._lock:
             self._conn.execute("UPDATE events SET person_id = NULL WHERE person_id = ?", (person_id,))
+            # Le sue tessere restano nell'elenco, Libere (il servizio le ha già tolte dal controller)
+            self._conn.execute(f"UPDATE cards SET {FREE_CARD} WHERE person_id = ?", (person_id,))
             self._conn.execute("DELETE FROM persons WHERE id = ?", (person_id,))
             self._commit()
 
@@ -1158,7 +1231,41 @@ class Database:
         rows[0]["enabled"] = bool(rows[0]["enabled"])
         return rows[0]
 
+    def list_cards(self) -> list[dict]:
+        """Tutte le tessere fisiche, Libere (person_id None, person_name "") e assegnate, con il nome della persona:
+        l'elenco delle tessere."""
+        rows = self._query(
+            "SELECT cards.*, COALESCE(persons.name, '') AS person_name FROM cards "
+            "LEFT JOIN persons ON persons.id = cards.person_id ORDER BY cards.id"
+        )
+        for row in rows:
+            row["enabled"] = bool(row["enabled"])
+        return rows
+
+    def any_card_by_number(self, number: str) -> dict | None:
+        """Tessera con quel codice, anche Libera (person_id None, person_name ""). card_by_number vede solo quelle
+        assegnate: una tessera Libera passata a una porta non è di nessuno."""
+        rows = self._query(
+            "SELECT cards.*, COALESCE(persons.name, '') AS person_name FROM cards "
+            "LEFT JOIN persons ON persons.id = cards.person_id WHERE cards.number = ?",
+            (number,),
+        )
+        return rows[0] if rows else None
+
+    def free_numbers(self, numbers) -> set[str]:
+        """Tra i codici indicati, quelli di tessere Libere (senza maiuscole, vedi nocase): una query sola."""
+        wanted = sorted({str(n) for n in numbers if n})
+        if not wanted:
+            return set()
+        rows = self._query(
+            f"SELECT number FROM cards WHERE number IN ({','.join('?' * len(wanted))}) AND person_id IS NULL",
+            tuple(wanted),
+        )
+        return {nocase(row["number"]) for row in rows}
+
     def card_by_number(self, number: str) -> dict | None:
+        """Tessera assegnata con quel codice, con il nome della persona. Una Libera non c'è (vedi
+        any_card_by_number)."""
         rows = self._query(
             "SELECT cards.*, persons.name AS person_name FROM cards JOIN persons ON persons.id = cards.person_id "
             "WHERE cards.number = ?",
@@ -1179,20 +1286,26 @@ class Database:
         return row["person_id"] if row else None
 
     def card_by_printed_code(self, printed_code: str, other_than: int | None = None) -> dict | None:
-        """Tessera (diversa da other_than) che ha già il Codice Stampato, senza distinguere maiuscole come l'indice
-        unico, con il nome della sua persona."""
+        """Tessera (diversa da other_than) che ha già il Nome Tessera, senza distinguere maiuscole come l'indice
+        unico, con il nome della sua persona ("" se è Libera)."""
         if not printed_code:
             return None
         rows = self._query(
-            "SELECT cards.id, cards.number, cards.person_id, persons.name AS person_name FROM cards "
-            "JOIN persons ON persons.id = cards.person_id WHERE cards.printed_code = ? COLLATE NOCASE "
+            "SELECT cards.id, cards.number, cards.person_id, COALESCE(persons.name, '') AS person_name FROM cards "
+            "LEFT JOIN persons ON persons.id = cards.person_id WHERE cards.printed_code = ? COLLATE NOCASE "
             "AND cards.printed_code != '' AND cards.id IS NOT ?",
             (printed_code, other_than),
         )
         return rows[0] if rows else None
 
+    def all_printed_codes(self) -> list[str]:
+        """Nomi Tessera di tutte le tessere, Libere e assegnate, dal caricamento più recente: per proporre il
+        prossimo."""
+        rows = self._query("SELECT printed_code FROM cards WHERE printed_code != '' ORDER BY id DESC")
+        return [row["printed_code"] for row in rows]
+
     def printed_codes(self, numbers) -> dict[str, str]:
-        """Codice Stampato di adesso delle tessere indicate che ne hanno uno, per numero senza maiuscole (vedi nocase):
+        """Nome Tessera di adesso delle tessere indicate che ne hanno uno, per numero senza maiuscole (vedi nocase):
         una query sola, con l'indice dei numeri, per tutta una pagina del registro."""
         wanted = sorted({str(n) for n in numbers if n})
         if not wanted:
@@ -1205,7 +1318,7 @@ class Database:
         return {nocase(row["number"]): row["printed_code"] for row in rows}
 
     def with_printed_codes(self, events: list[dict]) -> list[dict]:
-        """Eventi del registro con il Codice Stampato che la loro tessera ha adesso (printed_code, "" se non ne ha o se
+        """Eventi del registro con il Nome Tessera che la loro tessera ha adesso (printed_code, "" se non ne ha o se
         non è registrata): il registro salva solo il numero. Una query per tutti gli eventi (vedi printed_codes)."""
         codes = self.printed_codes(event.get("card") for event in events)
         for event in events:
@@ -1221,9 +1334,30 @@ class Database:
         access: dict | None = None,
         printed_code: str = "",
     ) -> int:
-        """printed_code: il Codice Stampato sulla tessera fisica, solo nell'app (vedi CARD_COLUMNS)."""
+        """printed_code: il Nome Tessera sulla tessera fisica, solo nell'app (vedi CARD_COLUMNS). Una tessera Libera
+        con quel codice è la stessa tessera fisica: passa alla persona, con lo stesso numero (id), la data in cui è
+        stata caricata e il suo Nome Tessera, se non se ne dà un altro."""
         access = access or {}
+        values = (access.get("access_profile", ""), access.get("valid_from", ""), access.get("valid_to", ""))
         with self._writing() as conn:
+            free = conn.execute(
+                "SELECT id, printed_code FROM cards WHERE number = ? AND person_id IS NULL", (number,)
+            ).fetchone()
+            if free is not None:
+                conn.execute(
+                    "UPDATE cards SET person_id = ?, enabled = ?, axis_credential_token = ?, access_profile = ?, "
+                    "valid_from = ?, valid_to = ?, missing_since = '', printed_code = ? WHERE id = ?",
+                    (
+                        person_id,
+                        int(enabled),
+                        axis_credential_token,
+                        *values,
+                        printed_code or free["printed_code"],
+                        free["id"],
+                    ),
+                )
+                self._touch_persons([person_id])
+                return free["id"]
             cursor = conn.execute(
                 "INSERT INTO cards (person_id, number, enabled, axis_credential_token, created_at, "
                 "access_profile, valid_from, valid_to, printed_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1240,15 +1374,31 @@ class Database:
                 ),
             )
             self._touch_persons([person_id])
-        self.forget_unknown_card(number)
         return cursor.lastrowid
+
+    def add_free_card(self, number: str, printed_code: str = "") -> int:
+        """Tessera fisica caricata nell'elenco, Libera: senza persona e senza niente sul controller."""
+        with self._writing() as conn:
+            cursor = conn.execute(
+                "INSERT INTO cards (person_id, number, enabled, axis_credential_token, created_at, printed_code) "
+                "VALUES (NULL, ?, 1, NULL, ?, ?)",
+                (number, now_iso(), printed_code),
+            )
+        return cursor.lastrowid
+
+    def free_card(self, card_id: int) -> None:
+        """La tessera torna Libera: senza persona, token e accesso, con lo stesso codice e lo stesso Nome Tessera.
+        Cambia l'Ultima Modifica della persona che l'aveva."""
+        with self._writing() as conn:
+            self._touch_persons([self._card_owner(card_id)])
+            conn.execute(f"UPDATE cards SET {FREE_CARD} WHERE id = ?", (card_id,))
 
     def update_card(
         self, card_id: int, *, person_id: int, number: str, enabled: bool, access: dict | None = None
     ) -> None:
         """Tessera come la legge il controller (sincronizzazione). L'Ultima Modifica cambia, per la persona di prima e
         per quella di adesso, solo se cambia qualcosa della tessera: non se torna solo presente (missing_since). Il
-        Codice Stampato resta com'è: il controller non lo conosce (vedi set_printed_codes)."""
+        Nome Tessera resta com'è: il controller non lo conosce (vedi set_printed_codes)."""
         # Una tessera ricomparsa sul controller non è più "non presente"
         sql = "UPDATE cards SET person_id = ?, number = ?, enabled = ?, missing_since = ''"
         params: tuple = (person_id, number, int(enabled))
@@ -1278,7 +1428,7 @@ class Database:
                 self._touch_persons([self._card_owner(card_id)])
 
     def set_card_printed_code(self, card_id: int, printed_code: str) -> tuple[bool, str]:
-        """Codice Stampato della tessera: (True se è cambiato, quello di prima). Uguale a quello salvato non cambia
+        """Nome della tessera: (True se è cambiato, quello di prima). Uguale a quello salvato non cambia
         niente, neanche l'Ultima Modifica della persona; diverso la cambia, come gli altri dati della tessera. Solo
         nell'app: il controller non lo conosce."""
         with self._writing() as conn:
@@ -1290,7 +1440,7 @@ class Database:
         return True, row["printed_code"]
 
     def set_printed_codes(self, codes: dict[int, str]) -> None:
-        """Codice Stampato di più tessere insieme ({id: codice}): la sincronizzazione che li rimette sui loro numeri
+        """Nome Tessera di più tessere insieme ({id: codice}): la sincronizzazione che li rimette sui loro numeri
         (vedi service.printed_codes_after_sync). Prima si tolgono quelli che cambiano e poi si scrivono i nuovi, così
         l'indice unico non trova mai lo stesso codice su due tessere a metà strada (due tessere che se lo scambiano).
         L'Ultima Modifica cambia per le persone delle tessere cambiate davvero."""
@@ -1352,7 +1502,7 @@ class Database:
 
     def written_names(self) -> list[str]:
         """Testi scritti dagli utenti che compaiono nei messaggi: persone (nome, cognome, ditta, referente, matricola),
-        Codici Stampati, tipologie, festività, porte, citofoni, controller, strutture, aree, ingressi e utenti. Per
+        Nomi Tessera, tipologie, festività, porte, citofoni, controller, strutture, aree, ingressi e utenti. Per
         plain.py: una parola come «HA» o «Broker» dentro un nome non è Home Assistant."""
         columns = (
             ("persons", "name"),
@@ -1379,7 +1529,8 @@ class Database:
     def profile_usage(self) -> dict[str, int]:
         """Numero di persone per gruppo."""
         rows = self._query(
-            "SELECT access_profile, COUNT(DISTINCT person_id) AS persons FROM cards GROUP BY access_profile"
+            "SELECT access_profile, COUNT(DISTINCT person_id) AS persons FROM cards WHERE person_id IS NOT NULL "
+            "GROUP BY access_profile"
         )
         return {row["access_profile"]: row["persons"] for row in rows}
 
@@ -1989,23 +2140,6 @@ class Database:
             closed = self._conn.execute("DELETE FROM sessions WHERE last_seen < ?", (unused_before,)).rowcount
             self._commit()
         return closed
-
-    # Tessere sconosciute
-
-    def note_unknown_card(self, number: str, ts: str) -> None:
-        # Una lettura recuperata dal registro del controller può essere più vecchia di quelle già viste
-        self._execute(
-            "INSERT INTO unknown_cards (number, first_seen, last_seen, count) VALUES (?, ?, ?, 1) "
-            "ON CONFLICT(number) DO UPDATE SET first_seen = MIN(first_seen, excluded.first_seen), "
-            "last_seen = MAX(last_seen, excluded.last_seen), count = count + 1",
-            (number, ts, ts),
-        )
-
-    def list_unknown_cards(self) -> list[dict]:
-        return self._query("SELECT * FROM unknown_cards ORDER BY last_seen DESC")
-
-    def forget_unknown_card(self, number: str) -> None:
-        self._execute("DELETE FROM unknown_cards WHERE number = ?", (number,))
 
     # Eventi
 
