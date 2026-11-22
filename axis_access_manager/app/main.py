@@ -238,6 +238,8 @@ class CardIn(BaseModel):
     card: str
     # Nome Tessera sulla tessera fisica, facoltativo (vedi AccessService.add_card)
     printed_code: str = ""
+    # La tessera Libera dell'elenco che si sta assegnando: se non c'è più non si ricrea
+    card_id: int | None = None
 
 
 class CardLoadIn(BaseModel):
@@ -252,6 +254,8 @@ class CardStateIn(BaseModel):
     printed_code: str | None = None
     # La persona della scheda da cui si chiede: se la tessera non è più sua non si tocca
     person_id: int | None = None
+    # Il codice della tessera che si vede (elenco Tessere): se l'id è passato a un'altra tessera non si tocca
+    number: str | None = None
 
 
 class ScheduleRuleIn(BaseModel):
@@ -448,6 +452,8 @@ class DashboardLayoutIn(BaseModel):
 class MissingCardsIn(BaseModel):
     # Nessun elenco = tutte le tessere non presenti
     ids: list[int] | None = None
+    # La persona della scheda da cui si chiede: una tessera passata a un'altra non si riscrive
+    person_id: int | None = None
 
 
 class HardwareAccessPointIn(BaseModel):
@@ -1316,7 +1322,7 @@ def create_app(
 
     @app.post("/api/missing-cards/restore", dependencies=[need("persone_modifica")])
     async def restore_missing_cards(body: MissingCardsIn, request: Request) -> dict:
-        return await request.app.state.service.restore_missing(request_user(request), body.ids)
+        return await request.app.state.service.restore_missing(request_user(request), body.ids, body.person_id)
 
     @app.post("/api/missing-cards/forget", dependencies=[need("persone_modifica")])
     async def forget_missing_cards(body: MissingCardsIn, request: Request) -> dict:
@@ -1457,7 +1463,7 @@ def create_app(
     @app.post("/api/persons/{person_id}/cards", dependencies=[need("persone_modifica")])
     async def add_card(person_id: int, body: CardIn, request: Request) -> dict:
         return await request.app.state.service.add_card(
-            person_id, body.card, request_user(request), printed_code=body.printed_code
+            person_id, body.card, request_user(request), printed_code=body.printed_code, card_id=body.card_id
         )
 
     @app.patch("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
@@ -1472,6 +1478,7 @@ def create_app(
             enabled=body.enabled,
             printed_code=body.printed_code,
             person_id=body.person_id,
+            number=body.number,
         )
         # Tessera Libera: non ha una persona da restituire
         return person if person is not None else {"card": request.app.state.db.get_card(card_id)}
@@ -1497,9 +1504,10 @@ def create_app(
         return {"card": card, "next_name": service.next_card_name()}
 
     @app.delete("/api/cards/{card_id}/forever", dependencies=[need("persone_modifica")])
-    async def delete_free_card(card_id: int, request: Request) -> dict:
-        """Elimina per sempre una tessera Libera (rotta o persa)."""
-        request.app.state.service.delete_free_card(card_id, request_user(request))
+    async def delete_free_card(card_id: int, request: Request, number: str | None = None) -> dict:
+        """Elimina per sempre una tessera Libera (rotta o persa). number: il codice che si vede; se l'id è passato a
+        un'altra tessera non si elimina."""
+        request.app.state.service.delete_free_card(card_id, request_user(request), number)
         return {"ok": True}
 
     # Registro

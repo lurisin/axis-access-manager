@@ -1564,6 +1564,8 @@ function busyHold(on) {
 function busyBlock(e) {
   if (!busyState.ops.length || e.target?.closest?.("#retry")) return;
   if (e.type.startsWith("key") && (e.ctrlKey || e.metaKey || e.altKey || /^F\d+$/.test(e.key))) return;
+  // Un tasto fermato: se subito dopo arriva il resto di una tessera passata sul lettore, non vale (vedi reader)
+  if (e.type === "keydown" && e.key?.length === 1) reader.swallowed = e.timeStamp;
   e.preventDefault();
   e.stopImmediatePropagation();
 }
@@ -1862,7 +1864,7 @@ async function loadSummary() {
 // non c'è niente in sospeso, cioè nessuna finestra aperta, nessuna modifica da salvare e nessuna in corso
 function reloadIfUpdated(version) {
   if (!version || !store.me?.version || version === store.me.version) return;
-  if ($("#modal").open || $("#sheet").open || $("#retry").open || busyState.ops.length || pageGuard?.dirty()) return;
+  if ($("#modal").open || $("#sheet").open || $("#retry").open || busyState.ops.length || pageGuard?.dirty() || cardsView.saving) return;
   location.reload();
 }
 
@@ -2026,7 +2028,8 @@ window.addEventListener("hashchange", async () => {
   $("#view").innerHTML = '<div class="loading"><span class="spinner"></span></div>';
   render();
 });
-window.addEventListener("beforeunload", (e) => { if (pageGuard?.dirty()) { e.preventDefault(); e.returnValue = ""; } });
+// Anche con tessere passate sul lettore e non ancora salvate
+window.addEventListener("beforeunload", (e) => { if (pageGuard?.dirty() || cardsView.saving || cardsView.queue.length) { e.preventDefault(); e.returnValue = ""; } });
 // Aggiorna la vista corrente senza ricaricarla da zero, se non c'è una finestra aperta né una modifica in corso (chi
 // l'ha avviata ridisegna la pagina alla fine)
 async function refreshView() {
@@ -3211,8 +3214,9 @@ function renderMissingBanner() {
   $("#m-restore").onclick = () => restoreMissing(cards.map((c) => c.id));
   $("#m-forget").onclick = () => forgetMissing();
 }
-async function restoreMissing(ids) {
-  const r = await run(() => api("api/missing-cards/restore", {method: "POST", body: {ids}}), "",
+// personId: la persona della scheda da cui si chiede (una tessera passata nel frattempo a un'altra non si riscrive)
+async function restoreMissing(ids, personId) {
+  const r = await run(() => api("api/missing-cards/restore", {method: "POST", body: {ids, person_id: personId}}), "",
     ids.length === 1 ? "Riscrittura della tessera sul controller" : "Riscrittura delle tessere sul controller");
   if (!r) return false;
   if (r.failed.length) {
@@ -3299,6 +3303,13 @@ const freeCards = async () => (await api("api/cards")).cards.filter((c) => c.per
 // Campo del Codice Tessera di una tessera da dare: passata sul lettore da banco, o scelta tra le Libere per nome
 const cardField = (free, value = "", hint = "") => field("Codice Tessera", `<input name="card" class="mono" autocomplete="off" spellcheck="false" list="free-cards" value="${esc(value)}" placeholder="passala sul lettore">
   <datalist id="free-cards">${free.map((c) => `<option value="${esc(c.number)}" label="${esc(c.printed_code)}"></option>`).join("")}</datalist>`, hint);
+// Codice scritto a metà per cercare tra le Libere (più corto di una tessera vera e inizio di una Libera): non si assegna
+function partialFreeCode(dlg, free) {
+  const typed = val(dlg, "card").trim().toLowerCase();
+  if (!typed || typed.length >= 8 || free.some((c) => c.number.toLowerCase() === typed) || !free.some((c) => c.number.toLowerCase().startsWith(typed))) return false;
+  toast("Codice incompleto: scegli la tessera dall'elenco o passala sul lettore", true);
+  return true;
+}
 const printedCodeField = (value = "", hint = PRINTED_CODE_HINT) =>
   field("Nome Tessera", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(value)}" placeholder="facoltativo">`, hint);
 // Telefono ed email incollati da una pagina web, da un PDF o da Word, puliti come fa il server mentre si scrivono:
@@ -3340,6 +3351,7 @@ async function newPerson(card = "") {
       // Validità e Nome Tessera sono della tessera: senza, la durata della tipologia parte dalla prima tessera
       if (body.card) Object.assign(body, readValidity(dlg), {printed_code: val(dlg, "printed_code")});
       if (!body.first_name && !body.last_name) { toast("Serve il nome o il cognome", true); return false; }
+      if (partialFreeCode(dlg, free)) return false;
       const person = await run(() => api("api/persons", {method: "POST", body}), body.card ? "Persona registrata: la tessera è attiva sul controller" : "Persona registrata senza tessera",
         body.card ? "Registrazione della persona e scrittura della tessera sul controller" : "Registrazione della persona");
       return person || false;
@@ -3563,15 +3575,15 @@ async function openPerson(id) {
       body: `<div class="fields-2">${cardField(free)}
         ${printedCodeField("", PRINTED_CODE_HINT + " Vuoto: resta quello che ha già.")}</div>
         <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."}</p>`,
-      actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) =>
-        (await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card"), printed_code: val(dlg, "printed_code")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false}],
+      actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) => !partialFreeCode(dlg, free) &&
+        ((await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card"), printed_code: val(dlg, "printed_code")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false)}],
     });
     if (ok) reload();
   };
   // Nome Tessera: solo nell'app, non scrive sul controller (veloce anche con il controller spento)
   $$("[data-card-code]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.cardCode));
-    const ok = await modal({
+    await modal({
       title: "Nome Tessera",
       body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", PRINTED_CODE_HINT + " Vuoto per toglierlo.")}`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
@@ -3580,22 +3592,26 @@ async function openPerson(id) {
         return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code, person_id: p.id}}), code ? "Nome tessera salvato" : "Nome tessera tolto", "Salvataggio del nome tessera")) || false;
       }}],
     });
-    if (ok) reload();
+    // Riletta comunque, chiusa la finestra: dopo un rifiuto la tessera può essere passata a un altro
+    reload();
   });
   $$("[data-restore-card]", sheet).forEach((b) => b.onclick = async () => {
-    if (await restoreMissing([Number(b.dataset.restoreCard)])) reload();
+    if (await restoreMissing([Number(b.dataset.restoreCard)], p.id)) reload();
   });
   $$("[data-toggle]", sheet).forEach((b) => b.onclick = async () => {
     const enable = b.dataset.enabled !== "1";
-    if (await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable, person_id: p.id}}), enable ? "Tessera riattivata" : "Tessera sospesa",
-      enable ? "Riattivazione della tessera sul controller" : "Sospensione della tessera sul controller")) reload();
+    // Riletta anche dopo un rifiuto: la tessera può essere passata a un altro
+    await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable, person_id: p.id}}), enable ? "Tessera riattivata" : "Tessera sospesa",
+      enable ? "Riattivazione della tessera sul controller" : "Sospensione della tessera sul controller");
+    reload();
   });
   $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
     const last = p.cards.length === 1;
     if (!await confirmBox("Togli Tessera", `Togliere la tessera <code>${esc(card.number)}</code> a <b>${esc(p.name)}</b>? Torna tra le tessere libere${card.missing_since ? "." : " e non apre più."}` + (last ? ` È l'unica: <b>${esc(p.name)}</b> resta in anagrafica senza tessere.` : ""), "Togli", true)) return;
-    if (await run(() => api(`api/cards/${card.id}?person_id=${p.id}`, {method: "DELETE"}), "Tessera tolta: ora è libera",
-      card.missing_since ? "Rimozione della tessera" : "Rimozione della tessera dal controller")) reload();
+    await run(() => api(`api/cards/${card.id}?person_id=${p.id}`, {method: "DELETE"}), "Tessera tolta: ora è libera",
+      card.missing_since ? "Rimozione della tessera" : "Rimozione della tessera dal controller");
+    reload();
   });
   $("[data-del-person]", sheet).onclick = async () => {
     const what = p.cards.length ? `<b>${esc(p.name)}</b>? ${p.cards.length === 1 ? "La sua tessera torna libera e non apre più." : `Le sue ${p.cards.length} tessere tornano libere e non aprono più.`}` : `<b>${esc(p.name)}</b> dall'anagrafica? Non ha tessere.`;
@@ -3616,48 +3632,96 @@ async function openPerson(id) {
 // Il lettore da banco scrive il codice come una tastiera velocissima e poi preme Invio. Con il fuoco altrove quell'Invio
 // premerebbe un pulsante o salverebbe una finestra, con il codice finito nel campo sbagliato: una raffica di cifre
 // esadecimali seguita subito da Invio è una tessera passata, non una persona che scrive
-const reader = {text: "", at: 0, target: null};
-const READER_GAP = 50, READER_CODE = /^[0-9a-f]{6,64}$/i;
+const reader = {text: "", at: -1e9, target: null, snap: null, prev: null, broken: false, done: -1e9, swallowed: -1e9};
+// READER_GAP: tasti più vicini di così sono il lettore, non una persona. READER_AFTER: un secondo Invio (o Tab) così
+// vicino è dello stesso lettore. READER_SPLIT: una raffica che riparte così presto dopo un'altra è il resto della stessa
+const READER_GAP = 50, READER_AFTER = 200, READER_SPLIT = 300, READER_CODE = /^[0-9a-f]{6,64}$/i, HEX = /^[0-9a-f]+$/i;
 // Campo dopo nella stessa finestra (o lo stesso, se è l'ultimo)
 function nextField(el) {
   const all = [...el.form.querySelectorAll("input:not([type=hidden]), select, textarea")].filter((x) => !x.disabled && x.offsetParent !== null);
   (all[all.indexOf(el) + 1] || el).focus();
 }
+// Il campo com'era prima della raffica, per rimetterlo così: anche una tendina (che con le lettere salta a un'altra
+// voce), una data, un'email o un numero, dove il testo non si può tagliare
+function readerSnap(el) {
+  return el?.matches?.("input:not([type=checkbox]):not([type=radio]), select, textarea") ? {el, value: el.value, edited: el.dataset.edited} : null;
+}
+function readerPutBack(snap) {
+  if (!snap?.el.isConnected) return;
+  if (snap.el.value !== snap.value) {
+    snap.el.value = snap.value;
+    snap.el.dispatchEvent(new Event("input", {bubbles: true}));
+    snap.el.dispatchEvent(new Event("change", {bubbles: true}));
+  }
+  // Il nome in Carica Tessere: la raffica non conta come nome scritto a mano
+  if (snap.edited === undefined) delete snap.el.dataset.edited;
+  else snap.el.dataset.edited = snap.edited;
+}
 document.addEventListener("keydown", (e) => {
-  const now = performance.now(), same = e.target === reader.target && now - reader.at < READER_GAP;
-  if (e.key !== "Enter") {
+  // Senza tasto: Chrome ne manda uno così scegliendo un suggerimento o compilando un campo da solo
+  if (typeof e.key !== "string") return;
+  // Il lettore che scrive le maiuscole manda Maiusc prima di ogni lettera: non interrompe la raffica
+  if (e.key === "Shift" || e.key === "CapsLock") return;
+  // L'ora in cui il tasto è arrivato, non quella in cui la pagina lo legge: con la pagina occupata per un attimo i tasti
+  // di una persona arriverebbero tutti insieme, come quelli del lettore
+  const now = e.timeStamp, same = e.target === reader.target && now - reader.at < READER_GAP;
+  const terminator = e.key === "Enter" || e.key === "Tab";
+  // Il secondo Invio, o il Tab, di un lettore che ne manda due: non preme niente e non salva la finestra
+  if (terminator && now - reader.done < READER_AFTER) {
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
+  // Il Tab chiude la tessera solo per i lettori impostati così: dopo una raffica, non dopo una persona che scrive
+  if (!(e.key === "Enter" || (e.key === "Tab" && same && READER_CODE.test(reader.text)))) {
     if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) { reader.text = ""; return; }
-    Object.assign(reader, {text: (same ? reader.text : "") + e.key, at: now, target: e.target});
+    if (!same) {
+      // Riparte subito dopo un pezzo scritto alla velocità del lettore (fuoco spostato) o dopo tasti fermati durante
+      // un'operazione: è il resto di una tessera letta a metà
+      const piece = reader.text.length >= 2 && HEX.test(reader.text) && now - reader.at < READER_SPLIT;
+      reader.broken = piece || now - reader.swallowed < READER_SPLIT;
+      reader.prev = piece ? reader.snap : null;
+      reader.snap = readerSnap(e.target);
+      reader.text = "";
+    }
+    Object.assign(reader, {text: reader.text + e.key, at: now, target: e.target, done: -1e9});
     return;
   }
   const code = same && READER_CODE.test(reader.text) ? reader.text : "";
-  reader.text = "";
+  const broken = same && reader.broken && HEX.test(reader.text);
+  const {snap, prev} = reader;
+  Object.assign(reader, {text: "", snap: null, prev: null, broken: false});
+  if (code || broken) reader.done = now;
   const field = e.target.closest?.("input[name=card]");
-  if (field) {
-    // In Carica Tessere Invio salva. Nelle finestre passa al campo dopo: il lettore non crea la persona né aggiunge la
-    // tessera prima che si sia scelto il resto
-    if (field.form?.id === "c-load" || !field.form) return;
-    e.preventDefault();
-    nextField(field);
+  if (field && !broken) {
+    // In Carica Tessere Invio salva, e anche il Tab di un lettore impostato così
+    if (field.form?.id === "c-load") {
+      if (e.key === "Tab") { e.preventDefault(); field.form.requestSubmit(); }
+      return;
+    }
+    // Nelle finestre passa al campo dopo: il lettore non crea la persona né aggiunge la tessera prima che si sia
+    // scelto il resto
+    if (field.form && e.key === "Enter") { e.preventDefault(); nextField(field); }
     return;
   }
-  if (!code) return;
-  const typed = e.target.matches?.("input, textarea") ? e.target : null;
+  if (!code && !broken) return;
   // In un campo di ricerca la tessera passata cerca, come il codice scritto a mano
-  if (typed && !typed.form) return;
+  if (!broken && e.target.matches?.("input:not([type=checkbox]):not([type=radio]), textarea") && !e.target.form) return;
   e.preventDefault();
   e.stopPropagation();
-  // Il codice è appena prima del cursore: si toglie da lì, il resto del campo resta com'era
-  const end = typed ? (typed.selectionStart ?? typed.value.length) : 0;
-  if (typed && typed.value.slice(end - code.length, end) === code) {
-    typed.setRangeText("", end - code.length, end, "end");
-    typed.dispatchEvent(new Event("input", {bubbles: true}));
+  readerPutBack(snap);
+  if (broken) {
+    readerPutBack(prev);
+    if (field) field.value = "";
+    if (field?.form?.id === "c-load") cardNote("Tessera letta a metà: passala di nuovo", true);
+    else toast("Tessera letta a metà: passala di nuovo", true);
+    return;
   }
-  const load = $("#c-load");
-  if (load && can("persone_modifica") && !$("dialog[open]")) {
+  const load = $("#c-load"), open = $("dialog[open]:not(#busy)");
+  if (load && can("persone_modifica") && !open) {
     $("[name=card]", load).value = code;
     load.requestSubmit();
-  } else toast("Tessera non usata: clicca prima nel campo Codice Tessera", true);
+  } else toast(open && $("input[name=card]", open) ? "Tessera non usata: clicca prima nel campo Codice Tessera" : "Tessera non usata", true);
 }, true);
 
 // ---------- Tessere ----------
@@ -3665,7 +3729,7 @@ document.addEventListener("keydown", (e) => {
 // lettore da banco, che scrive il Codice Tessera come una tastiera e manda Invio: il campo resta pronto per la
 // tessera dopo, anche mentre la precedente si sta ancora salvando
 const cardFilters = {q: "", state: ""};
-const cardsView = {cards: [], next: "", queue: [], saving: false, stale: false};
+const cardsView = {cards: [], next: "", queue: [], saving: false, stale: false, errors: []};
 // Per nome come si legge («Numero 2» prima di «Numero 10»), poi quelle senza nome per codice
 const compareCards = (a, b) => (!a.printed_code - !b.printed_code) || (a.printed_code || "").localeCompare(b.printed_code || "", "it", {numeric: true, sensitivity: "base"}) || a.number.localeCompare(b.number);
 function cardMatches(c) {
@@ -3704,43 +3768,59 @@ async function loadCards() {
 }
 async function refreshCards() {
   if (!$("#c-list")) return render();
-  // Con tessere ancora da salvare l'elenco lo rilegge chi le salva, alla fine
+  // Con tessere ancora da salvare l'elenco lo rilegge chi le salva, alla fine: anche se il salvataggio è partito mentre
+  // si leggeva (un elenco letto prima non ha la tessera appena salvata)
   if (cardsView.saving) { cardsView.stale = true; return; }
-  if (!await loadCards().then(() => true, () => false)) return;
+  let data;
+  try { data = await api("api/cards"); } catch { return; }
+  if (cardsView.saving) { cardsView.stale = true; return; }
+  Object.assign(cardsView, {cards: data.cards, next: data.next_name});
   paintCards();
 }
 // Esito dell'ultima tessera caricata, sotto il modulo: un errore resta finché non se ne carica un'altra
+// (gli errori delle ultime tessere non caricate restano sopra l'ultimo esito, una riga per tessera, finché si resta
+// sulla pagina: chi passa una pila di tessere non guarda lo schermo a ogni tessera)
 function cardNote(text, error = false) {
   const note = $("#c-note");
   if (!note) return;
-  note.className = error ? "alert err" : "small-text muted";
-  note.setAttribute("role", error ? "alert" : "status");
-  note.innerHTML = error ? `${icon("alert")}<div class="grow">${esc(text)}</div>` : esc(text);
+  const lines = [...cardsView.errors, ...(error && cardsView.errors.includes(text) ? [] : [text])];
+  const bad = error || cardsView.errors.length > 0;
+  note.className = bad ? "alert err" : "small-text muted";
+  note.setAttribute("role", bad ? "alert" : "status");
+  note.innerHTML = bad ? `${icon("alert")}<div class="grow">${lines.map(esc).join("<br>")}</div>` : esc(text);
   paintIcons(note);
 }
 // Salva una alla volta le tessere in attesa. Senza il riquadro di attesa, che fermerebbe i tasti: il lettore scrive già
 // la tessera dopo
 async function saveLoadedCards() {
   if (cardsView.saving) return;
-  cardsView.saving = true;
+  // L'elenco si rilegge alla fine
+  Object.assign(cardsView, {saving: true, stale: true});
   while (cardsView.queue.length) {
     const body = cardsView.queue.shift();
     try {
       const saved = await busy(false, () => api("api/cards", {method: "POST", body}));
       cardsView.next = saved.next_name;
-      cardsView.cards.push({...saved.card, person_name: ""});
+      // Sostituita se c'è già (elenco riletto mentre si salvava), se no aggiunta
+      const row = {...saved.card, person_name: ""}, at = cardsView.cards.findIndex((c) => c.id === row.id);
+      if (at >= 0) cardsView.cards[at] = row;
+      else cardsView.cards.push(row);
       cardNote(`Caricata: ${saved.card.printed_code || "senza nome"} · ${saved.card.number}`);
     } catch (err) {
-      cardNote(`${body.card}: ${cap(err.message)}`, true);
+      const text = `${body.card}: ${cap(err.message)}`;
+      cardsView.errors = [...cardsView.errors, text].slice(-5);
+      cardNote(text, true);
     }
     paintCards();
   }
   cardsView.saving = false;
-  if (cardsView.stale) { cardsView.stale = false; refreshCards(); }
+  // Solo se si è ancora sulla pagina Tessere: non si ridisegna quella dove si è andati nel frattempo
+  if (cardsView.stale) { cardsView.stale = false; if ($("#c-list")) refreshCards(); }
 }
 async function viewCards(el) {
   try { await loadCards(); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   if (!el.isConnected) return;
+  cardsView.errors = [];
   el.innerHTML = `<form class="card w-persone" id="c-load" autocomplete="off"><h2>Carica Tessere</h2>
       <div class="fields-2">${field("Codice Tessera", '<input name="card" class="mono" autocomplete="off" spellcheck="false" maxlength="80">', "Passa la tessera sul lettore da banco.")}
         ${field("Nome Tessera", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(cardsView.next)}">`, PRINTED_CODE_HINT)}</div>
@@ -3783,7 +3863,7 @@ async function viewCards(el) {
         actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
           const value = val(dlg, "printed_code");
           if (value === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
-          return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: value}}), value ? "Nome tessera salvato" : "Nome tessera tolto", "Salvataggio del nome tessera")) || false;
+          return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: value, number: card.number}}), value ? "Nome tessera salvato" : "Nome tessera tolto", "Salvataggio del nome tessera")) || false;
         }}],
       });
     } else if (b.dataset.cardGive) {
@@ -3794,14 +3874,16 @@ async function viewCards(el) {
         title: "Assegna Tessera",
         body: `<p style="margin:0 0 12px">Tessera ${shown}</p>` + (store.persons.length ? field("Persona", `<select name="person">${options}</select>`, "Avrà l'accesso delle altre tessere della persona, o della sua tipologia.") : '<p class="muted">Nessuna persona registrata.</p>'),
         actions: [{label: "Annulla", value: null}, {label: "Nuova Persona", value: "new"}, ...(store.persons.length ? [{label: "Assegna", kind: "primary", submit: true, onClick: async (dlg) =>
-          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: card.number}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
+          (await run(() => api(`api/persons/${val(dlg, "person")}/cards`, {method: "POST", body: {card: card.number, card_id: card.id}}), "Tessera assegnata", "Scrittura della tessera sul controller")) || false}] : [])],
       });
       if (done === "new") done = await newPerson(card.number);
     } else if (await confirmBox("Elimina Tessera", `Eliminare per sempre la tessera ${shown}? Solo se è rotta o persa: per darla a un'altra persona basta assegnarla.`, "Elimina", true)) {
-      done = await run(() => api(`api/cards/${card.id}/forever`, {method: "DELETE"}), "Tessera eliminata", "Eliminazione della tessera");
+      done = await run(() => api(`api/cards/${card.id}/forever?number=${encodeURIComponent(card.number)}`, {method: "DELETE"}), "Tessera eliminata", "Eliminazione della tessera");
     }
-    // Solo l'elenco: il modulo resta com'è, con la tessera che il lettore sta scrivendo
-    if (done) { loadSummary(); refreshCards(); }
+    // Solo l'elenco, anche dopo un rifiuto (la tessera è cambiata nel frattempo): il modulo resta com'è, con la
+    // tessera che il lettore sta scrivendo
+    if (done) loadSummary();
+    refreshCards();
   };
   // Con un mouse (la postazione con il lettore da banco) il campo è già pronto; sul telefono non si apre la tastiera
   if (can("persone_modifica") && matchMedia("(pointer: fine)").matches) code.focus();

@@ -755,14 +755,25 @@ class AccessService:
         # Un lettore di due porte non dice quale: resta la porta principale
         self.idpoint_doors = {reader: next(iter(doors)) for reader, doors in readers.items() if len(doors) == 1}
 
-    async def restore_missing(self, user: str, card_ids: list[int] | None = None) -> dict:
-        """Riscrive sul controller le tessere non presenti (tutte o quelle indicate), con gruppo e validità salvati."""
+    async def restore_missing(self, user: str, card_ids: list[int] | None = None, person_id: int | None = None) -> dict:
+        """Riscrive sul controller le tessere non presenti (tutte o quelle indicate), con gruppo e validità salvati.
+        person_id: la persona della scheda da cui si chiede; una tessera che nel frattempo è passata a un'altra non si
+        riscrive (vedi _owned_card)."""
         restored, failed = 0, []
         async with self.lock:
             cards = [c for c in self.db.missing_cards() if card_ids is None or c["id"] in card_ids]
             known_users: set[str] = set()
             for card in cards:
                 person = self.db.get_person(card["person_id"])
+                if person_id is not None and card["person_id"] != person_id:
+                    failed.append(
+                        {
+                            "card": card["number"],
+                            "person": person["name"],
+                            "error": f"ora è di {person['name']}: aggiorna la pagina",
+                        }
+                    )
+                    continue
                 try:
                     # Tessera importata senza utente: se ne crea uno, che prende anche le altre tessere della persona
                     user_token = await self._ensure_user(person, "Riscritto da Axis Access Manager")
@@ -1005,7 +1016,10 @@ class AccessService:
         number = normalize_card(card)
         # Una tessera passata a metà (il fuoco è cambiato mentre il lettore scriveva) non diventa una tessera
         if len(number) < LOADED_CARD_MIN:
-            raise ServiceError("codice troppo corto: passa di nuovo la tessera")
+            raise ServiceError(
+                "codice troppo corto: il lettore da banco scrive almeno 8 caratteri; passa di nuovo la tessera, "
+                "o scrivi un codice più corto in Aggiungi Tessera"
+            )
         existing = self.db.any_card_by_number(number)
         if existing is not None:
             name = f" ({existing['printed_code']})" if existing["printed_code"] else ""
@@ -1027,10 +1041,13 @@ class AccessService:
         self._changed()
         return self.db.get_card(card_id)
 
-    def delete_free_card(self, card_id: int, user: str) -> None:
+    def delete_free_card(self, card_id: int, user: str, number: str | None = None) -> None:
         """Elimina per sempre una tessera Libera dall'elenco (rotta, persa): con lei se ne va il suo Nome Tessera.
-        Una tessera assegnata prima si toglie alla persona."""
-        card = self._card(card_id)
+        Una tessera assegnata prima si toglie alla persona. number: il codice che chi chiede vede (vedi _owned_card)."""
+        if self.lock.locked():
+            # Per esempio la stessa tessera che si sta assegnando: eliminata a metà, la riga tornerebbe nuova, assegnata
+            raise ServiceError("è in corso un'altra operazione sul controller: riprova tra qualche secondo")
+        card = self._owned_card(card_id, None, number)
         if card["person_id"] is not None:
             person = self.db.get_person(card["person_id"])
             raise ServiceError(f"la tessera è assegnata a {person['name']}: prima toglila dalla sua scheda")
@@ -1185,9 +1202,11 @@ class AccessService:
         valid_to: str = "",
         category_id: int = 0,
         printed_code: str = "",
+        card_id: int | None = None,
     ) -> dict:
         """enabled False: la tessera si scrive già sospesa (importazione con stato «sospesa»). printed_code: il Codice
-        Stampato sulla tessera fisica, facoltativo e unico, solo nell'app.
+        Stampato sulla tessera fisica, facoltativo e unico, solo nell'app. card_id: la tessera Libera dell'elenco che
+        chi chiede vede; se nel frattempo è stata eliminata per sempre non si ricrea.
 
         Gruppo, validità e tipologia (0: quella della persona) valgono per la prima tessera della persona, come per
         una persona nuova con gli stessi valori (importazione): la tipologia decide gruppo e durata se non sono stati
@@ -1198,6 +1217,10 @@ class AccessService:
         chosen = self._category(category_id)
         async with self.lock:
             person = self._person(person_id)
+            if card_id is not None:
+                shown = self.db.get_card(card_id)
+                if shown is None or shown["number"].lower() != number.lower():
+                    raise ServiceError("la tessera non è più nell'elenco: aggiorna la pagina")
             self._check_card_free(number)
             number = (self._free_card(number) or {"number": number})["number"]
             # Prima di scrivere sul controller: con il Nome Tessera di un'altra tessera non si aggiunge
@@ -1441,12 +1464,13 @@ class AccessService:
         enabled: bool | None = None,
         printed_code: str | None = None,
         person_id: int | None = None,
+        number: str | None = None,
     ) -> dict:
         """Modifica di una tessera dalla scheda: stato (sospesa o attiva, sul controller) e Nome Tessera (solo
         nell'app). None: non cambia. Il codice si controlla prima di scrivere sul controller, così un codice non valido
         o già usato non lascia mezza modifica. person_id: la persona della scheda da cui si chiede (vedi _owned_card).
-        Restituisce la persona."""
-        self._owned_card(card_id, person_id)
+        number: il codice che chi chiede vede. Restituisce la persona."""
+        self._owned_card(card_id, person_id, number)
         if printed_code is not None:
             printed_code = normalize_printed_code(printed_code)
             self.check_printed_code(printed_code, self._card(card_id)["id"])
@@ -1820,11 +1844,15 @@ class AccessService:
             raise ServiceError("tessera non trovata")
         return card
 
-    def _owned_card(self, card_id: int, person_id: int | None) -> dict:
-        """Tessera per id, di quella persona (None: di chiunque). Una tessera tolta a una persona e data a un'altra
-        resta la stessa riga, con lo stesso id: da una scheda rimasta aperta sulla prima persona, Sospendi o Togli
-        cadrebbero sulla tessera della seconda. Chi chiede dice di chi la crede, e se non è più sua non si tocca."""
+    def _owned_card(self, card_id: int, person_id: int | None, number: str | None = None) -> dict:
+        """Tessera per id, di quella persona (None: di chiunque) e con quel codice (None: qualsiasi). Una tessera tolta
+        a una persona e data a un'altra resta la stessa riga, con lo stesso id: da una scheda rimasta aperta sulla prima
+        persona, Sospendi o Togli cadrebbero sulla tessera della seconda. E l'id dell'ultima tessera eliminata per
+        sempre passa alla prossima caricata: dall'elenco Tessere rimasto aperto, Nome o Elimina cadrebbero su
+        un'altra tessera. Chi chiede dice di chi la crede e che codice ha, e se non torna non si tocca."""
         card = self._card(card_id)
+        if number is not None and card["number"].lower() != number.strip().lower():
+            raise ServiceError("la tessera non è più quella mostrata: aggiorna la pagina")
         if person_id is not None and card["person_id"] != person_id:
             owner = self.db.get_person(card["person_id"]) if card["person_id"] is not None else None
             whose = f"è di {owner['name']}" if owner else "è libera"

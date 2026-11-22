@@ -469,7 +469,9 @@ def test_cards_swiped_one_after_the_other_are_all_loaded(plant, ingress_server, 
     assert (out["next"], out["focusAfter"], out["field"]) == ("Numero 4", "card", "")
     assert out["again"] == "04A1B2C3: Tessera già caricata (Numero 1): libera"
     assert out["posts"][4] == {"card": "04a1b2c6", "printed_code": "Ospite Blu"}
-    assert out["note"] == "Caricata: Ospite Blu · 04a1b2c6" and out["nextAfter"] == "Numero 4"
+    # L'errore della tessera già caricata resta sopra, finché si resta sulla pagina
+    assert out["note"] == "04A1B2C3: Tessera già caricata (Numero 1): liberaCaricata: Ospite Blu · 04a1b2c6"
+    assert out["nextAfter"] == "Numero 4"
     assert out["rowsAfter"][-1] == ["Ospite Blu", "04a1b2c6"]
     stored = {c["number"]: (c["printed_code"], c["person_id"]) for c in app.state.db.list_cards()}
     assert stored == {
@@ -517,7 +519,7 @@ def test_a_stale_person_sheet_does_not_touch_the_card_of_its_new_owner(client, c
 def test_a_code_cut_short_is_not_loaded(client, controller):
     """Una tessera passata a metà (il fuoco è cambiato mentre il lettore scriveva) non diventa una tessera."""
     answer = client.post("/api/cards", json={"card": "2c4"}, headers=ADMIN)
-    assert (answer.status_code, answer.json()["detail"]) == (400, "codice troppo corto: passa di nuovo la tessera")
+    assert answer.status_code == 400 and answer.json()["detail"].startswith("codice troppo corto: il lettore da banco")
     assert client.get("/api/cards", headers=ADMIN).json() == {"cards": [], "next_name": "Numero 1"}
     assert client.post("/api/cards", json={"card": "04a1b2c3"}, headers=ADMIN).status_code == 200
 
@@ -622,3 +624,200 @@ def test_a_card_swiped_with_the_focus_elsewhere_is_never_lost_or_misused(plant, 
     assert out["newPerson"][:3] == [0, True, "04a1b2c6"] and out["newPerson"][3] != "card"
     assert all(p["name"] != "Carla Sala" for p in app.state.db.list_persons())
     assert writes(controller) == []
+
+
+def test_the_tessere_page_acts_only_on_the_card_it_shows(client, controller):
+    """L'id dell'ultima tessera eliminata per sempre passa alla prossima caricata. Dall'elenco Tessere rimasto aperto,
+    Nome, Elimina e Assegna dicono che tessera vedono: su un'altra tessera, o su una che non c'è più, non fanno
+    niente, e il controller non si tocca."""
+    client.post("/api/cards", json={"card": "04a1b2c3"}, headers=ADMIN)
+    old = client.post("/api/cards", json={"card": "04a1b2c4", "printed_code": "Numero 9"}, headers=ADMIN).json()["card"]
+    assert client.delete(f"/api/cards/{old['id']}/forever?number=04a1b2c4", headers=ADMIN).status_code == 200
+    new = client.post("/api/cards", json={"card": "04dead01", "printed_code": "Ospite Viola"}, headers=ADMIN).json()
+    assert new["card"]["id"] == old["id"]
+    anna = client.post("/api/persons", json={"name": "Anna Neri"}, headers=ADMIN).json()
+    gone = "la tessera non è più quella mostrata: aggiorna la pagina"
+    answer = client.patch(
+        f"/api/cards/{old['id']}", json={"printed_code": "Numero 5", "number": "04a1b2c4"}, headers=ADMIN
+    )
+    assert (answer.status_code, answer.json()["detail"]) == (400, gone)
+    answer = client.delete(f"/api/cards/{old['id']}/forever?number=04A1B2C4", headers=ADMIN)
+    assert (answer.status_code, answer.json()["detail"]) == (400, gone)
+    answer = client.post(
+        f"/api/persons/{anna['id']}/cards", json={"card": "04a1b2c4", "card_id": old["id"]}, headers=ADMIN
+    )
+    assert (answer.status_code, answer.json()["detail"]) == (
+        400,
+        "la tessera non è più nell'elenco: aggiorna la pagina",
+    )
+    assert writes(controller) == []
+    check(client, controller, {"04a1b2c3": ("Numero 1", ""), "04dead01": ("Ospite Viola", "")})
+    # Con il codice giusto funzionano, anche scritto in maiuscolo
+    answer = client.patch(
+        f"/api/cards/{old['id']}", json={"printed_code": "Numero 5", "number": "04DEAD01"}, headers=ADMIN
+    )
+    assert answer.json()["card"]["printed_code"] == "Numero 5"
+    answer = client.post(
+        f"/api/persons/{anna['id']}/cards", json={"card": "04dead01", "card_id": old["id"]}, headers=ADMIN
+    )
+    assert [c["id"] for c in answer.json()["cards"]] == [old["id"]]
+    check(client, controller, {"04a1b2c3": ("Numero 1", ""), "04dead01": ("Numero 5", "Anna Neri")})
+
+
+async def test_a_card_is_not_deleted_for_good_while_the_controller_is_being_written(service, db, controller):
+    """Eliminata per sempre mentre la si sta assegnando, la tessera tornerebbe come nuova, assegnata e sul
+    controller, dopo «Tessera eliminata»: durante un'operazione sul controller non si elimina."""
+    card = service.load_card("04c0ffee", "admin", "Numero 3")
+    async with service.lock:
+        with pytest.raises(ServiceError, match="è in corso un'altra operazione sul controller"):
+            service.delete_free_card(card["id"], "admin", "04c0ffee")
+    assert db.any_card_by_number("04c0ffee")["printed_code"] == "Numero 3"
+    service.delete_free_card(card["id"], "admin", "04c0ffee")
+    assert db.any_card_by_number("04c0ffee") is None
+
+
+def test_riscrivi_from_a_stale_sheet_does_not_rewrite_the_card_of_its_new_owner(client, controller):
+    """La tessera non presente sul controller di Anna, nel frattempo tolta e data a Bruno (stessa riga, stesso id),
+    e di nuovo non presente: «Riscrivi» dalla scheda di Anna rimasta aperta non la scrive per Bruno."""
+    anna = client.post("/api/persons", json={"name": "Anna Neri", "card": "04a1b2c3"}, headers=ADMIN).json()
+    client.post("/api/persons", json={"name": "Carla Sala", "card": "04a1b2c9"}, headers=ADMIN)
+    bruno = client.post("/api/persons", json={"name": "Bruno Gallo"}, headers=ADMIN).json()
+    card_id = anna["cards"][0]["id"]
+    assert client.delete(f"/api/cards/{card_id}?person_id={anna['id']}", headers=ADMIN).status_code == 200
+    client.post(f"/api/persons/{bruno['id']}/cards", json={"card": "04a1b2c3"}, headers=ADMIN)
+    controller.credentials.pop(client.app.state.db.get_card(card_id)["axis_credential_token"])
+    assert client.post("/api/sync", headers=ADMIN).json()["missing"] == 1
+    before = len(controller.calls)
+    answer = client.post(
+        "/api/missing-cards/restore", json={"ids": [card_id], "person_id": anna["id"]}, headers=ADMIN
+    ).json()
+    assert answer["restored"] == 0
+    assert answer["failed"] == [
+        {"card": "04a1b2c3", "person": "Bruno Gallo", "error": "ora è di Bruno Gallo: aggiorna la pagina"}
+    ]
+    assert len(controller.calls) == before
+    # Dalla scheda di Bruno, o dall'avviso delle tessere non presenti, si riscrive
+    answer = client.post(
+        "/api/missing-cards/restore", json={"ids": [card_id], "person_id": bruno["id"]}, headers=ADMIN
+    ).json()
+    assert answer == {"restored": 1, "failed": []}
+    check(client, controller, {"04a1b2c3": ("", "Bruno Gallo"), "04a1b2c9": ("", "Carla Sala")})
+
+
+SWIPES = r"""
+const { chromium } = require("playwright");
+const config = JSON.parse(process.argv[1]);
+(async () => {
+  const browser = await chromium.launch();
+  const context = await browser.newContext({viewport: {width: 1280, height: 900}, extraHTTPHeaders: config.headers});
+  const page = await context.newPage();
+  const out = {errors: [], cards: [], persons: 0, adds: []};
+  page.on("pageerror", (e) => out.errors.push(String(e)));
+  page.on("request", (r) => {
+    const url = r.url();
+    if (r.method() !== "POST") return;
+    if (url.endsWith("/api/cards")) out.cards.push(JSON.parse(r.postData()).card);
+    if (url.endsWith("/api/persons")) out.persons += 1;
+    if (/\/api\/persons\/\d+\/cards$/.test(url)) out.adds.push([url.split("/").at(-2), JSON.parse(r.postData())]);
+  });
+  const swipe = async (code, ends = ["Enter"]) => {
+    await page.keyboard.type(code, {delay: 3});
+    for (const key of ends) await page.keyboard.press(key);
+  };
+  const open = () => page.evaluate(() => document.querySelector("#modal").open);
+  const closed = () => page.waitForFunction(() => !document.querySelector("#modal").open);
+  const rows = () => page.$$eval("#c-list > .item", (items) => items.length);
+  await page.goto(`${config.base}/#tessere`);
+  await page.waitForSelector("#c-list > .item");
+  // 1. Assegna: la tendina ha il fuoco e la persona scelta; una tessera passata non la cambia
+  await page.click("[data-card-give]");
+  await page.waitForSelector("#modal[open] select[name=person]");
+  await page.selectOption("#modal select[name=person]", {label: "Bruno Gallo"});
+  await page.focus("#modal select[name=person]");
+  await swipe("a1b2c3d4");
+  await page.waitForTimeout(150);
+  out.chosen = await page.$eval("#modal select[name=person]", (s) => s.selectedOptions[0].textContent);
+  await page.click("#modal .dlg-foot button.primary");
+  await closed();
+  // 2. Un lettore che manda due Invio, e uno che chiude con Tab, nella pagina Tessere: una tessera ciascuno
+  await page.focus("#c-load [name=card]");
+  await swipe("04c0ff01", ["Enter", "Enter"]);
+  await swipe("04c0ff02", ["Tab"]);
+  await page.waitForFunction((n) => document.querySelectorAll("#c-list > .item").length === n, 3);
+  out.focusAfterTab = await page.evaluate(() => document.activeElement?.name || "");
+  // 3. Tessera letta a metà: l'inizio su un pulsante, il resto nel campo del codice
+  await page.focus("[data-card-name]");
+  await page.keyboard.type("04c0", {delay: 3});
+  await page.focus("#c-load [name=card]");
+  await swipe("ffee11aa22");
+  await page.waitForTimeout(300);
+  out.half = [await page.textContent("#c-note"), await page.inputValue("#c-load [name=card]"), await rows()];
+  // 4. Una tessera già caricata in mezzo alle altre: il suo errore resta sopra le riuscite dopo
+  await page.focus("#c-load [name=card]");
+  await swipe("04c0ff01");
+  await swipe("04c0ff03");
+  await page.waitForFunction((n) => document.querySelectorAll("#c-list > .item").length === n, 4);
+  await page.waitForFunction(() => document.querySelector("#c-note").textContent.includes("04c0ff03"));
+  out.burst = await page.textContent("#c-note");
+  // 5. Tasto senza nome (Chrome compilando un campo): nessun errore
+  await page.evaluate(() => { document.querySelector("#c-q").dispatchEvent(new Event("keydown", {bubbles: true})); });
+  // 6. Nuova Persona: email e tipologia restano come erano, e due Invio non la registrano
+  await page.goto(`${config.base}/#persone`);
+  await page.click("#p-new");
+  await page.waitForSelector("#modal[open] [name=email]");
+  await page.fill("#modal [name=first_name]", "Dario");
+  await page.fill("#modal [name=email]", "dario@");
+  await page.focus("#modal [name=email]");
+  await swipe("04c0ffee");
+  await page.waitForTimeout(150);
+  out.email = await page.inputValue("#modal [name=email]");
+  await page.focus("#modal [name=card]");
+  await swipe("04c0ff05", ["Enter", "Enter"]);
+  await page.waitForTimeout(300);
+  out.newPerson = [out.persons, await open(), await page.inputValue("#modal [name=card]")];
+  // Un pezzo del codice di una Libera, scritto per cercarla, non si registra
+  await page.fill("#modal [name=card]", "04b7");
+  await page.click("#modal .dlg-foot button.primary");
+  await page.waitForTimeout(300);
+  out.partial = [out.persons, await open()];
+  console.log(JSON.stringify(out));
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
+def test_reader_swipes_never_change_a_choice_or_submit_a_dialog(plant, ingress_server, controller):  # noqa: F811
+    """Nella pagina vera. Una tessera passata con il fuoco su una tendina non cambia la persona scelta; un lettore che
+    manda due Invio, o che chiude con Tab, carica una tessera sola e non registra niente nelle finestre; una tessera
+    letta a metà non si carica; l'errore di una tessera in una raffica resta; un'email resta com'era."""
+    ingress, app = plant[0], plant[3]
+    for name in ("Anna Neri", "Bruno Gallo"):
+        assert ingress.post("/api/persons", json={"name": name}, headers=PAGE_ADMIN).status_code == 200
+    assert ingress.post("/api/cards", json={"card": "04b7c2d1"}, headers=PAGE_ADMIN).status_code == 200
+    controller.attempts.clear()
+    config = {"base": ingress_server, "headers": PAGE_ADMIN}
+    result = subprocess.run(["node", "-e", SWIPES, json.dumps(config)], capture_output=True, text=True, timeout=180)
+    if result.returncode and "Executable doesn't exist" in result.stderr:
+        pytest.skip("Chromium di Playwright non installato")
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert out["errors"] == []
+    assert out["chosen"] == "Bruno Gallo"
+    bruno = next(p for p in app.state.db.list_persons() if p["name"] == "Bruno Gallo")
+    assert out["adds"] == [[str(bruno["id"]), {"card": "04b7c2d1", "card_id": 1}]]
+    assert out["focusAfterTab"] == "card"
+    assert out["half"][1:] == ["", 3] and "letta a metà" in out["half"][0]
+    assert "04c0ff01: Tessera già caricata" in out["burst"] and "Caricata: Numero 4 · 04c0ff03" in out["burst"]
+    assert out["cards"] == ["04c0ff01", "04c0ff02", "04c0ff01", "04c0ff03"]
+    assert out["email"] == "dario@"
+    assert out["newPerson"] == [0, True, "04c0ff05"]
+    assert out["partial"] == [0, True]
+    stored = {c["number"]: (c["printed_code"], c["person_id"]) for c in app.state.db.list_cards()}
+    assert stored == {
+        "04b7c2d1": ("Numero 1", bruno["id"]),
+        "04c0ff01": ("Numero 2", None),
+        "04c0ff02": ("Numero 3", None),
+        "04c0ff03": ("Numero 4", None),
+    }
+    assert all(c["IdData"][0]["Value"] == "04b7c2d1" for c in controller.credentials.values())
