@@ -379,8 +379,8 @@ def test_registration_with_a_free_card_and_the_old_requests(settings, controller
     app = create_app(settings, allow_any_client=True, controller=controller, db_path=tmp_path / "api.db")
     with TestClient(app) as client:
         db = client.app.state.db
-        assert client.post("/api/cards", json={"card": "04dd"}).status_code == 200
-        body = {"first_name": "Gian Luca", "last_name": "De Santis", "card": "04dd", "phone": PHONE}
+        assert client.post("/api/cards", json={"card": "04dd0000"}).status_code == 200
+        body = {"first_name": "Gian Luca", "last_name": "De Santis", "card": "04dd0000", "phone": PHONE}
         person = client.post("/api/persons", json=body).json()
         assert (person["name"], person["first_name"], person["last_name"]) == (
             "Gian Luca De Santis",

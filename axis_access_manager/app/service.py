@@ -25,6 +25,8 @@ MAX_CLOCK_CORRECTION = 24 * 3600
 GRANT_LOG_TAIL = 30
 
 CARD_PATTERN = re.compile(r"^[0-9A-Fa-f]{2,64}$")
+# Tessera caricata con il lettore da banco: il codice più corto che un lettore scrive (4 byte)
+LOADED_CARD_MIN = 8
 # Telefono ed email delle persone: solo nell'app (vedi db.PERSON_COLUMNS)
 PHONE_PATTERN = re.compile(r"[0-9 +\-./()]+")
 # Telefono ed email incollati da una pagina web, da un PDF o da Word (index.html li pulisce allo stesso modo):
@@ -1001,6 +1003,9 @@ class AccessService:
         operazioni. Una tessera già caricata si dice subito, con il suo Nome Tessera e di chi è. printed_code None: il
         nome proposto (vedi next_card_name), così più tessere passate di fila prendono ognuna il suo."""
         number = normalize_card(card)
+        # Una tessera passata a metà (il fuoco è cambiato mentre il lettore scriveva) non diventa una tessera
+        if len(number) < LOADED_CARD_MIN:
+            raise ServiceError("codice troppo corto: passa di nuovo la tessera")
         existing = self.db.any_card_by_number(number)
         if existing is not None:
             name = f" ({existing['printed_code']})" if existing["printed_code"] else ""
@@ -1429,17 +1434,25 @@ class AccessService:
         return f"profilo {name}" if name else "accesso personalizzato"
 
     async def update_card(
-        self, card_id: int, user: str, *, enabled: bool | None = None, printed_code: str | None = None
+        self,
+        card_id: int,
+        user: str,
+        *,
+        enabled: bool | None = None,
+        printed_code: str | None = None,
+        person_id: int | None = None,
     ) -> dict:
         """Modifica di una tessera dalla scheda: stato (sospesa o attiva, sul controller) e Nome Tessera (solo
         nell'app). None: non cambia. Il codice si controlla prima di scrivere sul controller, così un codice non valido
-        o già usato non lascia mezza modifica. Restituisce la persona."""
+        o già usato non lascia mezza modifica. person_id: la persona della scheda da cui si chiede (vedi _owned_card).
+        Restituisce la persona."""
+        self._owned_card(card_id, person_id)
         if printed_code is not None:
             printed_code = normalize_printed_code(printed_code)
             self.check_printed_code(printed_code, self._card(card_id)["id"])
         person = None
         if enabled is not None:
-            person = await self.set_card_enabled(card_id, enabled, user)
+            person = await self.set_card_enabled(card_id, enabled, user, person_id)
         if printed_code is not None:
             person = self.set_card_printed_code(card_id, printed_code, user)
         if person is not None:
@@ -1466,9 +1479,9 @@ class AccessService:
             self._changed()
         return self._person(card["person_id"]) if card["person_id"] is not None else None
 
-    async def set_card_enabled(self, card_id: int, enabled: bool, user: str) -> dict:
+    async def set_card_enabled(self, card_id: int, enabled: bool, user: str, person_id: int | None = None) -> dict:
         async with self.lock:
-            card = self._card(card_id)
+            card = self._owned_card(card_id, person_id)
             if card["person_id"] is None:
                 raise ServiceError("la tessera è libera: si sospende solo una tessera assegnata")
             if enabled:
@@ -1499,12 +1512,13 @@ class AccessService:
             )
             return person
 
-    async def delete_card(self, card_id: int, user: str) -> dict:
+    async def delete_card(self, card_id: int, user: str, person_id: int | None = None) -> dict:
         """Toglie la tessera alla persona e la restituisce: la tessera torna Libera nell'elenco, con il suo codice e
         il suo Nome Tessera, e non è più sul controller. La persona resta in anagrafica anche senza tessere. Con
-        l'ultima si toglie dal controller anche il suo utente, e la tessera aggiunta dopo ne crea uno nuovo."""
+        l'ultima si toglie dal controller anche il suo utente, e la tessera aggiunta dopo ne crea uno nuovo.
+        person_id: la persona della scheda da cui si chiede (vedi _owned_card)."""
         async with self.lock:
-            card = self._card(card_id)
+            card = self._owned_card(card_id, person_id)
             if card["person_id"] is None:
                 raise ServiceError("la tessera è già libera")
             person = self.db.get_person(card["person_id"])
@@ -1804,6 +1818,17 @@ class AccessService:
         card = self.db.get_card(card_id)
         if card is None:
             raise ServiceError("tessera non trovata")
+        return card
+
+    def _owned_card(self, card_id: int, person_id: int | None) -> dict:
+        """Tessera per id, di quella persona (None: di chiunque). Una tessera tolta a una persona e data a un'altra
+        resta la stessa riga, con lo stesso id: da una scheda rimasta aperta sulla prima persona, Sospendi o Togli
+        cadrebbero sulla tessera della seconda. Chi chiede dice di chi la crede, e se non è più sua non si tocca."""
+        card = self._card(card_id)
+        if person_id is not None and card["person_id"] != person_id:
+            owner = self.db.get_person(card["person_id"]) if card["person_id"] is not None else None
+            whose = f"è di {owner['name']}" if owner else "è libera"
+            raise ServiceError(f"la tessera {card['number']} ora {whose}: aggiorna la pagina")
         return card
 
     # Porta

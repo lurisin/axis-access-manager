@@ -166,11 +166,11 @@ async def test_create_person_rolls_back_user_on_card_error(service, controller, 
 
 async def test_create_person_takes_the_free_card_of_the_list(service, db, controller):
     """La tessera caricata nell'elenco passa alla persona: stessa riga, stesso nome, codice scritto come caricato."""
-    loaded = service.load_card("04aa", "admin", "Numero 4")
-    person = await service.create_person("Mario Rossi", "04AA", "admin")
+    loaded = service.load_card("04aa0000", "admin", "Numero 4")
+    person = await service.create_person("Mario Rossi", "04AA0000", "admin")
     [card] = person["cards"]
-    assert (card["id"], card["number"], card["printed_code"]) == (loaded["id"], "04aa", "Numero 4")
-    assert [c["IdData"][0]["Value"] for c in controller.credentials.values()] == ["04aa"]
+    assert (card["id"], card["number"], card["printed_code"]) == (loaded["id"], "04aa0000", "Numero 4")
+    assert [c["IdData"][0]["Value"] for c in controller.credentials.values()] == ["04aa0000"]
 
 
 async def test_rename_updates_user_and_credentials(service, controller):

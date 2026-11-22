@@ -58,7 +58,7 @@ def database_0_28_11(path, code: bool = True) -> None:
     conn.execute("DROP TABLE cards")
     conn.execute(CARDS_0_28_11.format(code=", printed_code TEXT NOT NULL DEFAULT ''" if code else ""))
     conn.execute(UNKNOWN_0_28_11)
-    conn.execute("INSERT INTO unknown_cards VALUES ('04ff', ?, ?, 2)", (TS, TS))
+    conn.execute("INSERT INTO unknown_cards VALUES ('04ff0000', ?, ?, 2)", (TS, TS))
     for person_id, name, token in ((1, "Anna Neri", "u1"), (2, "Bruno Verdi", "u2")):
         conn.execute(
             "INSERT INTO persons (id, name, axis_user_token, created_at, updated_at, first_name, last_name) "
@@ -66,9 +66,9 @@ def database_0_28_11(path, code: bool = True) -> None:
             (person_id, name, token, TS, TS, *name.split()),
         )
     rows = [
-        (3, 1, "04aa", 1, "c1", "p1", "Numero 1"),
-        (5, 2, "04bb", 0, "c2", "p2", ""),
-        (8, 99, "04cc", 1, "c9", "", ""),
+        (3, 1, "04aa0000", 1, "c1", "p1", "Numero 1"),
+        (5, 2, "04bb0000", 0, "c2", "p2", ""),
+        (8, 99, "04cc0000", 1, "c9", "", ""),
     ]
     for card_id, person_id, number, enabled, token, profile, code_value in rows:
         conn.execute(
@@ -96,10 +96,10 @@ def test_database_of_0_28_11_keeps_the_cards_and_lets_them_be_free(tmp_path, cod
             assert db.schema_version == SCHEMA_VERSION == 11
             cards = {c["id"]: c for c in db.list_cards()}
             assert {i: (c["number"], c["person_id"], c["person_name"]) for i, c in cards.items()} == {
-                3: ("04aa", 1, "Anna Neri"),
-                5: ("04bb", 2, "Bruno Verdi"),
+                3: ("04aa0000", 1, "Anna Neri"),
+                5: ("04bb0000", 2, "Bruno Verdi"),
                 # Rimasta senza la sua persona: Libera, senza token né accesso
-                8: ("04cc", None, ""),
+                8: ("04cc0000", None, ""),
             }
             assert (cards[3]["axis_credential_token"], cards[3]["access_profile"], cards[3]["enabled"]) == (
                 "c1",
@@ -114,7 +114,7 @@ def test_database_of_0_28_11_keeps_the_cards_and_lets_them_be_free(tmp_path, cod
             assert json.loads(db.get_setting("dashboard_layout:rising"))[1] == {"type": "tessere_libere", "size": 2}
             # I numeri uguali restano rifiutati, senza distinguere le maiuscole
             with pytest.raises(sqlite3.IntegrityError):
-                db.add_free_card("04AA")
+                db.add_free_card("04AA0000")
         finally:
             db.close()
 
@@ -203,60 +203,62 @@ def test_loading_cards_never_touches_the_controller_and_proposes_the_next_name(c
 
 def test_next_name_follows_the_last_loaded_shape(db, service):
     assert service.next_card_name() == "Numero 1"
-    service.load_card("04a1", "admin", "Mario Rossi")
+    service.load_card("04a10000", "admin", "Mario Rossi")
     # Senza un numero in fondo non c'è una serie da continuare
     assert service.next_card_name() == "Numero 1"
-    service.load_card("04a2", "admin", "A-07")
+    service.load_card("04a20000", "admin", "A-07")
     assert service.next_card_name() == "A-01"
-    service.load_card("04a3", "admin", "A-01")
-    service.load_card("04a4", "admin", "a-02")
+    service.load_card("04a30000", "admin", "A-01")
+    service.load_card("04a40000", "admin", "a-02")
     # Come l'ultimo caricato, lettere comprese
     assert service.next_card_name() == "a-03"
-    service.load_card("04a5", "admin", "12")
+    service.load_card("04a50000", "admin", "12")
     assert service.next_card_name() == "1"
 
 
 def test_every_operation_keeps_free_cards_off_the_controller_and_the_shadow_clean(client, controller):
     """Stati (assente, Libera, assegnata, sospesa, non presente sul controller) per operazioni (carica, nuova persona,
     aggiungi tessera, togli, elimina persona, Togli dall'App, Riscrivi, elimina per sempre)."""
-    for number, name in (("04aa", "Numero 1"), ("04bb", "Numero 2"), ("04cc", "Numero 3")):
+    for number, name in (("04aa0000", "Numero 1"), ("04bb0000", "Numero 2"), ("04cc0000", "Numero 3")):
         assert client.post("/api/cards", json={"card": number, "printed_code": name}, headers=ADMIN).status_code == 200
-    check(client, controller, {"04aa": ("Numero 1", ""), "04bb": ("Numero 2", ""), "04cc": ("Numero 3", "")})
+    check(
+        client, controller, {"04aa0000": ("Numero 1", ""), "04bb0000": ("Numero 2", ""), "04cc0000": ("Numero 3", "")}
+    )
     # Nuova persona con una Libera (scritta in maiuscolo), e con una tessera mai caricata
-    anna = client.post("/api/persons", json={"name": "Anna Neri", "card": "04AA"}, headers=ADMIN).json()
-    bruno = client.post("/api/persons", json={"name": "Bruno Verdi", "card": "04dd"}, headers=ADMIN).json()
+    anna = client.post("/api/persons", json={"name": "Anna Neri", "card": "04AA0000"}, headers=ADMIN).json()
+    bruno = client.post("/api/persons", json={"name": "Bruno Verdi", "card": "04dd0000"}, headers=ADMIN).json()
     assert anna["cards"][0]["id"] == 1 and anna["cards"][0]["printed_code"] == "Numero 1"
     wanted = {
-        "04aa": ("Numero 1", "Anna Neri"),
-        "04bb": ("Numero 2", ""),
-        "04cc": ("Numero 3", ""),
-        "04dd": ("", "Bruno Verdi"),
+        "04aa0000": ("Numero 1", "Anna Neri"),
+        "04bb0000": ("Numero 2", ""),
+        "04cc0000": ("Numero 3", ""),
+        "04dd0000": ("", "Bruno Verdi"),
     }
     check(client, controller, wanted)
     # Aggiungi Tessera: una Libera, poi una già di un altro (rifiutata prima di scrivere sul controller)
-    response = client.post(f"/api/persons/{anna['id']}/cards", json={"card": "04bb"}, headers=ADMIN)
+    response = client.post(f"/api/persons/{anna['id']}/cards", json={"card": "04bb0000"}, headers=ADMIN)
     assert response.status_code == 200 and [c["id"] for c in response.json()["cards"]] == [1, 2]
     controller.attempts.clear()
-    response = client.post(f"/api/persons/{bruno['id']}/cards", json={"card": "04BB"}, headers=ADMIN)
+    response = client.post(f"/api/persons/{bruno['id']}/cards", json={"card": "04BB0000"}, headers=ADMIN)
     assert response.status_code == 400 and "già registrata a nome Anna Neri" in response.json()["detail"]
     assert writes(controller) == []
-    wanted["04bb"] = ("Numero 2", "Anna Neri")
+    wanted["04bb0000"] = ("Numero 2", "Anna Neri")
     check(client, controller, wanted)
     # Sospesa e poi tolta: torna Libera e attiva, con lo stesso nome; una Libera non si sospende né si toglie
     assert client.patch("/api/cards/2", json={"enabled": False}, headers=ADMIN).status_code == 200
     assert client.delete("/api/cards/2", headers=ADMIN).json()["person"]["cards"][0]["id"] == 1
-    assert (card(client, "04bb")["enabled"], card(client, "04bb")["axis_credential_token"]) == (True, None)
+    assert (card(client, "04bb0000")["enabled"], card(client, "04bb0000")["axis_credential_token"]) == (True, None)
     controller.attempts.clear()
     assert client.patch("/api/cards/2", json={"enabled": False}, headers=ADMIN).status_code == 400
     assert client.delete("/api/cards/2", headers=ADMIN).json()["detail"] == "la tessera è già libera"
     assert writes(controller) == []
-    wanted["04bb"] = ("Numero 2", "")
+    wanted["04bb0000"] = ("Numero 2", "")
     check(client, controller, wanted)
     # Il nome di una Libera si cambia dall'elenco, senza controller
     response = client.patch("/api/cards/2", json={"printed_code": "Numero 20"}, headers=ADMIN)
     assert response.status_code == 200 and response.json()["card"]["printed_code"] == "Numero 20"
     assert writes(controller) == []
-    wanted["04bb"] = ("Numero 20", "")
+    wanted["04bb0000"] = ("Numero 20", "")
     # Non presente sul controller: «Riscrivi» la riscrive, «Togli dall'App» la rimette Libera
     token = client.app.state.db.get_card(1)["axis_credential_token"]
     controller.credentials.pop(token)
@@ -266,17 +268,17 @@ def test_every_operation_keeps_free_cards_off_the_controller_and_the_shadow_clea
     controller.credentials.pop(client.app.state.db.get_card(1)["axis_credential_token"])
     assert client.post("/api/sync", headers=ADMIN).json()["missing"] == 1
     assert client.post("/api/missing-cards/forget", json={"ids": [1]}, headers=ADMIN).json() == {"cards": 1}
-    wanted["04aa"] = ("Numero 1", "")
+    wanted["04aa0000"] = ("Numero 1", "")
     # Anna resta, senza tessere: il suo utente sul controller non serve più
     controller.users.pop(anna["axis_user_token"], None)
     check(client, controller, wanted)
     # Elimina persona: la sua tessera torna Libera; eliminata per sempre solo una Libera
     assert client.delete(f"/api/cards/{bruno['cards'][0]['id']}/forever", headers=ADMIN).status_code == 400
     assert client.delete(f"/api/persons/{bruno['id']}", headers=ADMIN).status_code == 200
-    wanted["04dd"] = ("", "")
+    wanted["04dd0000"] = ("", "")
     check(client, controller, wanted)
     assert client.delete(f"/api/cards/{bruno['cards'][0]['id']}/forever", headers=ADMIN).status_code == 200
-    del wanted["04dd"]
+    del wanted["04dd0000"]
     check(client, controller, wanted)
     assert controller.users == {} and controller.credentials == {}
 
@@ -284,22 +286,23 @@ def test_every_operation_keeps_free_cards_off_the_controller_and_the_shadow_clea
 def test_a_credential_written_outside_the_app_for_a_free_card_assigns_it(client, controller):
     """La sincronizzazione non si ferma più su una tessera Libera scritta sul controller: nell'app passa a chi la ha
     sul controller (la porta con lei apre già), con una riga in Attività, e tiene il suo nome."""
-    anna = client.post("/api/persons", json={"name": "Anna Neri", "card": "04aa"}, headers=ADMIN).json()
+    anna = client.post("/api/persons", json={"name": "Anna Neri", "card": "04aa0000"}, headers=ADMIN).json()
     assert (
-        client.post("/api/cards", json={"card": "04bb", "printed_code": "Numero 2"}, headers=ADMIN).status_code == 200
+        client.post("/api/cards", json={"card": "04bb0000", "printed_code": "Numero 2"}, headers=ADMIN).status_code
+        == 200
     )
     controller.credentials["fuori"] = {
         "token": "fuori",
         "UserToken": anna["axis_user_token"],
         "Enabled": True,
-        "IdData": [{"Name": "Card", "Value": "04BB"}],
+        "IdData": [{"Name": "Card", "Value": "04BB0000"}],
     }
     for _ in range(2):
         assert client.post("/api/sync", headers=ADMIN).status_code == 200
-    found = card(client, "04bb")
+    found = card(client, "04bb0000")
     assert (found["id"], found["person_name"], found["printed_code"]) == (2, "Anna Neri", "Numero 2")
     audit = [a for a in client.app.state.db.list_audit() if a["action"] == "tessere libere trovate sul controller"]
-    assert [a["detail"] for a in audit] == ["1 tessera assegnata a chi la ha sul controller: 04BB"]
+    assert [a["detail"] for a in audit] == ["1 tessera assegnata a chi la ha sul controller: 04BB0000"]
 
 
 def event(topic: str, data: dict, second: int = 0) -> Event:
@@ -313,7 +316,8 @@ def test_a_free_card_at_a_door_is_an_invalid_card_with_its_name(client, controll
     registro; lo stesso recuperata dal registro del controller. Mai un errore di scrittura del registro."""
     state = client.app.state
     assert (
-        client.post("/api/cards", json={"card": "04bb", "printed_code": "Numero 2"}, headers=ADMIN).status_code == 200
+        client.post("/api/cards", json={"card": "04bb0000", "printed_code": "Numero 2"}, headers=ADMIN).status_code
+        == 200
     )
     service = state.service
 
@@ -321,56 +325,58 @@ def test_a_free_card_at_a_door_is_an_invalid_card_with_its_name(client, controll
         # Nel ciclo dell'app, come gli eventi veri
         client.portal.call(service.record_event, passage)
 
-    record(event("IdPoint/Request/IdData/x", {"Card": "04BB"}))
-    record(event("AccessControl/Denied/CredentialNotFound/Card", {"Card": "04BB", "AccessPointToken": "ap"}))
-    record(event("IdPoint/Request/IdData/x", {"Card": "05ff"}, 5))
+    record(event("IdPoint/Request/IdData/x", {"Card": "04BB0000"}))
+    record(event("AccessControl/Denied/CredentialNotFound/Card", {"Card": "04BB0000", "AccessPointToken": "ap"}))
+    record(event("IdPoint/Request/IdData/x", {"Card": "05ff0000"}, 5))
     service._recovering = True
     try:
-        record(event("IdPoint/Request/IdData/x", {"Card": "04BB"}, 30))
-        record(event("AccessControl/Denied/CredentialNotFound/Card", {"Card": "04BB", "AccessPointToken": "ap"}, 30))
+        record(event("IdPoint/Request/IdData/x", {"Card": "04BB0000"}, 30))
+        record(
+            event("AccessControl/Denied/CredentialNotFound/Card", {"Card": "04BB0000", "AccessPointToken": "ap"}, 30)
+        )
     finally:
         service._recovering = False
     rows = client.get("/api/events", headers=ADMIN).json()
     rows = rows["events"] if isinstance(rows, dict) else rows
     shown = [(e["kind"], e["card"], e["person_name"], e["detail"], e["printed_code"], e["recovered"]) for e in rows]
     assert shown == [
-        ("negato", "04BB", "", "tessera libera", "Numero 2", 1),
-        ("sconosciuta", "04BB", "", "tessera libera", "Numero 2", 1),
-        ("sconosciuta", "05ff", "", "", "", 0),
-        ("negato", "04BB", "", "tessera libera", "Numero 2", 0),
-        ("sconosciuta", "04BB", "", "tessera libera", "Numero 2", 0),
+        ("negato", "04BB0000", "", "tessera libera", "Numero 2", 1),
+        ("sconosciuta", "04BB0000", "", "tessera libera", "Numero 2", 1),
+        ("sconosciuta", "05ff0000", "", "", "", 0),
+        ("negato", "04BB0000", "", "tessera libera", "Numero 2", 0),
+        ("sconosciuta", "04BB0000", "", "tessera libera", "Numero 2", 0),
     ]
     assert not state.service.write_error
     items = [i for i in client.get("/api/notifications", headers=ADMIN).json()["items"] if i["type"] == "unknown_card"]
     assert [(i["title"], i["text"], i["link"]) for i in items] == [
-        ("Tessera Non Valida ×2", "Tessera 04BB · Numero 2 · libera", "#tessere")
+        ("Tessera Non Valida ×2", "Tessera 04BB0000 · Numero 2 · libera", "#tessere")
     ]
     # In Home Assistant mai il nome della tessera
     assert "Numero 2" not in json.dumps(state.bridge._last_payload())
 
 
 async def test_import_gives_a_free_card_to_the_person_of_the_file(service, db, controller):
-    loaded = service.load_card("04bb", "admin", "Numero 2")
-    text = "nome;tessera\nAnna Neri;04BB\n"
+    loaded = service.load_card("04bb0000", "admin", "Numero 2")
+    text = "nome;tessera\nAnna Neri;04BB0000\n"
     groups = [{"token": "profilo_sempre", "name": "Sempre"}]
     result = await import_persons(service, text, groups, "admin", apply=True)
     assert result["riepilogo"]["errori"] == 0
     [anna] = db.list_persons()
     [got] = anna["cards"]
-    assert (got["id"], got["number"], got["printed_code"]) == (loaded["id"], "04bb", "Numero 2")
-    assert on_controller(controller) == {"04bb"}
+    assert (got["id"], got["number"], got["printed_code"]) == (loaded["id"], "04bb0000", "Numero 2")
+    assert on_controller(controller) == {"04bb0000"}
 
 
 async def test_backups_carry_free_cards_and_stay_the_same_without(service, db):
     from app.backup import common_snapshot
 
-    await service.create_person("Anna Neri", "04aa", "admin")
+    await service.create_person("Anna Neri", "04aa0000", "admin")
     before = json.dumps(common_snapshot(db, []), sort_keys=True)
     assert '"person_id": null' not in before
-    loaded = service.load_card("04bb", "admin", "Numero 2")
+    loaded = service.load_card("04bb0000", "admin", "Numero 2")
     cards = {c["number"]: c for c in common_snapshot(db, [])["cards"]}
-    assert cards["04bb"] == {
-        "number": "04bb",
+    assert cards["04bb0000"] == {
+        "number": "04bb0000",
         "person_id": None,
         "enabled": True,
         "access_profile": "",
@@ -473,3 +479,146 @@ def test_cards_swiped_one_after_the_other_are_all_loaded(plant, ingress_server, 
         "04a1b2c6": ("Ospite Blu", None),
     }
     assert writes(controller) == [] and controller.credentials == {}
+
+
+def test_a_stale_person_sheet_does_not_touch_the_card_of_its_new_owner(client, controller):
+    """Una tessera tolta a una persona e data a un'altra resta la stessa riga, con lo stesso id. Dalla scheda rimasta
+    aperta sulla prima persona, Sospendi, Nome e Togli non cadono sulla tessera della seconda: né nell'app né sul
+    controller."""
+    anna = client.post("/api/persons", json={"name": "Anna Neri", "card": "04a1b2c3"}, headers=ADMIN).json()
+    bruno = client.post("/api/persons", json={"name": "Bruno Gallo"}, headers=ADMIN).json()
+    stale = anna["cards"][0]["id"]
+    assert client.delete(f"/api/cards/{stale}?person_id={anna['id']}", headers=ADMIN).status_code == 200
+    given = client.post(f"/api/persons/{bruno['id']}/cards", json={"card": "04a1b2c3"}, headers=ADMIN).json()
+    assert [c["id"] for c in given["cards"]] == [stale]
+    before = (json.dumps(controller.credentials, sort_keys=True), len(controller.calls))
+    wrong = "la tessera 04a1b2c3 ora è di Bruno Gallo: aggiorna la pagina"
+    for answer in (
+        client.patch(f"/api/cards/{stale}", json={"enabled": False, "person_id": anna["id"]}, headers=ADMIN),
+        client.patch(f"/api/cards/{stale}", json={"printed_code": "Numero 5", "person_id": anna["id"]}, headers=ADMIN),
+        client.delete(f"/api/cards/{stale}?person_id={anna['id']}", headers=ADMIN),
+    ):
+        assert (answer.status_code, answer.json()["detail"]) == (400, wrong)
+    assert (json.dumps(controller.credentials, sort_keys=True), len(controller.calls)) == before
+    check(client, controller, {"04a1b2c3": ("", "Bruno Gallo")})
+    # Dalla scheda giusta funziona, e tolta di nuovo la scheda vecchia la trova libera
+    assert (
+        client.patch(f"/api/cards/{stale}", json={"enabled": False, "person_id": bruno["id"]}, headers=ADMIN).json()[
+            "cards"
+        ][0]["enabled"]
+        is False
+    )
+    assert client.delete(f"/api/cards/{stale}?person_id={bruno['id']}", headers=ADMIN).status_code == 200
+    answer = client.delete(f"/api/cards/{stale}?person_id={anna['id']}", headers=ADMIN)
+    assert answer.json()["detail"] == "la tessera 04a1b2c3 ora è libera: aggiorna la pagina"
+    check(client, controller, {"04a1b2c3": ("", "")})
+
+
+def test_a_code_cut_short_is_not_loaded(client, controller):
+    """Una tessera passata a metà (il fuoco è cambiato mentre il lettore scriveva) non diventa una tessera."""
+    answer = client.post("/api/cards", json={"card": "2c4"}, headers=ADMIN)
+    assert (answer.status_code, answer.json()["detail"]) == (400, "codice troppo corto: passa di nuovo la tessera")
+    assert client.get("/api/cards", headers=ADMIN).json() == {"cards": [], "next_name": "Numero 1"}
+    assert client.post("/api/cards", json={"card": "04a1b2c3"}, headers=ADMIN).status_code == 200
+
+
+READER = r"""
+const { chromium } = require("playwright");
+const config = JSON.parse(process.argv[1]);
+(async () => {
+  const browser = await chromium.launch();
+  const context = await browser.newContext({viewport: {width: 1280, height: 900}, extraHTTPHeaders: config.headers});
+  const page = await context.newPage();
+  const out = {errors: [], posts: [], persons: 0};
+  page.on("pageerror", (e) => out.errors.push(String(e)));
+  page.on("request", (r) => {
+    if (r.method() === "POST" && r.url().endsWith("/api/cards")) out.posts.push(JSON.parse(r.postData()));
+    if (r.method() === "POST" && r.url().endsWith("/api/persons")) out.persons += 1;
+    if (r.method() === "PATCH") out.patched = true;
+  });
+  const swipe = async (code) => { await page.keyboard.type(code, {delay: 3}); await page.keyboard.press("Enter"); };
+  const rows = () => page.$$eval("#c-list > .item", (items) => items.map((i) => [
+    i.querySelector(".title").textContent.trim(), i.querySelector(".mono").textContent.trim()]));
+  const loaded = (n) => page.waitForFunction((n) => document.querySelectorAll("#c-list > .item").length === n, n);
+  await page.goto(`${config.base}/#tessere`);
+  await page.waitForSelector("#c-load [name=card]");
+  // 1. Il nome scritto a mano, e la tessera passata senza tornare nel campo del codice
+  await page.click("#c-load [name=printed_code]");
+  await page.keyboard.press("Control+A");
+  await page.keyboard.type("Ospite Blu", {delay: 80});
+  await swipe("04a1b2c3");
+  await loaded(1);
+  out.first = await rows();
+  out.nameAfter = await page.inputValue("#c-load [name=printed_code]");
+  out.focusAfter = await page.evaluate(() => document.activeElement?.name || "");
+  // 2. Finestra del nome annullata: il fuoco torna sul pulsante della riga, e la tessera dopo si carica lo stesso
+  await page.click("[data-card-name]");
+  await page.waitForSelector("#modal[open]");
+  await page.click("#modal .dlg-foot button:has-text('Annulla')");
+  await page.waitForFunction(() => !document.querySelector("#modal").open);
+  out.focusOnRow = await page.evaluate(() => document.activeElement?.hasAttribute("data-card-name"));
+  await swipe("04a1b2c4");
+  await loaded(2);
+  out.second = await rows();
+  out.dialogAfterSwipe = await page.evaluate(() => document.querySelector("#modal").open);
+  // 3. Tessera passata dentro la finestra del nome: non la salva, e il codice non resta nel campo
+  await page.click("[data-card-name]");
+  await page.waitForSelector("#modal[open] [name=printed_code]");
+  await page.focus("#modal [name=printed_code]");
+  await swipe("04a1b2c5");
+  await page.waitForSelector("#modal .dlg-error");
+  const open = () => page.evaluate(() => document.querySelector("#modal").open);
+  out.inDialog = [await page.inputValue("#modal [name=printed_code]"), await open(), !!out.patched];
+  await page.click("#modal .dlg-foot button:has-text('Annulla')");
+  // 4. Un'azione sulla riga non rifà il modulo: quello che il lettore sta scrivendo resta
+  await page.evaluate(() => { document.querySelector("#c-load").dataset.same = "1"; });
+  await page.fill("#c-load [name=card]", "04a10000");
+  page.once("dialog", (d) => d.accept());
+  await page.click("[data-card-del]");
+  await page.click("#modal .dlg-foot button.danger, #modal .dlg-foot button.primary");
+  await loaded(1);
+  const same = await page.evaluate(() => document.querySelector("#c-load").dataset.same || "");
+  out.formKept = [same, await page.inputValue("#c-load [name=card]")];
+  // 5. Nuova Persona: la tessera passata nel suo campo non registra la persona, passa al campo dopo
+  await page.goto(`${config.base}/#persone`);
+  await page.click("#p-new");
+  await page.waitForSelector("#modal[open] [name=first_name]");
+  await page.fill("#modal [name=first_name]", "Carla");
+  await page.fill("#modal [name=last_name]", "Sala");
+  await page.focus("#modal [name=card]");
+  await swipe("04a1b2c6");
+  await page.waitForTimeout(400);
+  const focus = await page.evaluate(() => document.activeElement?.name || "");
+  out.newPerson = [out.persons, await open(), await page.inputValue("#modal [name=card]"), focus];
+  console.log(JSON.stringify(out));
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+"""
+
+
+@pytest.mark.skipif(not _has_playwright(), reason="serve Playwright per node")
+def test_a_card_swiped_with_the_focus_elsewhere_is_never_lost_or_misused(plant, ingress_server, controller):  # noqa: F811
+    """Il lettore da banco scrive dove c'è il fuoco e preme Invio. Nel campo del nome, su un pulsante della riga o in
+    una finestra, la tessera non rinomina, non riapre finestre e non registra persone: dove si può si carica, se no
+    si dice che non è stata usata."""
+    app = plant[3]
+    config = {"base": ingress_server, "headers": PAGE_ADMIN}
+    result = subprocess.run(["node", "-e", READER, json.dumps(config)], capture_output=True, text=True, timeout=180)
+    if result.returncode and "Executable doesn't exist" in result.stderr:
+        pytest.skip("Chromium di Playwright non installato")
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    assert out["errors"] == []
+    assert out["first"] == [["Ospite Blu", "04a1b2c3"]]
+    assert (out["nameAfter"], out["focusAfter"]) == ("Numero 1", "card")
+    assert out["focusOnRow"] is True
+    assert out["second"] == [["Numero 1", "04a1b2c4"], ["Ospite Blu", "04a1b2c3"]] and not out["dialogAfterSwipe"]
+    assert out["inDialog"][1:] == [True, False] and "04a1b2c5" not in out["inDialog"][0]
+    assert out["posts"] == [
+        {"card": "04a1b2c3", "printed_code": "Ospite Blu"},
+        {"card": "04a1b2c4", "printed_code": None},
+    ]
+    assert out["formKept"] == ["1", "04a10000"]
+    assert out["newPerson"][:3] == [0, True, "04a1b2c6"] and out["newPerson"][3] != "card"
+    assert all(p["name"] != "Carla Sala" for p in app.state.db.list_persons())
+    assert writes(controller) == []

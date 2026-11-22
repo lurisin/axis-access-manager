@@ -3577,7 +3577,7 @@ async function openPerson(id) {
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
         const code = val(dlg, "printed_code");
         if (code === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
-        return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code}}), code ? "Nome tessera salvato" : "Nome tessera tolto", "Salvataggio del nome tessera")) || false;
+        return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code, person_id: p.id}}), code ? "Nome tessera salvato" : "Nome tessera tolto", "Salvataggio del nome tessera")) || false;
       }}],
     });
     if (ok) reload();
@@ -3587,14 +3587,14 @@ async function openPerson(id) {
   });
   $$("[data-toggle]", sheet).forEach((b) => b.onclick = async () => {
     const enable = b.dataset.enabled !== "1";
-    if (await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable}}), enable ? "Tessera riattivata" : "Tessera sospesa",
+    if (await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable, person_id: p.id}}), enable ? "Tessera riattivata" : "Tessera sospesa",
       enable ? "Riattivazione della tessera sul controller" : "Sospensione della tessera sul controller")) reload();
   });
   $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
     const last = p.cards.length === 1;
     if (!await confirmBox("Togli Tessera", `Togliere la tessera <code>${esc(card.number)}</code> a <b>${esc(p.name)}</b>? Torna tra le tessere libere${card.missing_since ? "." : " e non apre più."}` + (last ? ` È l'unica: <b>${esc(p.name)}</b> resta in anagrafica senza tessere.` : ""), "Togli", true)) return;
-    if (await run(() => api(`api/cards/${card.id}`, {method: "DELETE"}), "Tessera tolta: ora è libera",
+    if (await run(() => api(`api/cards/${card.id}?person_id=${p.id}`, {method: "DELETE"}), "Tessera tolta: ora è libera",
       card.missing_since ? "Rimozione della tessera" : "Rimozione della tessera dal controller")) reload();
   });
   $("[data-del-person]", sheet).onclick = async () => {
@@ -3612,12 +3612,60 @@ async function openPerson(id) {
   if (!sheet.open) sheet.showModal();
 }
 
+// ---------- Lettore da banco ----------
+// Il lettore da banco scrive il codice come una tastiera velocissima e poi preme Invio. Con il fuoco altrove quell'Invio
+// premerebbe un pulsante o salverebbe una finestra, con il codice finito nel campo sbagliato: una raffica di cifre
+// esadecimali seguita subito da Invio è una tessera passata, non una persona che scrive
+const reader = {text: "", at: 0, target: null};
+const READER_GAP = 50, READER_CODE = /^[0-9a-f]{6,64}$/i;
+// Campo dopo nella stessa finestra (o lo stesso, se è l'ultimo)
+function nextField(el) {
+  const all = [...el.form.querySelectorAll("input:not([type=hidden]), select, textarea")].filter((x) => !x.disabled && x.offsetParent !== null);
+  (all[all.indexOf(el) + 1] || el).focus();
+}
+document.addEventListener("keydown", (e) => {
+  const now = performance.now(), same = e.target === reader.target && now - reader.at < READER_GAP;
+  if (e.key !== "Enter") {
+    if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) { reader.text = ""; return; }
+    Object.assign(reader, {text: (same ? reader.text : "") + e.key, at: now, target: e.target});
+    return;
+  }
+  const code = same && READER_CODE.test(reader.text) ? reader.text : "";
+  reader.text = "";
+  const field = e.target.closest?.("input[name=card]");
+  if (field) {
+    // In Carica Tessere Invio salva. Nelle finestre passa al campo dopo: il lettore non crea la persona né aggiunge la
+    // tessera prima che si sia scelto il resto
+    if (field.form?.id === "c-load" || !field.form) return;
+    e.preventDefault();
+    nextField(field);
+    return;
+  }
+  if (!code) return;
+  const typed = e.target.matches?.("input, textarea") ? e.target : null;
+  // In un campo di ricerca la tessera passata cerca, come il codice scritto a mano
+  if (typed && !typed.form) return;
+  e.preventDefault();
+  e.stopPropagation();
+  // Il codice è appena prima del cursore: si toglie da lì, il resto del campo resta com'era
+  const end = typed ? (typed.selectionStart ?? typed.value.length) : 0;
+  if (typed && typed.value.slice(end - code.length, end) === code) {
+    typed.setRangeText("", end - code.length, end, "end");
+    typed.dispatchEvent(new Event("input", {bubbles: true}));
+  }
+  const load = $("#c-load");
+  if (load && can("persone_modifica") && !$("dialog[open]")) {
+    $("[name=card]", load).value = code;
+    load.requestSubmit();
+  } else toast("Tessera non usata: clicca prima nel campo Codice Tessera", true);
+}, true);
+
 // ---------- Tessere ----------
 // Elenco delle tessere fisiche: Libere (solo nell'app, mai sul controller) o assegnate a una persona. Si caricano con il
 // lettore da banco, che scrive il Codice Tessera come una tastiera e manda Invio: il campo resta pronto per la
 // tessera dopo, anche mentre la precedente si sta ancora salvando
 const cardFilters = {q: "", state: ""};
-const cardsView = {cards: [], next: "", queue: [], saving: false};
+const cardsView = {cards: [], next: "", queue: [], saving: false, stale: false};
 // Per nome come si legge («Numero 2» prima di «Numero 10»), poi quelle senza nome per codice
 const compareCards = (a, b) => (!a.printed_code - !b.printed_code) || (a.printed_code || "").localeCompare(b.printed_code || "", "it", {numeric: true, sensitivity: "base"}) || a.number.localeCompare(b.number);
 function cardMatches(c) {
@@ -3656,8 +3704,9 @@ async function loadCards() {
 }
 async function refreshCards() {
   if (!$("#c-list")) return render();
-  // Con tessere ancora da salvare l'elenco lo aggiorna chi le salva
-  if (cardsView.saving || !await loadCards().then(() => true, () => false)) return;
+  // Con tessere ancora da salvare l'elenco lo rilegge chi le salva, alla fine
+  if (cardsView.saving) { cardsView.stale = true; return; }
+  if (!await loadCards().then(() => true, () => false)) return;
   paintCards();
 }
 // Esito dell'ultima tessera caricata, sotto il modulo: un errore resta finché non se ne carica un'altra
@@ -3687,11 +3736,11 @@ async function saveLoadedCards() {
     paintCards();
   }
   cardsView.saving = false;
+  if (cardsView.stale) { cardsView.stale = false; refreshCards(); }
 }
 async function viewCards(el) {
   try { await loadCards(); } catch (err) { el.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   if (!el.isConnected) return;
-  Object.assign(cardsView, {queue: [], saving: false});
   el.innerHTML = `<form class="card w-persone" id="c-load" autocomplete="off"><h2>Carica Tessere</h2>
       <div class="fields-2">${field("Codice Tessera", '<input name="card" class="mono" autocomplete="off" spellcheck="false" maxlength="80">', "Passa la tessera sul lettore da banco.")}
         ${field("Nome Tessera", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(cardsView.next)}">`, PRINTED_CODE_HINT)}</div>
@@ -3751,7 +3800,8 @@ async function viewCards(el) {
     } else if (await confirmBox("Elimina Tessera", `Eliminare per sempre la tessera ${shown}? Solo se è rotta o persa: per darla a un'altra persona basta assegnarla.`, "Elimina", true)) {
       done = await run(() => api(`api/cards/${card.id}/forever`, {method: "DELETE"}), "Tessera eliminata", "Eliminazione della tessera");
     }
-    if (done) { loadSummary(); render(); }
+    // Solo l'elenco: il modulo resta com'è, con la tessera che il lettore sta scrivendo
+    if (done) { loadSummary(); refreshCards(); }
   };
   // Con un mouse (la postazione con il lettore da banco) il campo è già pronto; sul telefono non si apre la tastiera
   if (can("persone_modifica") && matchMedia("(pointer: fine)").matches) code.focus();

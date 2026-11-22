@@ -250,6 +250,8 @@ class CardStateIn(BaseModel):
     # None: non cambia. Lo stato va sul controller, il Nome Tessera resta nell'app (vedi AccessService.update_card)
     enabled: bool | None = None
     printed_code: str | None = None
+    # La persona della scheda da cui si chiede: se la tessera non è più sua non si tocca
+    person_id: int | None = None
 
 
 class ScheduleRuleIn(BaseModel):
@@ -1465,15 +1467,20 @@ def create_app(
         if body.enabled is None and body.printed_code is None:
             raise HTTPException(400, "indica cosa cambiare della tessera")
         person = await request.app.state.service.update_card(
-            card_id, request_user(request), enabled=body.enabled, printed_code=body.printed_code
+            card_id,
+            request_user(request),
+            enabled=body.enabled,
+            printed_code=body.printed_code,
+            person_id=body.person_id,
         )
         # Tessera Libera: non ha una persona da restituire
         return person if person is not None else {"card": request.app.state.db.get_card(card_id)}
 
     @app.delete("/api/cards/{card_id}", dependencies=[need("persone_modifica")])
-    async def delete_card(card_id: int, request: Request) -> dict:
-        """Toglie la tessera alla persona: torna Libera nell'elenco delle tessere."""
-        person = await request.app.state.service.delete_card(card_id, request_user(request))
+    async def delete_card(card_id: int, request: Request, person_id: int | None = None) -> dict:
+        """Toglie la tessera alla persona: torna Libera nell'elenco delle tessere. person_id: la persona della scheda
+        da cui si chiede; se la tessera non è più sua non si tocca."""
+        person = await request.app.state.service.delete_card(card_id, request_user(request), person_id)
         return {"ok": True, "person": person}
 
     @app.get("/api/cards", dependencies=[need("persone")])

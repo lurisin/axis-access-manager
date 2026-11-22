@@ -385,10 +385,10 @@ async def test_import_and_a_free_card_change_it(plant, db, clock, controller):
 
     # Tessera Libera dell'elenco: caricarla non cambia nessuno, assegnarla e toglierla cambiano chi la riceve
     with watch(db, clock) as step:
-        loaded = plant.access.load_card("04ff", "admin", "Numero 7")
+        loaded = plant.access.load_card("04ff0000", "admin", "Numero 7")
     assert step.changed() == set()
     with watch(db, clock) as step:
-        await plant.access.add_card(anna["id"], "04ff", "admin")
+        await plant.access.add_card(anna["id"], "04ff0000", "admin")
     assert step.changed() == {anna["id"]}
     with watch(db, clock) as step:
         await plant.access.delete_card(loaded["id"], "admin")
