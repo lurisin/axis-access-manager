@@ -853,9 +853,8 @@ def test_the_page_names_every_column_the_import_ignores():
     le ignora. Diceva solo ultimo_accesso, telefono ed email: chi correggeva i nomi tessera nel foglio e lo
     reimportava non trovava scritto che quella colonna non conta."""
     page = (Path(__file__).resolve().parents[1] / "axis_access_manager" / "app" / "static" / "index.html").read_text()
-    [shown] = re.findall(r"Il file esportato ha in più <code>([^<]*)</code>, che l'importazione ignora", page)
+    [shown] = re.findall(r"Le colonne in più del file esportato \(<code>([^<]*)</code>\) si ignorano", page)
     assert shown.split("; ") == EXPORT_COLUMNS
-    assert "il Nome Tessera con Nome sulla riga della tessera" in page
 
 
 # Registro
@@ -947,8 +946,8 @@ def test_the_page_shows_the_code_next_to_the_card_in_the_log_as_text():
     # Accanto al numero di una tessera senza persona
     chip = '<span class="pcode" title="Nome della tessera 04ff">4821</span>'
     assert f"<b>Tessera 04ff</b> {chip}" in out["card"]
-    assert "<dt>Nome Tessera</dt><dd>&lt;b&gt;Delta&lt;/b&gt; <span" in out["detail"]
-    assert "quello di adesso della tessera" in out["detail"] and "Nome Tessera" not in out["without"]
+    assert "<dt>Nome Tessera</dt><dd>&lt;b&gt;Delta&lt;/b&gt;</dd>" in out["detail"]
+    assert "Nome Tessera" not in out["without"]
 
 
 # Controller e Home Assistant

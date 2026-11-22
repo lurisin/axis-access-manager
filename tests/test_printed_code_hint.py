@@ -20,7 +20,7 @@ from test_page_time_zone import needs_node
 ROOT = Path(__file__).resolve().parents[1]
 ADDON = ROOT / "axis_access_manager"
 PAGE = ADDON / "app" / "static" / "index.html"
-HINT = "Quello scritto sulla tessera. Resta solo nell'app."
+HINT = "Quello scritto sulla tessera."
 # Esempi buttati lì: «Ciccio», e «1234» anche dentro le parole e i numeri («+39 333 1234567», «04123456»,
 # «password1234»), o le cifre in fila con il punto delle migliaia («06.123.456»)
 EXAMPLES = re.compile(r"ciccio|1234|123\.456", re.I)

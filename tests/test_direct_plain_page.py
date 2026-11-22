@@ -230,7 +230,7 @@ def test_direct_access_pages_never_name_home_assistant(plant, ingress_server, mo
         assert "Orologio di Home Assistant" in text[name]["#notifiche"], name
         assert "Opzioni dell'Add-on" in text[name]["#impostazioni"], name
         assert "Controller, eventi MQTT, coperchio e ultimo evento." in text[name]["catalogo"], name
-        assert any("MQTT o add-on fermi in quel momento" in t for t in text[name].values()), name
+        assert any("senza foto né evento in Home Assistant" in t for t in text[name].values()), name
     assert "Database Ripartito Vuoto" in text["amministratore"]["#notifiche"]
     assert "Database dell'Add-on" in text["ingress"]["#impostazioni"]
     assert out["amministratore"]["pill"] == "App Non Raggiungibile"
