@@ -288,13 +288,13 @@ def test_every_write_point_of_the_page(client):
     assert codes(db)["04ac"] == ""
     # Tessere caricate nell'elenco, Libere: una senza codice, che lo prende quando si assegna, e una con il suo, che
     # resta se non se ne scrive un altro
-    assert post(client, "/api/cards", {"card": "04DD"}).status_code == 200
-    assert post(client, "/api/cards", {"card": "04EE", "printed_code": "4821"}).status_code == 200
-    body = {"first_name": "Anna", "last_name": "Bianchi", "card": "04DD", "printed_code": "A-07"}
+    assert post(client, "/api/cards", {"card": "04DD0000"}).status_code == 200
+    assert post(client, "/api/cards", {"card": "04EE0000", "printed_code": "4821"}).status_code == 200
+    body = {"first_name": "Anna", "last_name": "Bianchi", "card": "04DD0000", "printed_code": "A-07"}
     anna = post(client, "/api/persons", body).json()
     assert anna["cards"][0]["printed_code"] == "A-07"
-    response = post(client, f"/api/persons/{anna['id']}/cards", {"card": "04EE"})
-    assert response.status_code == 200 and codes(db)["04EE"] == "4821"
+    response = post(client, f"/api/persons/{anna['id']}/cards", {"card": "04EE0000"})
+    assert response.status_code == 200 and codes(db)["04EE0000"] == "4821"
     assert all(card["person_id"] is not None for card in db.all_cards())
     # Senza tessera il codice non ha dove stare
     response = post(client, "/api/persons", {"first_name": "Ugo", "printed_code": "Z9"})
