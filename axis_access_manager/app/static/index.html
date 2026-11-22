@@ -3583,35 +3583,37 @@ async function openPerson(id) {
   // Nome Tessera: solo nell'app, non scrive sul controller (veloce anche con il controller spento)
   $$("[data-card-code]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.cardCode));
-    await modal({
+    const ok = await modal({
       title: "Nome Tessera",
       body: `<p style="margin:0 0 12px">Tessera <code>${esc(card.number)}</code></p>${printedCodeField(card.printed_code || "", PRINTED_CODE_HINT + " Vuoto per toglierlo.")}`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
         const code = val(dlg, "printed_code");
         if (code === (card.printed_code || "")) { toast("Nessuna modifica"); return true; }
-        return (await run(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code, person_id: p.id}}), code ? "Nome tessera salvato" : "Nome tessera tolto", "Salvataggio del nome tessera")) || false;
+        return (await runPerson(() => api(`api/cards/${card.id}`, {method: "PATCH", body: {printed_code: code, person_id: p.id}}), code ? "Nome tessera salvato" : "Nome tessera tolto", "Salvataggio del nome tessera")) || false;
       }}],
     });
-    // Riletta comunque, chiusa la finestra: dopo un rifiuto la tessera può essere passata a un altro
-    reload();
+    // La tessera è passata a un altro: scheda riletta, poi il motivo
+    if (ok?.stale) reloadStale(ok.stale);
+    else if (ok) reload();
   });
   $$("[data-restore-card]", sheet).forEach((b) => b.onclick = async () => {
     if (await restoreMissing([Number(b.dataset.restoreCard)], p.id)) reload();
   });
   $$("[data-toggle]", sheet).forEach((b) => b.onclick = async () => {
     const enable = b.dataset.enabled !== "1";
-    // Riletta anche dopo un rifiuto: la tessera può essere passata a un altro
-    await run(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable, person_id: p.id}}), enable ? "Tessera riattivata" : "Tessera sospesa",
+    const result = await runPerson(() => api(`api/cards/${b.dataset.toggle}`, {method: "PATCH", body: {enabled: enable, person_id: p.id}}), enable ? "Tessera riattivata" : "Tessera sospesa",
       enable ? "Riattivazione della tessera sul controller" : "Sospensione della tessera sul controller");
-    reload();
+    if (result?.stale) reloadStale(result.stale);
+    else if (result) reload();
   });
   $$("[data-del-card]", sheet).forEach((b) => b.onclick = async () => {
     const card = p.cards.find((c) => c.id === Number(b.dataset.delCard));
     const last = p.cards.length === 1;
     if (!await confirmBox("Togli Tessera", `Togliere la tessera <code>${esc(card.number)}</code> a <b>${esc(p.name)}</b>? Torna tra le tessere libere${card.missing_since ? "." : " e non apre più."}` + (last ? ` È l'unica: <b>${esc(p.name)}</b> resta in anagrafica senza tessere.` : ""), "Togli", true)) return;
-    await run(() => api(`api/cards/${card.id}?person_id=${p.id}`, {method: "DELETE"}), "Tessera tolta: ora è libera",
+    const result = await runPerson(() => api(`api/cards/${card.id}?person_id=${p.id}`, {method: "DELETE"}), "Tessera tolta: ora è libera",
       card.missing_since ? "Rimozione della tessera" : "Rimozione della tessera dal controller");
-    reload();
+    if (result?.stale) reloadStale(result.stale);
+    else if (result) reload();
   });
   $("[data-del-person]", sheet).onclick = async () => {
     const what = p.cards.length ? `<b>${esc(p.name)}</b>? ${p.cards.length === 1 ? "La sua tessera torna libera e non apre più." : `Le sue ${p.cards.length} tessere tornano libere e non aprono più.`}` : `<b>${esc(p.name)}</b> dall'anagrafica? Non ha tessere.`;
@@ -3632,27 +3634,32 @@ async function openPerson(id) {
 // Il lettore da banco scrive il codice come una tastiera velocissima e poi preme Invio. Con il fuoco altrove quell'Invio
 // premerebbe un pulsante o salverebbe una finestra, con il codice finito nel campo sbagliato: una raffica di cifre
 // esadecimali seguita subito da Invio è una tessera passata, non una persona che scrive
-const reader = {text: "", at: -1e9, target: null, snap: null, prev: null, broken: false, done: -1e9, swallowed: -1e9};
+const reader = {text: "", at: -1e9, target: null, snap: null, prev: null, piece: 0, afterBusy: false, done: -1e9, swallowed: -1e9};
 // READER_GAP: tasti più vicini di così sono il lettore, non una persona. READER_AFTER: un secondo Invio (o Tab) così
 // vicino è dello stesso lettore. READER_SPLIT: una raffica che riparte così presto dopo un'altra è il resto della stessa
 const READER_GAP = 50, READER_AFTER = 200, READER_SPLIT = 300, READER_CODE = /^[0-9a-f]{6,64}$/i, HEX = /^[0-9a-f]+$/i;
+const READER_FIELD = "input:not([type=checkbox]):not([type=radio]):not([type=file]), select, textarea";
 // Campo dopo nella stessa finestra (o lo stesso, se è l'ultimo)
 function nextField(el) {
   const all = [...el.form.querySelectorAll("input:not([type=hidden]), select, textarea")].filter((x) => !x.disabled && x.offsetParent !== null);
   (all[all.indexOf(el) + 1] || el).focus();
 }
 // Il campo com'era prima della raffica, per rimetterlo così: anche una tendina (che con le lettere salta a un'altra
-// voce), una data, un'email o un numero, dove il testo non si può tagliare
+// voce), una data, un'email o un numero, dove il testo non si può tagliare. E gli altri campi della finestra: una
+// tendina che cambia ne ricalcola altri (la tipologia ricalcola le date di validità)
 function readerSnap(el) {
-  return el?.matches?.("input:not([type=checkbox]):not([type=radio]), select, textarea") ? {el, value: el.value, edited: el.dataset.edited} : null;
+  if (!el?.matches?.(READER_FIELD)) return null;
+  const scope = el.form || el.closest("dialog");
+  const others = scope ? [...scope.querySelectorAll("input, select, textarea")].filter((x) => x !== el && x.type !== "file").map((x) => ({x, value: x.value, checked: x.checked})) : [];
+  return {el, value: el.value, edited: el.dataset.edited, others};
 }
 function readerPutBack(snap) {
   if (!snap?.el.isConnected) return;
-  if (snap.el.value !== snap.value) {
-    snap.el.value = snap.value;
-    snap.el.dispatchEvent(new Event("input", {bubbles: true}));
-    snap.el.dispatchEvent(new Event("change", {bubbles: true}));
-  }
+  const fire = (x) => { x.dispatchEvent(new Event("input", {bubbles: true})); x.dispatchEvent(new Event("change", {bubbles: true})); };
+  if (snap.el.value !== snap.value) { snap.el.value = snap.value; fire(snap.el); }
+  // Poi gli altri: prima le caselle (che mostrano o nascondono campi), poi i valori, senza altri ricalcoli
+  for (const o of snap.others) if (o.x.isConnected && o.x.checked !== o.checked) { o.x.checked = o.checked; fire(o.x); }
+  for (const o of snap.others) if (o.x.isConnected && o.x.value !== o.value) o.x.value = o.value;
   // Il nome in Carica Tessere: la raffica non conta come nome scritto a mano
   if (snap.edited === undefined) delete snap.el.dataset.edited;
   else snap.el.dataset.edited = snap.edited;
@@ -3662,6 +3669,8 @@ document.addEventListener("keydown", (e) => {
   if (typeof e.key !== "string") return;
   // Il lettore che scrive le maiuscole manda Maiusc prima di ogni lettera: non interrompe la raffica
   if (e.key === "Shift" || e.key === "CapsLock") return;
+  // In una password nessuno passa tessere, e un programma che la scrive al posto della persona è veloce come il lettore
+  if (e.target.type === "password") return;
   // L'ora in cui il tasto è arrivato, non quella in cui la pagina lo legge: con la pagina occupata per un attimo i tasti
   // di una persona arriverebbero tutti insieme, come quelli del lettore
   const now = e.timeStamp, same = e.target === reader.target && now - reader.at < READER_GAP;
@@ -3672,15 +3681,23 @@ document.addEventListener("keydown", (e) => {
     e.stopPropagation();
     return;
   }
+  // L'Invio subito dopo tasti fermati durante un'operazione: la fine di una tessera passata intanto, non preme niente
+  if (e.key === "Enter" && !same && now - reader.swallowed < READER_GAP) {
+    e.preventDefault();
+    e.stopPropagation();
+    toast("Tessera letta a metà: passala di nuovo", true);
+    return;
+  }
   // Il Tab chiude la tessera solo per i lettori impostati così: dopo una raffica, non dopo una persona che scrive
   if (!(e.key === "Enter" || (e.key === "Tab" && same && READER_CODE.test(reader.text)))) {
     if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) { reader.text = ""; return; }
     if (!same) {
-      // Riparte subito dopo un pezzo scritto alla velocità del lettore (fuoco spostato) o dopo tasti fermati durante
-      // un'operazione: è il resto di una tessera letta a metà
-      const piece = reader.text.length >= 2 && HEX.test(reader.text) && now - reader.at < READER_SPLIT;
-      reader.broken = piece || now - reader.swallowed < READER_SPLIT;
-      reader.prev = piece ? reader.snap : null;
+      // Riparte su un altro campo subito dopo un pezzo scritto alla velocità del lettore (il fuoco si è spostato), o
+      // dopo tasti fermati durante un'operazione: è il resto di una tessera letta a metà
+      const moved = e.target !== reader.target && reader.text && HEX.test(reader.text) && now - reader.at < READER_SPLIT;
+      reader.piece = moved ? reader.text.length : 0;
+      reader.afterBusy = now - reader.swallowed < READER_SPLIT;
+      reader.prev = moved ? reader.snap : null;
       reader.snap = readerSnap(e.target);
       reader.text = "";
     }
@@ -3688,9 +3705,10 @@ document.addEventListener("keydown", (e) => {
     return;
   }
   const code = same && READER_CODE.test(reader.text) ? reader.text : "";
-  const broken = same && reader.broken && HEX.test(reader.text);
+  // Letta a metà: i pezzi insieme fanno una tessera (non due tasti veloci di una persona), o è il resto dopo un'operazione
+  const broken = same && HEX.test(reader.text) && ((reader.piece > 0 && reader.piece + reader.text.length >= 6) || reader.afterBusy);
   const {snap, prev} = reader;
-  Object.assign(reader, {text: "", snap: null, prev: null, broken: false});
+  Object.assign(reader, {text: "", snap: null, prev: null, piece: 0, afterBusy: false});
   if (code || broken) reader.done = now;
   const field = e.target.closest?.("input[name=card]");
   if (field && !broken) {
@@ -3729,7 +3747,7 @@ document.addEventListener("keydown", (e) => {
 // lettore da banco, che scrive il Codice Tessera come una tastiera e manda Invio: il campo resta pronto per la
 // tessera dopo, anche mentre la precedente si sta ancora salvando
 const cardFilters = {q: "", state: ""};
-const cardsView = {cards: [], next: "", queue: [], saving: false, stale: false, errors: []};
+const cardsView = {cards: [], next: "", queue: [], saving: false, stale: false, errors: [], reads: 0};
 // Per nome come si legge («Numero 2» prima di «Numero 10»), poi quelle senza nome per codice
 const compareCards = (a, b) => (!a.printed_code - !b.printed_code) || (a.printed_code || "").localeCompare(b.printed_code || "", "it", {numeric: true, sensitivity: "base"}) || a.number.localeCompare(b.number);
 function cardMatches(c) {
@@ -3771,8 +3789,11 @@ async function refreshCards() {
   // Con tessere ancora da salvare l'elenco lo rilegge chi le salva, alla fine: anche se il salvataggio è partito mentre
   // si leggeva (un elenco letto prima non ha la tessera appena salvata)
   if (cardsView.saving) { cardsView.stale = true; return; }
+  const read = ++cardsView.reads;
   let data;
   try { data = await api("api/cards"); } catch { return; }
+  // Superata da una lettura dopo, o partita prima di un salvataggio: non ha l'ultima tessera
+  if (read !== cardsView.reads) return;
   if (cardsView.saving) { cardsView.stale = true; return; }
   Object.assign(cardsView, {cards: data.cards, next: data.next_name});
   paintCards();
@@ -3794,8 +3815,9 @@ function cardNote(text, error = false) {
 // la tessera dopo
 async function saveLoadedCards() {
   if (cardsView.saving) return;
-  // L'elenco si rilegge alla fine
+  // L'elenco si rilegge alla fine; una lettura già partita non vale più
   Object.assign(cardsView, {saving: true, stale: true});
+  cardsView.reads++;
   while (cardsView.queue.length) {
     const body = cardsView.queue.shift();
     try {
@@ -3808,7 +3830,7 @@ async function saveLoadedCards() {
       cardNote(`Caricata: ${saved.card.printed_code || "senza nome"} · ${saved.card.number}`);
     } catch (err) {
       const text = `${body.card}: ${cap(err.message)}`;
-      cardsView.errors = [...cardsView.errors, text].slice(-5);
+      if (!cardsView.errors.includes(text)) cardsView.errors = [...cardsView.errors, text].slice(-5);
       cardNote(text, true);
     }
     paintCards();

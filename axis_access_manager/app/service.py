@@ -1856,7 +1856,8 @@ class AccessService:
         if person_id is not None and card["person_id"] != person_id:
             owner = self.db.get_person(card["person_id"]) if card["person_id"] is not None else None
             whose = f"è di {owner['name']}" if owner else "è libera"
-            raise ServiceError(f"la tessera {card['number']} ora {whose}: aggiorna la pagina")
+            # 409 come gli altri cambi della persona: la scheda si rilegge e mostra il motivo
+            raise PersonChanged(f"la tessera {card['number']} ora {whose}")
         return card
 
     # Porta

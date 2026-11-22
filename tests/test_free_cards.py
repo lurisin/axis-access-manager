@@ -494,13 +494,13 @@ def test_a_stale_person_sheet_does_not_touch_the_card_of_its_new_owner(client, c
     given = client.post(f"/api/persons/{bruno['id']}/cards", json={"card": "04a1b2c3"}, headers=ADMIN).json()
     assert [c["id"] for c in given["cards"]] == [stale]
     before = (json.dumps(controller.credentials, sort_keys=True), len(controller.calls))
-    wrong = "la tessera 04a1b2c3 ora è di Bruno Gallo: aggiorna la pagina"
+    wrong = "la tessera 04a1b2c3 ora è di Bruno Gallo"
     for answer in (
         client.patch(f"/api/cards/{stale}", json={"enabled": False, "person_id": anna["id"]}, headers=ADMIN),
         client.patch(f"/api/cards/{stale}", json={"printed_code": "Numero 5", "person_id": anna["id"]}, headers=ADMIN),
         client.delete(f"/api/cards/{stale}?person_id={anna['id']}", headers=ADMIN),
     ):
-        assert (answer.status_code, answer.json()["detail"]) == (400, wrong)
+        assert (answer.status_code, answer.json()["detail"]) == (409, wrong)
     assert (json.dumps(controller.credentials, sort_keys=True), len(controller.calls)) == before
     check(client, controller, {"04a1b2c3": ("", "Bruno Gallo")})
     # Dalla scheda giusta funziona, e tolta di nuovo la scheda vecchia la trova libera
@@ -512,7 +512,7 @@ def test_a_stale_person_sheet_does_not_touch_the_card_of_its_new_owner(client, c
     )
     assert client.delete(f"/api/cards/{stale}?person_id={bruno['id']}", headers=ADMIN).status_code == 200
     answer = client.delete(f"/api/cards/{stale}?person_id={anna['id']}", headers=ADMIN)
-    assert answer.json()["detail"] == "la tessera 04a1b2c3 ora è libera: aggiorna la pagina"
+    assert (answer.status_code, answer.json()["detail"]) == (409, "la tessera 04a1b2c3 ora è libera")
     check(client, controller, {"04a1b2c3": ("", "")})
 
 
@@ -780,6 +780,23 @@ const config = JSON.parse(process.argv[1]);
   await page.click("#modal .dlg-foot button.primary");
   await page.waitForTimeout(300);
   out.partial = [out.persons, await open()];
+  // 7. Tipologia con durata: la tessera passata sulla tendina non cambia la tipologia né le date scritte a mano
+  await page.click("#modal .dlg-foot button:has-text('Annulla')");
+  await closed();
+  await page.click("#p-new");
+  await page.waitForSelector("#modal[open] [name=category]");
+  await page.fill("#modal [name=first_name]", "Elsa");
+  await page.fill("#modal [name=card]", "04c0ff07");
+  await page.selectOption("#modal [name=category]", {label: "Ospite"});
+  await page.fill("#modal [name=valid_to]", "2027-03-03T10:00");
+  await page.focus("#modal [name=category]");
+  await swipe("f00dcafe");
+  await page.waitForTimeout(150);
+  out.timed = [
+    await page.$eval("#modal [name=category]", (s) => s.selectedOptions[0].textContent),
+    await page.inputValue("#modal [name=valid_to]"),
+    await page.inputValue("#modal [name=card]"),
+  ];
   console.log(JSON.stringify(out));
   await browser.close();
 })().catch((e) => { console.error(e); process.exit(1); });
@@ -794,6 +811,10 @@ def test_reader_swipes_never_change_a_choice_or_submit_a_dialog(plant, ingress_s
     ingress, app = plant[0], plant[3]
     for name in ("Anna Neri", "Bruno Gallo"):
         assert ingress.post("/api/persons", json={"name": name}, headers=PAGE_ADMIN).status_code == 200
+    rule = {"target": "door", "target_id": app.state.doors[0]["id"], "schedule": "standard_always"}
+    for name, days in (("Fornitore", 0), ("Ospite", 1)):
+        body = {"name": name, "color": "blue", "valid_days": days, "description": "", "rules": [rule]}
+        assert ingress.post("/api/categories", json=body, headers=PAGE_ADMIN).status_code == 200
     assert ingress.post("/api/cards", json={"card": "04b7c2d1"}, headers=PAGE_ADMIN).status_code == 200
     controller.attempts.clear()
     config = {"base": ingress_server, "headers": PAGE_ADMIN}
@@ -813,6 +834,7 @@ def test_reader_swipes_never_change_a_choice_or_submit_a_dialog(plant, ingress_s
     assert out["email"] == "dario@"
     assert out["newPerson"] == [0, True, "04c0ff05"]
     assert out["partial"] == [0, True]
+    assert out["timed"] == ["Ospite", "2027-03-03T10:00", "04c0ff07"]
     stored = {c["number"]: (c["printed_code"], c["person_id"]) for c in app.state.db.list_cards()}
     assert stored == {
         "04b7c2d1": ("Numero 1", bruno["id"]),
