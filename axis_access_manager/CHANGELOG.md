@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.29.1
+
+- **Testi più brevi.** Le spiegazioni sotto i campi, in cima alle pagine e nelle finestre sono accorciate o tolte: resta solo quello che serve per usare l'app. Le spiegazioni lunghe sono nel manuale (Documentazione dell'add-on).
+- **Formato del CSV.** In Impostazioni → Esporta e Importa le regole del file sono sotto «Formato del File», chiuso finché non lo apri.
+- Nessun cambiamento nel funzionamento.
+
 ## 0.29.0
 
 - **Pagina Tessere.** Prende il posto di «Da Registrare»: è l'elenco di tutte le tessere, ognuna **Libera** oppure assegnata a una persona. Una tessera libera non è sul controller e alla porta non apre.

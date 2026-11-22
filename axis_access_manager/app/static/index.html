@@ -1413,7 +1413,7 @@ function retryBox(message) {
     const dlg = $("#retry");
     dlg.innerHTML = `<div class="dlg"><div class="dlg-head"><h2>Il Controller Non Ha Risposto</h2></div>
       <div class="dlg-body"><p style="margin:0 0 8px">La modifica non è stata completata.</p><p class="muted small-text" style="margin:0">${esc(cap(message))}</p>
-        <p class="hint">Controlla che il controller sia acceso e in rete, poi riprova. Riprovare non crea doppioni.</p></div>
+        <p class="hint">Controller acceso e in rete? Riprova: non crea doppioni.</p></div>
       <div class="dlg-foot"><button type="button" data-r="0">Annulla</button><button type="button" class="primary" data-r="1">Riprova</button></div></div>`;
     // Arriva a metà di una modifica: il riquadro di attesa si toglie finché non si risponde, poi torna
     const finish = (value) => { dlg.close(); busyHold(false); resolve(value); };
@@ -1954,7 +1954,7 @@ function parseHash() {
 }
 function viewNoAccess(el) {
   el.innerHTML = store.me.user
-    ? `<div class="card"><div class="empty">${icon("block")}<br><b>Nessuna Sezione Disponibile</b><br>Il tuo utente non ha permessi in questa app: chiedi a un amministratore di assegnarti un ruolo.</div></div>`
+    ? `<div class="card"><div class="empty">${icon("block")}<br><b>Nessuna Sezione Disponibile</b><br>Chiedi a un amministratore di assegnarti un ruolo.</div></div>`
     : `<div class="alert err">${cap(appName())} non risponde: ricarica la pagina tra qualche secondo.</div>`;
   paintIcons(el);
 }
@@ -2244,7 +2244,7 @@ async function viewDashboard(el) {
     $("#top-edit").hidden = dash.editing;
     paintIcons($("#top-edit"));
     el.innerHTML = `
-      ${dash.editing ? `<div class="dash-bar"><p class="muted small-text" style="margin:0;flex:1 1 280px">Trascina ${icon("drag")} per spostare un riquadro e ${icon("resize")} nell'angolo per cambiarne larghezza e altezza. Togli con × quelli che non ti servono.</p>
+      ${dash.editing ? `<div class="dash-bar"><p class="muted small-text" style="margin:0;flex:1 1 280px">Trascina ${icon("drag")} per spostare, ${icon("resize")} per ridimensionare.</p>
            <button type="button" id="dash-add" ${missing.length ? "" : "disabled"}>${icon("plus")}Aggiungi Riquadro</button>
            <button type="button" class="ghost" id="dash-reset">Ripristina Predefinito</button>
            <button type="button" class="ghost" id="dash-cancel">Annulla</button>
@@ -2477,8 +2477,7 @@ function doorList(doors) {
       <span class="pill ${doorModeClass(d.mode)}"><span class="dot ${doorModeClass(d.mode)}"></span>${esc(doorModeLabel(d.mode))}</span>
       <span class="muted">${icon("arrow")}</span></a>`;
   return `${doors.length > 8 ? '<div class="toolbar"><input type="search" id="door-q" placeholder="Cerca porta o area" aria-label="Cerca porta"></div>' : ""}
-    ${groups.map((g) => `<section class="door-group">${groups.length > 1 ? `<h3 class="section-title">${icon("building")}${esc(g.title)}</h3>` : ""}<div class="card flush"><div class="list">${g.doors.map(row).join("")}</div></div></section>`).join("")}
-    <p class="hint">Tocca una porta per stato, dispositivi, chi può entrare ed eventi.</p>`;
+    ${groups.map((g) => `<section class="door-group">${groups.length > 1 ? `<h3 class="section-title">${icon("building")}${esc(g.title)}</h3>` : ""}<div class="card flush"><div class="list">${g.doors.map(row).join("")}</div></div></section>`).join("")}`;
 }
 async function viewDoorDetail(el, id, doors) {
   let d;
@@ -2501,7 +2500,7 @@ async function viewDoorDetail(el, id, doors) {
     // Ingressi del controller con le stesse icone dello schema in Impianti
     ...d.readers.map((r) => [icon(r.role ? INPUT_ICONS[r.role_key] || "chip" : "card"), r.name, readerMeta(r), off(r)]),
     d.intercom ? [icon("phone"), d.intercom, d.intercom_open_door ? `Videocitofono Hikvision · apre la porta con il relè ${d.intercom_relay}` : "Videocitofono Hikvision · registra le chiamate, non apre la porta", null] : null,
-    d.camera ? [icon("camera"), cameraName(d.camera), d.snapshot_on_granted ? "Telecamera · foto a ogni passaggio e su chiamate al citofono, allarmi e manomissioni" : "Telecamera · foto su accessi negati, aperture remote, uscite dai pulsanti, chiamate al citofono, allarmi e manomissioni", null] : null,
+    d.camera ? [icon("camera"), cameraName(d.camera), d.snapshot_on_granted ? "Telecamera · foto a ogni passaggio" : "Telecamera · foto su negati, allarmi e aperture", null] : null,
     [icon("chip"), d.controller.name || "Controller", ["Controller", d.controller.host].filter(Boolean).join(" · "), null],
   ].filter(Boolean);
   const kpi = (label, value, sub, color = "") => `<div class="card"><div class="label">${label}</div><div class="value" ${color ? `style="color:${color}"` : ""}>${value}</div><div class="sub">${sub}</div></div>`;
@@ -2521,7 +2520,7 @@ async function viewDoorDetail(el, id, doors) {
     </div>
     <div class="card" style="margin-bottom:16px"><h2>Stato della Porta</h2>
       ${doorStateRows(d).map(([label, [cls, value]]) => `<div class="dw-sys"><span class="dot ${cls}"></span><span class="grow" style="flex:1;min-width:0">${esc(label)}</span><b>${esc(value)}</b></div>`).join("")}
-      ${d.state?.known ? "" : '<p class="hint" style="margin-bottom:0">Il controller non risponde, o non è ancora stato letto: lo stato compare appena risponde.</p>'}</div>
+      ${d.state?.known ? "" : '<p class="hint" style="margin-bottom:0">Stato non ancora letto dal controller.</p>'}</div>
     <div class="grid two">
       <div class="card flush"><h2>Dispositivi<span class="spacer"></span>${can("impianti") && d.controller.id ? `<a class="small-text" href="#impianti/c${d.controller.id}">Configura</a>` : ""}</h2>
         <div class="list" style="margin-top:8px;padding-bottom:8px">${devices.map(([ic, name, meta, state]) => `<div class="item"><div class="ev-icon k-accent">${ic}</div><div class="grow"><div class="title">${esc(name)}</div><div class="meta">${esc(meta || "")}</div></div>${state ? `<span class="pill ${state[0]}">${esc(state[1])}</span>` : ""}</div>`).join("")}</div></div>
@@ -2969,7 +2968,7 @@ function renderPersonList() {
   const pick = $("#p-sort");
   if (pick && pick.value !== personFilters.sort) pick.value = personFilters.sort;
   if (!rows.length) {
-    morph(list, `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : can("persone_modifica") ? "Nessuna persona registrata: aggiungila con Nuova Persona, anche senza tessera." : "Nessuna persona registrata."}</div>`);
+    morph(list, `<div class="empty">${store.persons.length ? "Nessuna persona corrisponde ai filtri." : can("persone_modifica") ? "Nessuna persona registrata." : "Nessuna persona registrata."}</div>`);
     return;
   }
   const sorted = sortPersons(rows, personFilters.sort);
@@ -3089,7 +3088,7 @@ async function editPersonColumns() {
   }).join("");
   const saved = await modal({
     title: "Colonne dell'Elenco",
-    body: `<p class="hint p-cols-hint">Spunta le colonne da vedere e mettile in ordine trascinandole per ${icon("drag")} o con ↑ e ↓. Cognome e Nome restano sempre in vista; con poco spazio spariscono prima le ultime. La scelta vale per il tuo utente, su ogni computer e telefono.</p>
+    body: `<p class="hint p-cols-hint">Spunta le colonne e ordinale trascinando ${icon("drag")}.</p>
       <ol class="p-cols" aria-label="Colonne dell'elenco, in ordine">${rows(personColumnsChosen())}</ol>
       <p class="sr-only" aria-live="polite" data-live></p>`,
     actions: [
@@ -3222,7 +3221,7 @@ async function restoreMissing(ids, personId) {
   if (r.failed.length) {
     await modal({title: "Tessere Non Riscritte", body: `<p style="margin-top:0">${plural(r.restored, "tessera riscritta", "tessere riscritte")}, ${plural(r.failed.length, "non riuscita", "non riuscite")}:</p>
       <div class="list">${r.failed.map((f) => `<div class="item" style="padding-left:0"><div class="grow"><div class="title">${esc(f.person)} · <code>${esc(f.card)}</code></div><div class="meta">${esc(cap(f.error))}</div></div></div>`).join("")}</div>
-      <p class="hint">Se manca il profilo di accesso sul controller (dopo un reset), va ripristinata prima la configurazione del controller.</p>`, actions: [{label: "Chiudi", value: true}]});
+      <p class="hint">Dopo un reset del controller serve prima il Ripristino Completo.</p>`, actions: [{label: "Chiudi", value: true}]});
   } else toast(`${plural(r.restored, "tessera riscritta", "tessere riscritte")} sul controller`);
   loadSummary();
   await loadPersons();
@@ -3297,7 +3296,7 @@ const idFields = (p = {}) => `<div class="fields-2">${field("Matricola", `<input
 // Nome Tessera: quello scritto sopra la tessera fisica (sono tutte bianche), facoltativo e unico. Solo nell'app: mai sul
 // controller. Si scrive caricando la tessera, e dopo dall'elenco delle tessere o dalla scheda (Nome). Lo stesso
 // suggerimento ovunque, senza esempi inventati: ogni impianto scrive i suoi nomi
-const PRINTED_CODE_HINT = "Quello scritto sulla tessera. Resta solo nell'app.";
+const PRINTED_CODE_HINT = "Quello scritto sulla tessera.";
 // Tessere Libere dell'elenco: quelle da dare a una persona
 const freeCards = async () => (await api("api/cards")).cards.filter((c) => c.person_id === null);
 // Campo del Codice Tessera di una tessera da dare: passata sul lettore da banco, o scelta tra le Libere per nome
@@ -3340,12 +3339,12 @@ async function newPerson(card = "") {
       ${field("Ditta o Reparto", `<input name="company" autocomplete="off" maxlength="100" placeholder="facoltativo">`)}
       ${contactFields()}
       ${idFields()}
-      ${cardField(free, card, card ? "" : "Senza tessera la persona non apre nessuna porta: si aggiunge dopo dalla sua scheda.")}
+      ${cardField(free, card, card ? "" : "Senza tessera la persona non apre nessuna porta.")}
       <div id="f-card-code" ${card ? "" : "hidden"}>${printedCodeField()}</div>
-      ${field("Tipologia", categorySelect(), "Decide dove e quando apre la tessera, e la sua durata. Le tipologie si gestiscono in Anagrafica → Tipologie.")}
+      ${field("Tipologia", categorySelect(), "Decide dove, quando e per quanto apre la tessera.")}
       <div id="f-card-validity" ${card ? "" : "hidden"}>${validityFields()}</div>
       ${field("Note", `<textarea name="notes" maxlength="1000" placeholder="facoltative"></textarea>`)}
-      <p class="hint">La Foto della Persona si aggiunge dalla sua scheda, dopo averla registrata. Telefono, email, matricola, referente e foto restano solo nell'app.</p>`,
+      <p class="hint">La foto si aggiunge dopo, dalla scheda della persona.</p>`,
     actions: [{label: "Annulla", value: null}, {label: "Registra", kind: "primary", submit: true, onClick: async (dlg) => {
       const body = {first_name: val(dlg, "first_name"), last_name: val(dlg, "last_name"), card: val(dlg, "card"), company: val(dlg, "company"), phone: val(dlg, "phone"), email: val(dlg, "email"), employee_id: val(dlg, "employee_id"), referent: val(dlg, "referent"), notes: val(dlg, "notes"), category_id: Number(val(dlg, "category") || 0)};
       // Validità e Nome Tessera sono della tessera: senza, la durata della tipologia parte dalla prima tessera
@@ -3468,7 +3467,7 @@ async function openPerson(id) {
           <div class="grow">${c.printed_code ? `<div class="title" title="Nome Tessera">${esc(c.printed_code)}</div><div class="card-no mono">${esc(c.number)}</div>` : `<div class="title mono">${esc(c.number)}</div>`}<div class="meta">${cardState(c)}<span>registrata ${esc(fmtDate(c.created_at))}</span></div></div>
           <div class="row w-persone item-actions">${c.missing_since ? `<button type="button" class="small primary" data-restore-card="${c.id}">Riscrivi</button>` : `<button type="button" class="small" data-toggle="${c.id}" data-enabled="${c.enabled ? 1 : 0}">${c.enabled ? "Sospendi" : "Riattiva"}</button>`}
           <button type="button" class="small" data-card-code="${c.id}" aria-label="Nome della tessera ${esc(c.number)}" title="Nome Tessera">${icon("edit")}Nome</button>
-          <button type="button" class="small danger" data-del-card="${c.id}" data-refocus="[data-add-card]">Togli</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: la persona è in anagrafica ma non apre nessuna porta.</div>'}</div></div>
+          <button type="button" class="small danger" data-del-card="${c.id}" data-refocus="[data-add-card]">Togli</button></div></div>`).join("") || '<div class="empty">Nessuna tessera: non apre nessuna porta.</div>'}</div></div>
       <div class="card"><h2>Dati<span class="spacer"></span><button type="button" class="small w-persone" data-edit-data>${icon("edit")}Modifica</button></h2>
         <dl class="props"><dt>Foto</dt><dd>${photoCell}</dd>
           <dt>Nome</dt><dd>${esc(p.first_name || "—")}</dd><dt>Cognome</dt><dd>${esc(p.last_name || "—")}</dd>
@@ -3501,7 +3500,7 @@ async function openPerson(id) {
       title: "Accesso di " + p.name,
       body: p.cards.length ? `${field("Tipologia", categorySelect(p.category_id || 0), "Dove e quando apre la tessera.")}${validityFields(a.from, a.to)}<p class="hint">Vale per tutte le tessere della persona.${custom ? " Salvando, l'accesso torna quello della tipologia." : ""}</p>`
         // Senza tessere la validità non c'è: la prima tessera prende la durata della tipologia
-        : `${field("Tipologia", categorySelect(p.category_id || 0), "Dove e quando aprirà la tessera, e la sua durata da quando la aggiungi.")}`,
+        : `${field("Tipologia", categorySelect(p.category_id || 0), "Dove, quando e per quanto aprirà la tessera.")}`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
         const chosen = Number(val(dlg, "category"));
         // Senza tessere c'è solo la tipologia: la stessa di prima non cambia niente
@@ -3554,8 +3553,7 @@ async function openPerson(id) {
         ${field("Ditta o Reparto", `<input name="company" value="${esc(p.company || "")}" maxlength="100">`)}
         ${contactFields(p)}
         ${idFields(p)}
-        ${field("Note", `<textarea name="notes" maxlength="1000">${esc(p.notes || "")}</textarea>`)}
-        <p class="hint">Sul controller la persona ha il nome completo, «Nome Cognome»: se cambia, cambia anche lì. Telefono, email, matricola e referente restano solo nell'app.</p>`,
+        ${field("Note", `<textarea name="notes" maxlength="1000">${esc(p.notes || "")}</textarea>`)}`,
       actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
         const body = {company: val(dlg, "company"), phone: val(dlg, "phone"), email: val(dlg, "email"), employee_id: val(dlg, "employee_id"), referent: val(dlg, "referent"), notes: val(dlg, "notes")};
         const first = val(dlg, "first_name"), last = val(dlg, "last_name");
@@ -3574,7 +3572,7 @@ async function openPerson(id) {
       title: "Aggiungi Tessera a " + p.name,
       body: `<div class="fields-2">${cardField(free)}
         ${printedCodeField("", PRINTED_CODE_HINT + " Vuoto: resta quello che ha già.")}</div>
-        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata della tipologia ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."}</p>`,
+        <p class="hint">${p.cards.length ? "La nuova tessera avrà lo stesso accesso e la stessa validità." : category ? `La tessera avrà l'accesso e la durata di ${esc(category.name)}.` : "La tessera avrà l'accesso predefinito."}</p>`,
       actions: [{label: "Annulla", value: null}, {label: "Aggiungi", kind: "primary", submit: true, onClick: async (dlg) => !partialFreeCode(dlg, free) &&
         ((await run(() => api(`api/persons/${id}/cards`, {method: "POST", body: {card: val(dlg, "card"), printed_code: val(dlg, "printed_code")}}), "Tessera aggiunta", "Scrittura della tessera sul controller")) || false)}],
     });
@@ -3952,7 +3950,7 @@ const LOG_ROW_WHAT = {concesso: "accesso concesso", negato: "accesso negato", le
 // Origine dell'evento come la scrive l'app (db.SOURCE_LABELS); gli altri valori sono già nomi
 const LOG_SOURCES = {lettore: "Lettore", controller: "Controller", porta: "Porta"};
 // Dettagli da spiegare nel Dettaglio Evento (service.NOT_ENABLED)
-const DETAIL_HINTS = {"non abilitato": "la tipologia della persona non comprende questa porta"};
+const DETAIL_HINTS = {"non abilitato": "porta non compresa nella sua tipologia"};
 // Riga compatta: ora, colore dell'esito, chi, cosa, dove (place false: elenco di una porta sola, il dove è già nel titolo)
 function logRow(e, {place = true} = {}) {
   const [label, cls] = KINDS[e.kind] || [e.kind, "k-muted"];
@@ -3976,11 +3974,11 @@ function eventDetail(e) {
     e.person_name ? ["Persona", e.person_id && can("persone") ? `<a href="#persone/${e.person_id}">${esc(e.person_name)}</a>` : esc(e.person_name)] : null,
     e.card ? ["Tessera", `<code>${esc(e.card)}</code>`] : null,
     // Quello che la tessera ha adesso: il registro salva solo il numero
-    e.printed_code ? ["Nome Tessera", `${esc(e.printed_code)} <span class="muted small-text">· quello di adesso della tessera</span>`] : null,
+    e.printed_code ? ["Nome Tessera", esc(e.printed_code)] : null,
     e.detail ? ["Dettaglio", `${esc(e.detail)}${DETAIL_HINTS[e.detail] ? ` <span class="muted">· ${esc(DETAIL_HINTS[e.detail])}</span>` : ""}`] : null,
     e.snapshot_error ? ["Foto", `<span style="color:var(--warn)">non scattata: ${esc(e.snapshot_error)}</span>`] : null,
-    e.recovered ? ["Recuperato", hideHA() ? "Arrivato in ritardo dal registro interno del controller: senza foto"
-      : "Arrivato in ritardo dal registro interno del controller (MQTT o add-on fermi in quel momento): senza foto e senza evento in Home Assistant"] : null,
+    e.recovered ? ["Recuperato", hideHA() ? "Arrivato in ritardo: senza foto"
+      : "Arrivato in ritardo: senza foto né evento in Home Assistant"] : null,
     controllerEvent(e) ? ["Controller", esc(e.source || "Controller")] : e.source ? ["Origine", esc(LOG_SOURCES[e.source] || e.source)] : null,
   ].filter(Boolean);
   return `<div class="row" style="margin-bottom:10px"><span class="pill ${KIND_DOT[cls] || ""}">${esc(label)}</span><span class="spacer" style="flex:1"></span><span class="muted small-text">${esc(relTime(e.ts))}</span></div>
@@ -4046,7 +4044,7 @@ async function fillFaces(root) {
     const url = photoUrl({id: slot.dataset.face, photo: version}), name = slot.dataset.faceName;
     const camera = $("[data-snap-label]", root);
     slot.innerHTML = `<button type="button" class="ev-face-img" aria-label="Ingrandisci la Foto in Anagrafica di ${esc(name)}" title="Ingrandisci la foto"><img src="${esc(url)}" alt=""></button>
-      <div class="grow"><b>Foto in Anagrafica</b><div class="muted small-text">${camera ? "Quella della scheda della persona: confrontala con la foto della telecamera." : "Quella della scheda della persona."}</div></div>`;
+      <div class="grow"><b>Foto in Anagrafica</b></div>`;
     $("button", slot).onclick = (e) => { e.stopPropagation(); showImage(url, `Foto in Anagrafica · ${name}`); };
     slot.hidden = false;
     if (camera) camera.hidden = false;
@@ -4164,7 +4162,7 @@ function logRows(events, {place = true} = {}) {
 }
 function renderLog() {
   logDay = plantDay();
-  $("#l-list").innerHTML = logEvents.length ? logRows(logEvents) : `<div class="empty">${logFilters.view === "controllo" && !logFilters.q && !logFilters.person_id ? "Niente da controllare: nessun accesso negato, nessuna tessera sconosciuta e nessun allarme." : "Nessun evento con questi filtri."}</div>`;
+  $("#l-list").innerHTML = logEvents.length ? logRows(logEvents) : `<div class="empty">${logFilters.view === "controllo" && !logFilters.q && !logFilters.person_id ? "Niente da controllare." : "Nessun evento con questi filtri."}</div>`;
 }
 async function refreshLog() {
   // Solo se si guarda la cima del registro senza ricerca né date, e non mentre arriva un'altra pagina
@@ -4278,7 +4276,7 @@ async function viewCategories(el, tabs = personTabs("tipologie")) {
     return;
   }
   const cats = store.categories;
-  body.innerHTML = `${rulesStaleBox([...new Set([groupsError, placesError].filter(Boolean))].join("; "))}<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">La tipologia dice chi è la persona (manutentore, pulizie, ospite…) e decide dove e quando apre la sua tessera, e per quanto tempo. Un'area o una struttura comprende tutte le sue porte, anche quelle aggiunte dopo.</p>
+  body.innerHTML = `${rulesStaleBox([...new Set([groupsError, placesError].filter(Boolean))].join("; "))}<div class="toolbar">
     <button type="button" class="primary w-regole" id="c-new">${icon("plus")}Nuova Tipologia</button></div>
     ${cats.length ? `<div class="grid cards">${cats.map((c) => `<div class="card" style="margin:0">
       <h2><span class="swatch c-${esc(c.color)}"></span>${esc(c.name)}<span class="spacer"></span>${c.default ? '<span class="pill accent">Predefinita</span>' : ""}</h2>
@@ -4290,7 +4288,7 @@ async function viewCategories(el, tabs = personTabs("tipologie")) {
       <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-c-edit="${c.id}">${icon("edit")}Modifica</button>
         ${c.default ? "" : `<button type="button" class="small" data-c-default="${c.id}">Rendi Predefinita</button><button type="button" class="small danger" data-c-del="${c.id}">Elimina</button>`}</div>
     </div>`).join("")}</div>`
-    : `<div class="card"><div class="empty">${icon("card")}<br>Nessuna tipologia.<br>Esempi: <b>Manutentore</b> ovunque sempre, <b>Pulizie</b> nelle camere 07:00–15:00, <b>Ospite</b> con durata di 1 giorno.</div></div>`}`;
+    : `<div class="card"><div class="empty">${icon("card")}<br>Nessuna tipologia.</div></div>`}`;
   paintIcons(body);
   // Luoghi per le righe: strutture, aree e porte del controller in uso
   const placeOptions = (selected) => {
@@ -4326,7 +4324,7 @@ async function viewCategories(el, tabs = personTabs("tipologie")) {
       <div class="field"><label>Colore</label><div class="colors">${Object.entries(COLORS).map(([k, label]) => `<label title="${label}"><input type="radio" name="color" value="${k}" ${(c?.color || "blue") === k ? "checked" : ""}><span class="swatch c-${k}"></span></label>`).join("")}</div></div>
       <div class="field"><label>Dove e Quando</label><div id="c-rules"></div>
         <button type="button" class="small" id="c-add" style="margin-top:8px">${icon("plus")}Aggiungi Riga</button>
-        <p class="hint">Ogni riga apre una porta, un'area o un'intera struttura nella fascia scelta. Una struttura comprende tutte le sue aree: per tenere fuori i locali tecnici, scegli le singole aree.</p></div>
+        <p class="hint">Una struttura comprende tutte le sue aree, locali tecnici compresi.</p></div>
       ${field("Durata della Tessera", `<input type="number" name="valid_days" min="0" max="3650" value="${c?.valid_days || 0}">`, "In giorni dalla registrazione. 0 = illimitata.")}
       ${field("Descrizione", `<input name="description" maxlength="200" value="${esc(c?.description || "")}" placeholder="facoltativa">`)}
       ${c && c.persons ? `<p class="hint">Le modifiche valgono subito per ${c.persons === 1 ? "la persona" : `le ${c.persons} persone`} con questa tipologia${c.custom ? ", tranne chi ha un accesso personalizzato" : ""}.</p>` : ""}`;
@@ -4372,7 +4370,7 @@ async function viewCategories(el, tabs = personTabs("tipologie")) {
 }
 // Sempre (s.always) fa da fascia dei profili con fasce diverse per porta e dei pulsanti: tutti i giorni, anche nei festivi
 const SCHEDULE_ALWAYS = [{days: DAYS.map((d) => d[0]), start: "00:00", end: "24:00"}];
-const SCHEDULE_ALWAYS_NOTE = "Fascia usata dall'app per le tipologie con fasce diverse per porta e per i pulsanti: resta valida sempre, anche nei festivi.";
+const SCHEDULE_ALWAYS_NOTE = "Fascia di sistema: si cambiano solo nome e descrizione.";
 // Cambiata da una versione precedente: va rimessa com'era. Una definizione che l'editor non sa leggere (di fabbrica o
 // di un altro strumento) non la si giudica: chi la modifica la riscrive comunque valida sempre
 const scheduleAlwaysChanged = (s) => s.holidays || (s.readable && !DAYS.every(([code]) => s.rules.some((r) => r.days.includes(code) && r.start === "00:00" && r.end === "24:00")));
@@ -4380,14 +4378,14 @@ function viewSchedules(body, stale = "") {
   const hiddenCount = store.schedules.filter((s) => s.hidden).length;
   const list = store.schedules.filter((s) => showHidden.schedule || !s.hidden);
   const badge = (s) => s.managed ? '<span class="pill accent">Creata Qui</span>' : s.standard ? '<span class="pill">Predefinita del Controller</span>' : '<span class="pill">Esterna</span>';
-  body.innerHTML = `${rulesStaleBox(stale)}<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Le fasce orarie dicono quando si entra: le usano le righe Dove e Quando delle tipologie. Tutte si possono modificare; quelle che non ti servono puoi nasconderle.</p>
+  body.innerHTML = `${rulesStaleBox(stale)}<div class="toolbar">
     ${hiddenToggle("schedule", hiddenCount)}<button type="button" class="primary w-regole" id="s-new">${icon("plus")}Nuova Fascia</button></div>
     <div class="grid cards">${list.map((s) => `<div class="card ${s.hidden ? "is-hidden" : ""}" style="margin:0">
       <h2>${esc(s.name)}<span class="spacer"></span>${badge(s)}${s.hidden ? '<span class="pill">Nascosta</span>' : ""}</h2>
       ${s.description ? `<p class="muted small-text" style="margin:-8px 0 10px">${esc(s.description)}</p>` : ""}
       ${s.always && scheduleAlwaysChanged(s) ? `<div class="alert stack" style="margin:0 0 10px">${icon("alert")}<div class="grow"><b>Fascia da Ripristinare</b>Deve valere tutti i giorni 00:00–24:00, anche nei festivi: com'è ora, le tipologie con fasce diverse per porta e i pulsanti possono non aprire quando dovrebbero.</div><button type="button" class="small primary w-regole" data-s-restore="${esc(s.token)}">Ripristina</button></div>` : ""}
-      ${s.readable ? weekPreview(s.rules) + `<p class="small-text" style="margin:8px 0 0">${esc(s.summary)}</p>` : `<p class="muted small-text">Definita con regole che l'editor non sa mostrare: se la modifichi la riscrivi da capo.</p>`}
-      <p class="hint">${s.holidays ? "Non vale nei giorni festivi." : "Vale anche nei festivi."}${s.always ? " L'app la usa per le tipologie con fasce diverse per porta e per i pulsanti." : ""}${s.groups.length ? ` Usata da: ${esc([...new Set(s.groups)].join(", "))}.` : ""}</p>
+      ${s.readable ? weekPreview(s.rules) + `<p class="small-text" style="margin:8px 0 0">${esc(s.summary)}</p>` : `<p class="muted small-text">Regole non mostrabili: salvandola la riscrivi da capo.</p>`}
+      <p class="hint">${s.holidays ? "Non vale nei giorni festivi." : "Vale anche nei festivi."}${s.groups.length ? ` Usata da: ${esc([...new Set(s.groups)].join(", "))}.` : ""}</p>
       <div class="row w-regole" style="margin-top:12px"><button type="button" class="small" data-s-edit="${esc(s.token)}">${icon("edit")}Modifica</button>
         <button type="button" class="small ghost" data-s-hide="${esc(s.token)}" data-hidden="${s.hidden ? 1 : 0}">${s.hidden ? "Mostra" : "Nascondi"}</button>
         ${s.groups.length || s.always ? "" : `<button type="button" class="small danger" data-s-del="${esc(s.token)}">Elimina</button>`}</div>
@@ -4415,8 +4413,8 @@ async function scheduleEditor(s) {
   let rules = s ? s.rules.map((r) => ({...r, days: [...r.days]})) : [{days: ["MO", "TU", "WE", "TH", "FR"], start: "08:00", end: "18:00"}];
   // Di Sempre si cambiano solo nome e descrizione
   const fixed = Boolean(s?.always);
-  const intro = fixed ? `${SCHEDULE_ALWAYS_NOTE}${scheduleAlwaysChanged(s) ? " Salvando la rimetti valida tutti i giorni 00:00–24:00." : ""}`
-    : s && !s.managed ? `${s.standard ? "È una fascia predefinita del controller." : "Questa fascia è stata creata fuori dall'app."}${s.readable ? " Salvando la riscrivi con gli intervalli qui sotto e da quel momento la gestisce l'app." : " Le regole attuali non si possono mostrare: scrivi gli intervalli da usare. Da quel momento la gestisce l'app."}${s.groups.length ? ` Vale subito per: ${esc(s.groups.join(", "))}.` : ""}` : "";
+  const intro = fixed ? `${SCHEDULE_ALWAYS_NOTE}${scheduleAlwaysChanged(s) ? " Salvando torna valida sempre." : ""}`
+    : s && !s.managed ? `${s.readable ? "Fascia del controller: salvando la riscrivi e la gestisce l'app." : "Regole non mostrabili: scrivi gli intervalli da usare."}${s.groups.length ? ` Vale subito per: ${esc(s.groups.join(", "))}.` : ""}` : "";
   const renderRules = (dlg) => {
     $("#rules", dlg).innerHTML = rules.map((r, i) => `<div class="rule-row" data-i="${i}">
       <span class="days">${DAYS.map(([code, letter, name]) => `<button type="button" class="${r.days.includes(code) ? "on" : ""}" data-day="${code}" title="${name}">${letter}</button>`).join("")}</span>
@@ -4475,11 +4473,11 @@ async function viewHolidays(body) {
   try { list = await api("api/holidays"); } catch (err) { body.innerHTML = `<div class="alert err">${esc(cap(err.message))}</div>`; return; }
   if (!body.isConnected) return;
   const year = Number(plantDay().slice(0, 4));
-  body.innerHTML = `<p class="muted" style="margin-top:0">Nei giorni festivi non valgono le fasce orarie gestite dall'app con l'opzione Non Valida nei Giorni Festivi. Le fasce mai modificate qui non cambiano.</p>
+  body.innerHTML = `<p class="muted" style="margin-top:0">Valgono solo per le fasce con Non Valida nei Giorni Festivi.</p>
     <div class="card w-regole"><h2>Aggiungi Festività</h2>
       <form class="row" id="h-form"><input type="date" name="day" required><input name="name" placeholder="Nome (es. Patrono)" maxlength="60" style="flex:1;min-width:160px">
       <label class="row small-text"><input type="checkbox" name="yearly" checked> Ogni Anno</label><button type="submit" class="primary">Aggiungi</button></form>
-      <p class="hint">Oppure <button type="button" class="small" id="h-it">Aggiungi le Festività Nazionali Italiane</button> (fisse ogni anno, Pasquetta ${year} e ${year + 1}).</p></div>
+      <p class="hint">Oppure <button type="button" class="small" id="h-it">Aggiungi le Festività Nazionali Italiane</button></p></div>
     <div class="card flush"><div class="list">${list.length ? list.map((h) => `<div class="item">
       <div class="ev-icon k-accent">${icon("clock")}</div>
       <div class="grow"><div class="title">${esc(h.name || "Festività")}</div><div class="meta">${esc(fmtDay(h.day, h.yearly ? {day: "numeric", month: "long"} : {day: "numeric", month: "long", year: "numeric"})) + (h.yearly ? " · ogni anno" : "")}</div></div>
@@ -4716,7 +4714,7 @@ async function viewNotificationSettings(body) {
   let n;
   try { n = await api("api/notifications"); } catch (err) { body.innerHTML = errorBox("Notifiche Non Leggibili", err); return; }
   body.innerHTML = `<div class="card flush"><h2>${icon("bell")}Quali Notifiche Ricevere</h2>
-    <p class="muted small-text" style="margin:0 18px 8px">Le attive compaiono in Da Gestire e sulla campanella, per tutti gli utenti.</p>
+    <p class="muted small-text" style="margin:0 18px 8px">Valgono per tutti gli utenti.</p>
     <div class="list two-col">${n.types.map((t) => `<div class="item"><div class="ev-icon k-accent">${icon(NOTIF_ICONS[t.key] || "bell")}</div>
       <div class="grow"><div class="title">${esc(t.name)}</div><div class="meta">${esc(t.description)}</div></div>
       <select data-level="${esc(t.key)}" style="width:auto">${Object.entries(n.levels).map(([k, label]) => `<option value="${k}" ${k === t.level ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></div>`).join("")}</div></div>`;
@@ -4770,7 +4768,7 @@ async function viewInstallation(el, sub) {
 // Elenco dei controller per struttura e area: tocca la scheda per lo schema, l'ingranaggio per la connessione
 async function viewControllers(body, data) {
   if (!data.controllers.length) {
-    body.innerHTML = `<div class="card"><div class="empty">${icon("chip")}<br><b>Nessun Controller Configurato</b><br>Aggiungi il controller Axis con indirizzo, utente e password: poi colleghi lettori e porte.<br><br>
+    body.innerHTML = `<div class="card"><div class="empty">${icon("chip")}<br><b>Nessun Controller Configurato</b><br>Aggiungi il controller con indirizzo, utente e password.<br><br>
       <button type="button" class="primary" id="ctrl-new">${icon("plus")}Aggiungi Controller</button></div></div>`;
     $("#ctrl-new").onclick = () => controllerEditor();
     return;
@@ -4795,7 +4793,7 @@ async function viewControllers(body, data) {
     </div>`;
   const full = data.controllers.length >= data.max_controllers;
   body.innerHTML = `
-    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Tocca un controller per collegare lettori e porte e per la programmazione. L'ingranaggio apre indirizzo, credenziali e posizione.</p>
+    <div class="toolbar">
       ${full ? "" : `<button type="button" class="primary" id="ctrl-new">${icon("plus")}Aggiungi Controller</button>`}</div>
     ${Object.entries(groups).map(([label, list]) => `<h2 class="section-title">${esc(label)}</h2><div class="card flush"><div class="list">${list.map(row).join("")}</div></div>`).join("")}
     ${full ? '<p class="hint">Per ora l\'app gestisce un controller; pagine e dati sono già pronti per averne di più.</p>' : ""}`;
@@ -4872,7 +4870,7 @@ function identityAlert(ctrl) {
   return `<div class="alert err stack">${icon("alert")}<div class="grow"><b>Controller Cambiato</b>All'indirizzo <code>${esc(ctrl.host)}</code> risponde un apparecchio diverso da quello memorizzato. Finché non confermi, l'app non scrive niente sul controller e non rilegge le tessere.
       <div class="table-wrap" style="margin-top:8px"><table class="table"><thead><tr><th></th><th>Memorizzato</th><th>Trovato</th></tr></thead><tbody>
         ${row("Numero di Serie", k.serial, h.serial)}${row("Modello", k.model, h.model)}${row("Certificato", (k.cert_fingerprint || "").slice(0, 23), (h.cert_fingerprint || "").slice(0, 23))}</tbody></table></div>
-      <p class="hint" style="margin-bottom:0">Conferma solo se il controller è stato davvero sostituito o resettato. Dopo la conferma le tessere che non trova restano segnate in Anagrafica, da riscrivere o togliere.</p></div>
+      <p class="hint" style="margin-bottom:0">Conferma solo se il controller è stato davvero sostituito o resettato.</p></div>
     ${store.me.admin ? `<button type="button" class="small primary" data-accept-identity="${ctrl.id}">Conferma Nuovo Controller</button>` : '<span class="small-text muted">Serve un amministratore</span>'}</div>`;
 }
 function bindIdentityAlert(root, ctrl) {
@@ -4891,17 +4889,17 @@ function areaSelect(sites, selected = 0, name = "area_id") {
 
 // sites null: strutture non leggibili. Il campo resta fermo e l'area non si manda, così non cambia
 function controllerAreaField(ctrl, sites) {
-  const where = 'Porte e lettori del controller stanno qui. Si creano in <a href="#impianti/strutture">Strutture e Aree</a>.';
+  const where = 'Le aree si creano in <a href="#impianti/strutture">Strutture e Aree</a>.';
   if (!sites) {
     return field("Struttura e Area", `<select name="area_id" disabled><option>${esc(ctrl ? placeOf(ctrl.place) || "Senza Area" : "Area Predefinita")}</option></select>`,
-      `Strutture e aree non leggibili: ${ctrl ? "l'area resta quella di adesso" : "l'app sceglie quella predefinita, che puoi cambiare dopo dall'ingranaggio del controller"}.`);
+      `Strutture e aree non leggibili: ${ctrl ? "resta quella di adesso" : "si usa la predefinita"}.`);
   }
   if (ctrl) return field("Struttura e Area", areaSelect(sites, ctrl.area_id || 0), where);
   // Controller nuovo: l'area che gli dà l'app se non se ne sceglie un'altra (installation._default_area)
   const areas = sites.filter((x) => x.id).flatMap((x) => x.areas);
   if (!areas.length) {
     return field("Struttura e Area", '<select name="area_id"><option value="">Struttura Principale › Generale</option></select>',
-      'Porte e lettori del controller stanno qui. Non ci sono ancora strutture: l\'app crea questa, da rinominare in <a href="#impianti/strutture">Strutture e Aree</a>.');
+      'Nessuna struttura: l\'app crea questa, da rinominare in <a href="#impianti/strutture">Strutture e Aree</a>.');
   }
   return field("Struttura e Area", areaSelect(sites, areas.length === 1 ? areas[0].id : 0), where);
 }
@@ -4926,7 +4924,7 @@ function controllerConnectionFields(ctrl) {
     <div class="fields-2">${field("Utente", `<input name="username" autocomplete="off" value="${esc(ctrl?.username || "")}">`)}
     ${field("Password", `<input name="password" type="password" autocomplete="new-password" placeholder="${ctrl?.has_password ? "lascia vuoto per non cambiarla" : ""}">`,
       ctrl?.has_password ? "Scrivi di nuovo la password se cambi indirizzo o utente." : "")}</div>
-    ${field("Prefisso MQTT", `<input name="mqtt_topic_prefix" class="mono" value="${esc(ctrl?.mqtt_topic_prefix || "")}" placeholder="es. accessi/controller_ingresso">`, "Lo stesso impostato nel client MQTT del controller: eventi sotto &lt;prefisso&gt;/eventi/…, stato del controller su &lt;prefisso&gt;/stato (online o offline).")}
+    ${field("Prefisso MQTT", `<input name="mqtt_topic_prefix" class="mono" value="${esc(ctrl?.mqtt_topic_prefix || "")}" placeholder="es. accessi/controller_ingresso">`, "Lo stesso del client MQTT del controller.")}
     <div class="field inline"><input type="checkbox" name="verify_ssl" id="f-ssl" ${ctrl?.verify_ssl ? "checked" : ""}><label for="f-ssl">Verifica Certificato HTTPS</label></div>
     <p class="hint" style="margin-top:-8px">Lasciala disattivata se il controller usa il certificato di fabbrica.</p>
     <div class="row"><button type="button" class="small" id="ctrl-test">${icon("refresh")}Prova Collegamento</button><span id="ctrl-test-result" class="small-text"></span></div>`;
@@ -5100,25 +5098,25 @@ const INPUT_ICONS = {"": "chip", rex: "arrow", intercom: "phone", door_monitor: 
 const DOOR_INPUT_ROLES = ["rex", "intercom", "door_monitor", "door_contact"];
 const CONTACT_INPUT_ROLES = ["door_monitor", "door_contact"];
 const INPUT_ROLE_HINTS = {
-  "": "L'ingresso non fa niente; resta solo lo stato in Home Assistant, se il controller lo manda.",
-  rex: "Chiede l'apertura della porta, come un lettore in uscita: per il pulsante della portineria o di uscita. Nel registro le aperture compaiono come Uscita, con il nome dell'ingresso.",
-  intercom: "Il contatto del relè del citofono: apre la porta anche con Home Assistant spento. Nel registro le aperture compaiono come Apertura Remota, con il nome dell'ingresso.",
-  door_monitor: "Contatto della porta gestito dal controller, con gli allarmi di porta forzata e aperta troppo a lungo. Il controller tiene la porta Aperta a Tempo finché non si richiude.",
-  door_contact: "Contatto della porta letto solo dall'app, senza allarmi: Contatto in Home Assistant. La serratura si riblocca sempre a fine tempo.",
-  alarm: "Nessuna azione sulla porta: lo stato arriva in Home Assistant con il nome scelto.",
+  "": "",
+  rex: "Pulsante di uscita o della portineria: apre la porta.",
+  intercom: "Relè del citofono: apre anche con Home Assistant spento.",
+  door_monitor: "Con allarmi; la porta resta Aperta a Tempo finché non si richiude.",
+  door_contact: "Senza allarmi; la serratura si riblocca sempre a fine tempo.",
+  alarm: "Solo stato in Home Assistant.",
 };
 // Al banco (firmware 10.12) gli AUX usati come pulsante sono rimasti attivi dopo la prima pressione fino al riavvio
 const inputRoleHint = (io, role) => INPUT_ROLE_HINTS[role] || "";
 // Cosa vuol dire il tipo di contatto scelto ("no" o "nc") per il ruolo dell'ingresso
-const DOOR_CONTACT_HINTS = {no: "Normalmente Aperto: con la porta chiusa il contatto è aperto e si chiude quando la porta si apre.",
-  nc: "Normalmente Chiuso: con la porta chiusa il contatto è chiuso e si apre quando la porta si apre."};
+const DOOR_CONTACT_HINTS = {no: "Con la porta chiusa il contatto è aperto.",
+  nc: "Con la porta chiusa il contatto è chiuso."};
 const CONTACT_HINTS = {
-  door_contact: {no: DOOR_CONTACT_HINTS.no + " Consigliato Normalmente Chiuso.", nc: DOOR_CONTACT_HINTS.nc + " Consigliato: un cavo tagliato risulta porta aperta."},
+  door_contact: {no: DOOR_CONTACT_HINTS.no + " Meglio Normalmente Chiuso.", nc: DOOR_CONTACT_HINTS.nc + " Consigliato."},
   door_monitor: DOOR_CONTACT_HINTS,
-  rex: {no: "Normalmente Aperto: il contatto si chiude quando si preme il pulsante o scatta il relè.",
-    nc: "Normalmente Chiuso: il contatto si apre quando si preme il pulsante o scatta il relè."},
-  alarm: {no: "Normalmente Aperto: acceso in Home Assistant con il contatto chiuso.",
-    nc: "Normalmente Chiuso: acceso in Home Assistant con il contatto aperto.",
+  rex: {no: "Il contatto si chiude alla pressione.",
+    nc: "Il contatto si apre alla pressione."},
+  alarm: {no: "Acceso con il contatto chiuso.",
+    nc: "Acceso con il contatto aperto.",
     "": "Acceso come lo dice il controller."},
 };
 const contactHint = (role, contact = "no") => role === "" ? "Con questo ruolo la modalità non ha effetto."
@@ -5185,7 +5183,7 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
           <span class="ev-icon k-muted">${icon("door")}</span><span class="grow"><b>${esc(doorName(d))}</b><span class="sch-meta">${appDoor(d.token) ? (d.name && d.name !== doorName(d) ? esc(`sul controller: ${d.name}`) : "") : "non gestita dall'app"}</span></span></button>`).join("")}</div>
         <svg class="sch-lines" id="sch-svg" aria-hidden="true"></svg><div id="sch-gears"></div>
       </div>` : '<div class="empty">Sul controller non ci sono lettori o porte da collegare.</div>'}
-      <p class="hint">Ogni filo è un lettore o un ingresso che comanda una porta. I collegamenti dei lettori si scrivono sul controller solo con Salva; quelli degli ingressi con Scrivi sul Controller nella loro finestra. Ogni modifica si può annullare dallo Storico Modifiche.</p>
+      <p class="hint">I collegamenti dei lettori vanno sul controller solo con Salva.</p>
     </div>
     <div class="save-bar" id="sch-bar" hidden><span class="grow" id="sch-changes"></span><button type="button" id="sch-discard">Scarta</button><button type="button" class="primary" id="sch-save">Salva</button></div>`;
   paintIcons(body);
@@ -5249,9 +5247,9 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
       const mine = pending.filter((l) => l.reader === m.dataset.readerMeta);
       m.textContent = mine.length ? mine.map((l) => `${doorName({token: l.door})} · ${DIRECTION_LABELS[l.direction]}`).join(", ") : "non collegato";
     });
-    $("#sch-hint").textContent = selectedInput ? `Ora tocca la porta da collegare a ${inputOf(selectedInput)?.name}, oppure tocca di nuovo l'ingresso per nome, ruolo e cablaggio.`
-      : selected ? `Ora tocca la porta da collegare a ${readerName(selected)}. Tocca di nuovo il lettore per annullare.`
-      : "Tocca un lettore o un ingresso e poi una porta per collegarli. L'ingranaggio sul filo apre le impostazioni del collegamento.";
+    $("#sch-hint").textContent = selectedInput ? `Tocca la porta per ${inputOf(selectedInput)?.name}, o di nuovo l'ingresso per aprirlo.`
+      : selected ? `Tocca la porta per ${readerName(selected)}, o di nuovo il lettore per annullare.`
+      : "Tocca un lettore o un ingresso, poi una porta.";
     const list = changes();
     $("#sch-bar").hidden = !list.length;
     $("#sch-changes").textContent = list.length ? `Modifiche non salvate: ${list.length === 1 ? list[0] : plural(list.length, "modifica", "modifiche")}` : "";
@@ -5266,13 +5264,12 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     const dirs = directionsOf(l.door);
     const shared = (direction) => {
       const names = onPoint(l.door, direction, l).map((x) => readerName(x.reader));
-      return names.length ? ` Vale anche per ${names.join(", ")}, che ${names.length === 1 ? "usa" : "usano"} lo stesso punto di accesso.` : "";
+      return names.length ? ` Vale anche per ${names.join(", ")}.` : "";
     };
     const result = await modal({title: `${readerName(l.reader)} → ${doorName({token: l.door})}`,
-      body: `${field("Direzione", `<select name="direction">${dirs.map((k) => `<option value="${esc(k)}" ${k === l.direction ? "selected" : ""}>${DIRECTION_LABELS[k] ?? esc(k)}</option>`).join("")}</select>`,
-        "Entrata o uscita dalla porta: i profili di accesso possono valere solo per una direzione.")}
+      body: `${field("Direzione", `<select name="direction">${dirs.map((k) => `<option value="${esc(k)}" ${k === l.direction ? "selected" : ""}>${DIRECTION_LABELS[k] ?? esc(k)}</option>`).join("")}</select>`)}
         <div class="field inline"><input type="checkbox" name="enabled" id="f-le" ${l.enabled ? "checked" : ""}><label for="f-le">Collegamento Attivo</label></div>
-        <p class="hint" style="margin-top:-8px">Disattivato: il lettore resta collegato ma non apre la porta.<span data-shared>${esc(shared(l.direction))}</span></p>`,
+        <p class="hint" style="margin-top:-8px">Disattivato, il lettore non apre la porta.<span data-shared>${esc(shared(l.direction))}</span></p>`,
       // Un'altra direzione è un altro punto di accesso: la spunta e gli altri lettori diventano quelli del punto di arrivo
       onOpen: (dlg) => {
         const select = $('[name="direction"]', dlg);
@@ -5316,12 +5313,12 @@ function controllerSchema(body, ctrl, p, errors, appDoor, doorName) {
     const supervisable = (r) => i.can_supervise && ["rex", "intercom"].includes(r);
     const ok = await modal({title: i.name,
       body: `${i.problem ? `<div class="alert" style="margin:0 0 12px">${icon("alert")}<div class="grow"><b>Da Riscrivere</b>${esc(i.problem[0].toUpperCase() + i.problem.slice(1))}. Premi Scrivi sul Controller: anche con le stesse impostazioni l'app completa la programmazione.</div></div>` : ""}
-        ${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.${i.port != null ? `<span data-ha-name ${role === "door_contact" && appDoor(door || i.door) ? "hidden" : ""}> È anche il nome dell'entità in Home Assistant.</span>` : ""} Compare nel registro per le aperture da questo ingresso.`)}
+        ${field("Nome", `<input name="name" maxlength="64" value="${esc(startName)}" placeholder="${esc(i.default_name)}">`, `Morsetti ${esc(i.pins.join(", "))}.`)}
         ${field("Ruolo", `<select name="role">${i.roles.map((r) => `<option value="${esc(r)}" ${r === role ? "selected" : ""}>${esc(p.input_roles[r])}</option>`).join("")}</select>`, `<span data-role-hint>${esc(inputRoleHint(i.io, role))}</span>`)}
         <div data-door-field ${DOOR_INPUT_ROLES.includes(role) ? "" : "hidden"}>${field("Porta", `<select name="door">${doorOptions}</select>`)}</div>
         <div data-wiring ${wired(role) ? "" : "hidden"}>${field("Modalità Ingresso", `<select name="contact">${contactOptions.map(([k, v]) => `<option value="${esc(k)}" ${k === startContact ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`, `<span data-contact-hint>${esc(contactHint(role, startContact))}</span>`)}
         <div class="field inline"><input type="checkbox" name="supervised" id="f-sup" ${i.supervised && supervisable(role) ? "checked" : ""} ${supervisable(role) ? "" : "disabled"}><label for="f-sup">Linea Supervisionata</label></div>
-        <p class="hint" style="margin-top:-8px">${i.can_supervise ? "Con le resistenze di fine linea il controller riconosce un cavo tagliato o in corto e non lo scambia per una pressione. Attivala solo se le resistenze sono montate. Dopo averla tolta, l'ingresso può risultare attivo finché non riavvii il controller." : "Questo ingresso non supporta la linea supervisionata."}</p></div>`,
+        <p class="hint" style="margin-top:-8px">${i.can_supervise ? "Solo con le resistenze di fine linea montate. Togliendola, riavvia il controller." : "Non disponibile su questo ingresso."}</p></div>`,
       onOpen: (dlg) => {
         const select = $('[name="role"]', dlg), name = $('[name="name"]', dlg), contact = $('[name="contact"]', dlg);
         // Il suggerimento segue il tipo di contatto scelto, non solo il ruolo
@@ -5422,8 +5419,8 @@ let schemaDraft = null;
 
 // Chiave, etichetta, suggerimento, minimo e massimo in secondi: gli stessi limiti di DOOR_TIMES nel server
 const DOOR_TIME_FIELDS = [
-  ["access_time", "Tempo di Apertura", "Quanto resta sbloccata dopo un accesso. Massimo 30 s, per non tenere alimentata a lungo la serratura.", 1, 30],
-  ["extended_access_time", "Apertura Estesa", "Per chi ha bisogno di più tempo (es. Apri a Lungo). Massimo 60 s.", 1, 60],
+  ["access_time", "Tempo di Apertura", "Quanto resta sbloccata dopo un accesso. Massimo 30 s.", 1, 30],
+  ["extended_access_time", "Apertura Estesa", "Per Apri a Lungo. Massimo 60 s.", 1, 60],
   ["open_too_long_time", "Allarme Aperta Troppo a Lungo", "Dopo quanto la porta aperta va in allarme.", 1, 3600],
   ["extended_open_too_long_time", "Allarme con Apertura Estesa", "", 1, 7200],
   ["pre_alarm_time", "Preallarme", "Avviso prima dell'allarme. Con 0 non c'è preallarme.", 0, 3600],
@@ -5439,7 +5436,7 @@ const doorTimes = (d) => DOOR_TIME_FIELDS.filter(([k]) => d[k] !== null && d[k] 
 function controllerDoors(body, ctrl, p, errors, appDoor) {
   const appInfo = (d) => {
     const door = appDoor(d.token);
-    if (!door) return `<p class="muted small-text" style="margin:0">Non gestita dall'app: niente registro per porta, pulsanti in Home Assistant o videocitofono.</p>`;
+    if (!door) return `<p class="muted small-text" style="margin:0">Non gestita dall'app.</p>`;
     return props([
       ["Nome nell'App", esc(door.name)],
       ["Telecamera", `${door.snapshot_camera ? `${esc(cameraName(door.snapshot_camera))}${door.snapshot_on_granted ? " · anche accessi concessi" : ""}${door.snapshot_delay > 0 ? ` · foto ${delayText(door.snapshot_delay)} dopo` : ""}` : '<span class="muted">Nessuna</span>'} · <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a>`],
@@ -5563,10 +5560,10 @@ async function controllerStatus(body, ctrl) {
     ["Lettori", esc(c.readers ?? "—")], ["Tessere sul Controller", esc(c.credentials)],
     // Ingressi scritti solo in parte o con oggetti tolti fuori dall'app: si riparano dallo schema
     ...(h?.input_problems?.length ? [["Ingressi", `${statusDot("warn")} Da Riscrivere: ${esc(h.input_problems.join(", "))} · <a href="#impianti/c${ctrl.id}">Apri lo Schema</a>`]] : []),
-  ]) + (h?.clock_problem ? '<p class="hint" style="color:var(--warn)">Le fasce orarie scattano con l\'ora del controller: imposta un server NTP raggiungibile nel controller (Sistema → Data e Ora).</p>' : "")
-    + (h?.zone_differs ? `<p class="hint" style="color:var(--warn)">Le fasce orarie e le festività scattano con l'ora locale del controller: imposta nel controller lo stesso fuso orario di Home Assistant.</p>
+  ]) + (h?.clock_problem ? '<p class="hint" style="color:var(--warn)">Imposta un server NTP raggiungibile nel controller (Sistema → Data e Ora).</p>' : "")
+    + (h?.zone_differs ? `<p class="hint" style="color:var(--warn)">Il fuso del controller è diverso da quello di Home Assistant.</p>
       <div class="row" style="margin-top:8px"><button type="button" class="small" id="ctl-zone">${icon("clock")}Usa il Fuso di Home Assistant</button></div>` : "")
-    + (h?.clock_fault === "home_assistant" ? '<p class="hint">A essere sbagliata è l\'ora di Home Assistant: controlla il suo server NTP. Le fasce orarie non ne risentono, perché le applica il controller con la sua ora.</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(cap(c.error))}${connection}</div></div>`;
+    + (h?.clock_fault === "home_assistant" ? '<p class="hint">È sbagliata l\'ora di Home Assistant: controlla il suo server NTP.</p>' : "") : `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(cap(c.error))}${connection}</div></div>`;
   const cats = Object.entries(m.categories || {});
   const unknown = `${statusDot("")} Sconosciuto <span class="muted">· broker non collegato</span>`;
   // Eventi in diretta: dal WebSocket del controller; MQTT è facoltativo per gli eventi, serve a Home Assistant
@@ -5592,7 +5589,7 @@ async function controllerStatus(body, ctrl) {
     ["Prefisso", `<code>${esc(m.prefix)}</code>`],
     // Senza broker gli ultimi valori ricevuti non dicono com'è adesso. Il controller sul broker è facoltativo
     ["Controller", !m.connected ? unknown : m.controller_online === null ? `${statusDot("")} Non Pubblica sul Broker <span class="muted">· facoltativo</span>` : m.controller_online ? `${statusDot("ok")} Collegato al Broker` : `${statusDot(source ? "" : "err")} Non Collegato al Broker`],
-  ]) + (source === "mqtt" && !m.access_events_seen ? '<p class="hint">Se dopo il passaggio di una tessera compare solo IdPoint, aggiungi gli eventi AccessControl (accesso concesso e negato) al filtro eventi MQTT dell\'A1210: servono per sapere se la porta si è aperta e perché un accesso è stato negato.</p>' : "");
+  ]) + (source === "mqtt" && !m.access_events_seen ? '<p class="hint">Se compare solo IdPoint, aggiungi gli eventi AccessControl al filtro MQTT dell\'A1210.</p>' : "");
   const liveCard = live + `<h3 class="section-title" style="margin-top:14px">Broker MQTT</h3>` + mqtt
     + (cats.length ? `<details style="margin-top:12px"><summary class="small-text muted" style="cursor:pointer">Eventi Ricevuti per Categoria (${cats.length})</summary><div class="table-wrap"><table class="table"><thead><tr><th>Categoria</th><th>Eventi</th><th>Ultimo Topic</th></tr></thead><tbody>${cats.map(([n, x]) => `<tr><td>${esc(n)}</td><td>${x.count}</td><td><code>${esc(x.last_topic)}</code><div class="muted small-text">${esc(relTime(x.last_seen))}</div></td></tr>`).join("")}</tbody></table></div></details>` : "");
   const doors = s.doors.filter((d) => ctrl.doors.some((x) => x.id === d.id));
@@ -5691,7 +5688,7 @@ function shadowHistoryHtml(h) {
     return `<dt class="${cls}">${statusDot(failed ? "err" : diff ? "warn" : clean ? "ok" : "")} ${esc(day)}</dt><dd>${lines.join("<br>")}</dd>`;
   }).join("");
   const unsaved = h.unsaved ? `<p class="small-text" style="color:var(--warn);margin:0 0 8px">${esc(plural(h.unsaved, "giro non ancora salvato", "giri non ancora salvati"))} nel database (spazio su disco esaurito?): si salvano al prossimo giro, con un riavvio si perdono.</p>` : "";
-  return `<h3 class="section-title" style="margin:16px 0 4px">Ultimi ${h.days.length} Giorni</h3><p class="muted small-text" style="margin:0 0 8px">Giorni dell'impianto. Un giro è senza differenze quando ha letto tutto e non ha trovato differenze né sorprese.</p>${unsaved}<dl class="props shadow-days">${days}</dl>`;
+  return `<h3 class="section-title" style="margin:16px 0 4px">Ultimi ${h.days.length} Giorni</h3>${unsaved}<dl class="props shadow-days">${days}</dl>`;
 }
 function comparisonHtml(r) {
   if (!r.ok) return `<div class="alert err" style="margin:0">${icon("alert")}<div class="grow"><b>Controller Non Raggiungibile</b>${esc(cap(r.error))}. Senza gli elenchi del controller il confronto non mostra niente: un elenco non letto non vuol dire vuoto.</div></div>`;
@@ -5717,17 +5714,17 @@ function comparisonHtml(r) {
     const same = g.rows.filter((i) => i.action === "uguale");
     const counts = compareCounts(g.counts);
     const lookedHtml = looked.length ? `<ul class="diff" style="margin-bottom:6px">${capped(looked, (i) => `<li class="chg"><b>!</b><span>${esc(i.label)} <span class="muted">· ${esc(i.text)}</span>${seen(i)}</span></li>`)}</ul>` : "";
-    const body = g.unread ? `<div class="rs-note">${icon("question")}<span>Non letto: ${esc(g.unread)}. Per questo tipo il confronto non toglierebbe, non ricreerebbe e non confermerebbe niente.</span></div>`
+    const body = g.unread ? `<div class="rs-note">${icon("question")}<span>Non letto: ${esc(g.unread)}.</span></div>`
       : g.hidden ? `<p class="muted small-text" style="margin:0">Solo il conteggio: ${esc(g.hidden)}.</p>`
       : !g.rows.length ? '<p class="muted small-text" style="margin:0">Nessun oggetto.</p>'
       : `${open.length ? `<div class="rs-list">${cappedRows(open)}</div>` : ""}${lookedHtml}${folded(takenRows, `${takenRows.length} da prendere in carico com'è sul controller`, "↓")}${folded(same, `${plural(same.length, "uguale", "uguali")} nell'app e sul controller`, "=")}`;
     return `<h3 class="diff-part">${esc(g.title)}${counts ? ` <span class="muted small-text">· ${esc(counts)}</span>` : ""}</h3>${body}`;
   }).join("");
-  return `${alerts}<p class="muted small-text" style="margin:0">Letto ${esc(relTime(r.at))}${r.serial ? ` dal controller ${esc(r.serial)}` : ""}. Nelle differenze, barrato com'è sul controller e dopo la freccia com'è nell'app.</p>${lookHtml}${takenHtml}${kinds}`;
+  return `${alerts}<p class="muted small-text" style="margin:0">Letto ${esc(relTime(r.at))}${r.serial ? ` dal controller ${esc(r.serial)}` : ""}. Barrato: sul controller; dopo la freccia: nell'app.</p>${lookHtml}${takenHtml}${kinds}`;
 }
 async function controllerComparison(body, ctrl, primary) {
   body.innerHTML = `<div class="card"><h2>${icon("shield")}Confronto (prova)<span class="spacer"></span><button type="button" class="small primary" id="cmp-run">Confronta Ora</button></h2>
-      <p style="margin-top:0"><b>Questa scheda non cambia niente sul controller.</b> Legge il controller e calcola cosa farebbero la presa in carico e l'allineamento automatico delle prossime versioni: cosa l'app prenderebbe in carico com'è sul controller, cosa riporterebbe com'è nell'app, cosa ricreerebbe perché manca e cosa toglierebbe perché c'è solo sul controller. Un elenco che il controller non manda è «non letto»: per quel tipo non toglierebbe e non ricreerebbe niente.</p>
+      <p style="margin-top:0"><b>Questa scheda non cambia niente sul controller.</b></p>
       <h3 class="section-title">Confronto in Ombra</h3><div id="cmp-shadow">${shadowHtml(primary.health?.shadow)}</div><div id="cmp-history">${loadingBox()}</div></div>
     <div class="card" id="cmp-card" hidden><h2>${icon("list")}Risultato</h2><div id="cmp-result"></div></div>`;
   paintIcons(body);
@@ -5775,7 +5772,7 @@ function controllerHistory(body, p) {
   // (le modifiche sono dalla più recente)
   const seen = new Set();
   const undoable = (c) => { const key = `${c.kind}:${c.token}`; if (c.undone || seen.has(key)) return false; seen.add(key); return true; };
-  body.innerHTML = `<div class="card flush"><h2>Storico Modifiche<span class="spacer"></span><span class="muted small-text">annulla per riportare com'era, dalla modifica più recente</span></h2>
+  body.innerHTML = `<div class="card flush"><h2>Storico Modifiche</h2>
     <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Modifica</th><th></th></tr></thead><tbody>
     ${p.changes.length ? p.changes.map((c) => `<tr><td>${esc(fmtDateTime(c.ts))}</td><td>${esc(c.user)}</td><td>${esc(c.summary)}</td><td style="text-align:right">${c.undone ? '<span class="pill">Annullata</span>' : undoable(c) ? `<button type="button" class="small" data-undo="${c.id}">Annulla</button>` : ""}</td></tr>`).join("") : '<tr><td colspan="4" class="muted">Nessuna modifica fatta dall\'app.</td></tr>'}</tbody></table></div></div>`;
   body.onclick = async (e) => {
@@ -5797,7 +5794,7 @@ async function viewSites(body, data) {
   const chips = (a) => [...a.controllers.map((id) => `<a class="chip" href="#impianti/c${id}">${icon("chip")}${esc(ctrlName(id))}</a>`),
     ...(a.doors.length ? [`<span class="chip">${icon("door")}${plural(a.doors.length, "porta", "porte")}</span>`] : [])].join("") || "vuota";
   body.innerHTML = `
-    <p class="muted" style="margin-top:0">Ogni controller sta in un'area di una struttura, ad esempio Teatro Eliseo › Via Consulta o Hotel Giulia › Primo Piano. Porte e lettori del controller ereditano la sua area; la posizione precisa va nella descrizione del controller.</p>
+    <p class="muted" style="margin-top:0">Porte e lettori prendono l'area del loro controller.</p>
     <div class="toolbar"><h2 class="section-title" style="margin:0;flex:1">Strutture</h2><button type="button" class="primary" id="site-new">${icon("plus")}Nuova Struttura</button></div>
     ${real.length ? real.map((site) => `<div class="card">
       <h2>${icon("building")}${esc(site.name)}<span class="spacer"></span>
@@ -5808,8 +5805,8 @@ async function viewSites(body, data) {
       ${site.areas.length ? `<div class="list">${site.areas.map((a) => `<div class="item"><div class="grow"><div class="title">${esc(a.name)}</div>
         <div class="meta">${chips(a)}</div></div>
         <button type="button" class="small ghost icon-only" data-area-edit="${a.id}" aria-label="Rinomina area">${icon("edit")}</button>
-        <button type="button" class="small ghost icon-only danger" data-area-del="${a.id}" aria-label="Elimina area">${icon("trash")}</button></div>`).join("")}</div>` : '<p class="muted" style="margin:0">Nessuna area: aggiungine una, ad esempio Piano Terra o Ingresso.</p>'}
-    </div>`).join("") : '<div class="card"><div class="empty">Nessuna struttura: creane una, ad esempio Hotel, Teatro o Villa 1.</div></div>'}
+        <button type="button" class="small ghost icon-only danger" data-area-del="${a.id}" aria-label="Elimina area">${icon("trash")}</button></div>`).join("")}</div>` : '<p class="muted" style="margin:0">Nessuna area.</p>'}
+    </div>`).join("") : '<div class="card"><div class="empty">Nessuna struttura.</div></div>'}
     ${loose ? `<div class="alert">${icon("alert")}<div class="grow"><b>Senza Area</b>${loose.areas[0].controllers.map((id) => esc(ctrlName(id))).join(", ") || plural(loose.areas[0].doors.length, "porta", "porte")}: scegli l'area con l'ingranaggio Connessione del controller.</div></div>` : ""}`;
   const allAreas = real.flatMap((x) => x.areas.map((a) => ({...a, site: x})));
   const nameDialog = (title, label, value = "", extra = "") => modal({title, body: field(label, `<input name="name" maxlength="64" value="${esc(value)}">`) + extra,
@@ -5876,7 +5873,7 @@ async function controllerCameras(body, ctrl) {
         <button type="button" class="small ghost danger" ${del}>Togli</button></div></div>`;
   const ctrlRow = ctrl.snapshot_camera ? cameraRow(ctrl.snapshot_camera, `coperchio di ${esc(ctrl.name)}`, "foto quando si apre il coperchio", 'data-cam-edit="ctrl"', 'data-cam-del="ctrl"') : "";
   body.innerHTML = `
-    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Una telecamera di Home Assistant per porta: l'app salva una foto nel registro su accessi negati, aperture remote, uscite dai pulsanti, chiamate al citofono, allarmi e manomissioni. Se il controller è in un altro locale, può avere la sua telecamera per l'apertura del coperchio. Le foto sono anche in Media → axis_access_manager.</p>
+    <div class="toolbar">
       <button type="button" class="primary" id="cam-new">${icon("plus")}Aggiungi Telecamera</button></div>
     ${rows.length || ctrlRow ? `<div class="card flush"><div class="list">${ctrlRow}${rows.map((d) => `<div class="item">
         <div class="ev-icon k-accent">${icon("camera")}</div>
@@ -5924,13 +5921,11 @@ async function cameraEditor(ctrl, cameras, door, forController = false) {
   let written = false;
   const result = await modal({
     title: door || forController ? "Modifica Telecamera" : "Aggiungi Telecamera",
-    body: `${field("Telecamera", cameraInput, cameras.length ? "Le telecamere di Home Assistant, con il loro nome. Ferma: non trasmette (con Frigate anche se spenta), la foto potrebbe non riuscire." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
-      ${field("Inquadra", targetSelect, "La porta: accessi, aperture, citofono e allarmi di quella porta. Il coperchio del controller: la sua apertura. Se c'è già una telecamera, viene sostituita.")}
+    body: `${field("Telecamera", cameraInput, cameras.length ? "«Ferma»: non trasmette, la foto potrebbe non riuscire." : "Home Assistant non ha restituito telecamere: scrivi l'entità a mano.")}
+      ${field("Inquadra", targetSelect, "Se c'è già una telecamera, viene sostituita.")}
       <div data-granted><div class="field inline"><input type="checkbox" name="granted" id="f-cg" ${door?.snapshot_on_granted ? "checked" : ""}><label for="f-cg">Foto Anche sugli Accessi Concessi</label></div>
-      <p class="hint" style="margin-top:-8px">Una foto per passaggio, sull'esito. Senza questa spunta la foto c'è solo su accessi negati, aperture remote, uscite dai pulsanti, citofono, allarmi e manomissioni.</p>
       <div class="field inline"><input type="checkbox" name="delay_on" id="f-cd" ${door?.snapshot_delay > 0 ? "checked" : ""}><label for="f-cd">Ritardo della Foto</label></div>
-      <p class="hint" style="margin-top:-8px">Se il video della telecamera arriva in ritardo, la foto si prende qualche secondo dopo l'evento, quando chi passa è davanti al lettore.</p>
-      <div data-delay ${door?.snapshot_delay > 0 ? "" : "hidden"}>${field("Secondi di Ritardo", `<input name="delay" inputmode="decimal" autocomplete="off" maxlength="4" style="max-width:120px" value="${door?.snapshot_delay > 0 ? esc(delayText(door.snapshot_delay).slice(0, -2)) : ""}">`, "Da 0,1 a 10 secondi, anche con i decimali. Confronta l'ora scritta sul fotogramma con l'ora dell'evento nel registro e metti la differenza.")}</div></div>`,
+      <div data-delay ${door?.snapshot_delay > 0 ? "" : "hidden"}>${field("Secondi di Ritardo", `<input name="delay" inputmode="decimal" autocomplete="off" maxlength="4" style="max-width:120px" value="${door?.snapshot_delay > 0 ? esc(delayText(door.snapshot_delay).slice(0, -2)) : ""}">`, "Da 0,1 a 10 secondi.")}</div></div>`,
     onOpen: (dlg) => {
       const sync = () => {
         $("[data-granted]", dlg).hidden = val(dlg, "door") === "ctrl";
@@ -5976,7 +5971,7 @@ async function controllerIntercoms(body, ctrl) {
   const rows = ctrl.doors.filter((d) => d.intercom_name);
   const seen = (d) => { const i = live(d); return i?.last_message_at ? `ultimo messaggio ${relTime(i.last_message_at)}` : "nessun messaggio dall'avvio"; };
   body.innerHTML = `
-    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 260px">Videocitofoni Hikvision collegati con l'add-on Hikvision Doorbell: le chiamate finiscono nel registro e, se vuoi, "Apri" dal videocitofono apre la porta con un'apertura a tempo.</p>
+    <div class="toolbar">
       ${ctrl.doors.length ? `<button type="button" class="primary" id="ic-new">${icon("plus")}Aggiungi Videocitofono</button>` : ""}</div>
     ${!ctrl.doors.length ? '<div class="card"><div class="empty">Prima aggiungi una porta all\'app nella scheda Porte.</div></div>'
       : rows.length ? `<div class="card flush"><div class="list">${rows.map((d) => `<div class="item">
@@ -6080,7 +6075,7 @@ async function intercomEditor(ctrl, door) {
       <div class="fields-2">${field("Porta", doorSelect, "Se la porta ha già un videocitofono, viene sostituito.")}
       ${field("Relè del Tasto Apri", '<select name="intercom_relay"></select>')}</div>
       <div class="field inline"><input type="checkbox" name="intercom_open_door" id="f-iod" ${d.intercom_open_door ? "checked" : ""}><label for="f-iod">"Apri" dal Videocitofono Apre Questa Porta</label></div>
-      <p class="hint" style="margin-top:-8px">"Apri" dal monitor o da Hik-Connect: l'app manda all'A1210 un'apertura a tempo, mai uno sblocco permanente. Disattivata: le chiamate finiscono solo nel registro.</p>`,
+      <p class="hint" style="margin-top:-8px">Apertura sempre a tempo. Disattivata: le chiamate vanno solo nel registro.</p>`,
     onOpen: (dlg) => {
       // La finestra è condivisa: il modulo si rifà a ogni apertura, e l'elenco richiesto dopo resta di questo
       const form = $("form", dlg), list = $("[data-ic-list]", form), relay = $("[name=intercom_relay]", form);
@@ -6164,8 +6159,8 @@ async function doorEditor(ctrl, door, token = "", controllerName = "") {
     body: `<div class="fields-2">${field("Nome nell'App", `<input name="name" maxlength="100" value="${esc(d.name || "")}" placeholder="es. Ingresso Scala A">`)}
       ${field("Porta del Controller", `<input value="${esc(controllerName || d.door_token)}" title="${esc(d.door_token)}" disabled>`)}</div>
       <div class="field inline"><input type="checkbox" name="ha_buttons" id="f-hab" ${d.ha_buttons ? "checked" : ""}><label for="f-hab">Pulsanti Apri e Apri a Lungo in Home Assistant</label></div>
-      <p class="hint" style="margin-top:-8px">Da mettere nelle dashboard. L'apertura è sempre a tempo e solo a porta bloccata.</p>
-      <p class="hint">Telecamera e videocitofono della porta si scelgono nelle schede <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a> e <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a> del controller.</p>`,
+      <p class="hint" style="margin-top:-8px">Aprono sempre a tempo, solo a porta bloccata.</p>
+      <p class="hint">Telecamera e videocitofono: schede <a href="#impianti/c${ctrl.id}/telecamere">Telecamere</a> e <a href="#impianti/c${ctrl.id}/citofoni">Videocitofoni</a>.</p>`,
     actions: [{label: "Annulla", value: null}, {label: "Salva", kind: "primary", submit: true, onClick: async (dlg) => {
       const body = doorBody(d, {name: val(dlg, "name"), ha_buttons: val(dlg, "ha_buttons")});
       return (await run(() => api(door ? `api/doors/${door.id}` : `api/controllers/${ctrl.id}/doors`, {method: door ? "PUT" : "POST", body}), "Porta salvata", "Salvataggio della porta")) || false;
@@ -6218,11 +6213,6 @@ function backupStatus(data) {
     <button type="button" class="small" id="bk-verify" title="Rilegge tutti i file dei backup e ne controlla l'impronta">Verifica Ora</button>
     ${store.me.admin ? `<a class="btn small ghost" href="#impostazioni/backup" title="Backup automatico e quanti backup tenere">${icon("cog")}<span class="lbl">Impostazioni</span></a>` : ""}</div>`;
 }
-const RESTORE_HINTS = {
-  tipologie: "Nome, colore, durata e regole di accesso.",
-  persone: "Dati della persona, tipologia e tessere con accesso e stato.",
-  porte: "Nomi e tempi delle porte, impostazioni dell'app sulle porte, nomi dei lettori.",
-};
 // Le ultime tre solo nel Confronto del controller
 const RESTORE_ACTIONS = {ricrea: ["k-ok", "plus"], riporta: ["k-info", "refresh"], togli: ["k-err", "trash"], prende: ["k-accent", "download"], uguale: ["k-muted", "check"], non_letto: ["k-warn", "question"]};
 function backupContents(b) {
@@ -6252,8 +6242,8 @@ async function viewBackups(body, part = "") {
   const list = part ? data.backups.filter((b) => b.parts?.[part]) : data.backups;
   const error = data.error;
   const intro = part
-    ? "Storico della configurazione di questo controller: porte, lettori, punti di accesso, profili e ingressi. Ripristina riporta porte e lettori com'erano oppure, per un controller resettato o sostituito, ricrea tutto con il Ripristino Completo."
-    : "Ogni backup salva i Dati Comuni (persone, tessere, tipologie, fasce orarie, festività, strutture e utenti dell'app) e la configurazione di ogni controller. Le parti che non cambiano non occupano altro spazio.";
+    ? "Controller resettato o sostituito: Ripristina, poi Ripristino Completo."
+    : "";
   const verify = data.verify;
   const moreErrors = verify ? verify.errors.length - 5 : 0;
   // Backup con l'indice illeggibile: non sono nell'elenco, si eliminano da qui (solo amministratori)
@@ -6262,10 +6252,10 @@ async function viewBackups(body, part = "") {
   body.innerHTML = `${error ? `<div class="alert">${icon("alert")}<div class="grow"><b>${error.id ? "Ultimo Backup Incompleto" : "Ultimo Backup Non Riuscito"}</b>${esc(cap(error.error))} · ${esc(relTime(error.at))}</div></div>` : ""}
     ${verify && !verify.ok ? `<div class="alert">${icon("alert")}<div class="grow"><b>Backup Rovinati</b>${verify.errors.slice(0, 5).map((e) => esc(e)).join("<br>")}${moreErrors > 0 ? `<br>${moreErrors === 1 ? "e un altro" : `e altri ${moreErrors}`}` : ""}<br><span class="small-text">Questi backup non si possono ripristinare: eliminali e premi Verifica Ora. Gli altri sono a posto.</span>
       ${unreadable.length ? `<div class="row" style="margin-top:8px">${unreadable.map((id) => `<button type="button" class="small danger" data-del-index="${esc(id)}" title="Backup con l'indice illeggibile">${icon("trash")}Elimina ${esc(idTime(id))}</button>`).join("")}</div>` : ""}</div></div>` : ""}
-    <div class="toolbar"><p class="muted" style="margin:0;flex:1 1 320px">${intro}</p><button type="button" class="primary" id="bk-new">${icon("plus")}Crea Backup Ora</button></div>
+    <div class="toolbar">${intro ? `<p class="muted" style="margin:0;flex:1 1 320px">${intro}</p>` : ""}<button type="button" class="primary" id="bk-new">${icon("plus")}Crea Backup Ora</button></div>
     ${part ? "" : backupStatus(data)}
-    <div class="card flush"><div class="list" id="bk-list">${list.length ? list.map((b) => backupRow(b, data, part)).join("") : `<div class="empty">${icon("history")}<br><b>Nessun Backup</b><br>${data.policy.auto ? "Il primo backup automatico arriva entro pochi minuti, oppure crealo ora." : "Crea il primo con Crea Backup Ora: ci vogliono pochi secondi."}</div>`}</div></div>
-    <p class="hint">${plural(data.backups.length, "backup", "backup")} · ${kb(data.size)} nella cartella dell'add-on. Si tengono ${esc(retentionText(data.policy))}; i bloccati restano sempre. Entrano nei backup di Home Assistant: controlla che includano l'add-on e che vadano anche fuori sede (NAS o cloud). Le password dei controller non si salvano.</p>`;
+    <div class="card flush"><div class="list" id="bk-list">${list.length ? list.map((b) => backupRow(b, data, part)).join("") : `<div class="empty">${icon("history")}<br><b>Nessun Backup</b><br>${data.policy.auto ? "Il primo backup automatico arriva entro pochi minuti." : "Crea il primo con Crea Backup Ora."}</div>`}</div></div>
+    <p class="hint">${plural(data.backups.length, "backup", "backup")} · ${kb(data.size)}. Tienine una copia fuori sede (NAS o cloud).</p>`;
   paintIcons(body);
   $("#bk-new").onclick = () => createBackup();
   if ($("#bk-verify")) $("#bk-verify").onclick = async () => {
@@ -6307,26 +6297,26 @@ async function viewBackupSettings(body) {
   const p = data.policy;
   const onOff = (key) => `<select data-bp="${key}" style="width:auto"><option value="1" ${p[key] ? "selected" : ""}>Attivo</option><option value="0" ${p[key] ? "" : "selected"}>Disattivato</option></select>`;
   const row = (ic, title, desc, control) => `<div class="item"><div class="ev-icon k-accent">${icon(ic)}</div><div class="grow"><div class="title">${esc(title)}</div><div class="meta">${desc}</div></div>${control}</div>`;
-  const keep = (key, label, hint, max = 1000) => `<label>${esc(label)}<input type="number" data-bp="${key}" min="${key === "keep_last" ? 1 : 0}" max="${max}" step="1" value="${p[key]}" inputmode="numeric"><small>${hint}</small></label>`;
+  const keep = (key, label, hint, max = 1000) => `<label>${esc(label)}<input type="number" data-bp="${key}" min="${key === "keep_last" ? 1 : 0}" max="${max}" step="1" value="${p[key]}" inputmode="numeric">${hint ? `<small>${hint}</small>` : ""}</label>`;
   const footer = (d) => {
     const span = retentionSpan(d.policy);
-    return `${plural(d.backups.length, "backup", "backup")} · ${kb(d.size)}, nei backup di Home Assistant con l'add-on. Una persona eliminata resta nei backup ${span ? `al massimo ${esc(span)}` : "finché i nuovi non li sostituiscono"}, in quelli bloccati finché non li sblocchi.`;
+    return `${plural(d.backups.length, "backup", "backup")} · ${kb(d.size)}. Una persona eliminata resta nei backup ${span ? `al massimo ${esc(span)}` : "finché i nuovi non li sostituiscono"}.`;
   };
   body.innerHTML = `<div class="bk-cols"><div class="card flush"><h2>${icon("history")}Backup Automatico</h2>
     <div class="list bk-set">
       ${row("refresh", "Backup Automatico", "Quando cambia qualcosa e ogni notte.", onOff("auto"))}
       ${row("clock", "Frequenza", "Ogni quanto controllare se è cambiato qualcosa.", `<select data-bp="frequency" style="width:auto">${Object.entries(BACKUP_FREQ).map(([k, label]) => `<option value="${k}" ${k === p.frequency ? "selected" : ""}>${esc(label)}</option>`).join("")}</select>`)}
       ${row("history", "Backup Notturno", "Anche se non è cambiato niente.", `<input type="time" data-bp="night" value="${esc(p.night)}" style="width:auto" required>`)}
-      ${row("shield", "Backup Prima delle Modifiche", "Prima di programmare il controller, cambiare le regole o importare, e dopo ogni aggiornamento.", onOff("before_changes"))}
+      ${row("shield", "Backup Prima delle Modifiche", "Prima delle modifiche importanti e dopo ogni aggiornamento.", onOff("before_changes"))}
     </div></div>
     <div class="card flush"><h2>${icon("lock")}Quanti Backup Tenere</h2>
-      <p class="muted small-text" style="margin:0 18px 10px">Gli ultimi, poi uno per giorno, settimana, mese e anno. I bloccati restano sempre.</p>
+      <p class="muted small-text" style="margin:0 18px 10px">I bloccati restano sempre.</p>
       <div class="bk-keep">
-        ${keep("keep_last", "Ultimi", "i più recenti")}
-        ${keep("keep_daily", "Giornalieri", "uno al giorno")}
-        ${keep("keep_weekly", "Settimanali", "uno a settimana")}
-        ${keep("keep_monthly", "Mensili", "uno al mese")}
-        ${keep("keep_yearly", "Annuali", "uno all'anno", 100)}
+        ${keep("keep_last", "Ultimi", "")}
+        ${keep("keep_daily", "Giornalieri", "")}
+        ${keep("keep_weekly", "Settimanali", "")}
+        ${keep("keep_monthly", "Mensili", "")}
+        ${keep("keep_yearly", "Annuali", "", 100)}
       </div></div></div>
     <p class="hint" id="bp-hint">${footer(data)}</p>`;
   paintIcons(body);
@@ -6374,7 +6364,7 @@ async function viewBackupSettings(body) {
 }
 async function createBackup() {
   const created = await modal({title: "Crea Backup Ora",
-    body: field("Nome", '<input name="name" maxlength="80" placeholder="es. Prima dei lavori al piano 2">', "Facoltativo. Il backup comprende Dati Comuni e configurazione di ogni controller."),
+    body: field("Nome", '<input name="name" maxlength="80" placeholder="es. Prima dei lavori al piano 2">', "Facoltativo."),
     actions: [{label: "Annulla", value: null}, {label: "Crea Backup", kind: "primary", submit: true, onClick: async (dlg) => (await run(() => api("api/backups", {method: "POST", body: {name: val(dlg, "name")}}), "", "Creazione del backup")) || false}]});
   if (!created) return;
   toast(created.errors?.length ? `Backup incompleto: ${created.errors[0]}` : `Backup creato · ${created.summary}`, Boolean(created.errors?.length));
@@ -6386,7 +6376,7 @@ function capped(items, line) {
   return items.slice(0, 40).map(line).join("") + (rest > 0 ? `<li class="muted">${rest === 1 ? "e un altro" : `e altri ${rest}`}</li>` : "");
 }
 function diffHtml(d) {
-  if (d.first) return '<p class="muted" style="margin:0">È il primo backup: prima non c\'è niente con cui confrontarlo.</p>';
+  if (d.first) return '<p class="muted" style="margin:0">Primo backup: niente da confrontare.</p>';
   const when = (x) => `${fmtDateTime(x.created_at)} (${backupTitle(x)})`;
   const until = d.newer.id === "attuale" ? "allo stato attuale" : `al ${when(d.newer)}`;
   const head = `<p class="muted small-text" style="margin:0 0 4px">Cosa è cambiato dal ${esc(when(d.older))} ${esc(until)}.</p>`;
@@ -6435,7 +6425,7 @@ function restoreItemHtml(i, {readonly = false} = {}) {
       ${(i.surprises || []).map((s) => `<div class="rs-note err">${icon("alert")}<span>Da guardare: ${esc(s)}</span></div>`).join("")}
       ${i.warnings.map((w) => `<div class="rs-note">${icon("alert")}<span>${esc(w[0].toUpperCase() + w.slice(1))}</span></div>`).join("")}
       ${i.blocked ? `<div class="rs-note err">${icon("block")}<span>Non si può: ${esc(i.blocked)}</span></div>` : ""}
-      ${i.password ? `<div class="rs-pass"><input type="password" name="mqtt_password" autocomplete="new-password" placeholder="Password di ${esc(i.username)}"><small class="muted">Nei backup le password non ci sono: scrivila qui, non viene salvata.</small></div>` : ""}
+      ${i.password ? `<div class="rs-pass"><input type="password" name="mqtt_password" autocomplete="new-password" placeholder="Password di ${esc(i.username)}"><small class="muted">Non è nel backup: scrivila qui.</small></div>` : ""}
     </div></${tag}>`;
 }
 // Righe di Cosa Cambierà per sezione, ognuna con la sua casella
@@ -6443,26 +6433,25 @@ function restoreGroupsHtml(groups, items) {
   return groups.map(([k, label]) => `<h3 class="diff-part">${esc(label)}</h3><div class="rs-list">${items.filter((i) => i.section === k).map((i) => restoreItemHtml(i)).join("")}</div>`).join("");
 }
 const RESTORE_MODES = {
-  porte: {sections: ["porte"], title: "Porte e Lettori", text: "Riporta nomi e tempi delle porte, le impostazioni dell'app sulle porte e i nomi dei lettori, per un controller che funziona."},
-  completo: {sections: ["dispositivo", "controller", "tessere"], title: "Ripristino Completo", text: "Per un controller resettato o sostituito: ricrea fasce orarie, porte con serratura, lettori, ingressi, punti di accesso e profili con i token del backup, rimette fuso orario, NTP e MQTT, poi riscrive le tessere."},
+  porte: {sections: ["porte"], title: "Porte e Lettori", text: "Per un controller che funziona."},
+  completo: {sections: ["dispositivo", "controller", "tessere"], title: "Ripristino Completo", text: "Per un controller resettato o sostituito: ricrea tutto."},
 };
 function restoreResultHtml(r) {
   return `${r.applied.length ? `<p style="margin-top:0"><b>${plural(r.applied.length, "modifica fatta", "modifiche fatte")}</b></p><ul class="diff">${capped(r.applied, (a) => `<li class="add"><b>✓</b>${esc(a.label)} <span class="muted">· ${esc(a.text)}</span></li>`)}</ul>` : ""}
     ${r.failed.length ? `<p${r.applied.length ? "" : ' style="margin-top:0"'}><b>${plural(r.failed.length, "non riuscita", "non riuscite")}</b></p><ul class="diff">${r.failed.map((f) => `<li class="del"><b>✕</b>${esc(f.label)} <span class="muted">· ${esc(f.error)}</span></li>`).join("")}</ul>` : ""}
     ${r.unchanged ? `<p class="hint">${plural(r.unchanged, "riga era già", "righe erano già")} come nel backup.</p>` : ""}
-    ${r.renamed ? `<p class="hint">${plural(r.renamed, "oggetto ha", "oggetti hanno")} ricevuto dal controller un token nuovo: l'app l'ha cambiato ovunque (tipologie, tessere, ingressi).</p>` : ""}
-    <p class="hint">Prima del ripristino l'app ha creato il backup "Prima del Ripristino": per tornare indietro, ripristina quello.</p>`;
+    <p class="hint">Per tornare indietro, ripristina il backup «Prima del Ripristino».</p>`;
 }
 async function restoreBackup(b, data, part = "") {
   // Tessere quasi tutte sparite: probabilmente il controller è stato resettato, si propone il ripristino completo
   if (part) await loadSummary();
   const startMode = (store.summary?.faults || []).some((f) => f.type === "missing_cards" && f.severity === "crit") ? "completo" : "porte";
   const sectionsBody = part
-    ? `<p style="margin-top:0">Backup del ${esc(fmtDateTime(b.created_at))}. Prima di cambiare qualcosa vedrai l'elenco delle modifiche.</p>
+    ? `<p style="margin-top:0">Backup del ${esc(fmtDateTime(b.created_at))}. Prima di cambiare vedrai le modifiche.</p>
       <div class="perm-list">${Object.entries(RESTORE_MODES).map(([k, m]) => `<label><input type="radio" name="mode" value="${k}" ${k === startMode ? "checked" : ""}><span><b>${esc(m.title)}</b><br><span class="muted small-text">${esc(m.text)}</span></span></label>`).join("")}</div>
-      <p class="hint" style="margin-bottom:0">Dopo un reset l'indirizzo IP e l'utente amministratore si rimettono dalla pagina web del controller, con gli stessi dati salvati nell'app. Un controller sostituito va prima confermato nell'avviso Controller Cambiato.</p>`
-    : `<p style="margin-top:0">Backup del ${esc(fmtDateTime(b.created_at))}. Scegli cosa riportare com'era: prima di cambiare qualcosa vedrai l'elenco delle modifiche.</p>
-      <div class="perm-list">${Object.entries(data.sections).map(([k, label]) => `<label><input type="checkbox" name="sec" value="${k}" checked><span><b>${esc(label)}</b><br><span class="muted small-text">${esc(RESTORE_HINTS[k] || "")}</span></span></label>`).join("")}</div>`;
+      <p class="hint" style="margin-bottom:0">Dopo un reset rimetti IP e utente dalla pagina web del controller.</p>`
+    : `<p style="margin-top:0">Backup del ${esc(fmtDateTime(b.created_at))}. Prima di cambiare vedrai le modifiche.</p>
+      <div class="perm-list">${Object.entries(data.sections).map(([k, label]) => `<label><input type="checkbox" name="sec" value="${k}" checked><span><b>${esc(label)}</b></span></label>`).join("")}</div>`;
   let sections = [];
   const preview = await modal({title: `Ripristina: ${backupTitle(b)}`, body: sectionsBody,
     actions: [{label: "Annulla", value: null}, {label: "Mostra Cosa Cambierà", kind: "primary", submit: true, onClick: async (dlg) => {
@@ -6482,8 +6471,8 @@ async function restoreBackup(b, data, part = "") {
   const keys = await modal({title: "Cosa Cambierà", wide: true,
     body: `${preview.paused ? `<div class="alert err">${icon("alert")}<div class="grow"><b>Scritture Sospese</b>${esc(cap(preview.paused))}</div></div>` : ""}
       <p class="muted small-text" style="margin-top:0">${full
-        ? "Si scrive nell'ordine dell'elenco, le tessere per ultime. Quello che sul controller c'è ma nel backup no è spuntato solo se il controller è appena stato resettato. La programmazione oraria delle porte non si ripristina: niente sblocchi programmati."
-        : "Spunta cosa riportare com'era. Le righe che toglierebbero ciò che è stato aggiunto dopo il backup non sono spuntate: di solito è lavoro fatto nel frattempo, da tenere."} Prima del ripristino l'app crea un backup dello stato attuale, così puoi tornare indietro.</p>
+        ? "Gli sblocchi programmati delle porte non si ripristinano."
+        : "Le righe non spuntate toglierebbero lavoro fatto dopo il backup."} Prima l'app salva lo stato attuale in un backup.</p>
       ${restoreGroupsHtml(groups, items)}`,
     actions: [{label: "Annulla", value: null}, {label: "Ripristina Selezionati", kind: "primary", onClick: (dlg) => {
       const chosen = $$('[name="rs"]:checked', dlg).map((x) => x.value);
@@ -6536,11 +6525,23 @@ async function viewSettings(el, sub) {
     ["Entità MQTT", ha.integration ? `${statusDot(m.connected ? "ok" : "warn")} Attive, dispositivo "Controllo Accessi"` : `${statusDot("")} Disattivate nelle opzioni`],
     ...(ha.integration ? [["Entità", esc(ha.entities.join(", "))], ["Topic", `<code>${esc(ha.topic_prefix)}/…</code>`]] : []),
     ["API di Home Assistant", ha.api ? `${statusDot("ok")} Disponibile` : `${statusDot("warn")} Non Disponibile`],
-  ]) + `<p class="hint">L'evento "Eventi Accessi" ha i tipi accesso_concesso, accesso_negato, tessera_sconosciuta, tessera_letta, apertura_remota, uscita, allarme_porta, manomissione e citofono, con persona e tessera negli attributi: usalo come trigger nelle automazioni. I pulsanti di apertura si attivano per ogni porta nella pagina del controller.</p>`;
+  ]);
   const ioCard = `<div class="card w-io"><h2>${icon("download")}Esporta e Importa</h2>
           <div class="row">${can("persone") ? `<a class="btn small" href="api/export/persons.csv" download>${icon("download")}Persone CSV</a>` : ""}${can("registro") ? `<a class="btn small" href="api/export/events.csv" download>${icon("download")}Registro CSV</a>` : ""}
           <label class="btn small w-persone" style="cursor:pointer">${icon("upload")}Importa Persone<input type="file" id="import-file" accept=".csv,text/csv,text/plain" hidden></label></div>
-          <p class="hint">Importazione: CSV con colonne <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code> (solo il nome è obbligatorio, «Nome Cognome» in una colonna, diviso al primo spazio: senza tessera la persona resta solo nell'app; date gg/mm/aaaa), salvato in UTF-8 o nel formato ANSI di Excel. Il file esportato ha in più <code>ultimo_accesso; telefono; email; matricola; referente; nome_tessera</code>, che l'importazione ignora: telefono, email, matricola e referente si scrivono nella scheda della persona, il Nome Tessera con Nome sulla riga della tessera. La tipologia decide dove e quando apre la tessera; la colonna gruppo serve solo per un accesso personalizzato e di solito resta vuota. Nella colonna stato «sospesa» sospende la tessera, mentre «attiva» non riattiva una tessera sospesa: quella si riattiva dalla scheda della persona. Prima vedi un'anteprima, poi confermi. Per le tessere già registrate si aggiornano tipologia, validità, ditta e note della persona, se nel file sono diversi; in un file senza intestazione le celle vuote lasciano i valori attuali.</p></div>`;
+          <p class="hint">Importa un CSV: prima vedi un'anteprima, poi confermi.</p>
+          <details><summary class="small-text muted" style="cursor:pointer">Formato del File</summary>
+            <ul class="hint" style="margin:6px 0 0;padding-left:18px">
+              <li>Colonne: <code>nome; tessera; gruppo; valida_dal; valida_al; ditta; note; tipologia; stato</code>.</li>
+              <li>Obbligatorio solo nome, «Nome Cognome» in una colonna.</li>
+              <li>Senza tessera la persona non apre nessuna porta.</li>
+              <li>Date gg/mm/aaaa. File in UTF-8 o ANSI di Excel.</li>
+              <li>Lascia vuoto gruppo: decide la tipologia.</li>
+              <li>Stato «sospesa» sospende; «attiva» non riattiva una tessera sospesa.</li>
+              <li>Le colonne in più del file esportato (<code>ultimo_accesso; telefono; email; matricola; referente; nome_tessera</code>) si ignorano.</li>
+              <li>Le tessere già registrate si aggiornano.</li>
+              <li>Senza intestazione, le celle vuote non cancellano niente.</li>
+            </ul></details></div>`;
   // Dall'accesso diretto senza permessi tecnici: le opzioni dell'app ed Esporta e Importa, senza Home Assistant, broker
   // e database dell'add-on (il server non li manda)
   if (hideHA()) body.innerHTML = `
@@ -6548,12 +6549,12 @@ async function viewSettings(el, sub) {
       <div><div class="card"><h2>${icon("cog")}Opzioni dell'App</h2>${props([
         ...(seesCategories ? [["Tipologia Predefinita", esc(categoryOf(store.me.default_category)?.name || "—")]] : []),
         ["Conservazione Registro", plural(o.event_retention_days, "giorno", "giorni")],
-      ])}<p class="hint">La conservazione del registro la sceglie l'amministratore dell'impianto.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.` : ""}</p></div></div>
+      ])}${seesCategories ? `<p class="hint">La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.</p>` : ""}</div></div>
       <div>${ioCard}</div>
     </div>
     <p class="muted small-text" style="text-align:center">Axis Access Manager ${esc(store.me.version || "")}</p>`;
   else body.innerHTML = `
-    ${store.summary.configured === false && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b>Controller, porte, videocitofono e telecamera si impostano nella pagina Impianti.</div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
+    ${store.summary.configured === false && can("impianti") ? `<div class="alert info">${icon("cog")}<div class="grow"><b>Configura l'Impianto</b></div><a class="btn small primary" href="#impianti">Impianti</a></div>` : ""}
     <div class="grid two">
       <div>
         <div class="card"><h2>${icon("dashboard")}Home Assistant</h2>${haCard}</div>
@@ -6561,7 +6562,7 @@ async function viewSettings(el, sub) {
           ...(seesCategories ? [["Tipologia Predefinita", esc(categoryOf(store.me.default_category)?.name || "—")]] : []),
           ["Conservazione Registro", plural(o.event_retention_days, "giorno", "giorni")],
           ["Broker MQTT", !m.configured ? `${statusDot("warn")} Nessun Broker: installa l'add-on Mosquitto, l'app lo trova da sola` : o.mqtt_override ? "Impostato nelle opzioni" : "Mosquitto di Home Assistant"],
-        ])}<p class="hint">Conservazione del registro, entità di Home Assistant e broker MQTT si cambiano in Impostazioni → Componenti aggiuntivi → Axis Access Manager → Configurazione.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.` : ""}</p></div>
+        ])}<p class="hint">Si cambiano nella Configurazione dell'add-on.${seesCategories ? ` La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.` : ""}</p></div>
       </div>
       <div>
         ${ioCard}
@@ -6574,8 +6575,8 @@ async function viewSettings(el, sub) {
           // Copia non riuscita a questo avvio (disco pieno, troppo lenta): l'add-on è partito lo stesso
           ["Copie Prima degli Aggiornamenti", (s.database.copy_error ? `${statusDot("warn")} ${esc(capFirst(s.database.copy_error.text))} <span class="muted">· ${esc(relTime(s.database.copy_error.at))}</span>${s.database.copies.length ? "<br>" : ""}` : "")
             + (s.database.copies.length ? s.database.copies.map((c) => `${esc(fmtDateTime(c.at))} <span class="muted">· ${kb(c.size)}</span>`).join("<br>") : s.database.copy_error ? "" : "Nessuna")],
-        ])}<p class="hint">Prima di ogni aggiornamento dell'add-on si fa una copia del database (si tengono le ultime 3). Subito prima di ogni backup di Home Assistant si prepara una copia coerente, usata all'avvio se il database risultasse danneggiato.</p></div>
-        ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Stato del controller, delle porte, degli eventi MQTT e dei videocitofoni: nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
+        ])}</div>
+        ${can("impianti") ? `<div class="card"><h2>${icon("chip")}Controller e Porte</h2><p class="muted" style="margin:0">Lo stato è nella scheda <b>Stato</b> di ogni controller.</p><div class="row" style="margin-top:12px"><a class="btn small" href="#impianti">Vai agli Impianti</a></div></div>` : ""}
       </div>
     </div>
     <p class="muted small-text" style="text-align:center">Axis Access Manager ${esc(store.me.version || "")}</p>`;
@@ -6584,7 +6585,7 @@ async function viewSettings(el, sub) {
 }
 
 async function viewAudit(body) {
-  body.innerHTML = `<div class="card flush"><h2>Attività<span class="spacer"></span><span class="muted small-text">chi ha fatto cosa nell'app</span></h2>
+  body.innerHTML = `<div class="card flush"><h2>Attività</h2>
       <div class="table-wrap" style="padding:8px 8px 0"><table class="table"><thead><tr><th style="width:150px">Quando</th><th style="width:140px">Utente</th><th>Azione</th></tr></thead><tbody id="audit"></tbody></table></div>
       <div style="text-align:center;padding:12px" id="audit-more-box" hidden><button type="button" id="audit-more">Carica Altre</button></div></div>`;
   $("#audit-more").onclick = () => loadAudit(true);
@@ -6599,7 +6600,7 @@ async function viewUsers(body) {
   const access = (u) => !u.direct ? "" : u.direct.expired ? '<span class="pill err">Provvisoria Scaduta</span>'
     : u.direct.temporary ? '<span class="pill warn">Password Provvisoria</span>'
     : `<span class="pill ok">Accesso Diretto${u.direct.sessions.length ? ` · ${u.direct.sessions.length}` : ""}</span>`;
-  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">Chi apre l'app da Home Assistant entra con "Solo Stato". Il personale senza Home Assistant entra dall'accesso diretto con una password provvisoria.</p>
+  body.innerHTML = `<div class="toolbar"><p class="muted" style="margin:0;flex:1;min-width:240px">I nuovi utenti di Home Assistant entrano con «Solo Stato».</p>
     <button type="button" class="primary" id="u-new">${icon("plus")}Nuovo Utente</button></div>
     <div class="card flush"><div class="list">${data.users.map((u) => `<div class="item">
       <div class="avatar ${u.perms.length ? "" : "off"}">${esc(initials(u.name || u.username))}</div>
@@ -6613,7 +6614,7 @@ async function viewUsers(body) {
     ${field("Nome", `<input name="name" maxlength="100" value="${esc(u?.name || "")}" placeholder="facoltativo">`)}
     ${field("Ruolo", `<select name="role">${Object.entries(data.roles).map(([k, r]) => `<option value="${k}" ${(u ? u.role : "solo_stato") === k ? "selected" : ""}>${esc(r.label)}</option>`).join("")}<option value="personalizzato" ${u?.role === "personalizzato" ? "selected" : ""}>Personalizzato</option></select>`)}
     <div class="field"><label>Permessi</label><div class="perm-list">${Object.entries(data.permissions).map(([k, label]) => `<label><input type="checkbox" name="perm" value="${k}" ${(u ? u.perms : data.roles.solo_stato.perms).includes(k) ? "checked" : ""}>${esc(label)}</label>`).join("")}</div>
-      <p class="hint">Senza «${esc(data.permissions.stato)}» non si vedono Cruscotto, Porte e Notifiche, né guasti e allarmi in alto. Lo stato del controller è nella sua scheda Stato, in Impianti, che richiede il permesso di configurare i controller.</p></div>`;
+      <p class="hint">Senza «${esc(data.permissions.stato)}» non si vedono Cruscotto, Porte, Notifiche, guasti e allarmi.</p></div>`;
   const bind = (dlg) => {
     const role = $("[name=role]", dlg);
     const boxes = $$("[name=perm]", dlg);
@@ -6700,7 +6701,7 @@ async function viewDirectAccess(body) {
       ["Porta nel Container", `<code>${st.port}</code>`],
       ["Utenti con Password", String(data.users)],
       ["Sessioni Aperte", `${data.sessions}${data.sessions ? ` <button type="button" class="small" id="da-close">Chiudi Tutte</button>` : ""}`],
-    ])}<p class="hint">La porta si assegna nella scheda Rete dell'add-on. Solo rete interna. Una sessione resta aperta finché non si esce, o fino a ${data.unused_days} giorni senza uso.</p></div></div>`;
+    ])}<p class="hint">La porta si assegna nella scheda Rete dell'add-on. Solo rete interna.</p></div></div>`;
   paintIcons(body);
   const save = async () => {
     const next = {enabled: $('[data-da="enabled"]', body).value === "true"};

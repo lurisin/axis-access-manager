@@ -105,7 +105,6 @@ def test_menu_and_titles_with_the_old_addresses():
         "Regole Non Leggibili",
     ):
         assert old not in page, old
-    assert "Le tipologie si gestiscono in Anagrafica → Tipologie." in page
     assert (
         'La tipologia predefinita si sceglie in ${can("persone") ? "Anagrafica" : "Fasce Orarie"} → Tipologie.' in page
     )
