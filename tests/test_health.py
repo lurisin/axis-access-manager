@@ -687,7 +687,7 @@ def test_exit_button_openings_of_0_21_4_become_exits(tmp_path):
     db = Database(path)
     for detail, source in (
         ("Pulsante Uscita · Aux 1 · più pressioni", "Pulsante Portineria"),
-        ("Relè Citofono · REX", "Via Consulta - Videocitofono"),
+        ("Relè Citofono · REX", "Ala Nord - Videocitofono"),
         ("tempo esteso", "Mario (HA)"),
     ):
         db.add_event(ts="2026-10-26T12:00:00+00:00", kind="apertura_remota", detail=detail, source=source)
@@ -698,7 +698,7 @@ def test_exit_button_openings_of_0_21_4_become_exits(tmp_path):
     kinds = {e["source"]: e["kind"] for e in db.list_events()}
     assert kinds == {
         "Pulsante Portineria": "uscita",
-        "Via Consulta - Videocitofono": "apertura_remota",
+        "Ala Nord - Videocitofono": "apertura_remota",
         "Mario (HA)": "apertura_remota",
     }
     db.close()

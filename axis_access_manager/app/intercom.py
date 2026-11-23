@@ -5,7 +5,7 @@ Gli eventi arrivano dall'add-on Hikvision Doorbell, che li pubblica sullo stesso
 
 Il relè del citofono non va mai alla serratura. Può essere collegato a un ingresso dell'A1210 con il ruolo Relè
 Citofono: il controller registra ogni pressione come apertura remota, ma apre solo se quell'ingresso ha il permesso di
-aprire. All'Eliseo non ce l'ha, per sicurezza (un relè manomesso non deve aprire): la porta la apre l'app, che quando
+aprire. Sull'impianto non ce l'ha, per sicurezza (un relè manomesso non deve aprire): la porta la apre l'app, che quando
 il citofono segnala un'apertura manda all'A1210 un solo AccessDoor, mai uno sblocco permanente ("Apri" dal
 Videocitofono Apre Questa Porta). Dove invece l'ingresso apre, l'app trova la porta già aperta e non manda altro.
 
@@ -13,7 +13,7 @@ Il 13/11 sera, dopo un riavvio di Home Assistant, il bridge ha consegnato in rit
 Home Assistant spento (20:02:42; messaggi alle 20:03:04 e 20:03:09) e la porta si è aperta 22 s dopo la richiesta,
 con nessuno davanti. Per questo un relè ON non si inoltra nei primi secondi dopo un ricollegamento (dell'app al broker
 o del bridge) senza una chiamata arrivata dopo, né se l'ora dell'evento negli attributi è vecchia. La 0.28.4 non lo
-inoltrava nemmeno se il controller aveva appena registrato una pressione del Relè Citofono: all'Eliseo, dove
+inoltrava nemmeno se il controller aveva appena registrato una pressione del Relè Citofono: sull'impianto, dove
 quell'ingresso non apre, così la porta restava chiusa. Tolto nella 0.28.5.
 """
 

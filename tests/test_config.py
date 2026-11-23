@@ -8,8 +8,8 @@ BASE = {
     "a1210_username": "addon",
     "a1210_password": "segreta",
     "a1210_verify_ssl": False,
-    "door_token": "porta_via_consulta_ingresso_scala",
-    "mqtt_topic_prefix": "accessi/via_consulta_controller/",
+    "door_token": "porta_ala_nord_ingresso_scala",
+    "mqtt_topic_prefix": "accessi/ala_nord_controller/",
     "log_level": "info",
 }
 
@@ -17,7 +17,7 @@ BASE = {
 def test_parse_options_trims_values():
     settings = parse_options(BASE)
     assert settings.a1210_host == "192.168.1.50"
-    assert settings.mqtt_topic_prefix == "accessi/via_consulta_controller"
+    assert settings.mqtt_topic_prefix == "accessi/ala_nord_controller"
     assert settings.mqtt is None
 
 

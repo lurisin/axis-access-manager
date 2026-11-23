@@ -16,7 +16,7 @@ from app.notifications import NotificationService
 from app.vapix import A1210Client, VapixError, cert_fingerprint
 
 PREFIX = "accessi/x"
-DOOR = "porta_via_consulta_ingresso_scala"
+DOOR = "porta_ala_nord_ingresso_scala"
 
 
 def notify(topic, source, data, timestamp=1792951050860):

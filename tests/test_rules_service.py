@@ -180,9 +180,9 @@ DOOR = {
 
 
 def place(db):
-    """Via Consulta: Varco Scala nell'area Camere (dal controller), Cantina nei Locali Tecnici."""
+    """Ala Nord: Varco Scala nell'area Camere (dal controller), Cantina nei Locali Tecnici."""
     controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
-    site = db.save_site(None, "Via Consulta", "")
+    site = db.save_site(None, "Ala Nord", "")
     rooms = db.save_area(None, site, "Camere")
     tech = db.save_area(None, site, "Locali Tecnici")
     db.set_controller_area(controller_id, rooms)

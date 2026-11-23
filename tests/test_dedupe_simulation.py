@@ -23,11 +23,11 @@ PREFIX = "accessi/x"
 READER = {
     "Area": "",
     "Location": "",
-    "Name": "Via Consulta - Lettore Esterno",
-    "IdPointToken": "lettore_via_consulta_ingresso_scala",
+    "Name": "Ala Nord - Lettore Esterno",
+    "IdPointToken": "lettore_ala_nord_ingresso_scala",
     "Category": "IdPoint",
 }
-ACCESS_POINT = {"AccessPointToken": "accesso_via_consulta_ingresso_scala"}
+ACCESS_POINT = {"AccessPointToken": "accesso_ala_nord_ingresso_scala"}
 DENIED = {
     "CardNr": "",
     "Card": "c0110b18",

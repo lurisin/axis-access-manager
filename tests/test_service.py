@@ -896,7 +896,7 @@ async def test_exit_button_from_mqtt_topic_is_logged_once_with_the_input_name(se
 async def test_same_press_from_mqtt_and_from_recovery_is_not_a_repeat(service, db):
     controller_id = db.save_controller(None, {f: "" for f in db.CONTROLLER_FIELDS} | {"name": "A1210", "verify_ssl": 0})
     db.save_controller_input(
-        controller_id, "REX", {"name": "Via Consulta - Videocitofono", "role": "intercom", "access_point_token": "ap"}
+        controller_id, "REX", {"name": "Ala Nord - Videocitofono", "role": "intercom", "access_point_token": "ap"}
     )
     denied = {"AccessPointToken": "ap", "Reason": "NotPermittedAtThisTime"}
     moment = datetime(2026, 10, 26, 12, 51, 41, tzinfo=UTC)
@@ -978,7 +978,7 @@ async def test_event_from_log_matches_mqtt_topics():
         "AccessControl/Denied/CredentialNotFound/",
     ]
     assert events[1].data["Card"] == "c0110b18"
-    assert events[6].data == {"DoorToken": "porta_via_consulta_ingresso_scala", "State": "Accessed"}
+    assert events[6].data == {"DoorToken": "porta_ala_nord_ingresso_scala", "State": "Accessed"}
     assert events[0].timestamp.isoformat(timespec="seconds") == "2026-10-25T17:54:43+00:00"
 
 
@@ -1017,7 +1017,7 @@ async def test_live_event_after_recovery_is_not_duplicated(service, controller, 
             category="AccessControl",
             topic="AccessControl/Denied/CredentialNotFound/Card/AccessPointToken/x",
             timestamp=datetime(2026, 10, 25, 17, 54, 43, tzinfo=UTC),
-            data={"Card": "c0110b18", "AccessPointToken": "accesso_via_consulta_ingresso_scala"},
+            data={"Card": "c0110b18", "AccessPointToken": "accesso_ala_nord_ingresso_scala"},
         )
     )
 

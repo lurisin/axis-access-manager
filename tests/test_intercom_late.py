@@ -2,7 +2,7 @@
 ha consegnato in ritardo le pressioni dell'Apri e l'app le ha inoltrate all'A1210: la porta si è aperta 22 s dopo la
 richiesta, con nessuno davanti.
 
-All'Eliseo il relè del citofono è collegato all'ingresso REX dell'A1210 («Relè Citofono»), ma lì non apre la porta,
+Sull'impianto il relè del citofono è collegato all'ingresso REX dell'A1210 («Relè Citofono»), ma lì non apre la porta,
 per sicurezza: il controller registra la pressione e la porta la apre solo l'app, con l'inoltro. Orologio finto e
 messaggi MQTT finti, passati dal monitor come quelli veri; solo il FakeController, mai una porta vera. Nomi di
 fantasia."""
@@ -140,7 +140,7 @@ async def test_13_11_late_presses_after_the_restart_do_not_open_the_door_again(d
     """La cronologia vera del 13/11, dai log del titolare."""
     # 20:01:30 Home Assistant si spegne per l'aggiornamento: broker e bridge del citofono cadono con lui.
     # 20:02:42 Apri dal monitor del citofono: il relè, collegato all'ingresso REX, fa registrare la pressione al
-    # controller anche con Home Assistant spento (all'Eliseo quell'ingresso non apre: la porta la apre l'app). Due
+    # controller anche con Home Assistant spento (sull'impianto quell'ingresso non apre: la porta la apre l'app). Due
     # pressioni (5 s) che il registro del controller tiene anche senza nessuno collegato
     controller.log_events = [log_entry(868, "20:02:42"), log_entry(869, "20:02:47")]
     # 20:02:57 il bridge torna sul broker; 20:02:58 riparte l'add-on, che si collega al broker e trova gli stati
@@ -509,7 +509,7 @@ async def test_event_time_in_the_attributes_stops_old_messages(db, controller, s
 async def test_relay_on_a_controller_input_that_does_not_open_never_holds_back_the_open(
     db, controller, settings, clock
 ):
-    """Eliseo (15/11): il relè del videocitofono è collegato all'ingresso Relè Citofono dell'A1210, ma lì non apre la
+    """Impianto (15/11): il relè del videocitofono è collegato all'ingresso Relè Citofono dell'A1210, ma lì non apre la
     porta, per sicurezza (un relè manomesso non deve aprire): la apre solo l'app, con l'inoltro. Il controller
     registra comunque la pressione come apertura remota dal Relè Citofono, spesso prima che arrivi il relè ON del
     videocitofono. Nella 0.28.4 quella riga fermava l'inoltro e la porta restava chiusa: ora un Apri dal vivo si
@@ -532,7 +532,7 @@ async def test_relay_on_a_controller_input_that_does_not_open_never_holds_back_t
         plant.monitor.door_mode = "Locked"
     assert controller.calls == [FORWARDED] * 3
     assert [row for row in plant.rows() if "non inoltrata" in row[1]] == []
-    # Nessun avviso che chieda di spegnere l'inoltro: all'Eliseo spegnerebbe l'apertura dal monitor
+    # Nessun avviso che chieda di spegnere l'inoltro: sull'impianto spegnerebbe l'apertura dal monitor
     from app.notifications import TYPES
 
     assert "intercom" not in TYPES
