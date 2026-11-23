@@ -47,15 +47,15 @@ def test_existing_doors_get_a_default_site_once(db):
 def test_door_area_moves_to_its_controller(db):
     # Impianto della 0.6: l'area era sulla porta
     installation = InstallationService(db)
-    teatro = installation.save_site(None, {"name": "Teatro Eliseo"}, "admin")["id"]
-    consulta = installation.save_area(None, teatro, {"name": "Via Consulta"}, "admin")["id"]
+    teatro = installation.save_site(None, {"name": "Teatro Aurora"}, "admin")["id"]
+    ala = installation.save_area(None, teatro, {"name": "Ala Nord"}, "admin")["id"]
     controller_id = db.save_controller(None, {**CONTROLLER, "verify_ssl": 0})
-    door_id = _old_door(db, controller_id, consulta)
+    door_id = _old_door(db, controller_id, ala)
     assert installation.ensure_default_site() is True
-    assert db.get_controller(controller_id)["area_id"] == consulta
+    assert db.get_controller(controller_id)["area_id"] == ala
     assert db.get_door(door_id)["area_id"] == 0
-    assert installation.door_places()[door_id]["area"] == "Via Consulta"
-    assert [s["name"] for s in db.list_sites()] == ["Teatro Eliseo"]
+    assert installation.door_places()[door_id]["area"] == "Ala Nord"
+    assert [s["name"] for s in db.list_sites()] == ["Teatro Aurora"]
 
 
 def test_sites_areas_and_door_places(db):

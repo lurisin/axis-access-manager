@@ -5,7 +5,7 @@
   "KeyValues": [
    {
     "Key": "IdPointToken",
-    "Value": "lettore_via_consulta_ingresso_scala"
+    "Value": "lettore_ala_nord_ingresso_scala"
    },
    {
     "Key": "topic1",
@@ -31,7 +31,7 @@
    },
    {
     "Key": "IdPointToken",
-    "Value": "lettore_via_consulta_ingresso_scala"
+    "Value": "lettore_ala_nord_ingresso_scala"
    },
    {
     "Key": "topic0",
@@ -77,7 +77,7 @@
    },
    {
     "Key": "AccessPointToken",
-    "Value": "accesso_via_consulta_ingresso_scala"
+    "Value": "accesso_ala_nord_ingresso_scala"
    },
    {
     "Key": "Card",
@@ -107,7 +107,7 @@
    },
    {
     "Key": "AccessPointToken",
-    "Value": "accesso_via_consulta_ingresso_scala"
+    "Value": "accesso_ala_nord_ingresso_scala"
    },
    {
     "Key": "Card",
@@ -125,7 +125,7 @@
    },
    {
     "Key": "IdPointToken",
-    "Value": "lettore_via_consulta_ingresso_scala"
+    "Value": "lettore_ala_nord_ingresso_scala"
    },
    {
     "Key": "topic0",
@@ -159,7 +159,7 @@
    },
    {
     "Key": "AccessPointToken",
-    "Value": "accesso_via_consulta_ingresso_scala"
+    "Value": "accesso_ala_nord_ingresso_scala"
    },
    {
     "Key": "topic2",
@@ -181,7 +181,7 @@
   "KeyValues": [
    {
     "Key": "DoorToken",
-    "Value": "porta_via_consulta_ingresso_scala"
+    "Value": "porta_ala_nord_ingresso_scala"
    },
    {
     "Key": "topic1",
@@ -207,7 +207,7 @@
   "KeyValues": [
    {
     "Key": "DoorToken",
-    "Value": "porta_via_consulta_ingresso_scala"
+    "Value": "porta_ala_nord_ingresso_scala"
    },
    {
     "Key": "topic1",

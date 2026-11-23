@@ -10,7 +10,7 @@ from app.events import Event, EventMonitor, parse_event
 from app.ha import HomeAssistant
 from app.main import create_app
 
-PREFIX = "accessi/via_consulta_controller"
+PREFIX = "accessi/ala_nord_controller"
 
 
 def payload(data: dict, timestamp: int = 1729800000000) -> bytes:

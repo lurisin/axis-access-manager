@@ -15,7 +15,7 @@ MQTT = {
     "server": {"protocol": "tcp", "host": "172.27.120.21", "port": 1883},
     "username": "axis_mqtt",
     "password": "segreta",
-    "clientId": "via_consulta_controller",
+    "clientId": "ala_nord_controller",
     "deviceTopicPrefix": "axis/B8A44FE6A074",
 }
 EVENTS = {
