@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.29.2
+
+- **Carica Tessere: una tessera caricata non sembra più un errore.** Dopo una tessera non caricata (per esempio già in elenco), le tessere caricate bene finivano nello stesso riquadro rosso. Ora sono due riquadri: in verde l'ultima caricata, in rosso «Non Caricate» con il motivo, che si chiude con la ×.
+
 ## 0.29.1
 
 - **Testi più brevi.** Le spiegazioni sotto i campi, in cima alle pagine e nelle finestre sono accorciate o tolte: resta solo quello che serve per usare l'app. Le spiegazioni lunghe sono nel manuale (Documentazione dell'add-on).

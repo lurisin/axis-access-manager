@@ -428,15 +428,19 @@ const config = JSON.parse(process.argv[1]);
   // Già caricata: lo dice subito, e il campo resta pronto
   await page.keyboard.type(config.codes[0].toUpperCase());
   await page.keyboard.press("Enter");
-  await page.waitForSelector("#c-note.alert.err");
-  out.again = await page.textContent("#c-note");
+  await page.waitForSelector("#c-errors:not([hidden])");
+  out.again = [await page.textContent("#c-errors .grow"), await page.isHidden("#c-note")];
   // Un nome scritto a mano vale per la tessera dopo, poi si torna alla serie
   await page.fill("#c-load [name=printed_code]", "Ospite Blu");
   await page.focus("#c-load [name=card]");
   await page.keyboard.type(config.extra);
   await page.keyboard.press("Enter");
   await page.waitForFunction((n) => document.querySelectorAll("#c-list > .item").length === n, config.codes.length + 1);
-  out.note = await page.textContent("#c-note");
+  out.note = [await page.textContent("#c-note"), await page.textContent("#c-errors .grow")];
+  // Chiuso il riquadro rosso, resta l'ultima caricata e il campo è pronto
+  await page.click("#c-errors-close");
+  const focused = await page.evaluate(() => document.activeElement?.name || "");
+  out.closed = [await page.isHidden("#c-errors"), await page.textContent("#c-note"), focused];
   out.nextAfter = await page.inputValue("#c-load [name=printed_code]");
   out.rowsAfter = await rows();
   out.scroll = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
@@ -467,10 +471,15 @@ def test_cards_swiped_one_after_the_other_are_all_loaded(plant, ingress_server, 
     assert out["rows"] == [["Numero 1", "04a1b2c3"], ["Numero 2", "04a1b2c4"], ["Numero 3", "04a1b2c5"]]
     assert out["count"] == "3 tessere · 3 libere"
     assert (out["next"], out["focusAfter"], out["field"]) == ("Numero 4", "card", "")
-    assert out["again"] == "04A1B2C3: Tessera già caricata (Numero 1): libera"
+    # Un errore va nel riquadro rosso, e l'ultima riuscita non resta come ultimo esito
+    assert out["again"] == ["Non Caricate04A1B2C3: Tessera già caricata (Numero 1): libera", True]
     assert out["posts"][4] == {"card": "04a1b2c6", "printed_code": "Ospite Blu"}
-    # L'errore della tessera già caricata resta sopra, finché si resta sulla pagina
-    assert out["note"] == "04A1B2C3: Tessera già caricata (Numero 1): liberaCaricata: Ospite Blu · 04a1b2c6"
+    # La tessera caricata dopo va nel riquadro verde, mai in quello rosso, che resta finché lo si chiude
+    assert out["note"] == [
+        "CaricataOspite Blu · 04a1b2c6",
+        "Non Caricate04A1B2C3: Tessera già caricata (Numero 1): libera",
+    ]
+    assert out["closed"] == [True, "CaricataOspite Blu · 04a1b2c6", "card"]
     assert out["nextAfter"] == "Numero 4"
     assert out["rowsAfter"][-1] == ["Ospite Blu", "04a1b2c6"]
     stored = {c["number"]: (c["printed_code"], c["person_id"]) for c in app.state.db.list_cards()}
@@ -751,14 +760,14 @@ const config = JSON.parse(process.argv[1]);
   await page.focus("#c-load [name=card]");
   await swipe("ffee11aa22");
   await page.waitForTimeout(300);
-  out.half = [await page.textContent("#c-note"), await page.inputValue("#c-load [name=card]"), await rows()];
+  out.half = [await page.textContent("#c-errors"), await page.inputValue("#c-load [name=card]"), await rows()];
   // 4. Una tessera già caricata in mezzo alle altre: il suo errore resta sopra le riuscite dopo
   await page.focus("#c-load [name=card]");
   await swipe("04c0ff01");
   await swipe("04c0ff03");
   await page.waitForFunction((n) => document.querySelectorAll("#c-list > .item").length === n, 4);
   await page.waitForFunction(() => document.querySelector("#c-note").textContent.includes("04c0ff03"));
-  out.burst = await page.textContent("#c-note");
+  out.burst = [await page.textContent("#c-note"), await page.textContent("#c-errors")];
   // 5. Tasto senza nome (Chrome compilando un campo): nessun errore
   await page.evaluate(() => { document.querySelector("#c-q").dispatchEvent(new Event("keydown", {bubbles: true})); });
   // 6. Nuova Persona: email e tipologia restano come erano, e due Invio non la registrano
@@ -829,7 +838,7 @@ def test_reader_swipes_never_change_a_choice_or_submit_a_dialog(plant, ingress_s
     assert out["adds"] == [[str(bruno["id"]), {"card": "04b7c2d1", "card_id": 1}]]
     assert out["focusAfterTab"] == "card"
     assert out["half"][1:] == ["", 3] and "letta a metà" in out["half"][0]
-    assert "04c0ff01: Tessera già caricata" in out["burst"] and "Caricata: Numero 4 · 04c0ff03" in out["burst"]
+    assert out["burst"][0] == "CaricataNumero 4 · 04c0ff03" and "04c0ff01: Tessera già caricata" in out["burst"][1]
     assert out["cards"] == ["04c0ff01", "04c0ff02", "04c0ff01", "04c0ff03"]
     assert out["email"] == "dario@"
     assert out["newPerson"] == [0, True, "04c0ff05"]
