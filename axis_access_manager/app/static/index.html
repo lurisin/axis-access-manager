@@ -458,6 +458,8 @@
            background: var(--warn-soft); color: var(--text); border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); }
   .alert.err { background: var(--err-soft); border-color: color-mix(in srgb, var(--err) 30%, transparent); }
   .alert.info { background: var(--info-soft); border-color: color-mix(in srgb, var(--info) 30%, transparent); }
+  .alert.ok { background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
+  .alert.ok > svg.icon { fill: var(--ok); }
   .alert b { display: block; }
   .alert b.inline { display: inline; }
   .alert .grow { flex: 1; min-width: 0; }
@@ -3796,18 +3798,21 @@ async function refreshCards() {
   Object.assign(cardsView, {cards: data.cards, next: data.next_name});
   paintCards();
 }
-// Esito dell'ultima tessera caricata, sotto il modulo: un errore resta finché non se ne carica un'altra
-// (gli errori delle ultime tessere non caricate restano sopra l'ultimo esito, una riga per tessera, finché si resta
-// sulla pagina: chi passa una pila di tessere non guarda lo schermo a ogni tessera)
+// Sotto il modulo, due riquadri uguali nella forma. In verde l'ultima tessera caricata. In rosso «Non Caricate», una riga per
+// tessera (le ultime cinque): resta finché non lo si chiude o si lascia la pagina, perché chi passa una pila di tessere
+// non guarda lo schermo a ogni tessera. Una tessera caricata bene non finisce mai nel riquadro rosso
 function cardNote(text, error = false) {
-  const note = $("#c-note");
-  if (!note) return;
-  const lines = [...cardsView.errors, ...(error && cardsView.errors.includes(text) ? [] : [text])];
-  const bad = error || cardsView.errors.length > 0;
-  note.className = bad ? "alert err" : "small-text muted";
-  note.setAttribute("role", bad ? "alert" : "status");
-  note.innerHTML = bad ? `${icon("alert")}<div class="grow">${lines.map(esc).join("<br>")}</div>` : esc(text);
+  const note = $("#c-note"), errors = $("#c-errors");
+  if (!note || !errors) return;
+  if (error && !cardsView.errors.includes(text)) cardsView.errors = [...cardsView.errors, text].slice(-5);
+  // Dopo un errore l'ultima riuscita non è più l'ultimo esito: il riquadro verde si toglie
+  note.hidden = error || !text;
+  note.innerHTML = error || !text ? "" : `${icon("check")}<div class="grow"><b>Caricata</b>${esc(text)}</div>`;
+  errors.hidden = !cardsView.errors.length;
+  errors.innerHTML = cardsView.errors.length ? `${icon("alert")}<div class="grow"><b>Non Caricate</b>${cardsView.errors.map(esc).join("<br>")}</div>
+    <button type="button" class="ghost icon-only" id="c-errors-close" aria-label="Chiudi">${icon("close")}</button>` : "";
   paintIcons(note);
+  paintIcons(errors);
 }
 // Salva una alla volta le tessere in attesa. Senza il riquadro di attesa, che fermerebbe i tasti: il lettore scrive già
 // la tessera dopo
@@ -3825,11 +3830,9 @@ async function saveLoadedCards() {
       const row = {...saved.card, person_name: ""}, at = cardsView.cards.findIndex((c) => c.id === row.id);
       if (at >= 0) cardsView.cards[at] = row;
       else cardsView.cards.push(row);
-      cardNote(`Caricata: ${saved.card.printed_code || "senza nome"} · ${saved.card.number}`);
+      cardNote(`${saved.card.printed_code || "Senza nome"} · ${saved.card.number}`);
     } catch (err) {
-      const text = `${body.card}: ${cap(err.message)}`;
-      if (!cardsView.errors.includes(text)) cardsView.errors = [...cardsView.errors, text].slice(-5);
-      cardNote(text, true);
+      cardNote(`${body.card}: ${cap(err.message)}`, true);
     }
     paintCards();
   }
@@ -3845,7 +3848,8 @@ async function viewCards(el) {
       <div class="fields-2">${field("Codice Tessera", '<input name="card" class="mono" autocomplete="off" spellcheck="false" maxlength="80">', "Passa la tessera sul lettore da banco.")}
         ${field("Nome Tessera", `<input name="printed_code" autocomplete="off" spellcheck="false" maxlength="30" value="${esc(cardsView.next)}">`, PRINTED_CODE_HINT)}</div>
       <div class="row"><button type="submit" class="primary">${icon("plus")}Carica</button></div>
-      <div id="c-note" class="small-text muted" role="status" style="margin-top:10px"></div></form>
+      <div id="c-note" class="alert ok" role="status" style="margin:12px 0 0" hidden></div>
+      <div id="c-errors" class="alert err" role="alert" style="margin:12px 0 0" hidden></div></form>
     <div class="toolbar"><input type="search" id="c-q" placeholder="Cerca nome, codice, persona…" aria-label="Cerca tessere" value="${esc(cardFilters.q)}">
       <select id="c-state" aria-label="Mostra"><option value="">Tutte le Tessere</option><option value="libere">Libere</option><option value="assegnate">Assegnate</option></select></div>
     <div class="card flush"><h2 style="padding-bottom:12px"><span id="c-count" class="muted small-text"></span></h2><div class="list" id="c-list"></div></div>`;
@@ -3870,6 +3874,13 @@ async function viewCards(el) {
   $("#c-q").oninput = (e) => { cardFilters.q = e.target.value; paintCards(); };
   $("#c-state").onchange = (e) => { cardFilters.state = e.target.value; paintCards(); };
   el.onclick = async (e) => {
+    // Chiuso il riquadro delle non caricate: il campo del codice torna pronto per il lettore
+    if (e.target.closest("#c-errors-close")) {
+      cardsView.errors = [];
+      Object.assign($("#c-errors"), {hidden: true, innerHTML: ""});
+      code.focus();
+      return;
+    }
     const b = e.target.closest("button[data-card-name], button[data-card-give], button[data-card-del]");
     if (!b) return;
     const card = cardsView.cards.find((c) => c.id === Number(b.dataset.cardName || b.dataset.cardGive || b.dataset.cardDel));
